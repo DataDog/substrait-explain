@@ -121,37 +121,80 @@ impl OutputContext {
         &self.options
     }
 
-    pub fn find_uri(&self, anchor: u32) -> Option<pext::SimpleExtensionUri> {
+    // pub fn fmt<T: Textify>(&self, t: &T) -> TextifyWriter<T> {
+    //     TextifyWriter {
+    //         ctx: self,
+    //         value: &t,
+    //     }
+    // }
+}
+
+pub trait SimpleExtensions {
+    fn find_uri(&self, anchor: u32) -> Option<pext::SimpleExtensionUri>;
+    fn find_function(&self, anchor: u32) -> Option<ExtensionFunction>;
+    fn find_type(&self, anchor: u32) -> Option<ExtensionType>;
+    fn find_type_variation(&self, anchor: u32) -> Option<ExtensionTypeVariation>;
+}
+
+impl SimpleExtensions for OutputContext {
+    fn find_uri(&self, anchor: u32) -> Option<pext::SimpleExtensionUri> {
         self.uris.get(&anchor).cloned()
     }
 
-    pub fn find_function(&self, anchor: u32) -> Option<ExtensionFunction> {
+    fn find_function(&self, anchor: u32) -> Option<ExtensionFunction> {
         self.functions.get(&anchor).cloned()
     }
 
-    pub fn find_type(&self, anchor: u32) -> Option<ExtensionType> {
+    fn find_type(&self, anchor: u32) -> Option<ExtensionType> {
         self.types.get(&anchor).cloned()
     }
 
-    pub fn find_type_variation(&self, anchor: u32) -> Option<ExtensionTypeVariation> {
+    fn find_type_variation(&self, anchor: u32) -> Option<ExtensionTypeVariation> {
         self.type_variations.get(&anchor).cloned()
+    }
+}
+
+pub struct TextifyWriter<'a, T: Textify + 'a> {
+    ctx: &'a mut OutputContext,
+    value: &'a T,
+}
+
+impl<'a, T: Textify> fmt::Display for TextifyWriter<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value.textify(&mut self.ctx.clone(), f)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum TextifyError {
-    Fmt(fmt::Error),
     /// An invalid value was encountered; could not be converted to a string.
     InvalidValue {
         // TODO: figure out the arguments here
         name: String,
         context: String,
     },
+    Unimplemented(String),
+
+    Internal(String),
+}
+
+impl std::error::Error for TextifyError {}
+
+impl fmt::Display for TextifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TextifyError::InvalidValue { name, context } => {
+                write!(f, "Invalid value: {} ({})", name, context)
+            }
+            TextifyError::Unimplemented(s) => write!(f, "Unimplemented: {}", s),
+            TextifyError::Internal(s) => write!(f, "Internal error: {}", s),
+        }
+    }
 }
 
 impl From<fmt::Error> for TextifyError {
     fn from(e: fmt::Error) -> Self {
-        TextifyError::Fmt(e)
+        TextifyError::Internal(format!("fmt error: {}", e))
     }
 }
 
@@ -165,3 +208,13 @@ pub trait Textify {
         w: &mut W,
     ) -> Result<(), TextifyError>;
 }
+
+// ($dst:expr, $($arg:tt)*) => {
+//     $dst.write_fmt($crate::format_args!($($arg)*))
+// };
+
+// macro_rules! textify {
+//     ($ctx:expr, $w:expr, $($arg:tt)*) => {
+
+//     };
+// }

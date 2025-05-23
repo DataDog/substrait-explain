@@ -1,3 +1,5 @@
+use crate::textify::SimpleExtensions;
+
 use super::textify::{OutputContext, Textify, TextifyError};
 
 use std::fmt::{self};
@@ -49,7 +51,7 @@ fn textify_type<W: fmt::Write, P: Textify, I: IntoIterator<Item = P>>(
     };
 
     let mut first = true;
-    for (_i, param) in params.into_iter().enumerate() {
+    for param in params.into_iter() {
         if first {
             write!(f, "<")?;
             first = false;
