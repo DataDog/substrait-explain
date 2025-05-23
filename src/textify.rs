@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fmt::{self};
+use std::fmt;
 
 use substrait::proto::extensions as pext;
 
@@ -8,7 +8,7 @@ use pext::simple_extension_declaration::{
 };
 
 /// OutputOptions holds the options for textifying a Substrait type.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OutputOptions {
     /// Show the extension URIs in the output.
     pub show_extension_uris: bool,
@@ -19,7 +19,7 @@ pub struct OutputOptions {
     /// names.
     pub show_simple_extension_anchors: bool,
     /// Instead of showing the emitted columns inline, show the emits directly.
-    pub use_emit: bool,
+    pub show_emit: bool,
 
     /// Show the types for columns in a read
     pub read_types: bool,
@@ -31,6 +31,26 @@ pub struct OutputOptions {
     pub strict: bool,
     /// The indent to use for nested types
     pub indent: String,
+    /// Show the binary values for literal types as hex strings. Normally, they
+    /// are shown as '{{binary}}'
+    pub show_literal_binaries: bool,
+}
+
+impl Default for OutputOptions {
+    fn default() -> Self {
+        Self {
+            show_extension_uris: false,
+            show_simple_extensions: false,
+            show_simple_extension_anchors: false,
+            show_emit: false,
+            read_types: false,
+            fn_types: false,
+            nullability: false,
+            strict: false,
+            indent: "  ".to_string(),
+            show_literal_binaries: false,
+        }
+    }
 }
 
 /// OutputContext holds the context for textifying a Substrait type.

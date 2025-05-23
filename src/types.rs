@@ -109,7 +109,7 @@ pub enum ExpectedValue<T> {
 }
 
 impl<T: fmt::Debug> ExpectedValue<T> {
-    fn from_option(opt: Option<T>, name: impl Into<String>) -> Self {
+    pub fn from_option(opt: Option<T>, name: impl Into<String>) -> Self {
         match opt {
             Some(t) => Self::Value(t),
             None => Self::Missing(MissingValue { name: name.into() }),
