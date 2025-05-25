@@ -2,11 +2,12 @@ use crate::textify::SimpleExtensions;
 
 use super::textify::{OutputContext, Textify, TextifyError};
 
+use std::borrow::Cow;
 use std::fmt::{self};
 
 use ptype::parameter::Parameter;
-use substrait::proto;
 use substrait::proto::r#type as ptype;
+use substrait::proto::{self};
 
 impl Textify for ptype::Nullability {
     fn textify<W: fmt::Write>(
@@ -79,11 +80,17 @@ macro_rules! textify_kind {
     };
 }
 
-pub struct MissingValue {
-    name: String,
+pub struct MissingValue<'a> {
+    name: Cow<'a, str>,
 }
 
-impl Textify for MissingValue {
+impl<'a, T: Into<Cow<'a, str>>> From<T> for MissingValue<'a> {
+    fn from(name: T) -> Self {
+        MissingValue { name: name.into() }
+    }
+}
+
+impl<'a> Textify for MissingValue<'a> {
     fn textify<W: fmt::Write>(
         &self,
         ctx: &mut OutputContext,
@@ -95,7 +102,7 @@ impl Textify for MissingValue {
                 context: "Expected a value, found None".into(),
             });
         }
-        write!(w, "{{{}}}", self.name)?;
+        write!(w, "!❬{}❭", self.name)?;
         Ok(())
     }
 }
@@ -105,21 +112,27 @@ impl Textify for MissingValue {
 /// Protobuf messages structurally allow values to be optional that by the spec
 /// may be necessary. Depending on options, this might end up as an error or as
 /// a placeholder.
-pub enum ExpectedValue<T> {
-    Value(T),
-    Missing(MissingValue),
+pub enum ExpectedValue<'a, T: Clone> {
+    Value(Cow<'a, T>),
+    Missing(MissingValue<'a>),
 }
 
-impl<T: fmt::Debug> ExpectedValue<T> {
-    pub fn from_option(opt: Option<T>, name: impl Into<String>) -> Self {
-        match opt {
-            Some(t) => Self::Value(t),
+impl<'a, T: fmt::Debug + Clone> ExpectedValue<'a, T> {
+    pub fn from_option(opt: impl Into<Option<&'a T>>, name: impl Into<Cow<'a, str>>) -> Self {
+        match opt.into() {
+            Some(t) => Self::Value(Cow::Borrowed(t)),
+            None => Self::Missing(MissingValue { name: name.into() }),
+        }
+    }
+    pub fn from_option_owned(opt: impl Into<Option<T>>, name: impl Into<Cow<'a, str>>) -> Self {
+        match opt.into() {
+            Some(t) => Self::Value(Cow::Owned(t)),
             None => Self::Missing(MissingValue { name: name.into() }),
         }
     }
 }
 
-impl<T: Textify + fmt::Debug> Textify for ExpectedValue<T> {
+impl<'a, T: Textify + fmt::Debug + Clone> Textify for ExpectedValue<'a, T> {
     fn textify<W: fmt::Write>(
         &self,
         ctx: &mut OutputContext,
@@ -159,13 +172,7 @@ impl Textify for ptype::Parameter {
         ctx: &mut OutputContext,
         w: &mut W,
     ) -> Result<(), TextifyError> {
-        match self.parameter.as_ref() {
-            Some(p) => p.textify(ctx, w),
-            None => MissingValue {
-                name: "Parameter".to_string(),
-            }
-            .textify(ctx, w),
-        }
+        ExpectedValue::from_option(self.parameter.as_ref(), "Parameter").textify(ctx, w)
     }
 }
 
@@ -264,10 +271,10 @@ impl Textify for ptype::Kind {
                 "list",
                 l.nullability(),
                 l.type_variation_reference,
-                [ExpectedValue::from_option(
+                [ExpectedValue::<Parameter>::from_option_owned(
                     l.r#type
                         .as_ref()
-                        .map(|t| Parameter::DataType((**t).clone())),
+                        .map(|t| Parameter::DataType((**t).to_owned())),
                     "LIST_PARAMETER",
                 )],
             ),
@@ -278,12 +285,16 @@ impl Textify for ptype::Kind {
                 m.nullability(),
                 m.type_variation_reference,
                 [
-                    ExpectedValue::from_option(
-                        m.key.as_ref().map(|t| Parameter::DataType((**t).clone())),
+                    ExpectedValue::<Parameter>::from_option_owned(
+                        m.key
+                            .as_ref()
+                            .map(|t| Parameter::DataType((**t).to_owned())),
                         "MAP_KEY",
                     ),
-                    ExpectedValue::from_option(
-                        m.value.as_ref().map(|t| Parameter::DataType((**t).clone())),
+                    ExpectedValue::<Parameter>::from_option_owned(
+                        m.value
+                            .as_ref()
+                            .map(|t| Parameter::DataType((**t).to_owned())),
                         "MAP_VALUE",
                     ),
                 ],
@@ -300,10 +311,7 @@ impl Textify for ptype::Kind {
                         u.type_parameters.iter().cloned(),
                     )
                 } else {
-                    let m = MissingValue {
-                        name: "UserDefined".to_string(),
-                    };
-                    m.textify(ctx, w)
+                    MissingValue::from("UserDefined").textify(ctx, w)
                 }
             }
             ptype::Kind::UserDefinedTypeReference(r) => {
