@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.41"
+prost = "0.13.5"
 substrait = "0.57.0"

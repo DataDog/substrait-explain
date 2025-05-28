@@ -1,4 +1,6 @@
+use std::cell::{RefCell, RefMut};
 use std::fmt;
+use std::ops::DerefMut;
 use std::{borrow::Cow, collections::HashMap};
 
 use substrait::proto::extensions as pext;
@@ -6,6 +8,10 @@ use substrait::proto::extensions as pext;
 use pext::simple_extension_declaration::{
     ExtensionFunction, ExtensionType, ExtensionTypeVariation, MappingType,
 };
+
+const ERROR_MARKER_START: &str = "!{"; // "!❬";
+const ERROR_MARKER_END: &str = "}"; // "❭";
+pub const NONSPECIFIC: Option<&'static str> = None;
 
 /// OutputOptions holds the options for textifying a Substrait type.
 #[derive(Debug, Clone)]
@@ -27,8 +33,6 @@ pub struct OutputOptions {
     pub fn_types: bool,
     /// Show the nullability of types
     pub nullability: bool,
-    /// Error on unspecified fields
-    pub strict: bool,
     /// The indent to use for nested types
     pub indent: String,
     /// Show the binary values for literal types as hex strings. Normally, they
@@ -46,16 +50,16 @@ impl Default for OutputOptions {
             read_types: false,
             fn_types: false,
             nullability: false,
-            strict: false,
             indent: "  ".to_string(),
             show_literal_binaries: false,
         }
     }
 }
 
-/// OutputContext holds the context for textifying a Substrait type.
+/// ExtensionLookup contains mappings from anchors to extension URIs, functions,
+/// types, and type variations.
 #[derive(Default, Debug, Clone)]
-pub struct OutputContext {
+pub struct ExtensionLookup {
     // Maps from extension URI anchor to URI
     uris: HashMap<u32, pext::SimpleExtensionUri>,
     // Maps from function anchor to (extension URI anchor, function name)
@@ -64,11 +68,9 @@ pub struct OutputContext {
     types: HashMap<u32, ExtensionType>,
     // Maps from type variation anchor to (extension URI anchor, type variation name)
     type_variations: HashMap<u32, ExtensionTypeVariation>,
-
-    options: OutputOptions,
 }
 
-impl OutputContext {
+impl ExtensionLookup {
     pub fn new() -> Self {
         Self::default()
     }
@@ -76,7 +78,6 @@ impl OutputContext {
     pub fn from_extensions(
         uris: Vec<pext::SimpleExtensionUri>,
         extensions: Vec<pext::SimpleExtensionDeclaration>,
-        options: OutputOptions,
     ) -> Result<Self, TextifyError> {
         let mut uri_map = HashMap::new();
         let mut functions = HashMap::new();
@@ -100,20 +101,21 @@ impl OutputContext {
                     functions.insert(f.function_anchor, f);
                 }
                 None => {
-                    return Err(TextifyError::InvalidValue {
-                        name: "Extension".to_string(),
-                        context: "Required MappingType unset".to_string(),
-                    });
+                    return Err(TextifyError::invalid(
+                        // TODO: Use prost::Name here
+                        "SimpleExtensionDeclaration",
+                        NONSPECIFIC,
+                        "Required MappingType unset",
+                    ));
                 }
             }
         }
 
-        Ok(OutputContext {
+        Ok(ExtensionLookup {
             uris: uri_map,
             functions,
             types,
             type_variations,
-            options,
         })
     }
 
@@ -168,10 +170,6 @@ impl OutputContext {
         );
     }
 
-    pub fn options(&self) -> &OutputOptions {
-        &self.options
-    }
-
     // pub fn fmt<T: Textify>(&self, t: &T) -> TextifyWriter<T> {
     //     TextifyWriter {
     //         ctx: self,
@@ -191,7 +189,7 @@ pub trait SimpleExtensions {
     fn find_variations(&self, name: &str) -> impl Iterator<Item = &ExtensionTypeVariation>;
 }
 
-impl SimpleExtensions for OutputContext {
+impl SimpleExtensions for ExtensionLookup {
     fn find_uri(&self, anchor: u32) -> Option<pext::SimpleExtensionUri> {
         self.uris.get(&anchor).cloned()
     }
@@ -223,40 +221,229 @@ impl SimpleExtensions for OutputContext {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum TextifyError {
-    /// An invalid value was encountered; could not be converted to a string.
-    InvalidValue {
-        // TODO: figure out the arguments here
-        name: String,
-        context: String,
-    },
-    Unimplemented(Cow<'static, str>),
-
-    Internal(String),
+pub trait ErrorAccumulator {
+    fn push(&mut self, e: TextifyError);
 }
 
-pub(crate) fn unimplemented_err(s: impl Into<Cow<'static, str>>) -> TextifyError {
-    TextifyError::Unimplemented(s.into())
+pub struct ErrorVec(pub Vec<TextifyError>);
+
+impl ErrorVec {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl ErrorAccumulator for ErrorVec {
+    fn push(&mut self, e: TextifyError) {
+        self.0.push(e);
+    }
+}
+
+impl fmt::Display for ErrorVec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for e in &self.0 {
+            if first {
+                first = false;
+            } else {
+                write!(f, "\n")?;
+            }
+            write!(f, "{}", e)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> {
+    errors: &'a mut Err,
+    options: &'a OutputOptions,
+    extensions: &'a Ext,
+}
+
+impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
+    pub fn new(options: &'a OutputOptions, errors: &'a mut Err, extensions: &'a mut Ext) -> Self {
+        Self {
+            options,
+            errors,
+            extensions,
+        }
+    }
+
+    pub fn options(&self) -> &OutputOptions {
+        self.options
+    }
+
+    pub fn extensions(&self) -> &Ext {
+        self.extensions
+    }
+
+    pub fn push_error(&mut self, e: TextifyError) {
+        self.errors.push(e);
+    }
+}
+
+impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
+    /// Handle a failure to textify a value. Textify errors are written as
+    /// "!{name}" to the output (where "name" is the type name), and
+    /// the error is pushed to the error accumulator.
+    pub fn failure<W: fmt::Write>(&mut self, w: &mut W, e: TextifyError) -> Result<(), fmt::Error> {
+        match e.error_type {
+            TextifyErrorType::Fmt => return Err(fmt::Error),
+            _ => {
+                write!(w, "{}{}", ERROR_MARKER_START, e.message)?;
+                if let Some(ref lookup) = e.lookup {
+                    write!(w, ": {}", lookup)?;
+                }
+                write!(w, "{}", ERROR_MARKER_END)?;
+                self.errors.push(e.clone());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn expect<W: fmt::Write, T: Textify>(&mut self, w: &mut W, t: &Option<T>) -> fmt::Result {
+        match t {
+            Some(t) => t.textify(self, w),
+            None => self.failure(
+                w,
+                TextifyError::invalid(T::name(), NONSPECIFIC, "Required field missing, None found"),
+            ),
+        }
+    }
+}
+
+pub struct MessageWriter<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T> {
+    context: RefCell<ScopedContext<'a, Err, Ext>>,
+    message: &'a T,
+}
+
+impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Message>
+    MessageWriter<'a, Err, Ext, T>
+{
+    pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err, Ext>>, fmt::Error> {
+        self.context.try_borrow_mut().map_err(|_| fmt::Error)
+    }
+
+    pub fn failure<W: fmt::Write>(&self, w: &mut W, e: TextifyError) -> fmt::Result {
+        let borrow = self.context.try_borrow_mut();
+        let mut ctx = match borrow {
+            Ok(ctx) => ctx,
+            Err(be) => {
+                w.write_fmt(format_args!("!{}: {}❭", e, be))?;
+                return Err(fmt::Error);
+            }
+        };
+
+        if e.error_type == TextifyErrorType::Fmt {
+            return Err(fmt::Error);
+        }
+
+        ctx.errors.push(e);
+        Ok(())
+    }
+}
+
+impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Message> fmt::Display
+    for MessageWriter<'a, Err, Ext, T>
+{
+    fn fmt<'b>(&self, f: &mut fmt::Formatter<'b>) -> fmt::Result {
+        let mut ctx_ref = self.ctx()?;
+        self.message.textify(ctx_ref.deref_mut(), f)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextifyError {
+    // The message this originated in
+    pub message: &'static str,
+    // The specific lookup that failed, if specifiable
+    pub lookup: Option<Cow<'static, str>>,
+    // The description of the error
+    pub description: Cow<'static, str>,
+    // The error type
+    pub error_type: TextifyErrorType,
+}
+
+impl TextifyError {
+    pub fn invalid(
+        message: &'static str,
+        specific: Option<impl Into<Cow<'static, str>>>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            message,
+            lookup: specific.map(|s| s.into()),
+            description: description.into(),
+            error_type: TextifyErrorType::InvalidValue,
+        }
+    }
+
+    pub fn unimplemented(
+        message: &'static str,
+        specific: Option<impl Into<Cow<'static, str>>>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            message,
+            lookup: specific.map(|s| s.into()),
+            description: description.into(),
+            error_type: TextifyErrorType::Unimplemented,
+        }
+    }
+
+    pub fn internal(
+        message: &'static str,
+        specific: Option<impl Into<Cow<'static, str>>>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            message,
+            lookup: specific.map(|s| s.into()),
+            description: description.into(),
+            error_type: TextifyErrorType::Internal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
+pub enum TextifyErrorType {
+    InvalidValue,
+    Unimplemented,
+    Internal,
+    Fmt,
+}
+
+impl fmt::Display for TextifyErrorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TextifyErrorType::InvalidValue => write!(f, "InvalidValue"),
+            TextifyErrorType::Unimplemented => write!(f, "Unimplemented"),
+            TextifyErrorType::Internal => write!(f, "Internal"),
+            TextifyErrorType::Fmt => write!(f, "Fmt"),
+        }
+    }
+}
+
+impl From<fmt::Error> for TextifyError {
+    fn from(_: fmt::Error) -> Self {
+        Self {
+            message: "fmt",
+            lookup: None,
+            description: Cow::Borrowed("fmt error"),
+            error_type: TextifyErrorType::Fmt,
+        }
+    }
 }
 
 impl std::error::Error for TextifyError {}
 
 impl fmt::Display for TextifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TextifyError::InvalidValue { name, context } => {
-                write!(f, "Invalid value: {} ({})", name, context)
-            }
-            TextifyError::Unimplemented(s) => write!(f, "Unimplemented: {}", s),
-            TextifyError::Internal(s) => write!(f, "Internal error: {}", s),
-        }
-    }
-}
-
-impl From<fmt::Error> for TextifyError {
-    fn from(e: fmt::Error) -> Self {
-        TextifyError::Internal(format!("fmt error: {}", e))
+        write!(
+            f,
+            "{} Error writing {}: {}",
+            self.error_type, self.message, self.description
+        )
     }
 }
 
@@ -264,11 +451,15 @@ impl From<fmt::Error> for TextifyError {
 ///
 /// This trait is used to convert a Substrait type into a string representation.
 pub trait Textify {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError>;
+    ) -> fmt::Result;
+
+    fn name() -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 // ($dst:expr, $($arg:tt)*) => {
@@ -282,8 +473,8 @@ pub trait Textify {
 // }
 
 #[cfg(test)]
-pub fn test_ctx(options: OutputOptions) -> OutputContext {
-    OutputContext::from_extensions(
+pub fn test_ext() -> ExtensionLookup {
+    ExtensionLookup::from_extensions(
         vec![
             pext::SimpleExtensionUri {
                 extension_uri_anchor: 1,
@@ -316,8 +507,14 @@ pub fn test_ctx(options: OutputOptions) -> OutputContext {
                     name: "third".to_string(),
                 })),
             },
+            pext::SimpleExtensionDeclaration {
+                mapping_type: Some(MappingType::ExtensionType(ExtensionType {
+                    type_anchor: 100,
+                    extension_uri_reference: 1,
+                    name: "cow".to_string(),
+                })),
+            },
         ],
-        options,
     )
     .unwrap()
 }

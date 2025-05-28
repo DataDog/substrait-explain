@@ -34,4 +34,4 @@ mod expressions;
 mod textify;
 mod types;
 
-pub use textify::{OutputContext, OutputOptions, SimpleExtensions, Textify, TextifyError};
+pub use textify::{ExtensionLookup, OutputOptions, SimpleExtensions, Textify, TextifyError};

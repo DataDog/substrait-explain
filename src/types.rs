@@ -1,30 +1,33 @@
-use crate::textify::SimpleExtensions;
+use crate::textify::{ErrorAccumulator, NONSPECIFIC, ScopedContext, SimpleExtensions};
 
-use super::textify::{OutputContext, Textify, TextifyError};
+use super::textify::{Textify, TextifyError};
 
 use std::borrow::Cow;
 use std::fmt::{self};
 
 use ptype::parameter::Parameter;
+use substrait::proto::extensions::simple_extension_declaration::ExtensionTypeVariation;
 use substrait::proto::r#type as ptype;
 use substrait::proto::{self};
 
+const NULLABILITY_UNSPECIFIED: &str = "⁉";
+
 impl Textify for ptype::Nullability {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
             ptype::Nullability::Unspecified => {
-                if ctx.options().strict {
-                    return Err(TextifyError::InvalidValue {
-                        name: "Nullability".to_string(),
-                        context: "Unspecified".to_string(),
-                    });
-                }
-                // TODO: what should unspecified look like?
-                write!(w, "⁉")?;
+                ctx.push_error(TextifyError::invalid(
+                    "Nullability",
+                    NONSPECIFIC,
+                    "Nullability left Unspecified",
+                ));
+
+                // TODO: what should unspecified Nullabilitylook like?
+                w.write_str(NULLABILITY_UNSPECIFIED)?;
             }
             ptype::Nullability::Nullable => write!(w, "?")?,
             ptype::Nullability::Required => {}
@@ -33,22 +36,68 @@ impl Textify for ptype::Nullability {
     }
 }
 
+fn textify_type_variation<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
+    ctx: &mut ScopedContext<'a, Err, Ext>,
+    f: &mut W,
+    name: &'static str,
+    anchor: u32,
+) -> fmt::Result {
+    if anchor == 0 {
+        // This is the default, this doesn't count as a type variation
+        return Ok(());
+    }
+    let type_variation: Option<ExtensionTypeVariation> =
+        ctx.extensions().find_type_variation(anchor);
+
+    match type_variation {
+        Some(ext) => {
+            write!(f, "[{}", ext.name)?;
+            if ctx.options().show_extension_uris {
+                write!(f, "@{}", ext.extension_uri_reference)?;
+            }
+            write!(f, "]")?;
+        }
+        None => ctx.failure(
+            f,
+            TextifyError::invalid(
+                "ExtensionTypeVariation",
+                Some(name),
+                format!("Unknown type variation {}", anchor),
+            ),
+        )?,
+    }
+    Ok(())
+}
+
 // Textify a type with parameters.
 //
 // P will generally be the Parameter type, but it can be any type that
 // implements Textify.
-fn textify_type<W: fmt::Write, P: Textify, I: IntoIterator<Item = P>>(
-    ctx: &mut OutputContext,
+fn textify_type<
+    'a,
+    'b,
+    Err: ErrorAccumulator,
+    Ext: SimpleExtensions,
+    W: fmt::Write,
+    P: Textify,
+    I: IntoIterator<Item = Option<P>>,
+>(
+    ctx: &mut ScopedContext<'a, Err, Ext>,
     f: &mut W,
     name: impl AsRef<str>,
     nullability: ptype::Nullability,
     variant: u32,
     params: I,
-) -> Result<(), TextifyError> {
+) -> fmt::Result {
     write!(f, "{}", name.as_ref())?;
     nullability.textify(ctx, f)?;
     if variant > 0 {
-        write!(f, "[{}]", variant)?;
+        let type_variation = ctx.extensions().find_type_variation(variant);
+        if let Some(type_variation) = type_variation {
+            write!(f, "[{}]", type_variation.name)?;
+        } else {
+            write!(f, "[{}]", variant)?;
+        }
     };
 
     let mut first = true;
@@ -59,7 +108,7 @@ fn textify_type<W: fmt::Write, P: Textify, I: IntoIterator<Item = P>>(
         } else {
             write!(f, ", ")?;
         }
-        param.textify(ctx, f)?;
+        ctx.expect(f, &param)?;
     }
     if !first {
         write!(f, ">")?;
@@ -75,82 +124,32 @@ macro_rules! textify_kind {
             $name,
             $kind.nullability(),
             $kind.type_variation_reference,
-            [] as [Parameter; 0],
+            [] as [Option<Parameter>; 0],
         )
     };
 }
 
 pub struct MissingValue<'a> {
+    // The message type this originated in
+    message: &'static str,
+    // The name of the missing value
     name: Cow<'a, str>,
 }
 
-impl<'a, T: Into<Cow<'a, str>>> From<T> for MissingValue<'a> {
-    fn from(name: T) -> Self {
-        MissingValue { name: name.into() }
-    }
-}
-
-impl<'a> Textify for MissingValue<'a> {
-    fn textify<W: fmt::Write>(
-        &self,
-        ctx: &mut OutputContext,
-        w: &mut W,
-    ) -> Result<(), TextifyError> {
-        if ctx.options().strict {
-            return Err(TextifyError::InvalidValue {
-                name: format!("Missing argument {}", self.name),
-                context: "Expected a value, found None".into(),
-            });
-        }
-        write!(w, "!❬{}❭", self.name)?;
-        Ok(())
-    }
-}
-
-/// A wrapper around a value that should be present but isn't.
-///
-/// Protobuf messages structurally allow values to be optional that by the spec
-/// may be necessary. Depending on options, this might end up as an error or as
-/// a placeholder.
-pub enum ExpectedValue<'a, T: Clone> {
-    Value(Cow<'a, T>),
-    Missing(MissingValue<'a>),
-}
-
-impl<'a, T: fmt::Debug + Clone> ExpectedValue<'a, T> {
-    pub fn from_option(opt: impl Into<Option<&'a T>>, name: impl Into<Cow<'a, str>>) -> Self {
-        match opt.into() {
-            Some(t) => Self::Value(Cow::Borrowed(t)),
-            None => Self::Missing(MissingValue { name: name.into() }),
-        }
-    }
-    pub fn from_option_owned(opt: impl Into<Option<T>>, name: impl Into<Cow<'a, str>>) -> Self {
-        match opt.into() {
-            Some(t) => Self::Value(Cow::Owned(t)),
-            None => Self::Missing(MissingValue { name: name.into() }),
+impl<'m> MissingValue<'m> {
+    pub fn new(message: &'static str, name: impl Into<Cow<'m, str>>) -> Self {
+        Self {
+            message,
+            name: name.into(),
         }
     }
 }
-
-impl<'a, T: Textify + fmt::Debug + Clone> Textify for ExpectedValue<'a, T> {
-    fn textify<W: fmt::Write>(
-        &self,
-        ctx: &mut OutputContext,
-        w: &mut W,
-    ) -> Result<(), TextifyError> {
-        match self {
-            Self::Value(t) => t.textify(ctx, w),
-            Self::Missing(m) => m.textify(ctx, w),
-        }
-    }
-}
-
 impl Textify for Parameter {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
             Parameter::Boolean(true) => write!(w, "true")?,
             Parameter::Boolean(false) => write!(w, "false")?,
@@ -165,33 +164,69 @@ impl Textify for Parameter {
         Ok(())
     }
 }
-
 impl Textify for ptype::Parameter {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        ExpectedValue::from_option(self.parameter.as_ref(), "Parameter").textify(ctx, w)
+    ) -> fmt::Result {
+        ctx.expect(w, &self.parameter)
+    }
+}
+
+impl Textify for ptype::UserDefined {
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
+        &self,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
+        w: &mut W,
+    ) -> fmt::Result {
+        {
+            let type_reference = ctx.extensions().find_type(self.type_reference);
+            let params = self.type_parameters.iter().map(|t| Some(t.clone()));
+            let typ = match type_reference {
+                Some(t) => t,
+                None => {
+                    return ctx.failure(
+                        w,
+                        TextifyError::invalid(
+                            "UserDefined",
+                            Some(format!("{}", self.type_reference)),
+                            format!("Type reference {} not found", self.type_reference),
+                        ),
+                    );
+                }
+            };
+
+            textify_type(
+                ctx,
+                w,
+                format!("u!{}", typ.name),
+                self.nullability(),
+                self.type_variation_reference,
+                params,
+            )
+        }
     }
 }
 
 impl Textify for ptype::Kind {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
+            // This is the expansion of:
+            //     textify_kind!(ctx, w, k, "boolean")
+            // Shown here for visibility
             ptype::Kind::Bool(k) => textify_type(
                 ctx,
                 w,
                 "boolean",
                 k.nullability(),
                 k.type_variation_reference,
-                [] as [Parameter; 0],
+                [] as [Option<Parameter>; 0],
             ),
-            //  textify_kind!(ctx, w, k, "boolean"),
             ptype::Kind::I8(k) => textify_kind!(ctx, w, k, "i8"),
             ptype::Kind::I16(k) => textify_kind!(ctx, w, k, "i16"),
             ptype::Kind::I32(k) => textify_kind!(ctx, w, k, "i32"),
@@ -219,7 +254,7 @@ impl Textify for ptype::Kind {
                 i.nullability(),
                 i.type_variation_reference,
                 // Precision defaults to 6 if unspecified
-                [Parameter::Integer(i.precision.unwrap_or(6) as i64)],
+                [Some(Parameter::Integer(i.precision.unwrap_or(6) as i64))],
             ),
             ptype::Kind::IntervalCompound(i) => textify_type(
                 ctx,
@@ -227,7 +262,7 @@ impl Textify for ptype::Kind {
                 "interval_compound",
                 i.nullability(),
                 i.type_variation_reference,
-                [Parameter::Integer(i.precision as i64)],
+                [Some(Parameter::Integer(i.precision as i64))],
             ),
             ptype::Kind::FixedChar(c) => textify_type(
                 ctx,
@@ -235,7 +270,7 @@ impl Textify for ptype::Kind {
                 "fixedchar",
                 c.nullability(),
                 c.type_variation_reference,
-                [Parameter::Integer(c.length as i64)],
+                [Some(Parameter::Integer(c.length as i64))],
             ),
             ptype::Kind::Varchar(_c) => todo!(),
             ptype::Kind::FixedBinary(_b) => todo!(),
@@ -246,7 +281,7 @@ impl Textify for ptype::Kind {
                 "precisiontime",
                 p.nullability(),
                 p.type_variation_reference,
-                [Parameter::Integer(p.precision as i64)],
+                [Some(Parameter::Integer(p.precision as i64))],
             ),
             ptype::Kind::PrecisionTimestamp(p) => textify_type(
                 ctx,
@@ -254,7 +289,7 @@ impl Textify for ptype::Kind {
                 "precisiontimestamp",
                 p.nullability(),
                 p.type_variation_reference,
-                [Parameter::Integer(p.precision as i64)],
+                [Some(Parameter::Integer(p.precision as i64))],
             ),
             ptype::Kind::PrecisionTimestampTz(_p) => todo!(),
             ptype::Kind::Struct(s) => textify_type(
@@ -263,57 +298,41 @@ impl Textify for ptype::Kind {
                 "struct",
                 s.nullability(),
                 s.type_variation_reference,
-                s.types.iter().map(|t| Parameter::DataType(t.clone())),
+                s.types.iter().map(|t| Some(Parameter::DataType(t.clone()))),
             ),
-            ptype::Kind::List(l) => textify_type(
-                ctx,
-                w,
-                "list",
-                l.nullability(),
-                l.type_variation_reference,
-                [ExpectedValue::<Parameter>::from_option_owned(
-                    l.r#type
-                        .as_ref()
-                        .map(|t| Parameter::DataType((**t).to_owned())),
-                    "LIST_PARAMETER",
-                )],
-            ),
-            ptype::Kind::Map(m) => textify_type(
-                ctx,
-                w,
-                "map",
-                m.nullability(),
-                m.type_variation_reference,
-                [
-                    ExpectedValue::<Parameter>::from_option_owned(
-                        m.key
-                            .as_ref()
-                            .map(|t| Parameter::DataType((**t).to_owned())),
-                        "MAP_KEY",
-                    ),
-                    ExpectedValue::<Parameter>::from_option_owned(
-                        m.value
-                            .as_ref()
-                            .map(|t| Parameter::DataType((**t).to_owned())),
-                        "MAP_VALUE",
-                    ),
-                ],
-            ),
-            ptype::Kind::UserDefined(u) => {
-                let type_variation = ctx.find_type_variation(u.type_variation_reference);
-                if let Some(type_variation) = type_variation {
-                    textify_type(
-                        ctx,
-                        w,
-                        format!("u!{}", type_variation.name),
-                        u.nullability(),
-                        u.type_reference,
-                        u.type_parameters.iter().cloned(),
-                    )
-                } else {
-                    MissingValue::from("UserDefined").textify(ctx, w)
-                }
+            ptype::Kind::List(l) => {
+                let p = l
+                    .r#type
+                    .as_ref()
+                    .map(|t| Parameter::DataType((**t).to_owned()));
+                textify_type(
+                    ctx,
+                    w,
+                    "list",
+                    l.nullability(),
+                    l.type_variation_reference,
+                    [p],
+                )
             }
+            ptype::Kind::Map(m) => {
+                let k = m
+                    .key
+                    .as_ref()
+                    .map(|t| Parameter::DataType((**t).to_owned()));
+                let v = m
+                    .value
+                    .as_ref()
+                    .map(|t| Parameter::DataType((**t).to_owned()));
+                textify_type(
+                    ctx,
+                    w,
+                    "map",
+                    m.nullability(),
+                    m.type_variation_reference,
+                    [k, v],
+                )
+            }
+            ptype::Kind::UserDefined(u) => u.textify(ctx, w),
             ptype::Kind::UserDefinedTypeReference(r) => {
                 // Defer to the UserDefined definition, using defaults for
                 // variation, and non-nullable as suggested by the docs
@@ -330,30 +349,37 @@ impl Textify for ptype::Kind {
 }
 
 impl Textify for proto::Type {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        self.kind
-            .as_ref()
-            .ok_or_else(|| TextifyError::InvalidValue {
-                name: "Type".into(),
-                context: "Required Kind unset".into(),
-            })?
-            .textify(ctx, w)
+    ) -> fmt::Result {
+        ctx.expect(w, &self.kind)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        ExtensionLookup, OutputOptions,
+        textify::{ErrorVec, test_ext},
+    };
 
     use super::*;
 
-    fn textify_basic<T: Textify>(t: T) -> String {
-        let mut ctx = OutputContext::default();
+    fn textify_basic<T: Textify>(t: T) -> (String, ErrorVec) {
+        let mut ext = ExtensionLookup::default();
+        let mut err = ErrorVec::new();
+        let options = OutputOptions::default();
+        let mut ctx = ScopedContext::new(&options, &mut err, &mut ext);
         let mut s = String::new();
         t.textify(&mut ctx, &mut s).unwrap();
+        (s, err)
+    }
+
+    fn textify_no_errors<T: Textify>(t: T) -> String {
+        let (s, err) = textify_basic(t);
+        assert!(err.0.is_empty(), "{}", err);
         s
     }
 
@@ -366,7 +392,7 @@ mod tests {
             })),
         };
 
-        assert_eq!(textify_basic(t), "boolean?[2]");
+        assert_eq!(textify_no_errors(t), "boolean?[2]");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::I8(ptype::I8 {
@@ -374,7 +400,7 @@ mod tests {
                 nullability: ptype::Nullability::Required as i32,
             })),
         };
-        assert_eq!(textify_basic(t), "i8");
+        assert_eq!(textify_no_errors(t), "i8");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
@@ -383,7 +409,7 @@ mod tests {
                 precision: 3,
             })),
         };
-        assert_eq!(textify_basic(t), "precisiontimestamp?<3>");
+        assert_eq!(textify_no_errors(t), "precisiontimestamp?<3>");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::PrecisionTime(ptype::PrecisionTime {
@@ -392,7 +418,47 @@ mod tests {
                 precision: 9,
             })),
         };
-        assert_eq!(textify_basic(t), "precisiontime?[8]<9>");
+        assert_eq!(textify_no_errors(t), "precisiontime?[8]<9>");
+    }
+
+    #[test]
+    fn type_display_with_errors() {
+        let mut ext = test_ext();
+        let mut err = ErrorVec::new();
+        let options = OutputOptions::default();
+        let mut ctx = ScopedContext::new(&options, &mut err, &mut ext);
+
+        let t = proto::Type {
+            kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
+                type_variation_reference: 0,
+                nullability: ptype::Nullability::Required as i32,
+                type_reference: 100,
+                type_parameters: vec![],
+            })),
+        };
+
+        let mut s = String::new();
+        t.textify(&mut ctx, &mut s).unwrap();
+        assert!(err.0.is_empty(), "{}", err);
+        assert_eq!(s, "u!cow");
+
+        let t = proto::Type {
+            kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
+                type_variation_reference: 0,
+                nullability: ptype::Nullability::Required as i32,
+                type_reference: 12589,
+                type_parameters: vec![],
+            })),
+        };
+
+        ctx = ScopedContext::new(&options, &mut err, &mut ext);
+        let mut s = String::new();
+        t.textify(&mut ctx, &mut s).unwrap();
+        assert_eq!(err.0.len(), 1);
+        assert_eq!(err.0[0].message, "UserDefined");
+        assert_eq!(err.0[0].lookup, Some("12589".into()));
+        assert_eq!(err.0[0].description, "Type reference 12589 not found");
+        assert_eq!(s, "!{UserDefined: 12589}");
     }
 
     #[test]
@@ -429,6 +495,9 @@ mod tests {
                 ],
             })),
         };
-        assert_eq!(textify_basic(t), "struct?<string, i8, i32?, timestamp_tz>");
+        assert_eq!(
+            textify_no_errors(t),
+            "struct?<string, i8, i32?, timestamp_tz>"
+        );
     }
 }

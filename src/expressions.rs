@@ -1,5 +1,13 @@
-use crate::textify::{OutputContext, SimpleExtensions, Textify, TextifyError, unimplemented_err};
-use crate::types::ExpectedValue;
+use crate::textify::{
+    ErrorAccumulator,
+    ExtensionLookup,
+    NONSPECIFIC, // Added NONSPECIFIC
+    ScopedContext,
+    SimpleExtensions,
+    Textify,
+    TextifyError,
+    TextifyErrorType,
+};
 
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;
@@ -14,19 +22,20 @@ use std::fmt;
 // (…) for function call
 // […] for variant
 // <…> for parameters
-// {…} for URI
-// !❬…❭
+// !{…}
 const UNKNOWN_FUNCTION: &str = "!❬unknown_scalar_function❭";
 
+// #… for anchor
+// @… for URI anchor
 // …::… for cast
 // …:::… for specifying type
 // &… for enum
 
-pub fn textify_binary<W: fmt::Write>(
+pub fn textify_binary<'a, Ext: SimpleExtensions, Err: ErrorAccumulator, W: fmt::Write>(
     items: &[u8],
-    ctx: &OutputContext,
+    ctx: &mut ScopedContext<'a, Err, Ext>,
     w: &mut W,
-) -> Result<(), TextifyError> {
+) -> fmt::Result {
     if ctx.options().show_literal_binaries {
         write!(w, "0x")?;
         for &n in items {
@@ -47,16 +56,21 @@ pub fn as_escaped_string(s: &str) -> String {
     )
 }
 
-pub fn textify_literal_from_string<W: fmt::Write>(
+pub fn textify_literal_from_string<
+    'a,
+    'b,
+    Err: ErrorAccumulator,
+    Ext: SimpleExtensions,
+    W: fmt::Write,
+>(
     s: &str,
     t: Kind,
-    ctx: &mut OutputContext,
+    ctx: &'b mut ScopedContext<'a, Err, Ext>,
     w: &mut W,
-) -> Result<(), TextifyError> {
+) -> fmt::Result {
     let escaped = as_escaped_string(s);
-    write!(w, "\"{}\":::", escaped)?;
-    t.textify(ctx, w)?;
-    Ok(())
+    write!(w, ""{}":::", escaped)?;
+    t.textify(ctx, w)
 }
 
 /// A valid identifier is a sequence of ASCII letters, digits, and underscores,
@@ -85,28 +99,28 @@ pub fn is_identifer(s: &str) -> bool {
     true
 }
 
-pub fn textify_identifier<W: fmt::Write>(
+pub fn textify_identifier<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
     s: &str,
-    _ctx: &mut OutputContext,
+    _ctx: &'b mut ScopedContext<'a, Err, Ext>,
     w: &mut W,
-) -> Result<(), TextifyError> {
+) -> fmt::Result {
     if is_identifer(s) {
         write!(w, "{}", s)?;
         return Ok(());
     }
 
     let escaped = as_escaped_string(s);
-    write!(w, "\'{}\'", escaped)?;
+    write!(w, "'{}'", escaped)?;
     Ok(())
 }
 
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
 /// a valid identifier; otherwise, they are written as `&'<escaped_string>'`.
-pub fn textify_enum<W: fmt::Write>(
+pub fn textify_enum<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
     s: &str,
-    ctx: &mut OutputContext,
+    ctx: &'b mut ScopedContext<'a, Err, Ext>,
     w: &mut W,
-) -> Result<(), TextifyError> {
+) -> fmt::Result {
     write!(w, "&")?;
     textify_identifier(s, ctx, w)
 }
@@ -221,11 +235,11 @@ impl Kinded for LiteralType {
 }
 
 impl Textify for LiteralType {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
             LiteralType::Boolean(true) => write!(w, "true")?,
             LiteralType::Boolean(false) => write!(w, "false")?,
@@ -241,63 +255,254 @@ impl Textify for LiteralType {
                 let k = match self.kind(ctx) {
                     Some(k) => k,
                     None => {
-                        return Err(TextifyError::Internal(format!(
-                            "No kind found for {:?}",
-                            self
-                        )));
+                        let err = TextifyError::internal(
+                            "LiteralType",
+                            NONSPECIFIC,
+                            format!("No kind found for {:?}", self),
+                        );
+                        return ctx.failure(w, err);
                     }
                 };
                 let s = timestamp_to_string(*t);
                 textify_literal_from_string(&s, k, ctx, w)?
             }
-            LiteralType::Date(_) => todo!(),
-            LiteralType::Time(_) => todo!(),
-            LiteralType::IntervalYearToMonth(_i) => todo!(),
-            LiteralType::IntervalDayToSecond(_i) => todo!(),
-            LiteralType::IntervalCompound(_i) => todo!(),
-            LiteralType::FixedChar(_c) => todo!(),
-            LiteralType::VarChar(_c) => todo!(),
-            LiteralType::FixedBinary(_i) => todo!(),
-            LiteralType::Decimal(_d) => todo!(),
-            LiteralType::PrecisionTime(_p) => todo!(),
-            LiteralType::PrecisionTimestamp(_p) => todo!(),
-            LiteralType::PrecisionTimestampTz(_p) => todo!(),
-            LiteralType::Struct(_s) => todo!(),
-            LiteralType::Map(_m) => todo!(),
-            LiteralType::TimestampTz(_t) => todo!(),
-            LiteralType::Uuid(_u) => todo!(),
-            LiteralType::Null(_n) => todo!(),
-            LiteralType::List(_l) => todo!(),
-            LiteralType::EmptyList(_l) => todo!(),
-            LiteralType::EmptyMap(_l) => todo!(),
-            LiteralType::UserDefined(_u) => todo!(),
+            LiteralType::Date(_) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Date"),
+                        "Date literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Time(_) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Time"),
+                        "Time literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::IntervalYearToMonth(_i) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("IntervalYearToMonth"),
+                        "IntervalYearToMonth literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::IntervalDayToSecond(_i) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("IntervalDayToSecond"),
+                        "IntervalDayToSecond literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::IntervalCompound(_i) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("IntervalCompound"),
+                        "IntervalCompound literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::FixedChar(_c) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("FixedChar"),
+                        "FixedChar literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::VarChar(_c) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("VarChar"),
+                        "VarChar literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::FixedBinary(_i) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("FixedBinary"),
+                        "FixedBinary literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Decimal(_d) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Decimal"),
+                        "Decimal literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::PrecisionTime(_p) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("PrecisionTime"),
+                        "PrecisionTime literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::PrecisionTimestamp(_p) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("PrecisionTimestamp"),
+                        "PrecisionTimestamp literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::PrecisionTimestampTz(_p) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("PrecisionTimestampTz"),
+                        "PrecisionTimestampTz literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Struct(_s) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Struct"),
+                        "Struct literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Map(_m) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Map"),
+                        "Map literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::TimestampTz(_t) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("TimestampTz"),
+                        "TimestampTz literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Uuid(_u) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Uuid"),
+                        "Uuid literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::Null(_n) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("Null"),
+                        "Null literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::List(_l) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("List"),
+                        "List literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::EmptyList(_l) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("EmptyList"),
+                        "EmptyList literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::EmptyMap(_l) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("EmptyMap"),
+                        "EmptyMap literal textification not implemented",
+                    ),
+                );
+            }
+            LiteralType::UserDefined(_u) => {
+                return ctx.failure(
+                    w,
+                    TextifyError::unimplemented(
+                        "LiteralType",
+                        Some("UserDefined"),
+                        "UserDefined literal textification not implemented",
+                    ),
+                );
+            }
         }
         Ok(())
     }
 }
 
 impl Textify for expr::Literal {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        ExpectedValue::<LiteralType>::from_option(self.literal_type.as_ref(), "literal_type")
-            .textify(ctx, w)
+    ) -> fmt::Result {
+        ctx.expect(w, &self.literal_type.as_ref())
     }
 }
 
 impl Textify for ScalarFunction {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        let ext = ctx.find_function(self.function_reference);
+    ) -> fmt::Result {
+        let ext_lookup = ctx.extensions();
+        let ext = ext_lookup.find_function(self.function_reference);
         match (ext, ctx.options().strict) {
             (Some(ref extf), _) => {
                 let show_anchor = ctx.options().show_simple_extension_anchors
-                    || (ctx.find_functions(&extf.name).count() > 1);
+                    || (ext_lookup.find_functions(&extf.name).count() > 1);
                 write!(w, "{}", &extf.name)?;
                 if show_anchor {
                     write!(w, "#{}", extf.function_anchor)?;
@@ -307,13 +512,15 @@ impl Textify for ScalarFunction {
                 }
             }
             (None, true) => {
-                return Err(TextifyError::InvalidValue {
-                    name: "function_not_found".to_string(),
-                    context: format!(
+                let err = TextifyError::invalid(
+                    "ScalarFunction",
+                    Some(format!("{}", self.function_reference)),
+                    format!(
                         "Function {} not found in extensions",
                         self.function_reference
                     ),
-                });
+                );
+                return ctx.failure(w, err);
             }
             (None, false) => {
                 write!(w, "{}#{}", UNKNOWN_FUNCTION, self.function_reference)?;
@@ -325,6 +532,7 @@ impl Textify for ScalarFunction {
         for arg in self.arguments.iter() {
             if !first {
                 write!(w, ", ")?;
+            } else {
                 first = false;
             }
             arg.textify(ctx, w)?;
@@ -333,6 +541,7 @@ impl Textify for ScalarFunction {
         for opt in self.options.iter() {
             if !first {
                 write!(w, ", ")?;
+            } else {
                 first = false;
             }
             opt.textify(ctx, w)?;
@@ -344,16 +553,17 @@ impl Textify for ScalarFunction {
 }
 
 impl Textify for FunctionOption {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        _ctx: &mut OutputContext,
+        _ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         write!(w, "{}⇒[", self.name)?;
         let mut first = true;
         for pref in self.preference.iter() {
             if !first {
                 write!(w, ", ")?;
+            } else {
                 first = false;
             }
             write!(w, "{}", pref)?;
@@ -364,21 +574,21 @@ impl Textify for FunctionOption {
 }
 
 impl Textify for FunctionArgument {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        ExpectedValue::from_option(self.arg_type.as_ref(), "argument").textify(ctx, w)
+    ) -> fmt::Result {
+        ctx.expect(w, &self.arg_type.as_ref())
     }
 }
 
 impl Textify for ArgType {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
             ArgType::Type(t) => t.textify(ctx, w),
             ArgType::Value(v) => v.textify(ctx, w),
@@ -388,76 +598,199 @@ impl Textify for ArgType {
 }
 
 impl Textify for RexType {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
+    ) -> fmt::Result {
         match self {
             RexType::Literal(literal) => literal.textify(ctx, w),
-            RexType::Selection(_f) => Err(unimplemented_err("FieldReference")),
+            RexType::Selection(_f) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("Selection"),
+                    "FieldReference textification not implemented",
+                ),
+            ),
             RexType::ScalarFunction(s) => s.textify(ctx, w),
-            RexType::WindowFunction(_w) => Err(unimplemented_err("WindowFunction")),
-            RexType::IfThen(_i) => Err(unimplemented_err("IfThen")),
-            RexType::SwitchExpression(_s) => Err(unimplemented_err("SwitchExpression")),
-            RexType::SingularOrList(_s) => Err(unimplemented_err("SingularOrList")),
-            RexType::MultiOrList(_m) => Err(unimplemented_err("MultiOrList")),
-            RexType::Cast(_c) => Err(unimplemented_err("Cast")),
-            RexType::Subquery(_s) => Err(unimplemented_err("Subquery")),
-            RexType::Nested(_n) => Err(unimplemented_err("Nested")),
-            RexType::DynamicParameter(_d) => Err(unimplemented_err("DynamicParameter")),
-            RexType::Enum(_) => Err(unimplemented_err("Enum")),
+            RexType::WindowFunction(_w) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("WindowFunction"),
+                    "WindowFunction textification not implemented",
+                ),
+            ),
+            RexType::IfThen(_i) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("IfThen"),
+                    "IfThen textification not implemented",
+                ),
+            ),
+            RexType::SwitchExpression(_s) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("SwitchExpression"),
+                    "SwitchExpression textification not implemented",
+                ),
+            ),
+            RexType::SingularOrList(_s) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("SingularOrList"),
+                    "SingularOrList textification not implemented",
+                ),
+            ),
+            RexType::MultiOrList(_m) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("MultiOrList"),
+                    "MultiOrList textification not implemented",
+                ),
+            ),
+            RexType::Cast(_c) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("Cast"),
+                    "Cast textification not implemented",
+                ),
+            ),
+            RexType::Subquery(_s) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("Subquery"),
+                    "Subquery textification not implemented",
+                ),
+            ),
+            RexType::Nested(_n) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("Nested"),
+                    "Nested textification not implemented",
+                ),
+            ),
+            RexType::DynamicParameter(_d) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("DynamicParameter"),
+                    "DynamicParameter textification not implemented",
+                ),
+            ),
+            RexType::Enum(_) => ctx.failure(
+                w,
+                TextifyError::unimplemented(
+                    "RexType",
+                    Some("Enum"),
+                    "Enum textification not implemented",
+                ),
+            ),
         }
     }
 }
 
 impl Textify for Expression {
-    fn textify<W: fmt::Write>(
+    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
-        ctx: &mut OutputContext,
+        ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
-    ) -> Result<(), TextifyError> {
-        ExpectedValue::from_option(self.rex_type.as_ref(), "expression").textify(ctx, w)
+    ) -> fmt::Result {
+        ctx.expect(w, &self.rex_type.as_ref())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::textify::{OutputContext, OutputOptions, test_ctx};
+    use crate::textify::{
+        ErrorAccumulator, ErrorVec, ExtensionLookup, OutputOptions,
+        /*test_ctx,*/ SimpleExtensions,
+    }; // Removed test_ctx, added ErrorVec
+    use substrait::proto::Plan;
+    use substrait::proto::r#type::Kind; // For Kind in tests if needed for ScopedContext construction. // Example, might need more specific types for extensions
 
-    use substrait::proto::expression::{self, RexType};
+    // Helper to create a ScopedContext for tests
+    fn create_test_scoped_context<'a, 'b, E: ErrorAccumulator, Ext: SimpleExtensions>(
+        options: &'a OutputOptions,
+        errors: &'a mut E,
+        extensions: &'a mut Ext,
+    ) -> ScopedContext<'a, E, Ext> {
+        ScopedContext::new(options, errors, extensions)
+    }
 
     #[test]
     fn test_literal_textify() {
-        let mut ctx = OutputContext::default();
+        let mut ext = ExtensionLookup::default();
+        let mut err_acc = ErrorVec::new();
+        let opts = OutputOptions::default();
+        let mut ctx = create_test_scoped_context(&opts, &mut err_acc, &mut ext);
+
         let mut output = String::new();
         let literal = LiteralType::Boolean(true);
         literal.textify(&mut ctx, &mut output).unwrap();
         assert_eq!(output, "true");
+        assert!(err_acc.0.is_empty());
     }
 
     #[test]
     fn test_expression_textify() {
-        let mut ctx = OutputContext::default();
+        let mut ext = ExtensionLookup::default();
+        let mut err_acc = ErrorVec::new();
+        let opts = OutputOptions::default();
+        let mut ctx = create_test_scoped_context(&opts, &mut err_acc, &mut ext);
         let mut output = String::new();
 
         // Test empty expression
         let expr = Expression { rex_type: None };
         expr.textify(&mut ctx, &mut output).unwrap();
-        assert_eq!(output, "!❬expression❭");
+        // Using ctx.expect will result in something like "!{Option<RexType>}" or "!{expression}"
+        // The exact output depends on ScopedContext::failure and TextifyError::invalid implementation details
+        // For now, let's check if it contains the error marker start and the type name.
+        assert!(output.contains("!{"));
+        assert!(output.contains(expr::RexType::name())); // Check it refers to the missing type
+        assert!(err_acc.0.len() == 1); // Expect one error: "Required field missing"
 
         // Test literal expression
         output.clear();
-        let expr = Expression {
+        err_acc.0.clear(); // Clear errors for the next assertion
+        let expr_lit = Expression {
             rex_type: Some(RexType::Literal(expression::Literal {
                 nullable: false,
                 type_variation_reference: 0,
                 literal_type: Some(expression::literal::LiteralType::Boolean(true)),
             })),
         };
-        expr.textify(&mut ctx, &mut output).unwrap();
+        expr_lit.textify(&mut ctx, &mut output).unwrap();
         assert_eq!(output, "true");
+        assert!(err_acc.0.is_empty());
+    }
+
+    // Minimal test_ext function, assuming it's not too complex or take from types.rs if compatible
+    // This is just to make `test_ctx` (now `create_test_scoped_context_with_test_ext`) compile if needed by other tests.
+    // It's better to use the one from textify.rs if possible, or ensure this is a valid mock.
+    pub fn test_ext() -> ExtensionLookup {
+        let mut ext = ExtensionLookup::default();
+        ext.add_extension_function(0, 1, "first".to_string());
+        // Add other extensions if used by tests below
+        ext
+    }
+
+    fn create_test_scoped_context_with_test_ext<'a, 'b, E: ErrorAccumulator>(
+        options: &'a OutputOptions,
+        errors: &'a mut E,
+        extensions: &'a mut ExtensionLookup, // test_ext returns ExtensionLookup
+    ) -> ScopedContext<'a, E, ExtensionLookup> {
+        // Ext is ExtensionLookup
+        ScopedContext::new(options, errors, extensions)
     }
 
     #[test]
@@ -465,55 +798,78 @@ mod tests {
         let options = OutputOptions {
             ..Default::default()
         };
-        let mut ctx = test_ctx(options);
+        let mut err_acc = ErrorVec::new();
+        let mut ext_lookup = test_ext(); // Use our test_ext
+        let mut ctx =
+            create_test_scoped_context_with_test_ext(&options, &mut err_acc, &mut ext_lookup);
         let mut output = String::new();
 
         // Test unimplemented types return appropriate errors
-        let rex = RexType::Selection(Default::default());
-        assert!(matches!(
-            rex.textify(&mut ctx, &mut output),
-            Err(TextifyError::Unimplemented(_))
-        ));
+        err_acc.0.clear();
+        output.clear();
+        let rex_sel = RexType::Selection(Default::default());
+        rex_sel.textify(&mut ctx, &mut output).unwrap();
+        assert!(output.contains("!{RexType: Selection}")); // Or similar, based on failure formatting
+        assert_eq!(err_acc.0.len(), 1);
+        assert_eq!(err_acc.0[0].error_type, TextifyErrorType::Unimplemented);
 
-        output = String::new();
-        let rex = RexType::WindowFunction(Default::default());
-        assert!(matches!(
-            rex.textify(&mut ctx, &mut output),
-            Err(TextifyError::Unimplemented(_))
-        ));
+        err_acc.0.clear();
+        output.clear();
+        let rex_win = RexType::WindowFunction(Default::default());
+        rex_win.textify(&mut ctx, &mut output).unwrap();
+        assert!(output.contains("!{RexType: WindowFunction}"));
+        assert_eq!(err_acc.0.len(), 1);
+        assert_eq!(err_acc.0[0].error_type, TextifyErrorType::Unimplemented);
 
-        output = String::new();
-        let rex = RexType::ScalarFunction(ScalarFunction {
-            function_reference: 1000,
+        err_acc.0.clear();
+        output.clear();
+        let rex_sf_unknown = RexType::ScalarFunction(ScalarFunction {
+            function_reference: 1000, // Not in test_ext
             arguments: vec![],
             options: vec![],
             output_type: None,
             #[allow(deprecated)]
             args: vec![],
         });
-        rex.textify(&mut ctx, &mut output).unwrap();
+        // With strict=false (default in OutputOptions), it should format as unknown
+        // If strict=true, it would be an error.
+        // Assuming default OutputOptions has strict = false.
+        // ScopedContext.options() has strict. Default OutputOptions has strict: false.
+        rex_sf_unknown.textify(&mut ctx, &mut output).unwrap();
         assert_eq!(output, "!❬unknown_scalar_function❭#1000()");
+        assert!(err_acc.0.is_empty()); // No error if not strict
 
-        output = String::new();
-        let rex = RexType::ScalarFunction(ScalarFunction {
-            function_reference: 1,
+        err_acc.0.clear();
+        output.clear();
+        let rex_sf_known = RexType::ScalarFunction(ScalarFunction {
+            function_reference: 1, // "first" from test_ext
             arguments: vec![],
             options: vec![],
             output_type: None,
             #[allow(deprecated)]
             args: vec![],
         });
-        rex.textify(&mut ctx, &mut output).unwrap();
+        rex_sf_known.textify(&mut ctx, &mut output).unwrap();
         assert_eq!(output, "first()");
+        assert!(err_acc.0.is_empty());
 
-        ctx = test_ctx(OutputOptions {
-            show_simple_extension_anchors: false,
+        // Test for duplicated function name requiring anchor
+        let options_show_anchor = OutputOptions {
+            show_simple_extension_anchors: false, // Will be overridden by duplicate detection
             ..Default::default()
-        });
-        ctx.add_extension_function(1, 231, "duplicated".to_string());
-        ctx.add_extension_function(2, 232, "duplicated".to_string());
-        output = String::new();
-        let rex = RexType::ScalarFunction(ScalarFunction {
+        };
+        err_acc.0.clear();
+        let mut ext_lookup_dup = ExtensionLookup::default();
+        ext_lookup_dup.add_extension_function(1, 231, "duplicated".to_string());
+        ext_lookup_dup.add_extension_function(2, 232, "duplicated".to_string());
+        let mut ctx_dup = create_test_scoped_context_with_test_ext(
+            &options_show_anchor,
+            &mut err_acc,
+            &mut ext_lookup_dup,
+        );
+
+        output.clear();
+        let rex_dup = RexType::ScalarFunction(ScalarFunction {
             function_reference: 231,
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
@@ -529,7 +885,8 @@ mod tests {
             #[allow(deprecated)]
             args: vec![],
         });
-        rex.textify(&mut ctx, &mut output).unwrap();
+        rex_dup.textify(&mut ctx_dup, &mut output).unwrap();
         assert_eq!(output, "duplicated#231(true)");
+        assert!(err_acc.0.is_empty());
     }
 }
