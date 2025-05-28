@@ -169,13 +169,6 @@ impl ExtensionLookup {
             },
         );
     }
-
-    // pub fn fmt<T: Textify>(&self, t: &T) -> TextifyWriter<T> {
-    //     TextifyWriter {
-    //         ctx: self,
-    //         value: &t,
-    //     }
-    // }
 }
 
 pub trait SimpleExtensions {
@@ -225,13 +218,8 @@ pub trait ErrorAccumulator {
     fn push(&mut self, e: TextifyError);
 }
 
+#[derive(Default, Debug, Clone)]
 pub struct ErrorVec(pub Vec<TextifyError>);
-
-impl ErrorVec {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-}
 
 impl ErrorAccumulator for ErrorVec {
     fn push(&mut self, e: TextifyError) {
@@ -261,7 +249,7 @@ pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> {
 }
 
 impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
-    pub fn new(options: &'a OutputOptions, errors: &'a mut Err, extensions: &'a mut Ext) -> Self {
+    pub fn new(options: &'a OutputOptions, errors: &'a mut Err, extensions: &'a Ext) -> Self {
         Self {
             options,
             errors,
@@ -322,24 +310,6 @@ impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Messa
 {
     pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err, Ext>>, fmt::Error> {
         self.context.try_borrow_mut().map_err(|_| fmt::Error)
-    }
-
-    pub fn failure<W: fmt::Write>(&self, w: &mut W, e: TextifyError) -> fmt::Result {
-        let borrow = self.context.try_borrow_mut();
-        let mut ctx = match borrow {
-            Ok(ctx) => ctx,
-            Err(be) => {
-                w.write_fmt(format_args!("!{}: {}❭", e, be))?;
-                return Err(fmt::Error);
-            }
-        };
-
-        if e.error_type == TextifyErrorType::Fmt {
-            return Err(fmt::Error);
-        }
-
-        ctx.errors.push(e);
-        Ok(())
     }
 }
 
@@ -457,9 +427,9 @@ pub trait Textify {
         w: &mut W,
     ) -> fmt::Result;
 
-    fn name() -> &'static str {
-        std::any::type_name::<Self>()
-    }
+    // TODO: Prost can give this to us if substrait was generated with `enable_type_names`
+    // <https://docs.rs/prost-build/latest/prost_build/struct.Config.html#method.enable_type_names>
+    fn name() -> &'static str;
 }
 
 // ($dst:expr, $($arg:tt)*) => {
@@ -471,50 +441,3 @@ pub trait Textify {
 
 //     };
 // }
-
-#[cfg(test)]
-pub fn test_ext() -> ExtensionLookup {
-    ExtensionLookup::from_extensions(
-        vec![
-            pext::SimpleExtensionUri {
-                extension_uri_anchor: 1,
-                uri: "tests/fixtures/first.yaml".to_string(),
-            },
-            pext::SimpleExtensionUri {
-                extension_uri_anchor: 2,
-                uri: "tests/fixtures/second.yaml".to_string(),
-            },
-        ],
-        vec![
-            pext::SimpleExtensionDeclaration {
-                mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
-                    function_anchor: 1,
-                    extension_uri_reference: 1,
-                    name: "first".to_string(),
-                })),
-            },
-            pext::SimpleExtensionDeclaration {
-                mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
-                    function_anchor: 2,
-                    extension_uri_reference: 2,
-                    name: "second".to_string(),
-                })),
-            },
-            pext::SimpleExtensionDeclaration {
-                mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
-                    function_anchor: 3,
-                    extension_uri_reference: 1,
-                    name: "third".to_string(),
-                })),
-            },
-            pext::SimpleExtensionDeclaration {
-                mapping_type: Some(MappingType::ExtensionType(ExtensionType {
-                    type_anchor: 100,
-                    extension_uri_reference: 1,
-                    name: "cow".to_string(),
-                })),
-            },
-        ],
-    )
-    .unwrap()
-}

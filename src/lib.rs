@@ -31,6 +31,8 @@
 //!        but should be accumulated, and returned to the user.
 
 mod expressions;
+#[cfg(test)]
+mod fixtures;
 mod textify;
 mod types;
 

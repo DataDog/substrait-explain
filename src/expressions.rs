@@ -1,13 +1,4 @@
-use crate::textify::{
-    ErrorAccumulator,
-    ExtensionLookup,
-    NONSPECIFIC, // Added NONSPECIFIC
-    ScopedContext,
-    SimpleExtensions,
-    Textify,
-    TextifyError,
-    TextifyErrorType,
-};
+use crate::textify::{ErrorAccumulator, ScopedContext, SimpleExtensions, Textify, TextifyError};
 
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;
@@ -23,7 +14,7 @@ use std::fmt;
 // […] for variant
 // <…> for parameters
 // !{…}
-const UNKNOWN_FUNCTION: &str = "!❬unknown_scalar_function❭";
+const UNKNOWN_FUNCTION: &str = "!{unknown_scalar_function}";
 
 // #… for anchor
 // @… for URI anchor
@@ -69,7 +60,7 @@ pub fn textify_literal_from_string<
     w: &mut W,
 ) -> fmt::Result {
     let escaped = as_escaped_string(s);
-    write!(w, ""{}":::", escaped)?;
+    write!(w, "\"{}\":::", escaped)?;
     t.textify(ctx, w)
 }
 
@@ -235,6 +226,10 @@ impl Kinded for LiteralType {
 }
 
 impl Textify for LiteralType {
+    fn name() -> &'static str {
+        "LiteralType"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
@@ -252,12 +247,12 @@ impl Textify for LiteralType {
             LiteralType::String(s) => write!(w, "\"{}\"", s.escape_default())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
             LiteralType::Timestamp(t) => {
-                let k = match self.kind(ctx) {
+                let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
                     None => {
                         let err = TextifyError::internal(
                             "LiteralType",
-                            NONSPECIFIC,
+                            Some("Timestamp"),
                             format!("No kind found for {:?}", self),
                         );
                         return ctx.failure(w, err);
@@ -482,16 +477,24 @@ impl Textify for LiteralType {
 }
 
 impl Textify for expr::Literal {
+    fn name() -> &'static str {
+        "Literal"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
     ) -> fmt::Result {
-        ctx.expect(w, &self.literal_type.as_ref())
+        ctx.expect(w, &self.literal_type)
     }
 }
 
 impl Textify for ScalarFunction {
+    fn name() -> &'static str {
+        "ScalarFunction"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
@@ -499,8 +502,8 @@ impl Textify for ScalarFunction {
     ) -> fmt::Result {
         let ext_lookup = ctx.extensions();
         let ext = ext_lookup.find_function(self.function_reference);
-        match (ext, ctx.options().strict) {
-            (Some(ref extf), _) => {
+        match ext {
+            Some(ref extf) => {
                 let show_anchor = ctx.options().show_simple_extension_anchors
                     || (ext_lookup.find_functions(&extf.name).count() > 1);
                 write!(w, "{}", &extf.name)?;
@@ -511,19 +514,13 @@ impl Textify for ScalarFunction {
                     write!(w, "@{}", extf.extension_uri_reference)?;
                 }
             }
-            (None, true) => {
-                let err = TextifyError::invalid(
-                    "ScalarFunction",
-                    Some(format!("{}", self.function_reference)),
-                    format!(
-                        "Function {} not found in extensions",
-                        self.function_reference
-                    ),
-                );
-                return ctx.failure(w, err);
-            }
-            (None, false) => {
+            None => {
                 write!(w, "{}#{}", UNKNOWN_FUNCTION, self.function_reference)?;
+                ctx.push_error(TextifyError::invalid(
+                    Self::name(),
+                    Some("Function reference invalid"),
+                    format!("Unknown function {}", self.function_reference),
+                ));
             }
         };
 
@@ -553,6 +550,10 @@ impl Textify for ScalarFunction {
 }
 
 impl Textify for FunctionOption {
+    fn name() -> &'static str {
+        "FunctionOption"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         _ctx: &'b mut ScopedContext<'a, Err, Ext>,
@@ -574,16 +575,24 @@ impl Textify for FunctionOption {
 }
 
 impl Textify for FunctionArgument {
+    fn name() -> &'static str {
+        "FunctionArgument"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
     ) -> fmt::Result {
-        ctx.expect(w, &self.arg_type.as_ref())
+        ctx.expect(w, &self.arg_type)
     }
 }
 
 impl Textify for ArgType {
+    fn name() -> &'static str {
+        "ArgType"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
@@ -598,6 +607,10 @@ impl Textify for ArgType {
 }
 
 impl Textify for RexType {
+    fn name() -> &'static str {
+        "RexType"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
@@ -699,132 +712,67 @@ impl Textify for RexType {
 }
 
 impl Textify for Expression {
+    fn name() -> &'static str {
+        "Expression"
+    }
+
     fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
         &self,
         ctx: &'b mut ScopedContext<'a, Err, Ext>,
         w: &mut W,
     ) -> fmt::Result {
-        ctx.expect(w, &self.rex_type.as_ref())
+        ctx.expect(w, &self.rex_type)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::textify::{
-        ErrorAccumulator, ErrorVec, ExtensionLookup, OutputOptions,
-        /*test_ctx,*/ SimpleExtensions,
-    }; // Removed test_ctx, added ErrorVec
-    use substrait::proto::Plan;
-    use substrait::proto::r#type::Kind; // For Kind in tests if needed for ScopedContext construction. // Example, might need more specific types for extensions
-
-    // Helper to create a ScopedContext for tests
-    fn create_test_scoped_context<'a, 'b, E: ErrorAccumulator, Ext: SimpleExtensions>(
-        options: &'a OutputOptions,
-        errors: &'a mut E,
-        extensions: &'a mut Ext,
-    ) -> ScopedContext<'a, E, Ext> {
-        ScopedContext::new(options, errors, extensions)
-    }
+    use crate::fixtures::TestContext;
+    use crate::textify::{OutputOptions, TextifyErrorType};
 
     #[test]
     fn test_literal_textify() {
-        let mut ext = ExtensionLookup::default();
-        let mut err_acc = ErrorVec::new();
-        let opts = OutputOptions::default();
-        let mut ctx = create_test_scoped_context(&opts, &mut err_acc, &mut ext);
+        let ctx = TestContext::new();
 
-        let mut output = String::new();
         let literal = LiteralType::Boolean(true);
-        literal.textify(&mut ctx, &mut output).unwrap();
-        assert_eq!(output, "true");
-        assert!(err_acc.0.is_empty());
+        assert_eq!(ctx.textify_no_errors(literal), "true");
     }
 
     #[test]
     fn test_expression_textify() {
-        let mut ext = ExtensionLookup::default();
-        let mut err_acc = ErrorVec::new();
-        let opts = OutputOptions::default();
-        let mut ctx = create_test_scoped_context(&opts, &mut err_acc, &mut ext);
-        let mut output = String::new();
+        let ctx = TestContext::new();
 
         // Test empty expression
-        let expr = Expression { rex_type: None };
-        expr.textify(&mut ctx, &mut output).unwrap();
-        // Using ctx.expect will result in something like "!{Option<RexType>}" or "!{expression}"
-        // The exact output depends on ScopedContext::failure and TextifyError::invalid implementation details
-        // For now, let's check if it contains the error marker start and the type name.
-        assert!(output.contains("!{"));
-        assert!(output.contains(expr::RexType::name())); // Check it refers to the missing type
-        assert!(err_acc.0.len() == 1); // Expect one error: "Required field missing"
+        let expr_empty = Expression { rex_type: None }; // Renamed to avoid conflict
+        let (s, errs) = ctx.textify(expr_empty);
+        assert_eq!(errs.0.len(), 1);
+        assert_eq!(s, "!{RexType}");
 
         // Test literal expression
-        output.clear();
-        err_acc.0.clear(); // Clear errors for the next assertion
         let expr_lit = Expression {
-            rex_type: Some(RexType::Literal(expression::Literal {
+            rex_type: Some(RexType::Literal(expr::Literal {
                 nullable: false,
                 type_variation_reference: 0,
-                literal_type: Some(expression::literal::LiteralType::Boolean(true)),
+                literal_type: Some(expr::literal::LiteralType::Boolean(true)),
             })),
         };
-        expr_lit.textify(&mut ctx, &mut output).unwrap();
-        assert_eq!(output, "true");
-        assert!(err_acc.0.is_empty());
-    }
-
-    // Minimal test_ext function, assuming it's not too complex or take from types.rs if compatible
-    // This is just to make `test_ctx` (now `create_test_scoped_context_with_test_ext`) compile if needed by other tests.
-    // It's better to use the one from textify.rs if possible, or ensure this is a valid mock.
-    pub fn test_ext() -> ExtensionLookup {
-        let mut ext = ExtensionLookup::default();
-        ext.add_extension_function(0, 1, "first".to_string());
-        // Add other extensions if used by tests below
-        ext
-    }
-
-    fn create_test_scoped_context_with_test_ext<'a, 'b, E: ErrorAccumulator>(
-        options: &'a OutputOptions,
-        errors: &'a mut E,
-        extensions: &'a mut ExtensionLookup, // test_ext returns ExtensionLookup
-    ) -> ScopedContext<'a, E, ExtensionLookup> {
-        // Ext is ExtensionLookup
-        ScopedContext::new(options, errors, extensions)
+        assert_eq!(ctx.textify_no_errors(expr_lit), "true");
     }
 
     #[test]
     fn test_rextype_textify() {
-        let options = OutputOptions {
-            ..Default::default()
-        };
-        let mut err_acc = ErrorVec::new();
-        let mut ext_lookup = test_ext(); // Use our test_ext
-        let mut ctx =
-            create_test_scoped_context_with_test_ext(&options, &mut err_acc, &mut ext_lookup);
-        let mut output = String::new();
+        let ctx = TestContext::new();
 
         // Test unimplemented types return appropriate errors
-        err_acc.0.clear();
-        output.clear();
         let rex_sel = RexType::Selection(Default::default());
-        rex_sel.textify(&mut ctx, &mut output).unwrap();
-        assert!(output.contains("!{RexType: Selection}")); // Or similar, based on failure formatting
-        assert_eq!(err_acc.0.len(), 1);
-        assert_eq!(err_acc.0[0].error_type, TextifyErrorType::Unimplemented);
+        let (s, errs) = ctx.textify(rex_sel);
+        assert_eq!(s, "!{RexType: Selection}");
+        assert_eq!(errs.0.len(), 1);
+        assert_eq!(errs.0[0].error_type, TextifyErrorType::Unimplemented);
 
-        err_acc.0.clear();
-        output.clear();
-        let rex_win = RexType::WindowFunction(Default::default());
-        rex_win.textify(&mut ctx, &mut output).unwrap();
-        assert!(output.contains("!{RexType: WindowFunction}"));
-        assert_eq!(err_acc.0.len(), 1);
-        assert_eq!(err_acc.0[0].error_type, TextifyErrorType::Unimplemented);
-
-        err_acc.0.clear();
-        output.clear();
-        let rex_sf_unknown = RexType::ScalarFunction(ScalarFunction {
-            function_reference: 1000, // Not in test_ext
+        let func = RexType::ScalarFunction(ScalarFunction {
+            function_reference: 1000, // Does not exist
             arguments: vec![],
             options: vec![],
             output_type: None,
@@ -835,48 +783,43 @@ mod tests {
         // If strict=true, it would be an error.
         // Assuming default OutputOptions has strict = false.
         // ScopedContext.options() has strict. Default OutputOptions has strict: false.
-        rex_sf_unknown.textify(&mut ctx, &mut output).unwrap();
-        assert_eq!(output, "!❬unknown_scalar_function❭#1000()");
-        assert!(err_acc.0.is_empty()); // No error if not strict
+        let (s, errs) = ctx.textify(func);
+        assert_eq!(s, "!{unknown_scalar_function}#1000()");
+        assert_eq!(errs.0[0].error_type, TextifyErrorType::InvalidValue);
+        assert_eq!(errs.0.len(), 1);
 
-        err_acc.0.clear();
-        output.clear();
-        let rex_sf_known = RexType::ScalarFunction(ScalarFunction {
-            function_reference: 1, // "first" from test_ext
+        let ctx = ctx.with_uri(1, "first").with_function(1, 100, "first");
+        let func = RexType::ScalarFunction(ScalarFunction {
+            function_reference: 100,
             arguments: vec![],
             options: vec![],
             output_type: None,
             #[allow(deprecated)]
             args: vec![],
         });
-        rex_sf_known.textify(&mut ctx, &mut output).unwrap();
-        assert_eq!(output, "first()");
-        assert!(err_acc.0.is_empty());
+        let s = ctx.textify_no_errors(func);
+        assert_eq!(s, "first()");
 
         // Test for duplicated function name requiring anchor
         let options_show_anchor = OutputOptions {
             show_simple_extension_anchors: false, // Will be overridden by duplicate detection
             ..Default::default()
         };
-        err_acc.0.clear();
-        let mut ext_lookup_dup = ExtensionLookup::default();
-        ext_lookup_dup.add_extension_function(1, 231, "duplicated".to_string());
-        ext_lookup_dup.add_extension_function(2, 232, "duplicated".to_string());
-        let mut ctx_dup = create_test_scoped_context_with_test_ext(
-            &options_show_anchor,
-            &mut err_acc,
-            &mut ext_lookup_dup,
-        );
+        let ctx = TestContext::new()
+            .with_options(options_show_anchor)
+            .with_uri(1, "somewhere_on_the_internet")
+            .with_uri(2, "somewhere_else")
+            .with_function(1, 231, "duplicated")
+            .with_function(2, 232, "duplicated");
 
-        output.clear();
         let rex_dup = RexType::ScalarFunction(ScalarFunction {
             function_reference: 231,
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Literal(expression::Literal {
+                    rex_type: Some(RexType::Literal(expr::Literal {
                         nullable: false,
                         type_variation_reference: 0,
-                        literal_type: Some(expression::literal::LiteralType::Boolean(true)),
+                        literal_type: Some(expr::literal::LiteralType::Boolean(true)),
                     })),
                 })),
             }],
@@ -885,8 +828,7 @@ mod tests {
             #[allow(deprecated)]
             args: vec![],
         });
-        rex_dup.textify(&mut ctx_dup, &mut output).unwrap();
-        assert_eq!(output, "duplicated#231(true)");
-        assert!(err_acc.0.is_empty());
+        let s = ctx.textify_no_errors(rex_dup);
+        assert_eq!(s, "duplicated#231(true)");
     }
 }
