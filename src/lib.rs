@@ -23,6 +23,9 @@
 //!        providing exact structural equivalence. As an example, `Emit` is
 //!        generally not shown via references, instead reordering the columns as
 //!        shown to show what the `Emit` would resolve to.
+//!   5. Graceful errors:
+//!      - Errors should not prevent the output from being generated, but should
+//!        be returned.
 //!
 //! ### Design Goals
 //!
@@ -33,6 +36,7 @@
 mod expressions;
 #[cfg(test)]
 mod fixtures;
+mod rels;
 mod textify;
 mod types;
 

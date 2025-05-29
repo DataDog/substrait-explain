@@ -1,4 +1,4 @@
-use crate::textify::{ErrorAccumulator, ScopedContext, SimpleExtensions, Textify, TextifyError};
+use crate::textify::{Scope, SimpleExtensions, Textify, TextifyError};
 
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;
@@ -22,9 +22,9 @@ const UNKNOWN_FUNCTION: &str = "!{unknown_scalar_function}";
 // …:::… for specifying type
 // &… for enum
 
-pub fn textify_binary<'a, Ext: SimpleExtensions, Err: ErrorAccumulator, W: fmt::Write>(
+pub fn textify_binary<S: Scope, W: fmt::Write>(
     items: &[u8],
-    ctx: &mut ScopedContext<'a, Err, Ext>,
+    ctx: &mut S,
     w: &mut W,
 ) -> fmt::Result {
     if ctx.options().show_literal_binaries {
@@ -47,16 +47,10 @@ pub fn as_escaped_string(s: &str) -> String {
     )
 }
 
-pub fn textify_literal_from_string<
-    'a,
-    'b,
-    Err: ErrorAccumulator,
-    Ext: SimpleExtensions,
-    W: fmt::Write,
->(
+pub fn textify_literal_from_string<S: Scope, W: fmt::Write>(
     s: &str,
     t: Kind,
-    ctx: &'b mut ScopedContext<'a, Err, Ext>,
+    ctx: &mut S,
     w: &mut W,
 ) -> fmt::Result {
     let escaped = as_escaped_string(s);
@@ -90,9 +84,9 @@ pub fn is_identifer(s: &str) -> bool {
     true
 }
 
-pub fn textify_identifier<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
+pub fn textify_identifier<S: Scope, W: fmt::Write>(
     s: &str,
-    _ctx: &'b mut ScopedContext<'a, Err, Ext>,
+    _ctx: &mut S,
     w: &mut W,
 ) -> fmt::Result {
     if is_identifer(s) {
@@ -107,11 +101,7 @@ pub fn textify_identifier<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, 
 
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
 /// a valid identifier; otherwise, they are written as `&'<escaped_string>'`.
-pub fn textify_enum<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-    s: &str,
-    ctx: &'b mut ScopedContext<'a, Err, Ext>,
-    w: &mut W,
-) -> fmt::Result {
+pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, ctx: &mut S, w: &mut W) -> fmt::Result {
     write!(w, "&")?;
     textify_identifier(s, ctx, w)
 }
@@ -230,11 +220,7 @@ impl Textify for LiteralType {
         "LiteralType"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             LiteralType::Boolean(true) => write!(w, "true")?,
             LiteralType::Boolean(false) => write!(w, "false")?,
@@ -481,11 +467,7 @@ impl Textify for expr::Literal {
         "Literal"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         ctx.expect(w, &self.literal_type)
     }
 }
@@ -495,11 +477,7 @@ impl Textify for ScalarFunction {
         "ScalarFunction"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         let ext_lookup = ctx.extensions();
         let ext = ext_lookup.find_function(self.function_reference);
         match ext {
@@ -554,11 +532,7 @@ impl Textify for FunctionOption {
         "FunctionOption"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        _ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &mut S, w: &mut W) -> fmt::Result {
         write!(w, "{}⇒[", self.name)?;
         let mut first = true;
         for pref in self.preference.iter() {
@@ -579,11 +553,7 @@ impl Textify for FunctionArgument {
         "FunctionArgument"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         ctx.expect(w, &self.arg_type)
     }
 }
@@ -593,11 +563,7 @@ impl Textify for ArgType {
         "ArgType"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             ArgType::Type(t) => t.textify(ctx, w),
             ArgType::Value(v) => v.textify(ctx, w),
@@ -611,11 +577,7 @@ impl Textify for RexType {
         "RexType"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             RexType::Literal(literal) => literal.textify(ctx, w),
             RexType::Selection(_f) => ctx.failure(
@@ -716,11 +678,7 @@ impl Textify for Expression {
         "Expression"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         ctx.expect(w, &self.rex_type)
     }
 }

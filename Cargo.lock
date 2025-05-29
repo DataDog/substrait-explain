@@ -287,15 +287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "planpal"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "prost",
- "substrait",
-]
-
-[[package]]
 name = "prettyplease"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -579,6 +570,15 @@ dependencies = [
  "syn",
  "typify",
  "walkdir",
+]
+
+[[package]]
+name = "substrait-explain"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "prost",
+ "substrait",
 ]
 
 [[package]]

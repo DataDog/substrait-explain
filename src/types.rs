@@ -1,4 +1,4 @@
-use crate::textify::{ErrorAccumulator, NONSPECIFIC, ScopedContext, SimpleExtensions};
+use crate::textify::{NONSPECIFIC, Scope, SimpleExtensions};
 
 use super::textify::{Textify, TextifyError};
 
@@ -17,11 +17,7 @@ impl Textify for ptype::Nullability {
         "Nullability"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             ptype::Nullability::Unspecified => {
                 ctx.push_error(TextifyError::invalid(
@@ -40,8 +36,8 @@ impl Textify for ptype::Nullability {
     }
 }
 
-fn textify_type_variation<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-    ctx: &mut ScopedContext<'a, Err, Ext>,
+fn textify_type_variation<S: Scope, W: fmt::Write>(
+    ctx: &mut S,
     f: &mut W,
     name: &str,
     anchor: u32,
@@ -86,16 +82,8 @@ fn textify_type_variation<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, 
 //
 // P will generally be the Parameter type, but it can be any type that
 // implements Textify.
-fn textify_type<
-    'a,
-    'b,
-    Err: ErrorAccumulator,
-    Ext: SimpleExtensions,
-    W: fmt::Write,
-    P: Textify,
-    I: IntoIterator<Item = Option<P>>,
->(
-    ctx: &mut ScopedContext<'a, Err, Ext>,
+fn textify_type<S: Scope, W: fmt::Write, P: Textify, I: IntoIterator<Item = Option<P>>>(
+    ctx: &mut S,
     f: &mut W,
     name: impl AsRef<str>,
     nullability: ptype::Nullability,
@@ -140,11 +128,7 @@ impl Textify for Parameter {
         "Parameter"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             Parameter::Boolean(true) => write!(w, "true")?,
             Parameter::Boolean(false) => write!(w, "false")?,
@@ -164,11 +148,7 @@ impl Textify for ptype::Parameter {
         "Parameter"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         ctx.expect(w, &self.parameter)
     }
 }
@@ -178,11 +158,7 @@ impl Textify for ptype::UserDefined {
         "UserDefined"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         {
             let type_reference = ctx.extensions().find_type(self.type_reference);
             let params = self.type_parameters.iter().map(|t| Some(t.clone()));
@@ -217,11 +193,7 @@ impl Textify for ptype::Kind {
         "Kind"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         match self {
             // This is the expansion of:
             //     textify_kind!(ctx, w, k, "boolean")
@@ -360,11 +332,7 @@ impl Textify for proto::Type {
         "Type"
     }
 
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
         ctx.expect(w, &self.kind)
     }
 }

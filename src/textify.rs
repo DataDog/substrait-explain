@@ -242,10 +242,41 @@ impl fmt::Display for ErrorVec {
     }
 }
 
+pub trait IndentTracker {
+    fn indent<W: fmt::Write>(&self, w: &mut W) -> fmt::Result;
+    fn push(self) -> Self;
+}
+
+pub struct IndentStack<'a> {
+    count: u32,
+    indent: &'a str,
+}
+
 pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> {
     errors: &'a mut Err,
     options: &'a OutputOptions,
     extensions: &'a Ext,
+    indent: IndentStack<'a>,
+}
+
+impl<'a> IndentStack<'a> {
+    pub fn new(indent: &'a str) -> Self {
+        Self { count: 0, indent }
+    }
+}
+
+impl<'a> IndentTracker for IndentStack<'a> {
+    fn indent<W: fmt::Write>(&self, w: &mut W) -> fmt::Result {
+        for _ in 0..self.count {
+            w.write_str(self.indent)?;
+        }
+        Ok(())
+    }
+
+    fn push(mut self) -> Self {
+        self.count += 1;
+        self
+    }
 }
 
 impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
@@ -254,48 +285,7 @@ impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ex
             options,
             errors,
             extensions,
-        }
-    }
-
-    pub fn options(&self) -> &OutputOptions {
-        self.options
-    }
-
-    pub fn extensions(&self) -> &Ext {
-        self.extensions
-    }
-
-    pub fn push_error(&mut self, e: TextifyError) {
-        self.errors.push(e);
-    }
-}
-
-impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
-    /// Handle a failure to textify a value. Textify errors are written as
-    /// "!{name}" to the output (where "name" is the type name), and
-    /// the error is pushed to the error accumulator.
-    pub fn failure<W: fmt::Write>(&mut self, w: &mut W, e: TextifyError) -> Result<(), fmt::Error> {
-        match e.error_type {
-            TextifyErrorType::Fmt => return Err(fmt::Error),
-            _ => {
-                write!(w, "{}{}", ERROR_MARKER_START, e.message)?;
-                if let Some(ref lookup) = e.lookup {
-                    write!(w, ": {}", lookup)?;
-                }
-                write!(w, "{}", ERROR_MARKER_END)?;
-                self.errors.push(e.clone());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn expect<W: fmt::Write, T: Textify>(&mut self, w: &mut W, t: &Option<T>) -> fmt::Result {
-        match t {
-            Some(t) => t.textify(self, w),
-            None => self.failure(
-                w,
-                TextifyError::invalid(T::name(), NONSPECIFIC, "Required field missing, None found"),
-            ),
+            indent: IndentStack::new(options.indent.as_str()),
         }
     }
 }
@@ -421,23 +411,76 @@ impl fmt::Display for TextifyError {
 ///
 /// This trait is used to convert a Substrait type into a string representation.
 pub trait Textify {
-    fn textify<'a, 'b, Err: ErrorAccumulator, Ext: SimpleExtensions, W: fmt::Write>(
-        &self,
-        ctx: &'b mut ScopedContext<'a, Err, Ext>,
-        w: &mut W,
-    ) -> fmt::Result;
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result;
 
     // TODO: Prost can give this to us if substrait was generated with `enable_type_names`
     // <https://docs.rs/prost-build/latest/prost_build/struct.Config.html#method.enable_type_names>
     fn name() -> &'static str;
 }
 
-// ($dst:expr, $($arg:tt)*) => {
-//     $dst.write_fmt($crate::format_args!($($arg)*))
-// };
+pub trait Scope: Sized {
+    type Errors: ErrorAccumulator;
+    type Extensions: SimpleExtensions;
+    type Indent: IndentTracker;
 
-// macro_rules! textify {
-//     ($ctx:expr, $w:expr, $($arg:tt)*) => {
+    fn push_indent(self) -> Self;
 
-//     };
-// }
+    fn options(&self) -> &OutputOptions;
+    fn extensions(&self) -> &Self::Extensions;
+    fn errors(&mut self) -> &mut Self::Errors;
+
+    fn push_error(&mut self, e: TextifyError) {
+        self.errors().push(e);
+    }
+
+    /// Handle a failure to textify a value. Textify errors are written as
+    /// "!{name}" to the output (where "name" is the type name), and
+    /// the error is pushed to the error accumulator.
+    fn failure<W: fmt::Write>(&mut self, w: &mut W, e: TextifyError) -> Result<(), fmt::Error> {
+        match e.error_type {
+            TextifyErrorType::Fmt => return Err(fmt::Error),
+            _ => {
+                write!(w, "{}{}", ERROR_MARKER_START, e.message)?;
+                if let Some(ref lookup) = e.lookup {
+                    write!(w, ": {}", lookup)?;
+                }
+                write!(w, "{}", ERROR_MARKER_END)?;
+                self.errors().push(e.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn expect<W: fmt::Write, T: Textify>(&mut self, w: &mut W, t: &Option<T>) -> fmt::Result {
+        match t {
+            Some(t) => t.textify(self, w),
+            None => self.failure(
+                w,
+                TextifyError::invalid(T::name(), NONSPECIFIC, "Required field missing, None found"),
+            ),
+        }
+    }
+}
+
+impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> Scope for ScopedContext<'a, Err, Ext> {
+    type Errors = Err;
+    type Extensions = Ext;
+    type Indent = IndentStack<'a>;
+
+    fn push_indent(mut self) -> Self {
+        self.indent = self.indent.push();
+        self
+    }
+
+    fn options(&self) -> &OutputOptions {
+        self.options
+    }
+
+    fn extensions(&self) -> &Self::Extensions {
+        self.extensions
+    }
+
+    fn errors(&mut self) -> &mut Self::Errors {
+        self.errors
+    }
+}
