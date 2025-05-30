@@ -22,23 +22,22 @@ impl Textify for ReadRel {
         "ReadRel"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
-        let mut first = true;
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &mut S, _w: &mut W) -> fmt::Result {
+        todo!();
+        // let mut first = true;
 
-        let names = self.base_schema.as_ref().map(|s| &s.names).iter().flatten();
+        // let names = self.base_schema.as_ref().map(|s| &s.names).iter().flatten();
 
-        for field in self.base_schema.as_ref()latmap(|s| &s.names).iter().flatten() {
-            if !first {
-                w.write_str(", ")?;
-            }
-            first = false;
-        }
+        // for field in self.base_schema.as_ref().flatmap(|s| &s.names).iter().flatten() {
+        //     if !first {
+        //         w.write_str(", ")?;
+        //     }
+        //     first = false;
+        // }
 
         //     w.write_str(": ")?;
         //     w.write_str(&field.type_)?;
         // }
-
-        todo!()
     }
 }
 
