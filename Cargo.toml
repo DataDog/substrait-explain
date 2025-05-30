@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.41"
+pest = "2.8.0"
+pest_derive = "2.8.0"
 prost = "0.13.5"
 substrait = "0.57.0"
