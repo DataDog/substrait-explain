@@ -36,6 +36,7 @@
 mod expressions;
 #[cfg(test)]
 mod fixtures;
+mod parser;
 mod rels;
 mod textify;
 mod types;

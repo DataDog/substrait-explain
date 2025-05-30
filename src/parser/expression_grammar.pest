@@ -1,0 +1,42 @@
+// `pest` will skip WHITESPACE between tokens by default if it's defined with `_`
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+
+// Basic Terminals
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+integer    = @{ ASCII_DIGIT+ }
+// Basic string literal, does not handle escape sequences for simplicity here.
+// For production, you'd want a more robust string rule with escapes.
+string_literal = @{ "\'" ~ (!"\'" ~ ANY)* ~ "\'" | "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+
+// Expression Components
+reference = { "$" ~ integer }
+
+literal = { integer | string_literal }
+
+parameters = { "<" ~ identifier ~ ("," ~ WHITESPACE* ~ identifier)* ~ ">" }
+variant    = { "[" ~ identifier ~ "]" }
+anchor     = { "#" ~ integer }
+uri_anchor = { "@" ~ integer }
+
+argument_list = { "(" ~ (expression ~ ("," ~ WHITESPACE* ~ expression)*)? ~ ")" }
+//                 ^ open paren
+//                     ^ an optional list of expressions (first expression, then zero or more comma + expression)
+//                                                                       ^ close paren
+
+function_call = {
+    identifier ~ WHITESPACE* ~  // Function name
+    parameters? ~ WHITESPACE* ~
+    variant? ~ WHITESPACE* ~
+    anchor? ~ WHITESPACE* ~
+    uri_anchor? ~ WHITESPACE* ~
+    argument_list             // Arguments `()` are required
+}
+
+// Top-level Expression Rule
+// Order matters for PEGs: if `identifier` could also be a function name, place `function_call` before simpler `identifier` based rules if ambiguous.
+// Here, `function_call` is distinct enough. `literal` is also distinct from `reference`.
+expression = _{ reference | literal | function_call }
+
+// Optional: A rule to parse a full input if you expect only one expression
+// file = _{ SOI ~ expression ~ EOI }
