@@ -1,42 +1,40 @@
 // `pest` will skip WHITESPACE between tokens by default if it's defined with `_`
-WHITESPACE = _{ " " | "\t" | NEWLINE }
+WHITESPACE = _{ " " }
 
 // Basic Terminals
 identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 integer    = @{ ASCII_DIGIT+ }
-// Basic string literal, does not handle escape sequences for simplicity here.
-// For production, you'd want a more robust string rule with escapes.
-string_literal = @{ "\'" ~ (!"\'" ~ ANY)* ~ "\'" | "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
+// Basic string literals, does not handle escape sequences for simplicity here.
+// String literals are for literal values
+string_literal = @{ "\'" ~ (!"\'" ~ ANY)* ~ "\'" }
+// Quoted names are for function names or other identifiers that need to be quoted
+quoted_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// A name of a function or table can either be an unquoted identifier or a quoted string
+name = _{ identifier | quoted_name }
 
 // Expression Components
-reference = { "$" ~ integer }
+// Field reference
+reference = _{ "$" ~ integer }
+// Literal
+literal = _{ integer | string_literal }
 
-literal = { integer | string_literal }
+parameters = _{ "<" ~ name ~ ("," ~ WHITESPACE* ~ name)* ~ ">" }
+variant    = _{ "[" ~ name ~ "]" }
+anchor     = _{ "#" ~ integer }
+uri_anchor = _{ "@" ~ integer }
 
-parameters = { "<" ~ identifier ~ ("," ~ WHITESPACE* ~ identifier)* ~ ">" }
-variant    = { "[" ~ identifier ~ "]" }
-anchor     = { "#" ~ integer }
-uri_anchor = { "@" ~ integer }
-
-argument_list = { "(" ~ (expression ~ ("," ~ WHITESPACE* ~ expression)*)? ~ ")" }
-//                 ^ open paren
-//                     ^ an optional list of expressions (first expression, then zero or more comma + expression)
-//                                                                       ^ close paren
+argument_list = _{ "(" ~ (expression ~ ("," ~ WHITESPACE* ~ expression)*)? ~ ")" }
 
 function_call = {
-    identifier ~ WHITESPACE* ~  // Function name
-    parameters? ~ WHITESPACE* ~
-    variant? ~ WHITESPACE* ~
-    anchor? ~ WHITESPACE* ~
-    uri_anchor? ~ WHITESPACE* ~
-    argument_list             // Arguments `()` are required
+    name ~ WHITESPACE* ~  // Function name
+  parameters? ~ WHITESPACE* ~ variant? ~ WHITESPACE* ~ anchor? ~ WHITESPACE* ~ uri_anchor? ~ WHITESPACE* ~ argument_list // Arguments `()` are required
 }
 
 // Top-level Expression Rule
-// Order matters for PEGs: if `identifier` could also be a function name, place `function_call` before simpler `identifier` based rules if ambiguous.
-// Here, `function_call` is distinct enough. `literal` is also distinct from `reference`.
-expression = _{ reference | literal | function_call }
+// Order matters for PEGs: Since an identifer can be a function call, we put that first.
+expression = _{ function_call | reference | literal }
 
-// Optional: A rule to parse a full input if you expect only one expression
-// file = _{ SOI ~ expression ~ EOI }
+// A rule for matching an entire input as an expression
+expression_complete = _{ SOI ~ expression ~ EOI }
