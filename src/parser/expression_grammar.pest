@@ -1,5 +1,8 @@
-// `pest` will skip WHITESPACE between tokens by default if it's defined with `_`
-WHITESPACE = _{ " " }
+// Explicit whitespace, used below.
+// Pest allows implicit whitespace with WHITESPACE; we don't do that here.
+whitespace = _{ " " }
+// Shorthand for space between tokens
+sp = _{ whitespace* }
 
 // Basic Terminals
 identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -7,34 +10,50 @@ integer    = @{ ASCII_DIGIT+ }
 
 // Basic string literals, does not handle escape sequences for simplicity here.
 // String literals are for literal values
-string_literal = @{ "\'" ~ (!"\'" ~ ANY)* ~ "\'" }
+string_literal = @{
+    "\'" ~  // opening quote
+  (("\\" ~ ANY) // Escape sequence
+  | (!"\'" ~ ANY) // Any character except the closing quote
+  )* // middle
+  ~ "\'" // closing quote
+}
 // Quoted names are for function names or other identifiers that need to be quoted
-quoted_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+quoted_name = @{
+    "\"" ~  // opening quote
+  (("\\" ~ ANY) // Escape sequence
+  | (!"\"" ~ ANY) // Any character except the closing quote
+  )* // middle
+  ~ "\"" // closing quote
+}
 
 // A name of a function or table can either be an unquoted identifier or a quoted string
-name = _{ identifier | quoted_name }
+name = { identifier | quoted_name }
 
 // Expression Components
 // Field reference
-reference = _{ "$" ~ integer }
+reference = { "$" ~ integer }
 // Literal
-literal = _{ integer | string_literal }
+literal    = { integer | string_literal }
+parameters = { "<" ~ name ~ ("," ~ sp ~ name)* ~ ">" }
+// TODO: Function Options. Not fully decided on the syntax for this.
+// options    = { "[" ~ ??????? ~ "]" }
+anchor     = { "#" ~ integer }
+uri_anchor = { "@" ~ integer }
 
-parameters = _{ "<" ~ name ~ ("," ~ WHITESPACE* ~ name)* ~ ">" }
-variant    = _{ "[" ~ name ~ "]" }
-anchor     = _{ "#" ~ integer }
-uri_anchor = _{ "@" ~ integer }
-
-argument_list = _{ "(" ~ (expression ~ ("," ~ WHITESPACE* ~ expression)*)? ~ ")" }
+argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
 function_call = {
-    name ~ WHITESPACE* ~  // Function name
-  parameters? ~ WHITESPACE* ~ variant? ~ WHITESPACE* ~ anchor? ~ WHITESPACE* ~ uri_anchor? ~ WHITESPACE* ~ argument_list // Arguments `()` are required
+    name ~ sp ~  // Function name
+  parameters? ~ sp ~  // Optional parameters, e.g. <T, V>
+  // options? ~ sp ~  // Options, e.g. []
+  anchor? ~ sp ~  // Optional Anchor, e.g. #1
+  uri_anchor? ~ sp ~  // Optional URI Anchor, e.g. @1
+  argument_list // Arguments `()` are required, e.g. (1, 2, 3)
 }
 
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
-expression = _{ function_call | reference | literal }
+expression = { function_call | reference | literal }
 
 // A rule for matching an entire input as an expression
-expression_complete = _{ SOI ~ expression ~ EOI }
+expression_complete = { SOI ~ expression ~ EOI }

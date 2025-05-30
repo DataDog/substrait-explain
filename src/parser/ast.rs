@@ -1,9 +1,12 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
-    Reference(u32),
+    Reference(Reference),
     Literal(Literal),
     FunctionCall(Box<FunctionCall>), // Boxed because FunctionCall can contain Vec<Expression>
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
@@ -18,7 +21,6 @@ pub struct FunctionCall {
     // E.g. fn() is valid with
     pub name: String,
     pub parameters: Option<Vec<String>>,
-    pub variant: Option<String>,
     pub anchor: Option<u32>,
     pub uri_anchor: Option<u32>,
     pub arguments: Vec<Expression>,
