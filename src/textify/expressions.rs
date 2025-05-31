@@ -1,5 +1,5 @@
 use super::{Scope, Textify, TextifyError};
-use crate::extensions::SimpleExtensions;
+use crate::extensions::ExtensionLookup;
 
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;
@@ -113,11 +113,11 @@ pub fn timestamp_to_string(t: i64) -> String {
 }
 
 trait Kinded {
-    fn kind<E: SimpleExtensions>(&self, ctx: &E) -> Option<Kind>;
+    fn kind<E: ExtensionLookup>(&self, ctx: &E) -> Option<Kind>;
 }
 
 impl Kinded for LiteralType {
-    fn kind<E: SimpleExtensions>(&self, _ctx: &E) -> Option<Kind> {
+    fn kind<E: ExtensionLookup>(&self, _ctx: &E) -> Option<Kind> {
         match self {
             LiteralType::Boolean(_) => Some(Kind::Bool(ptype::Boolean {
                 type_variation_reference: 0,

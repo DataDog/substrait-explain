@@ -5,14 +5,14 @@ use crate::extensions::{ExtensionLookup, SimpleExtensions};
 
 pub struct TestContext {
     pub options: OutputOptions,
-    pub extensions: ExtensionLookup,
+    pub extensions: SimpleExtensions,
 }
 
 impl TestContext {
     pub fn new() -> Self {
         Self {
             options: OutputOptions::default(),
-            extensions: ExtensionLookup::new(),
+            extensions: SimpleExtensions::new(),
         }
     }
 
