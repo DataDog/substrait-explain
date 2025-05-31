@@ -1,6 +1,6 @@
-use super::foundation::{NONSPECIFIC, Scope, SimpleExtensions};
-
+use super::foundation::{NONSPECIFIC, Scope};
 use super::{Textify, TextifyError};
+use crate::extensions::SimpleExtensions;
 
 use std::fmt;
 

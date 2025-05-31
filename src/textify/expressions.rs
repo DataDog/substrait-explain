@@ -1,4 +1,5 @@
-use crate::textify::{Scope, SimpleExtensions, Textify, TextifyError};
+use super::{Scope, Textify, TextifyError};
+use crate::extensions::SimpleExtensions;
 
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;

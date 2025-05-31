@@ -1,6 +1,7 @@
 #![cfg(test)]
 
-use super::{ErrorVec, ExtensionLookup, OutputOptions, ScopedContext, SimpleExtensions, Textify};
+use super::{ErrorVec, OutputOptions, ScopedContext, Textify};
+use crate::extensions::{ExtensionLookup, SimpleExtensions};
 
 pub struct TestContext {
     pub options: OutputOptions,

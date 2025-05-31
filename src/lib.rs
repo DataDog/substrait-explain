@@ -33,6 +33,7 @@
 //!      - Any unimplemented or failed features not cause translation to fail,
 //!        but should be accumulated, and returned to the user.
 
+pub mod extensions;
 pub mod parser;
 pub mod structure;
 pub mod textify;
