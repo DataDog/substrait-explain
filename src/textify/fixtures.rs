@@ -5,14 +5,14 @@ use crate::extensions::{ExtensionLookup, SimpleExtensions};
 
 pub struct TestContext {
     pub options: OutputOptions,
-    pub extensions: ExtensionLookup,
+    pub extensions: SimpleExtensions,
 }
 
 impl TestContext {
     pub fn new() -> Self {
         Self {
             options: OutputOptions::default(),
-            extensions: ExtensionLookup::new(),
+            extensions: SimpleExtensions::new(),
         }
     }
 
@@ -22,27 +22,33 @@ impl TestContext {
     }
 
     pub fn with_uri(mut self, anchor: u32, uri: &str) -> Self {
-        self.extensions.add_extension_uri(uri.to_string(), anchor);
+        self.extensions
+            .add_extension_uri(uri.to_string(), anchor)
+            .unwrap();
         self
     }
 
     pub fn with_function(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_some());
         self.extensions
-            .add_extension_function(uri, anchor, name.into());
+            .add_extension_function(uri, anchor, name.into())
+            .unwrap();
         self
     }
 
     pub fn with_type(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_some());
-        self.extensions.add_extension_type(uri, anchor, name.into());
+        self.extensions
+            .add_extension_type(uri, anchor, name.into())
+            .unwrap();
         self
     }
 
     pub fn with_type_variation(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_some());
         self.extensions
-            .add_extension_type_variation(uri, anchor, name.into());
+            .add_extension_type_variation(uri, anchor, name.into())
+            .unwrap();
         self
     }
 

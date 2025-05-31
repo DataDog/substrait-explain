@@ -3,7 +3,7 @@ use std::cell::{RefCell, RefMut};
 use std::fmt;
 use std::ops::DerefMut;
 
-use crate::extensions::SimpleExtensions;
+use crate::extensions::ExtensionLookup;
 
 const ERROR_MARKER_START: &str = "!{"; // "!❬";
 const ERROR_MARKER_END: &str = "}"; // "❭";
@@ -89,7 +89,7 @@ pub struct IndentStack<'a> {
     indent: &'a str,
 }
 
-pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> {
+pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> {
     errors: &'a mut Err,
     options: &'a OutputOptions,
     extensions: &'a Ext,
@@ -116,7 +116,7 @@ impl<'a> IndentTracker for IndentStack<'a> {
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ext> {
+impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> ScopedContext<'a, Err, Ext> {
     pub fn new(options: &'a OutputOptions, errors: &'a mut Err, extensions: &'a Ext) -> Self {
         Self {
             options,
@@ -127,12 +127,12 @@ impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> ScopedContext<'a, Err, Ex
     }
 }
 
-pub struct MessageWriter<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T> {
+pub struct MessageWriter<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T> {
     context: RefCell<ScopedContext<'a, Err, Ext>>,
     message: &'a T,
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Message>
+impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T: Textify + prost::Message>
     MessageWriter<'a, Err, Ext, T>
 {
     pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err, Ext>>, fmt::Error> {
@@ -140,7 +140,7 @@ impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Messa
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions, T: Textify + prost::Message> fmt::Display
+impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T: Textify + prost::Message> fmt::Display
     for MessageWriter<'a, Err, Ext, T>
 {
     fn fmt<'b>(&self, f: &mut fmt::Formatter<'b>) -> fmt::Result {
@@ -257,7 +257,7 @@ pub trait Textify {
 
 pub trait Scope: Sized {
     type Errors: ErrorAccumulator;
-    type Extensions: SimpleExtensions;
+    type Extensions: ExtensionLookup;
     type Indent: IndentTracker;
 
     fn push_indent(self) -> Self;
@@ -299,7 +299,7 @@ pub trait Scope: Sized {
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: SimpleExtensions> Scope for ScopedContext<'a, Err, Ext> {
+impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> Scope for ScopedContext<'a, Err, Ext> {
     type Errors = Err;
     type Extensions = Ext;
     type Indent = IndentStack<'a>;
