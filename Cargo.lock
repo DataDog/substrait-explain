@@ -685,6 +685,7 @@ dependencies = [
  "pest_derive",
  "prost",
  "substrait",
+ "thiserror",
 ]
 
 [[package]]
