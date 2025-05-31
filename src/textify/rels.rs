@@ -2,10 +2,7 @@ use std::fmt;
 
 use substrait::proto::{ReadRel, Rel, rel::RelType};
 
-use crate::{
-    TextifyError,
-    textify::{Scope, Textify},
-};
+use super::{Scope, Textify, TextifyError};
 
 impl Textify for Rel {
     fn name() -> &'static str {

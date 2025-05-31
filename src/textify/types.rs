@@ -1,6 +1,6 @@
-use crate::textify::{NONSPECIFIC, Scope, SimpleExtensions};
+use super::foundation::{NONSPECIFIC, Scope, SimpleExtensions};
 
-use super::textify::{Textify, TextifyError};
+use super::{Textify, TextifyError};
 
 use std::fmt;
 
@@ -339,7 +339,7 @@ impl Textify for proto::Type {
 
 #[cfg(test)]
 mod tests {
-    use crate::fixtures::TestContext;
+    use super::super::fixtures::TestContext;
 
     use super::*;
 

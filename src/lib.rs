@@ -33,12 +33,6 @@
 //!      - Any unimplemented or failed features not cause translation to fail,
 //!        but should be accumulated, and returned to the user.
 
-mod expressions;
-#[cfg(test)]
-mod fixtures;
-mod parser;
-mod rels;
-mod textify;
-mod types;
-
-pub use textify::{ExtensionLookup, OutputOptions, SimpleExtensions, Textify, TextifyError};
+pub mod parser;
+pub mod structure;
+pub mod textify;
