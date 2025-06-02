@@ -9,6 +9,12 @@ use pext::simple_extension_declaration::{
     ExtensionFunction, ExtensionType, ExtensionTypeVariation, MappingType,
 };
 
+pub const EXTENSIONS_HEADER: &str = "=== Extensions";
+pub const EXTENSION_URIS_HEADER: &str = "URIs:";
+pub const EXTENSION_FUNCTIONS_HEADER: &str = "Functions:";
+pub const EXTENSION_TYPES_HEADER: &str = "Types:";
+pub const EXTENSION_TYPE_VARIATIONS_HEADER: &str = "Type Variations:";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionKind {
     Uri,
@@ -275,49 +281,60 @@ impl SimpleExtensions {
     }
 
     pub fn write<W: fmt::Write>(&self, w: &mut W, indent: &str) -> fmt::Result {
-        writeln!(w, "Extensions:")?;
-        writeln!(w, "{}URIs:", indent)?;
-        for (anchor, uri) in &self.uris {
-            writeln!(w, "{}{}@{}: {}", indent, indent, anchor, uri.uri)?;
+        if self.uris.is_empty()
+            && self.functions.is_empty()
+            && self.types.is_empty()
+            && self.type_variations.is_empty()
+        {
+            // No extensions, so no need to write anything.
+            return Ok(());
         }
 
-        writeln!(w, "{}Functions:", indent)?;
-        for (anchor, function) in &self.functions {
-            writeln!(
-                w,
-                "{}{}#{anchor}@{uri_ref}: {name}",
-                indent,
-                indent,
-                anchor = anchor,
-                uri_ref = function.extension_uri_reference,
-                name = function.name
-            )?;
+        writeln!(w, "{}", EXTENSIONS_HEADER)?;
+        if !self.uris.is_empty() {
+            writeln!(w, "{}", EXTENSION_URIS_HEADER)?;
+            for (anchor, uri) in &self.uris {
+                writeln!(w, "{}@{}: {}", indent, anchor, uri.uri)?;
+            }
         }
-
-        writeln!(w, "{}Types:", indent)?;
-        for (anchor, typ) in &self.types {
-            writeln!(
-                w,
-                "{}{}#{anchor}@{uri_ref}: {name}",
-                indent,
-                indent,
-                anchor = anchor,
-                uri_ref = typ.extension_uri_reference,
-                name = typ.name
-            )?;
+        if !self.functions.is_empty() {
+            writeln!(w, "{}", EXTENSION_FUNCTIONS_HEADER)?;
+            for (anchor, function) in &self.functions {
+                writeln!(
+                    w,
+                    "{}#{anchor}@{uri_ref}: {name}",
+                    indent,
+                    anchor = anchor,
+                    uri_ref = function.extension_uri_reference,
+                    name = function.name
+                )?;
+            }
         }
-
-        writeln!(w, "{}Type Variations:", indent)?;
-        for (anchor, variation) in &self.type_variations {
-            writeln!(
-                w,
-                "{}{}#{anchor}@{uri_ref}: {name}",
-                indent,
-                indent,
-                anchor = anchor,
-                uri_ref = variation.extension_uri_reference,
-                name = variation.name
-            )?;
+        if !self.types.is_empty() {
+            writeln!(w, "{}", EXTENSION_TYPES_HEADER)?;
+            for (anchor, typ) in &self.types {
+                writeln!(
+                    w,
+                    "{}#{anchor}@{uri_ref}: {name}",
+                    indent,
+                    anchor = anchor,
+                    uri_ref = typ.extension_uri_reference,
+                    name = typ.name
+                )?;
+            }
+        }
+        if !self.type_variations.is_empty() {
+            writeln!(w, "{}", EXTENSION_TYPE_VARIATIONS_HEADER)?;
+            for (anchor, variation) in &self.type_variations {
+                writeln!(
+                    w,
+                    "{}#{anchor}@{uri_ref}: {name}",
+                    indent,
+                    anchor = anchor,
+                    uri_ref = variation.extension_uri_reference,
+                    name = variation.name
+                )?;
+            }
         }
         Ok(())
     }
@@ -569,13 +586,7 @@ mod tests {
         let lookup = SimpleExtensions::new();
         let mut output = String::new();
         lookup.write(&mut output, "  ").unwrap();
-        let expected = r"
-Extensions:
-  URIs:
-  Functions:
-  Types:
-  Type Variations:
-";
+        let expected = r"";
         assert_eq!(output, expected.trim_start());
     }
 
@@ -592,17 +603,17 @@ Extensions:
         let display_str = exts.to_string("  ");
 
         let expected = r"
-Extensions:
-  URIs:
-    @1: /my/uri1
-    @42: /another/uri
-  Functions:
-    #10@1: my_func
-    #11@42: another_func
-  Types:
-    #20@1: my_type
-  Type Variations:
-    #30@42: my_var
+=== Extensions
+URIs:
+  @1: /my/uri1
+  @42: /another/uri
+Functions:
+  #10@1: my_func
+  #11@42: another_func
+Types:
+  #20@1: my_type
+Type Variations:
+  #30@42: my_var
 ";
         assert_eq!(display_str, expected.trim_start());
     }
