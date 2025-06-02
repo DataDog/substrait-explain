@@ -1,6 +1,8 @@
 use pest::Parser;
 use pest_derive::Parser;
 
+mod structural;
+
 use crate::structure::{Expression, FunctionCall, Literal, Reference};
 
 #[derive(Parser)]
