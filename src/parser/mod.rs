@@ -1,6 +1,7 @@
 use pest::Parser;
 use pest_derive::Parser;
 
+mod extensions;
 mod structural;
 
 use crate::structure::{Expression, FunctionCall, Literal, Reference};
@@ -66,6 +67,14 @@ trait ParsePair {
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
     fn parse(pair: pest::iterators::Pair<Rule>) -> Self;
+}
+
+trait ParsePairStr: ParsePair + Sized {
+    fn parse_str(s: &str) -> Result<Self, pest::error::Error<Rule>> {
+        let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
+        let pair = pairs.next().unwrap();
+        Ok(Self::parse(pair))
+    }
 }
 
 impl ParsePair for Reference {

@@ -137,6 +137,10 @@ impl<'a> StructuralParser<'a> {
         Ok(())
     }
 
+    fn parse_extension_uris_line(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
+        todo!()
+    }
+
     fn parse_extension_uris(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
         let (indents, trimmed) = self.trim(line);
         match (indents, trimmed) {
@@ -144,6 +148,12 @@ impl<'a> StructuralParser<'a> {
                 // Blank lines are allowed between subsections, so if we see one, we stay in the same state.
                 self.state = State::Extensions;
                 Ok(())
+            }
+            (1, s) => {
+                todo!()
+                // let uri = URIExtensionDeclaration::parse_str(s)?;
+                // self.extensions.add_uri(uri);
+                // Ok(())
             }
             _ => Err(ParseError::unexpected_line(
                 self.line_no,

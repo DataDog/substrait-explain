@@ -67,13 +67,11 @@ expression_complete = { SOI ~ expression ~ EOI }
 // `uri_anchor` is defined above as "@" ~ integer.
 // `sp` is defined above as whitespace*.
 
-// A URI value can be a sequence of non-whitespace characters (if not quoted)
-// or a standard string_literal (if it needs to contain spaces or special characters).
+// A URI value can be a sequence of non-whitespace characters
 uri_unquoted = @{ (!whitespace ~ ANY)+ }
-uri_value    = _{ uri_unquoted | string_literal }
+uri_value    = _{ uri_unquoted }
 
-extension_uri_declaration_rule     = { uri_anchor ~ sp ~ ":" ~ sp ~ uri_value }
-extension_uri_declaration_complete = { SOI ~ extension_uri_declaration_rule ~ EOI }
+extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri_value }
 
 // -- Simple Extension Declaration (Function, Type, TypeVariation) --
 // Format: #anchor@uri_ref: name
@@ -81,6 +79,4 @@ extension_uri_declaration_complete = { SOI ~ extension_uri_declaration_rule ~ EO
 // `anchor` is defined above as "#" ~ integer.
 // `uri_anchor` is defined above as "@" ~ integer.
 // `name` is defined above as identifier | quoted_name.
-
-simple_extension_rule     = { anchor ~ sp ~ uri_anchor ~ sp ~ ":" ~ sp ~ name }
-simple_extension_complete = { SOI ~ simple_extension_rule ~ EOI }
+simple_extension = { anchor ~ sp ~ ":" ~ sp ~ name }
