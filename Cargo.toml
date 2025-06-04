@@ -3,6 +3,10 @@ name = "substrait-explain"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Use a pre-built protoc binary instead of building from source. Useful for CI.
+protoc = ["substrait/protoc"]
+
 [dependencies]
 chrono = "0.4.41"
 pest = "2.8.0"
