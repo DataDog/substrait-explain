@@ -25,11 +25,16 @@ pub enum ExtensionKind {
 
 impl fmt::Display for ExtensionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            ExtensionKind::Uri => write!(f, "URI"),
+            ExtensionKind::Function => write!(f, "Function"),
+            ExtensionKind::Type => write!(f, "Type"),
+            ExtensionKind::TypeVariation => write!(f, "Type Variation"),
+        }
     }
 }
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug, PartialEq, Clone)]
 pub enum ExtensionError {
     #[error("Extension declaration missing mapping type")]
     MissingMappingType,
@@ -294,7 +299,7 @@ impl SimpleExtensions {
         if !self.uris.is_empty() {
             writeln!(w, "{}", EXTENSION_URIS_HEADER)?;
             for (anchor, uri) in &self.uris {
-                writeln!(w, "{}@{}: {}", indent, anchor, uri.uri)?;
+                writeln!(w, "{}@{:3}: {}", indent, anchor, uri.uri)?;
             }
         }
         if !self.functions.is_empty() {
@@ -302,7 +307,7 @@ impl SimpleExtensions {
             for (anchor, function) in &self.functions {
                 writeln!(
                     w,
-                    "{}#{anchor}@{uri_ref}: {name}",
+                    "{}#{anchor:3} @{uri_ref:3}: {name}",
                     indent,
                     anchor = anchor,
                     uri_ref = function.extension_uri_reference,
@@ -315,7 +320,7 @@ impl SimpleExtensions {
             for (anchor, typ) in &self.types {
                 writeln!(
                     w,
-                    "{}#{anchor}@{uri_ref}: {name}",
+                    "{}#{anchor:3} @{uri_ref:3}: {name}",
                     indent,
                     anchor = anchor,
                     uri_ref = typ.extension_uri_reference,
@@ -328,7 +333,7 @@ impl SimpleExtensions {
             for (anchor, variation) in &self.type_variations {
                 writeln!(
                     w,
-                    "{}#{anchor}@{uri_ref}: {name}",
+                    "{}#{anchor:3} @{uri_ref:3}: {name}",
                     indent,
                     anchor = anchor,
                     uri_ref = variation.extension_uri_reference,
@@ -592,12 +597,17 @@ mod tests {
 
     #[test]
     fn test_display_extension_lookup_with_content() {
-        let uris = vec![new_uri(1, "/my/uri1"), new_uri(42, "/another/uri")];
+        let uris = vec![
+            new_uri(1, "/my/uri1"),
+            new_uri(42, "/another/uri"),
+            new_uri(4091, "/big/anchor"),
+        ];
         let extensions = vec![
             new_ext_fn(10, 1, "my_func"),
             new_ext_type(20, 1, "my_type"),
             new_type_var(30, 42, "my_var"),
             new_ext_fn(11, 42, "another_func"),
+            new_ext_fn(108812, 4091, "big_func"),
         ];
         let exts = unwrap_new_extensions(uris, extensions);
         let display_str = exts.to_string("  ");
@@ -605,15 +615,17 @@ mod tests {
         let expected = r"
 === Extensions
 URIs:
-  @1: /my/uri1
-  @42: /another/uri
+  @  1: /my/uri1
+  @ 42: /another/uri
+  @4091: /big/anchor
 Functions:
-  #10@1: my_func
-  #11@42: another_func
+  # 10 @  1: my_func
+  # 11 @ 42: another_func
+  #108812 @4091: big_func
 Types:
-  #20@1: my_type
+  # 20 @  1: my_type
 Type Variations:
-  #30@42: my_var
+  # 30 @ 42: my_var
 ";
         assert_eq!(display_str, expected.trim_start());
     }

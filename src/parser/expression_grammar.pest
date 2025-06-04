@@ -37,8 +37,8 @@ literal    = { integer | string_literal }
 parameters = { "<" ~ name ~ ("," ~ sp ~ name)* ~ ">" }
 // TODO: Function Options. Not fully decided on the syntax for this.
 // options    = { "[" ~ ??????? ~ "]" }
-anchor     = { "#" ~ integer }
-uri_anchor = { "@" ~ integer }
+anchor     = { "#" ~ sp ~ integer }
+uri_anchor = { "@" ~ sp ~ integer }
 
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
@@ -58,7 +58,7 @@ expression = { function_call | reference | literal }
 // A rule for matching an entire input as an expression
 expression_complete = { SOI ~ expression ~ EOI }
 
-// == Extension Declarations ==
+// == Extensions ==
 // These rules are for parsing extension declarations, by line.
 
 // -- URI Extension Declaration --
@@ -79,4 +79,4 @@ extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri_value }
 // `anchor` is defined above as "#" ~ integer.
 // `uri_anchor` is defined above as "@" ~ integer.
 // `name` is defined above as identifier | quoted_name.
-simple_extension = { anchor ~ sp ~ ":" ~ sp ~ name }
+simple_extension = { anchor ~ sp ~ uri_anchor ~ sp ~ ":" ~ sp ~ name }

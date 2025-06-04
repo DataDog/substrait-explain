@@ -8,78 +8,26 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::extensions::{ExtensionError, SimpleExtensions, simple, simple::ExtensionKind};
+use crate::{
+    extensions::{
+        ExtensionError, SimpleExtensions,
+        simple::{self, ExtensionKind},
+    },
+    structure::URIExtensionDeclaration,
+};
 
-#[derive(Debug)]
-pub enum State {
-    // The initial state, before we have parsed any lines.
-    Initial,
-    // The extensions section, after parsing the header, before parsing any subsection headers.
-    Extensions,
-    // The extension URIs section, after parsing the 'URIs:' subsection header, and any URIs so far.
-    ExtensionUris,
-    // In a subsection, after parsing the subsection header, and any declarations so far.
-    ExtensionDeclarations(ExtensionKind),
-    // The plan section, after parsing the header, before parsing any plan lines.
-    Plan,
-}
+use super::{ParsePairStr, Rule};
 
-impl fmt::Display for State {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
+pub const PLAN_HEADER: &str = "=== Plan";
 
-#[derive(Debug, Error)]
-#[error("Parse error at line {line_no}: {state}: {error}")]
-pub struct ParseError<'a> {
-    pub line_no: i64,
-    pub line: &'a str,
-    pub state: State,
-    pub error: ParseErrorType,
-}
+/// Represents an input line, trimmed of leading two-space indents and final
+/// whitespace. Contains the number of indents and the trimmed line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndentedLine<'a>(pub usize, pub &'a str);
 
-#[derive(Debug, Error)]
-pub enum ParseErrorType {
-    #[error("Extension error: {0}")]
-    ExtensionError(ExtensionError),
-    #[error("Unexpected line")]
-    UnexpectedLine,
-}
-
-impl<'a> ParseError<'a> {
-    pub fn unexpected_line(line_no: i64, line: &'a str, state: State) -> Self {
-        Self {
-            line_no: 0,
-            line,
-            state,
-            error: ParseErrorType::UnexpectedLine,
-        }
-    }
-}
-
-pub struct StructuralParser<'a> {
-    line_no: i64,
-    state: State,
-    errors: Vec<ParseError<'a>>,
-    extensions: SimpleExtensions,
-    // plans: …,
-}
-
-impl<'a> StructuralParser<'a> {
-    pub fn new() -> Self {
-        Self {
-            line_no: 1,
-            state: State::Initial,
-            errors: Vec::new(),
-            extensions: SimpleExtensions::new(),
-        }
-    }
-}
-impl<'a> StructuralParser<'a> {
-    // Trim ending whitespace and return the number of indents (number of leading spaces / 2)
-    pub fn trim(&self, line: &'a str) -> (usize, &'a str) {
-        let mut line = line.trim_end();
+impl<'a> From<&'a str> for IndentedLine<'a> {
+    fn from(line: &'a str) -> Self {
+        let line = line.trim_end();
         let mut spaces = 0;
         for c in line.chars() {
             if c == ' ' {
@@ -91,75 +39,249 @@ impl<'a> StructuralParser<'a> {
 
         let indents = spaces / 2;
 
-        (_, line) = line.split_at(indents * 2);
+        let (_, trimmed) = line.split_at(indents * 2);
 
-        (indents, line)
+        IndentedLine(indents, trimmed)
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum ExtensionParseError {
+    #[error("Unexpected line, expected {0}")]
+    UnexpectedLine(ExtensionParserState),
+    #[error("Extension error: {0}")]
+    ExtensionError(#[from] ExtensionError),
+    #[error("Error parsing line: {0}")]
+    LineParseError(#[from] pest::error::Error<Rule>),
+}
+
+/// The state of the extension parser - tracking what section of extension
+/// parsing we are in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtensionParserState {
+    // The extensions section, after parsing the 'Extensions:' header, before
+    // parsing any subsection headers.
+    Extensions,
+    // The extension URIs section, after parsing the 'URIs:' subsection header,
+    // and any URIs so far.
+    ExtensionUris,
+    // In a subsection, after parsing the subsection header, and any
+    // declarations so far.
+    ExtensionDeclarations(ExtensionKind),
+}
+
+impl fmt::Display for ExtensionParserState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtensionParserState::Extensions => write!(f, "Subsection Header, e.g. 'URIs:'"),
+            ExtensionParserState::ExtensionUris => write!(f, "Extension URIs"),
+            ExtensionParserState::ExtensionDeclarations(kind) => {
+                write!(f, "Extension Declaration for {}", kind)
+            }
+        }
+    }
+}
+
+/// The parser for the extension section of the Substrait file format.
+///
+/// This is responsible for parsing the extension section of the file, which
+/// contains the extension URIs and declarations.
+///
+/// Consumes input line by line,
+pub struct ExtensionParser {
+    state: ExtensionParserState,
+    extensions: SimpleExtensions,
+}
+
+impl ExtensionParser {
+    pub fn new() -> Self {
+        Self {
+            state: ExtensionParserState::Extensions,
+            extensions: SimpleExtensions::new(),
+        }
     }
 
-    pub fn parse_initial(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
-        let (indents, trimmed) = self.trim(line);
-        if indents == 0 && trimmed == simple::EXTENSIONS_HEADER {
-            self.state = State::ExtensionUris;
+    pub fn parse_line(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+        if let IndentedLine(_, "") = line {
+            // Blank lines are allowed between subsections, so if we see
+            // one, we revert out of the subsection.
+            self.state = ExtensionParserState::Extensions;
             return Ok(());
         }
-        return Err(ParseError::unexpected_line(
-            self.line_no,
-            line,
-            State::Initial,
-        ));
+
+        match self.state {
+            ExtensionParserState::Extensions => self.parse_subsection(line),
+            ExtensionParserState::ExtensionUris => self.parse_extension_uris(line),
+            ExtensionParserState::ExtensionDeclarations(extension_kind) => {
+                self.parse_declarations(line, extension_kind)
+            }
+        }
     }
 
-    pub fn parse_extensions(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
-        let (indents, trimmed) = self.trim(line);
-        // TODO: This allows for subsections to be repeated, which is kind of weird.
-        let state = match (indents, trimmed) {
-            (0, simple::EXTENSION_URIS_HEADER) => State::ExtensionUris,
-            (0, simple::EXTENSION_FUNCTIONS_HEADER) => {
-                State::ExtensionDeclarations(ExtensionKind::Function)
+    fn parse_subsection(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+        match line {
+            IndentedLine(0, simple::EXTENSION_URIS_HEADER) => {
+                self.state = ExtensionParserState::ExtensionUris;
+                Ok(())
             }
-            (0, simple::EXTENSION_TYPES_HEADER) => {
-                State::ExtensionDeclarations(ExtensionKind::Type)
+            IndentedLine(0, simple::EXTENSION_FUNCTIONS_HEADER) => {
+                self.state = ExtensionParserState::ExtensionDeclarations(ExtensionKind::Function);
+                Ok(())
             }
-            (0, simple::EXTENSION_TYPE_VARIATIONS_HEADER) => {
-                State::ExtensionDeclarations(ExtensionKind::TypeVariation)
+            IndentedLine(0, simple::EXTENSION_TYPES_HEADER) => {
+                self.state = ExtensionParserState::ExtensionDeclarations(ExtensionKind::Type);
+                Ok(())
             }
-            // Blank lines are allowed between subsections, so if we see one, we stay in the same state.
-            (0, "") => State::Extensions,
-            _ => {
-                return Err(ParseError::unexpected_line(
-                    self.line_no,
-                    line,
-                    State::Extensions,
-                ));
+            IndentedLine(0, simple::EXTENSION_TYPE_VARIATIONS_HEADER) => {
+                self.state =
+                    ExtensionParserState::ExtensionDeclarations(ExtensionKind::TypeVariation);
+                Ok(())
             }
-        };
-        self.state = state;
-        Ok(())
+            _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
+        }
     }
 
-    fn parse_extension_uris_line(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
+    fn parse_extension_uris(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+        match line {
+            //
+            IndentedLine(0, s) => self.parse_subsection(line),
+            IndentedLine(1, s) => {
+                let uri = crate::structure::URIExtensionDeclaration::parse_str(s)?;
+                self.extensions.add_extension_uri(uri.uri, uri.anchor);
+                Ok(())
+            }
+            _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
+        }
+    }
+
+    fn parse_declarations(
+        &mut self,
+        line: IndentedLine,
+        extension_kind: ExtensionKind,
+    ) -> Result<(), ExtensionParseError> {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+pub enum State {
+    // The initial state, before we have parsed any lines.
+    Initial,
+    // The extensions section, after parsing the header and any other Extension lines.
+    Extensions,
+    // The plan section, after parsing the header and any other Plan lines.
+    Plan,
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum ParseError {
+    #[error("Error parsing extensions: {0}")]
+    ExtensionError(#[from] ExtensionParseError),
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseContext {
+    pub line_no: i64,
+    pub line: String,
+}
+
+impl fmt::Display for ParseContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}: '{}'", self.line_no, self.line)
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+#[error("Error parsing {context}: {error}")]
+pub struct ParseErrorWithContext {
+    #[source]
+    error: ParseError,
+    context: ParseContext,
+}
+
+#[derive(Debug, Error)]
+pub enum ParseErrorType {
+    #[error("Extension error: {0}")]
+    ExtensionError(ExtensionError),
+    #[error("Unexpected line")]
+    UnexpectedLine,
+}
+
+/// The parser for the substrait-explain format.
+///
+/// This is responsible for parsing the file line by line, and tracking the
+/// current state of the parser.
+pub struct Parser {
+    line_no: i64,
+    state: State,
+    extensions: ExtensionParser,
+}
+
+impl Parser {
+    pub fn new() -> Self {
+        Self {
+            line_no: 1,
+            state: State::Initial,
+            extensions: ExtensionParser::new(),
+        }
+    }
+}
+impl Parser {
+    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
+        if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
+            self.state = State::Extensions;
+            return Ok(());
+        }
+        if line == IndentedLine(0, PLAN_HEADER) {
+            self.state = State::Plan;
+            return Ok(());
+        }
+
         todo!()
     }
 
-    fn parse_extension_uris(&mut self, line: &'a str) -> Result<(), ParseError<'a>> {
-        let (indents, trimmed) = self.trim(line);
-        match (indents, trimmed) {
-            (0, "") => {
-                // Blank lines are allowed between subsections, so if we see one, we stay in the same state.
-                self.state = State::Extensions;
-                Ok(())
-            }
-            (1, s) => {
-                todo!()
-                // let uri = URIExtensionDeclaration::parse_str(s)?;
-                // self.extensions.add_uri(uri);
-                // Ok(())
-            }
-            _ => Err(ParseError::unexpected_line(
-                self.line_no,
-                line,
-                State::ExtensionUris,
-            )),
+    fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ParseError> {
+        if line == IndentedLine(0, PLAN_HEADER) {
+            self.state = State::Plan;
+            return Ok(());
         }
+
+        self.extensions.parse_line(line)?;
+        Ok(())
+    }
+
+    fn parse_plan(&mut self, line: IndentedLine<'_>) -> Result<(), ParseError> {
+        todo!()
+    }
+
+    fn add_error_context(&self, line: String, error: ParseError) -> ParseErrorWithContext {
+        ParseErrorWithContext {
+            error,
+            context: ParseContext {
+                line_no: self.line_no,
+                line,
+            },
+        }
+    }
+
+    fn parse_line(&mut self, line: &str) -> Result<(), ParseErrorWithContext> {
+        let (orig, line) = (line, IndentedLine::from(line));
+
+        let result = match self.state {
+            State::Initial => self.parse_initial(line),
+            State::Extensions => self.parse_extensions(line),
+            State::Plan => self.parse_plan(line),
+        };
+        if let Err(e) = result {
+            return Err(self.add_error_context(orig.to_string(), e));
+        }
+
+        Ok(())
     }
 }
