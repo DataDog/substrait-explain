@@ -1,0 +1,27 @@
+name: Rust CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_and_test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        # Use same command as pre-commit.sh
+        run: ./scripts/fmt.sh
+
+      - name: Lint with Clippy
+        # Use same command as pre-commit.sh
+        run: ./scripts/clippy.sh
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
