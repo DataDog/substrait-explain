@@ -1,6 +1,7 @@
 use std::fmt;
 
-use substrait::proto::{ReadRel, Rel, rel::RelType};
+use substrait::proto::rel::RelType;
+use substrait::proto::{ReadRel, Rel};
 
 use super::{Scope, Textify, TextifyError};
 

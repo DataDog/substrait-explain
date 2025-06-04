@@ -8,12 +8,9 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::extensions::{
-    ExtensionError, SimpleExtensions,
-    simple::{self, ExtensionKind},
-};
-
 use super::FromStr;
+use crate::extensions::simple::{self, ExtensionKind};
+use crate::extensions::{ExtensionError, SimpleExtensions};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -314,7 +311,6 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::extensions::simple::ExtensionKind;
 
     #[test]

@@ -1,15 +1,14 @@
-use super::{Scope, Textify, TextifyError};
-use crate::extensions::ExtensionLookup;
+use std::fmt;
 
+use expr::RexType;
 use substrait::proto::expression::ScalarFunction;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
 
-use expr::RexType;
-
-use std::fmt;
+use super::{Scope, Textify, TextifyError};
+use crate::extensions::ExtensionLookup;
 
 // (…) for function call
 // […] for variant
