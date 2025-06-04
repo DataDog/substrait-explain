@@ -85,7 +85,7 @@ impl SimpleExtensions {
         Self::default()
     }
 
-    pub fn from_extensions<'a>(
+    pub fn from_extensions(
         uris: impl IntoIterator<Item = pext::SimpleExtensionUri>,
         extensions: impl IntoIterator<Item = pext::SimpleExtensionDeclaration>,
     ) -> (Self, Vec<ExtensionError>) {
@@ -147,7 +147,7 @@ impl SimpleExtensions {
             Entry::Occupied(e) => {
                 return Err(ExtensionError::DuplicateAnchor {
                     kind: ExtensionKind::Uri,
-                    anchor: anchor,
+                    anchor,
                     prev: e.get().uri.clone(),
                     name: uri,
                 });
@@ -175,23 +175,23 @@ impl SimpleExtensions {
     ) -> Result<(), ExtensionError> {
         match (missing_uri, prev) {
             (true, Some(prev)) => Err(ExtensionError::DuplicateAndMissingUri {
-                kind: kind,
-                anchor: anchor,
-                prev: prev,
-                name: name,
-                uri: uri,
+                kind,
+                anchor,
+                prev,
+                name,
+                uri,
             }),
             (false, Some(prev)) => Err(ExtensionError::DuplicateAnchor {
-                kind: kind,
-                anchor: anchor,
-                prev: prev,
-                name: name,
+                kind,
+                anchor,
+                prev,
+                name,
             }),
             (true, None) => Err(ExtensionError::MissingUri {
-                kind: kind,
-                anchor: anchor,
-                name: name,
-                uri: uri,
+                kind,
+                anchor,
+                name,
+                uri,
             }),
             (false, None) => Ok(()),
         }
@@ -203,7 +203,7 @@ impl SimpleExtensions {
         anchor: u32,
         name: String,
     ) -> Result<(), ExtensionError> {
-        let missing_uri = self.uris.get(&uri).is_none();
+        let missing_uri = !self.uris.contains_key(&uri);
 
         let duplicate = match self.functions.entry(anchor) {
             Entry::Occupied(e) => Some(e.get().name.clone()),
@@ -232,7 +232,7 @@ impl SimpleExtensions {
         anchor: u32,
         name: String,
     ) -> Result<(), ExtensionError> {
-        let missing_uri = self.uris.get(&uri).is_none();
+        let missing_uri = !self.uris.contains_key(&uri);
 
         let duplicate = match self.types.entry(anchor) {
             Entry::Occupied(e) => Some(e.get().name.clone()),
@@ -261,7 +261,7 @@ impl SimpleExtensions {
         anchor: u32,
         name: String,
     ) -> Result<(), ExtensionError> {
-        let missing_uri = self.uris.get(&uri).is_none();
+        let missing_uri = !self.uris.contains_key(&uri);
 
         let duplicate = match self.type_variations.entry(anchor) {
             Entry::Occupied(e) => Some(e.get().name.clone()),

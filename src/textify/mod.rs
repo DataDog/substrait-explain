@@ -1,5 +1,4 @@
 mod expressions;
-#[cfg(test)]
 pub mod fixtures;
 pub(crate) mod foundation;
 mod rels;

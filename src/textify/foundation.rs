@@ -71,7 +71,7 @@ impl fmt::Display for ErrorVec {
             if first {
                 first = false;
             } else {
-                write!(f, "\n")?;
+                writeln!(f)?;
             }
             write!(f, "{}", e)?;
         }
@@ -80,6 +80,8 @@ impl fmt::Display for ErrorVec {
 }
 
 pub trait IndentTracker {
+    // TODO: Use this and remove the allow(dead_code)
+    #[allow(dead_code)]
     fn indent<W: fmt::Write>(&self, w: &mut W) -> fmt::Result;
     fn push(self) -> Self;
 }

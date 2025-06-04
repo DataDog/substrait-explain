@@ -13,7 +13,7 @@ use crate::extensions::{
     simple::{self, ExtensionKind},
 };
 
-use super::{FromStr, Rule};
+use super::FromStr;
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -49,7 +49,7 @@ pub enum ExtensionParseError {
     #[error("Extension error: {0}")]
     ExtensionError(#[from] ExtensionError),
     #[error("Error parsing line: {0}")]
-    LineParseError(#[from] pest::error::Error<Rule>),
+    LineParseError(#[from] super::Error),
 }
 
 /// The state of the extension parser - tracking what section of extension
@@ -242,6 +242,12 @@ pub struct Parser {
     extensions: ExtensionParser,
 }
 
+impl Default for Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Parser {
     pub fn new() -> Self {
         Self {
@@ -275,7 +281,7 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_plan(&mut self, line: IndentedLine<'_>) -> Result<(), ParseError> {
+    fn parse_plan(&mut self, _line: IndentedLine<'_>) -> Result<(), ParseError> {
         todo!()
     }
 
@@ -308,13 +314,8 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::ExtensionLookup;
-    use crate::extensions::simple::ExtensionKind;
 
-    // Helper to create IndentedLine - still needed for error tests
-    fn il(indent: usize, text: &str) -> IndentedLine {
-        IndentedLine(indent, text)
-    }
+    use crate::extensions::simple::ExtensionKind;
 
     #[test]
     fn test_parse_basic_block() {

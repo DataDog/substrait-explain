@@ -8,6 +8,12 @@ pub struct TestContext {
     pub extensions: SimpleExtensions,
 }
 
+impl Default for TestContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestContext {
     pub fn new() -> Self {
         Self {

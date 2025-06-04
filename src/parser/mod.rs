@@ -13,7 +13,9 @@ use crate::structure::{Expression, FunctionCall, Literal, Reference};
 #[grammar = "parser/expression_grammar.pest"] // Path relative to src
 pub struct ExpressionParser;
 
-pub fn parse_expression(rule: Rule, input: &str) -> Result<Expression, pest::error::Error<Rule>> {
+pub type Error = Box<pest::error::Error<Rule>>;
+
+pub fn parse_expression(rule: Rule, input: &str) -> Result<Expression, Error> {
     // Parse the string, if possible. This can fail if the input is invalid.
     let mut pairs = ExpressionParser::parse(rule, input)?;
     // If parsing was successful, there should be exactly one pair, parseable exactly into an Expression.
@@ -71,7 +73,7 @@ trait ParsePair: Sized {
     // expected.
     fn parse(pair: pest::iterators::Pair<Rule>) -> Self;
 
-    fn parse_str(s: &str) -> Result<Self, pest::error::Error<Rule>> {
+    fn parse_str(s: &str) -> Result<Self, Error> {
         let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
         let pair = pairs.next().unwrap();
         Ok(Self::parse(pair))
@@ -139,10 +141,10 @@ impl ParsePair for FunctionCall {
         assert_eq!(pairs.next(), None);
         FunctionCall {
             name: name.0,
-            parameters: parameters,
-            anchor: anchor,
-            uri_anchor: uri_anchor,
-            arguments: arguments,
+            parameters,
+            anchor,
+            uri_anchor,
+            arguments,
         }
     }
 }

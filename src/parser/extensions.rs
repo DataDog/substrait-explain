@@ -25,7 +25,7 @@ impl ParsePair for URIExtensionDeclaration {
 }
 
 impl FromStr for URIExtensionDeclaration {
-    type Err = pest::error::Error<Rule>;
+    type Err = super::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_str(s)
@@ -59,7 +59,7 @@ impl ParsePair for SimpleExtensionDeclaration {
 }
 
 impl FromStr for SimpleExtensionDeclaration {
-    type Err = pest::error::Error<Rule>;
+    type Err = super::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_str(s)
