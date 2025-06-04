@@ -8,15 +8,12 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::{
-    extensions::{
-        ExtensionError, SimpleExtensions,
-        simple::{self, ExtensionKind},
-    },
-    structure::URIExtensionDeclaration,
+use crate::extensions::{
+    ExtensionError, SimpleExtensions,
+    simple::{self, ExtensionKind},
 };
 
-use super::{ParsePairStr, Rule};
+use super::{FromStr, Rule};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -144,10 +141,10 @@ impl ExtensionParser {
     fn parse_extension_uris(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
         match line {
             //
-            IndentedLine(0, s) => self.parse_subsection(line),
+            IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let uri = crate::structure::URIExtensionDeclaration::parse_str(s)?;
-                self.extensions.add_extension_uri(uri.uri, uri.anchor);
+                let uri = crate::structure::URIExtensionDeclaration::from_str(s)?;
+                self.extensions.add_extension_uri(uri.uri, uri.anchor)?;
                 Ok(())
             }
             _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
@@ -159,7 +156,37 @@ impl ExtensionParser {
         line: IndentedLine,
         extension_kind: ExtensionKind,
     ) -> Result<(), ExtensionParseError> {
-        todo!()
+        match line {
+            IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
+            IndentedLine(1, s) => {
+                let decl = crate::structure::SimpleExtensionDeclaration::from_str(s)?;
+                match extension_kind {
+                    ExtensionKind::Function => self.extensions.add_extension_function(
+                        decl.uri_anchor,
+                        decl.anchor,
+                        decl.name,
+                    )?,
+                    ExtensionKind::Type => self.extensions.add_extension_type(
+                        decl.uri_anchor,
+                        decl.anchor,
+                        decl.name,
+                    )?,
+                    ExtensionKind::TypeVariation => self.extensions.add_extension_type_variation(
+                        decl.uri_anchor,
+                        decl.anchor,
+                        decl.name,
+                    )?,
+                    ExtensionKind::Uri => {
+                        // This case should ideally not be reached if state management is correct,
+                        // as URIs are handled by parse_extension_uris.
+                        // However, to be exhaustive:
+                        return Err(ExtensionParseError::UnexpectedLine(self.state));
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
+        }
     }
 }
 
@@ -203,14 +230,6 @@ pub struct ParseErrorWithContext {
     #[source]
     error: ParseError,
     context: ParseContext,
-}
-
-#[derive(Debug, Error)]
-pub enum ParseErrorType {
-    #[error("Extension error: {0}")]
-    ExtensionError(ExtensionError),
-    #[error("Unexpected line")]
-    UnexpectedLine,
 }
 
 /// The parser for the substrait-explain format.
@@ -270,7 +289,7 @@ impl Parser {
         }
     }
 
-    fn parse_line(&mut self, line: &str) -> Result<(), ParseErrorWithContext> {
+    pub fn parse_line(&mut self, line: &str) -> Result<(), ParseErrorWithContext> {
         let (orig, line) = (line, IndentedLine::from(line));
 
         let result = match self.state {
@@ -283,5 +302,110 @@ impl Parser {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensions::ExtensionLookup;
+    use crate::extensions::simple::ExtensionKind;
+
+    // Helper to create IndentedLine - still needed for error tests
+    fn il(indent: usize, text: &str) -> IndentedLine {
+        IndentedLine(indent, text)
+    }
+
+    #[test]
+    fn test_parse_basic_block() {
+        let mut expected_extensions = SimpleExtensions::new();
+        expected_extensions
+            .add_extension_uri("/uri/common".to_string(), 1)
+            .unwrap();
+        expected_extensions
+            .add_extension_uri("/uri/specific_funcs".to_string(), 2)
+            .unwrap();
+        expected_extensions
+            .add_extension_function(1, 10, "func_a".to_string())
+            .unwrap();
+        expected_extensions
+            .add_extension_function(2, 11, "func_b_special".to_string())
+            .unwrap();
+        expected_extensions
+            .add_extension_type(1, 20, "SomeType".to_string())
+            .unwrap();
+        expected_extensions
+            .add_extension_type_variation(2, 30, "VarX".to_string())
+            .unwrap();
+
+        let mut parser = ExtensionParser::new();
+        let input_block = r#"
+URIs:
+  @  1: /uri/common
+  @  2: /uri/specific_funcs
+Functions:
+  # 10 @  1: func_a
+  # 11 @  2: func_b_special
+Types:
+  # 20 @  1: SomeType
+Type Variations:
+  # 30 @  2: VarX
+"#;
+
+        for line_str in input_block.trim().lines() {
+            parser
+                .parse_line(IndentedLine::from(line_str))
+                .unwrap_or_else(|e| panic!("Failed to parse line \'{}\': {:?}", line_str, e));
+        }
+
+        assert_eq!(parser.extensions, expected_extensions);
+
+        let extensions_str = parser.extensions.to_string("  ");
+        println!("{}", extensions_str);
+        assert_eq!(extensions_str.trim(), input_block.trim());
+        // Check final state after all lines are processed.
+        // The last significant line in input_block is a TypeVariation declaration.
+        assert_eq!(
+            parser.state,
+            ExtensionParserState::ExtensionDeclarations(ExtensionKind::TypeVariation)
+        );
+
+        // Check that a subsequent blank line correctly resets state to Extensions.
+        parser.parse_line(IndentedLine(0, "")).unwrap();
+        assert_eq!(parser.state, ExtensionParserState::Extensions);
+    }
+
+    /// Test that we can parse a larger extensions block and it matches the input.
+    #[test]
+    fn test_parse_complete_extension_block() {
+        let mut parser = ExtensionParser::new();
+        let input_block = r#"
+URIs:
+  @  1: /uri/common
+  @  2: /uri/specific_funcs
+  @  3: /uri/types_lib
+  @  4: /uri/variations_lib
+Functions:
+  # 10 @  1: func_a
+  # 11 @  2: func_b_special
+  # 12 @  1: func_c_common
+Types:
+  # 20 @  1: CommonType
+  # 21 @  3: LibraryType
+  # 22 @  1: AnotherCommonType
+Type Variations:
+  # 30 @  4: VarX
+  # 31 @  4: VarY
+"#;
+
+        for line_str in input_block.trim().lines() {
+            parser
+                .parse_line(IndentedLine::from(line_str))
+                .unwrap_or_else(|e| panic!("Failed to parse line \'{}\': {:?}", line_str, e));
+        }
+
+        let extensions_str = parser.extensions.to_string("  ");
+        println!("{}", extensions_str);
+        assert_eq!(extensions_str.trim(), input_block.trim());
     }
 }

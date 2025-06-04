@@ -68,7 +68,7 @@ pub enum ExtensionError {
 
 /// ExtensionLookup contains mappings from anchors to extension URIs, functions,
 /// types, and type variations.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct SimpleExtensions {
     // Maps from extension URI anchor to URI
     uris: BTreeMap<u32, pext::SimpleExtensionUri>,
@@ -285,6 +285,13 @@ impl SimpleExtensions {
         )
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.uris.is_empty()
+            && self.functions.is_empty()
+            && self.types.is_empty()
+            && self.type_variations.is_empty()
+    }
+
     pub fn write<W: fmt::Write>(&self, w: &mut W, indent: &str) -> fmt::Result {
         if self.uris.is_empty()
             && self.functions.is_empty()
@@ -295,7 +302,8 @@ impl SimpleExtensions {
             return Ok(());
         }
 
-        writeln!(w, "{}", EXTENSIONS_HEADER)?;
+        // TODO: write the header. I think we can put this in the main block
+        // writeln!(w, "{}", EXTENSIONS_HEADER)?;
         if !self.uris.is_empty() {
             writeln!(w, "{}", EXTENSION_URIS_HEADER)?;
             for (anchor, uri) in &self.uris {
@@ -613,7 +621,6 @@ mod tests {
         let display_str = exts.to_string("  ");
 
         let expected = r"
-=== Extensions
 URIs:
   @  1: /my/uri1
   @ 42: /another/uri

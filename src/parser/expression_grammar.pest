@@ -55,9 +55,6 @@ function_call = {
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
 expression = { function_call | reference | literal }
 
-// A rule for matching an entire input as an expression
-expression_complete = { SOI ~ expression ~ EOI }
-
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
 

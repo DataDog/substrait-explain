@@ -1,12 +1,15 @@
-use pest::Parser;
-use pest_derive::Parser;
+use std::str::FromStr;
+
+use pest::Parser as PestParser;
+use pest_derive::Parser as PestParser;
 
 mod extensions;
 mod structural;
+pub use structural::Parser;
 
 use crate::structure::{Expression, FunctionCall, Literal, Reference};
 
-#[derive(Parser)]
+#[derive(PestParser)]
 #[grammar = "parser/expression_grammar.pest"] // Path relative to src
 pub struct ExpressionParser;
 
@@ -59,7 +62,7 @@ fn unescape_string(s: &str, opener: char, closer: char) -> String {
 // A trait for converting a pest::iterators::Pair<Rule> into a Rust type. This
 // is used to convert from the uniformly structured nesting
 // pest::iterators::Pair<Rule> into more structured types.
-trait ParsePair {
+trait ParsePair: Sized {
     // The rule that this type is parsed from.
     fn rule() -> Rule;
 
@@ -67,9 +70,7 @@ trait ParsePair {
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
     fn parse(pair: pest::iterators::Pair<Rule>) -> Self;
-}
 
-trait ParsePairStr: ParsePair + Sized {
     fn parse_str(s: &str) -> Result<Self, pest::error::Error<Rule>> {
         let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
         let pair = pairs.next().unwrap();

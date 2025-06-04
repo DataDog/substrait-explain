@@ -1,9 +1,7 @@
-use super::{
-    ExpressionParser, ParsePair, ParsePairStr, Rule, structural::ParseError, unwrap_single_pair,
-};
-use crate::structure::{SimpleExtensionDeclaration, URIExtensionDeclaration};
+use std::str::FromStr;
 
-use pest::Parser;
+use super::{ParsePair, Rule, unwrap_single_pair};
+use crate::structure::{SimpleExtensionDeclaration, URIExtensionDeclaration};
 
 impl ParsePair for URIExtensionDeclaration {
     fn rule() -> Rule {
@@ -26,12 +24,12 @@ impl ParsePair for URIExtensionDeclaration {
     }
 }
 
-impl ParsePairStr for URIExtensionDeclaration {}
+impl FromStr for URIExtensionDeclaration {
+    type Err = pest::error::Error<Rule>;
 
-pub fn parse_extension_uri_declaration(line: &str) -> Result<URIExtensionDeclaration, ParseError> {
-    let mut pairs = ExpressionParser::parse(URIExtensionDeclaration::rule(), line).unwrap();
-    let pair = unwrap_single_pair(pairs.next().unwrap());
-    Ok(URIExtensionDeclaration::parse(pair))
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_str(s)
+    }
 }
 
 impl ParsePair for SimpleExtensionDeclaration {
@@ -60,14 +58,12 @@ impl ParsePair for SimpleExtensionDeclaration {
     }
 }
 
-pub fn parse_simple_extension_declaration(
-    line: &str,
-) -> Result<SimpleExtensionDeclaration, ParseError> {
-    let mut pairs = ExpressionParser::parse(SimpleExtensionDeclaration::rule(), line).unwrap();
+impl FromStr for SimpleExtensionDeclaration {
+    type Err = pest::error::Error<Rule>;
 
-    let pair = pairs.next().unwrap();
-    dbg!(&pair);
-    Ok(SimpleExtensionDeclaration::parse(pair))
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_str(s)
+    }
 }
 
 #[cfg(test)]
@@ -77,7 +73,7 @@ mod tests {
     #[test]
     fn test_parse_uri_extension_declaration() {
         let line = "@1: /my/uri1";
-        let uri = parse_extension_uri_declaration(line).unwrap();
+        let uri = URIExtensionDeclaration::parse_str(line).unwrap();
         assert_eq!(uri.anchor, 1);
         assert_eq!(uri.uri, "/my/uri1");
     }
@@ -86,14 +82,14 @@ mod tests {
     fn test_parse_simple_extension_declaration() {
         // Assumes a format like "@anchor: uri_anchor:name"
         let line = "#5@2: my_function_name";
-        let decl = parse_simple_extension_declaration(line).unwrap();
+        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.uri_anchor, 2);
         assert_eq!(decl.name, "my_function_name");
 
         // Test with a different name format, e.g. with underscores and numbers
         let line2 = "#10  @200: another_ext_123";
-        let decl = parse_simple_extension_declaration(line2).unwrap();
+        let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
         assert_eq!(decl.anchor, 10);
         assert_eq!(decl.uri_anchor, 200);
         assert_eq!(decl.name, "another_ext_123");
