@@ -41,7 +41,6 @@ if [ "$1" = "install" ]; then
     REAL_TARGET=$(readlink "$HOOK_PATH")
     echo "Successfully installed pre-commit hook."
     echo "$HOOK_PATH is now a symlink to $REAL_TARGET"
-    echo "Please commit $SCRIPT_NAME to your repository."
   else
     echo "ERROR: Pre-commit hook installation failed."
     echo "Check if $HOOK_PATH was created and is executable, and points to the correct target."
@@ -50,45 +49,24 @@ if [ "$1" = "install" ]; then
   exit 0
 fi
 
-# --- Pre-commit formatting logic starts here ---
+# --- Pre-commit checks start here ---
 # (This part runs when Git executes the hook)
 
-# Find all staged .rs files
-STAGED_RS_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$')
+SCRIPT_DIR=$(dirname "$0") # Gets the directory of this script, should be the repo root
 
-if [ -z "$STAGED_RS_FILES" ]; then
-  # No .rs files to format, exit successfully
-  exit 0
-fi
-
-echo "Formatting staged Rust files with rustfmt..."
-
-# Format each staged .rs file
-# Ensure rustfmt is available
-if ! command -v rustfmt > /dev/null; then
-  echo "Error: rustfmt not found in PATH. Please install rustfmt."
-  echo "You can usually install it with: rustup component add rustfmt"
+# Check formatting for the entire project
+echo "Pre-commit: Running formatting checks..."
+if ! "${SCRIPT_DIR}/scripts/fmt.sh"; then
+  echo "Pre-commit: Formatting check failed. Please see output from scripts/fmt.sh above."
   exit 1
 fi
 
-HAS_ERRORS=0
-for FILE in $STAGED_RS_FILES; do
-  if [ -f "$FILE" ]; then # Check if file exists, as it might have been deleted
-    rustfmt "$FILE"
-    if [ $? -ne 0 ]; then
-      echo "Error formatting $FILE with rustfmt."
-      HAS_ERRORS=1
-    else
-      # Add the formatted file back to the staging area
-      git add "$FILE"
-    fi
-  fi
-done
 
-if [ $HAS_ERRORS -ne 0 ]; then
-  echo "Some files could not be formatted. Please review the errors above."
+# Run cargo clippy with warnings as errors
+echo "Pre-commit: Running linter checks..."
+if ! "${SCRIPT_DIR}/scripts/clippy.sh"; then
+  echo "Pre-commit: Linter check failed. Please see output from scripts/clippy.sh above."
   exit 1
 fi
 
-echo "Formatting complete."
 exit 0
