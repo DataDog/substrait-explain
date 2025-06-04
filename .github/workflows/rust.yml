@@ -27,6 +27,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      # Also downloads dependencies etc.
+      - name: Basic check
+        run: cargo check --features protoc
+
       # Use protoc feature to build the project with a pre-built protoc binary
       - name: Lint with Clippy
         run: cargo clippy --features protoc -- -D warnings
