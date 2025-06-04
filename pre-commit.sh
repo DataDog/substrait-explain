@@ -1,8 +1,9 @@
-#!/bin/sh
+#!/bin/bash
+set -eu
 
 # This script can be run in two ways:
-# 1. ./pre-commit.sh install - This will create a symlink in .git/hooks/pre-commit
-#                             pointing to this script.
+# 1. ./pre-commit.sh install: This will create a symlink in
+#    .git/hooks/pre-commit pointing to this script.
 # 2. Git will run it automatically before commits if it's linked in .git/hooks.
 
 SCRIPT_NAME="pre-commit.sh" # This script's name, assumed to be in the repo root.
@@ -15,7 +16,7 @@ HOOK_PATH="$HOOK_DIR/pre-commit"
 RELATIVE_SCRIPT_PATH="../../$SCRIPT_NAME"
 
 # Handle the 'install' command
-if [ "$1" = "install" ]; then
+if [ -n "${1:-}" ] && [ "$1" = "install" ]; then
   echo "Installing pre-commit hook to $HOOK_PATH..."
 
   # Ensure the .git/hooks directory exists
@@ -55,18 +56,26 @@ fi
 SCRIPT_DIR=$(dirname "$0") # Gets the directory of this script, should be the repo root
 
 # Check formatting for the entire project
-echo "Pre-commit: Running formatting checks..."
-if ! "${SCRIPT_DIR}/scripts/fmt.sh"; then
-  echo "Pre-commit: Formatting check failed. Please see output from scripts/fmt.sh above."
+COMMAND="cargo fmt -- --check"
+echo "\$ $COMMAND"
+$COMMAND
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+  echo "Pre-commit: Formatting check failed."
   exit 1
 fi
-
 
 # Run cargo clippy with warnings as errors
-echo "Pre-commit: Running linter checks..."
-if ! "${SCRIPT_DIR}/scripts/clippy.sh"; then
-  echo "Pre-commit: Linter check failed. Please see output from scripts/clippy.sh above."
+COMMAND="cargo clippy -- -D warnings"
+echo "\$ $COMMAND"
+$COMMAND
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+  echo "clippy: Error - '$CMD' failed. Please fix the issues and try again."
   exit 1
 fi
 
+echo "pre-commit: success"
 exit 0
