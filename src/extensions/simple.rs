@@ -1,13 +1,12 @@
-use thiserror::Error;
-
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
-
-use substrait::proto::extensions as pext;
 
 use pext::simple_extension_declaration::{
     ExtensionFunction, ExtensionType, ExtensionTypeVariation, MappingType,
 };
+use substrait::proto::extensions as pext;
+use thiserror::Error;
 
 pub const EXTENSIONS_HEADER: &str = "=== Extensions";
 pub const EXTENSION_URIS_HEADER: &str = "URIs:";
@@ -405,11 +404,12 @@ impl ExtensionLookup for SimpleExtensions {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
     use pext::simple_extension_declaration::{
         ExtensionFunction, ExtensionType, ExtensionTypeVariation, MappingType,
     };
     use substrait::proto::extensions as pext;
+
+    use super::*;
 
     fn new_uri(anchor: u32, uri_str: &str) -> pext::SimpleExtensionUri {
         pext::SimpleExtensionUri {

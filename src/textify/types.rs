@@ -1,13 +1,13 @@
-use super::foundation::{NONSPECIFIC, Scope};
-use super::{Textify, TextifyError};
-use crate::extensions::ExtensionLookup;
-
 use std::fmt;
 
 use ptype::parameter::Parameter;
 use substrait::proto;
 use substrait::proto::extensions::simple_extension_declaration::ExtensionTypeVariation;
 use substrait::proto::r#type as ptype;
+
+use super::foundation::{NONSPECIFIC, Scope};
+use super::{Textify, TextifyError};
+use crate::extensions::ExtensionLookup;
 
 const UNKNOWN_TYPE_VARIATION: &str = "!{unknown_variant}";
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
@@ -340,7 +340,6 @@ impl Textify for proto::Type {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::TestContext;
-
     use super::*;
 
     #[test]
