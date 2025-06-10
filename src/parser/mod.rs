@@ -5,6 +5,7 @@ use pest_derive::Parser as PestParser;
 
 mod extensions;
 mod structural;
+mod types;
 pub use structural::Parser;
 
 use crate::structure::{Expression, FunctionCall, Literal, Reference};
@@ -14,15 +15,6 @@ use crate::structure::{Expression, FunctionCall, Literal, Reference};
 pub struct ExpressionParser;
 
 pub type Error = Box<pest::error::Error<Rule>>;
-
-pub fn parse_expression(rule: Rule, input: &str) -> Result<Expression, Error> {
-    // Parse the string, if possible. This can fail if the input is invalid.
-    let mut pairs = ExpressionParser::parse(rule, input)?;
-    // If parsing was successful, there should be exactly one pair, parseable exactly into an Expression.
-    let pair = pairs.next().unwrap();
-    assert_eq!(pairs.next(), None);
-    Ok(Expression::parse(pair))
-}
 
 fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators::Pair<Rule> {
     let mut pairs = pair.into_inner();
@@ -75,8 +67,78 @@ trait ParsePair: Sized {
 
     fn parse_str(s: &str) -> Result<Self, Error> {
         let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
+        assert_eq!(pairs.as_str(), s);
         let pair = pairs.next().unwrap();
+        assert_eq!(pairs.next(), None);
         Ok(Self::parse(pair))
+    }
+}
+
+fn iter_pairs(pair: pest::iterators::Pairs<Rule>) -> RuleIter<'_> {
+    RuleIter {
+        iter: pair,
+        done: false,
+    }
+}
+
+struct RuleIter<'a> {
+    iter: pest::iterators::Pairs<'a, Rule>,
+    // Set to true when done is called, so destructor doesn't panic
+    done: bool,
+}
+
+impl<'a> From<pest::iterators::Pairs<'a, Rule>> for RuleIter<'a> {
+    fn from(iter: pest::iterators::Pairs<'a, Rule>) -> Self {
+        RuleIter { iter, done: false }
+    }
+}
+
+impl<'a> RuleIter<'a> {
+    fn peek(&self) -> Option<pest::iterators::Pair<'a, Rule>> {
+        self.iter.peek()
+    }
+
+    // Pop the next pair if it matches the rule. Returns None if not.
+    fn pop_if(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
+        match self.peek() {
+            Some(pair) if pair.as_rule() == rule => {
+                self.iter.next();
+                return Some(pair);
+            }
+            _ => None,
+        }
+    }
+
+    // Parse the next pair if it matches the rule. Returns None if not.
+    fn parse_if_next<T: ParsePair>(&mut self) -> Option<T> {
+        match self.peek() {
+            Some(pair) if pair.as_rule() == T::rule() => {
+                self.iter.next();
+                return Some(T::parse(pair));
+            }
+            _ => None,
+        }
+    }
+
+    // Parse the next pair, assuming it matches the rule. Panics if not.
+    fn parse_next<T: ParsePair>(&mut self) -> T {
+        let pair = self.iter.next().unwrap();
+        T::parse(pair)
+    }
+
+    fn done(mut self) {
+        self.done = true;
+        assert_eq!(self.iter.next(), None);
+    }
+}
+
+impl Drop for RuleIter<'_> {
+    fn drop(&mut self) {
+        if self.done || std::thread::panicking() {
+            return;
+        }
+        // If the iterator is not done, something probably went wrong.
+        assert_eq!(self.iter.next(), None);
     }
 }
 

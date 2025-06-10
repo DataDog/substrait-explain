@@ -1,7 +1,7 @@
 // Explicit whitespace, used below.
 // Pest allows implicit whitespace with WHITESPACE; we don't do that here.
 whitespace = _{ " " }
-// Shorthand for space between tokens
+// Shorthand for optional whitespace between tokens
 sp = _{ whitespace* }
 
 // Basic Terminals
@@ -33,12 +33,94 @@ name = { identifier | quoted_name }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal    = { integer | string_literal }
-parameters = { "<" ~ name ~ ("," ~ sp ~ name)* ~ ">" }
-// TODO: Function Options. Not fully decided on the syntax for this.
-// options    = { "[" ~ ??????? ~ "]" }
+literal = { integer | string_literal }
+
+// -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
 uri_anchor = { "@" ~ sp ~ integer }
+
+parameter = { type | integer | name }
+
+// An arbitrary parameter list for use with type expressions or function calls.
+// Example: <T, V>
+// 
+// Note that if a type can have no parameters, there should be no parameter list.
+// A type that can take parameters but has an empty parameter list should be
+// written with the empty parameter list.
+// 
+// As examples: 'i64' and 'struct<>' are valid, but 'i64<>' and 'struct' are not.
+parameters = { "<" ~ (parameter ~ ("," ~ sp ~ parameter)*)? ~ ">" }
+
+// Nullability - ? for nullable, nothing for non-nullable. And for unspecified, ⁉.
+nullability = { ("?" | "⁉")? }
+
+// -- Type Expressions --
+// See <https://substrait.io/types/type_classes/>. These must be lowercase.
+simple_type_name = {
+    "boolean"
+  | "i8"
+  | "i16"
+  | "i32"
+  | "i64"
+  | "u8"
+  | "u16"
+  | "u32"
+  | "u64"
+  | "fp32"
+  | "fp64"
+  | "string"
+  | "binary"
+  | "timestamp"
+  | "timestamp_tz"
+  | "date"
+  | "time"
+  | "interval_year"
+  | "uuid"
+}
+
+// A simple native type expression, composed of a name and optional nullability.
+// Examples: i64, bool?, string
+simple_type = { simple_type_name ~ nullability }
+
+// -- Compound Types --
+// 
+// Note that the names here are case-insensitive. In the docs, they are shown as
+// upper-case, but I prefer them lowercase...
+
+// A list type expression, composed of a list keyword and a type.
+// Example: list<i64>
+list_type = { ^"list" ~ nullability ~ "<" ~ type ~ ">" }
+
+// A map type expression, composed of a map keyword and a key type and a value type.
+// Example: map<i64, string>
+map_type = { ^"map" ~ nullability ~ "<" ~ type ~ "," ~ sp ~ type ~ ">" }
+
+struct_type = { ^"struct" ~ nullability ~ parameters }
+
+// A compound type expression, composed of a name, optional parameters, and optional nullability.
+// Example: LIST?<fp64?>, MAP<i64, string>
+// TODO: precisiontime types, interval_day
+compound_type = { list_type | map_type | struct_type }
+
+// A user-defined type expression.
+// 
+// Example: point#8@2?<i8>
+// 
+// - The `u!` prefix is optional.
+// - The anchor is optional if the name is unique in the extensions; otherwise,
+// required.
+// - The URI anchor is optional. Note that this is different from type
+// expressions in the YAML, where these do not exist.
+// - If the type is nullable, the nullability is required.
+// - The parameters are required if they exist for this type.
+user_defined_type = {
+    "u!"? ~ name ~ anchor? ~ uri_anchor? ~ nullability ~ parameters?
+}
+
+// A type expression is a simple type, a compound type, or a user-defined type.
+type = { simple_type | compound_type | user_defined_type }
+
+// -- Function Calls --
 
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
