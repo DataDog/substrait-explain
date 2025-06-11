@@ -8,7 +8,10 @@ mod structural;
 mod types;
 pub use structural::Parser;
 
-use crate::structure::{Expression, FunctionCall, Literal, Reference};
+use crate::{
+    structure::{Expression, FunctionCall, Literal, Reference},
+    textify::Scope,
+};
 
 #[derive(PestParser)]
 #[grammar = "parser/expression_grammar.pest"] // Path relative to src
@@ -63,14 +66,58 @@ trait ParsePair: Sized {
     // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self;
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self;
 
     fn parse_str(s: &str) -> Result<Self, Error> {
         let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
         assert_eq!(pairs.as_str(), s);
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
-        Ok(Self::parse(pair))
+        Ok(Self::parse_pair(pair))
+    }
+}
+
+/// A trait for types that can be directly parsed from a string input,
+/// regardless of context.
+pub trait Parse {
+    fn parse(input: &str) -> Result<Self, Error>
+    where
+        Self: Sized;
+}
+
+impl<T: ParsePair> Parse for T {
+    fn parse(input: &str) -> Result<Self, Error> {
+        T::parse_str(input)
+    }
+}
+
+/// A trait for types that are parsed from a pest::iterators::Pair<Rule> that
+/// depends on the context - e.g. extension lookups or other contextual
+/// information. This is used for types that are not directly parsed from the
+/// grammar, but rather require additional context to parse correctly.
+pub trait ScopedParsePair: Sized {
+    // The rule that this type is parsed from.
+    fn rule() -> Rule;
+
+    // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
+    // The input must match the rule returned by `rule`; otherwise, a panic is
+    // expected.
+    fn parse_pair<S: Scope>(scope: &mut S, pair: pest::iterators::Pair<Rule>) -> Self;
+}
+
+pub trait ScopedParse: Sized {
+    fn parse<S: Scope>(scope: &mut S, input: &str) -> Result<Self, Error>
+    where
+        Self: Sized;
+}
+
+impl<T: ScopedParsePair> ScopedParse for T {
+    fn parse<S: Scope>(scope: &mut S, input: &str) -> Result<Self, Error> {
+        let mut pairs = ExpressionParser::parse(Self::rule(), input)?;
+        assert_eq!(pairs.as_str(), input);
+        let pair = pairs.next().unwrap();
+        assert_eq!(pairs.next(), None);
+        Ok(Self::parse_pair(scope, pair))
     }
 }
 
@@ -114,7 +161,18 @@ impl<'a> RuleIter<'a> {
         match self.peek() {
             Some(pair) if pair.as_rule() == T::rule() => {
                 self.iter.next();
-                return Some(T::parse(pair));
+                return Some(T::parse_pair(pair));
+            }
+            _ => None,
+        }
+    }
+
+    // Parse the next pair if it matches the rule. Returns None if not.
+    fn parse_if_next_scoped<T: ScopedParsePair, S: Scope>(&mut self, scope: &mut S) -> Option<T> {
+        match self.peek() {
+            Some(pair) if pair.as_rule() == T::rule() => {
+                self.iter.next();
+                return Some(T::parse_pair(scope, pair));
             }
             _ => None,
         }
@@ -123,7 +181,13 @@ impl<'a> RuleIter<'a> {
     // Parse the next pair, assuming it matches the rule. Panics if not.
     fn parse_next<T: ParsePair>(&mut self) -> T {
         let pair = self.iter.next().unwrap();
-        T::parse(pair)
+        T::parse_pair(pair)
+    }
+
+    // Parse the next pair, assuming it matches the rule. Panics if not.
+    fn parse_next_scoped<S: Scope, T: ScopedParsePair>(&mut self, scope: &mut S) -> T {
+        let pair = self.iter.next().unwrap();
+        T::parse_pair(scope, pair)
     }
 
     fn done(mut self) {
@@ -147,7 +211,7 @@ impl ParsePair for Reference {
         Rule::reference
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         Reference(inner.as_str().parse().unwrap())
@@ -159,7 +223,7 @@ impl ParsePair for Literal {
         Rule::literal
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
@@ -175,15 +239,15 @@ impl ParsePair for FunctionCall {
         Rule::function_call
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
-        let name = Name::parse(pairs.next().unwrap());
+        let name = Name::parse_pair(pairs.next().unwrap());
         let mut next = pairs.next().unwrap();
 
         let mut parameters = None;
         if let Rule::parameters = next.as_rule() {
-            parameters = Some(next.into_inner().map(|p| Name::parse(p).0).collect());
+            parameters = Some(next.into_inner().map(|p| Name::parse_pair(p).0).collect());
             next = pairs.next().unwrap();
         }
         // TODO: Function Options.
@@ -198,7 +262,7 @@ impl ParsePair for FunctionCall {
             next = pairs.next().unwrap();
         }
         assert_eq!(next.as_rule(), Rule::argument_list);
-        let arguments = next.into_inner().map(Expression::parse).collect();
+        let arguments = next.into_inner().map(Expression::parse_pair).collect();
 
         assert_eq!(pairs.next(), None);
         FunctionCall {
@@ -216,13 +280,15 @@ impl ParsePair for Expression {
         Rule::expression
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
-            Rule::reference => Expression::Reference(Reference::parse(inner)),
-            Rule::literal => Expression::Literal(Literal::parse(inner)),
-            Rule::function_call => Expression::FunctionCall(Box::new(FunctionCall::parse(inner))),
+            Rule::reference => Expression::Reference(Reference::parse_pair(inner)),
+            Rule::literal => Expression::Literal(Literal::parse_pair(inner)),
+            Rule::function_call => {
+                Expression::FunctionCall(Box::new(FunctionCall::parse_pair(inner)))
+            }
             _ => unreachable!("Expression unexpected rule: {:?}", inner.as_rule()),
         }
     }
@@ -236,7 +302,7 @@ impl ParsePair for Name {
         Rule::name
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
@@ -262,7 +328,7 @@ mod tests {
 
     fn assert_parses_to<T: ParsePair + PartialEq + std::fmt::Debug>(input: &str, expected: T) {
         let pair = parse_exact(T::rule(), input);
-        let actual = T::parse(pair);
+        let actual = T::parse_pair(pair);
         assert_eq!(actual, expected);
     }
 

@@ -137,11 +137,7 @@ impl SimpleExtensions {
         (exts, errors)
     }
 
-    pub(crate) fn add_extension_uri(
-        &mut self,
-        uri: String,
-        anchor: u32,
-    ) -> Result<(), ExtensionError> {
+    pub fn add_extension_uri(&mut self, uri: String, anchor: u32) -> Result<(), ExtensionError> {
         match self.uris.entry(anchor) {
             Entry::Occupied(e) => {
                 return Err(ExtensionError::DuplicateAnchor {
@@ -196,7 +192,7 @@ impl SimpleExtensions {
         }
     }
 
-    pub(crate) fn add_extension_function(
+    pub fn add_extension_function(
         &mut self,
         uri: u32,
         anchor: u32,
@@ -225,7 +221,7 @@ impl SimpleExtensions {
         )
     }
 
-    pub(crate) fn add_extension_type(
+    pub fn add_extension_type(
         &mut self,
         uri: u32,
         anchor: u32,
@@ -254,7 +250,7 @@ impl SimpleExtensions {
         )
     }
 
-    pub(crate) fn add_extension_type_variation(
+    pub fn add_extension_type_variation(
         &mut self,
         uri: u32,
         anchor: u32,

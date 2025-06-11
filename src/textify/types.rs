@@ -78,7 +78,7 @@ fn textify_type_variation<S: Scope, W: fmt::Write>(
     Ok(())
 }
 
-// Textify a type with parameters.
+// Textify a standard type with parameters.
 //
 // P will generally be the Parameter type, but it can be any type that
 // implements Textify.
@@ -179,7 +179,7 @@ impl Textify for ptype::UserDefined {
             textify_type(
                 ctx,
                 w,
-                format!("u!{}", typ.name),
+                typ.name,
                 self.nullability(),
                 self.type_variation_reference,
                 params,
@@ -339,8 +339,8 @@ impl Textify for proto::Type {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::TestContext;
     use super::*;
+    use crate::fixtures::TestContext;
 
     #[test]
     fn type_display() {

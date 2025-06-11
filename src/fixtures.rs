@@ -1,7 +1,9 @@
-#![cfg(test)]
-
-use super::{ErrorVec, OutputOptions, ScopedContext, Textify};
-use crate::extensions::{ExtensionLookup, SimpleExtensions};
+use crate::parser::{self, ScopedParse};
+use crate::textify::{ErrorVec, OutputOptions, ScopedContext, Textify};
+use crate::{
+    extensions::{ExtensionLookup, SimpleExtensions},
+    textify::{Scope, foundation::ErrorAccumulator},
+};
 
 pub struct TestContext {
     pub options: OutputOptions,
@@ -58,11 +60,17 @@ impl TestContext {
         self
     }
 
+    pub fn scope<'e, E: ErrorAccumulator>(&'e self, errors: &'e mut E) -> impl Scope + 'e {
+        ScopedContext::new(&self.options, errors, &self.extensions)
+    }
+
     pub fn textify<T: Textify>(&self, t: T) -> (String, ErrorVec) {
         let mut errors = ErrorVec::default();
-        let mut scope = ScopedContext::new(&self.options, &mut errors, &self.extensions);
         let mut output = String::new();
-        t.textify(&mut scope, &mut output).unwrap();
+        {
+            let mut scope = self.scope(&mut errors);
+            t.textify(&mut scope, &mut output).unwrap();
+        }
         (output, errors)
     }
 
@@ -70,5 +78,15 @@ impl TestContext {
         let (s, errs) = self.textify(t);
         assert!(errs.0.is_empty(), "{}", errs);
         s
+    }
+
+    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<(T, ErrorVec), parser::Error> {
+        let mut errors = ErrorVec::default();
+
+        let value = {
+            let mut scope = self.scope(&mut errors);
+            T::parse(&mut scope, input)?
+        };
+        Ok((value, errors))
     }
 }

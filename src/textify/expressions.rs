@@ -685,9 +685,9 @@ impl Textify for Expression {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::TestContext;
     use super::super::{OutputOptions, TextifyErrorType};
     use super::*;
+    use crate::fixtures::TestContext;
 
     #[test]
     fn test_literal_textify() {

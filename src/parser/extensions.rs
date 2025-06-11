@@ -8,7 +8,7 @@ impl ParsePair for URIExtensionDeclaration {
         Rule::extension_uri_declaration
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let mut pairs = pair.into_inner();
@@ -37,7 +37,7 @@ impl ParsePair for SimpleExtensionDeclaration {
         Rule::simple_extension
     }
 
-    fn parse(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
         let anchor = pairs.next().unwrap();

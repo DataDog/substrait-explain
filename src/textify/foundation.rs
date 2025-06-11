@@ -4,6 +4,7 @@ use std::fmt;
 use std::ops::DerefMut;
 
 use crate::extensions::ExtensionLookup;
+use crate::extensions::simple::ExtensionKind;
 
 const ERROR_MARKER_START: &str = "!{"; // "!❬";
 const ERROR_MARKER_END: &str = "}"; // "❭";
@@ -163,6 +164,13 @@ pub struct TextifyError {
     pub error_type: TextifyErrorType,
 }
 
+pub enum MissingReference {
+    MissingAnchor(ExtensionKind, u32),
+    MissingName(ExtensionKind, String),
+    /// When the name of the value does not match the expected name
+    Mismatched(ExtensionKind, String, u32),
+}
+
 impl TextifyError {
     pub fn invalid(
         message: &'static str,
@@ -249,6 +257,9 @@ impl fmt::Display for TextifyError {
 /// A trait for types that can be textified.
 ///
 /// This trait is used to convert a Substrait type into a string representation.
+///
+/// TODO: Split into Resolve and Display traits, where Resolve is used to resolve
+/// references to their names and may error, and Display never errors.
 pub trait Textify {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result;
 

@@ -254,6 +254,7 @@ impl Parser {
         }
     }
 }
+
 impl Parser {
     fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
