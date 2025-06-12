@@ -4,5 +4,5 @@ mod rels;
 mod types;
 
 pub use foundation::{
-    ErrorVec, OutputOptions, Scope, ScopedContext, Textify, TextifyError, TextifyErrorType,
+    ErrorQueue, OutputOptions, Scope, ScopedContext, Textify, TextifyError, TextifyErrorType,
 };

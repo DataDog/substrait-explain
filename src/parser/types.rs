@@ -63,6 +63,14 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
+        "i16" => Kind::I16(proto::r#type::I16 {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "i8" => Kind::I8(proto::r#type::I8 {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
         "string" => Kind::String(proto::r#type::String {
             nullability: nullability.into(),
             type_variation_reference: 0,
@@ -112,37 +120,6 @@ fn parse_parameters<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Vec<Parameter>
     params
 }
 
-/// Reconcile what the anchor should be for a user-defined type.
-///
-/// If the anchor is provided, it is used.
-/// Otherwise, uses the name and (if given) URI anchor to find the anchor. If a unique anchor is found, it is used, otherwise, 0 is used.
-fn reconcile_anchor<E: ExtensionLookup>(
-    extensions: &E,
-    name: &str,
-    anchor: Option<u32>,
-    uri_anchor: Option<u32>,
-) -> u32 {
-    if let Some(anchor) = anchor {
-        return anchor;
-    }
-
-    let mut found = None;
-    for item in extensions.find_types(name) {
-        if uri_anchor.is_some() && uri_anchor != Some(item.extension_uri_reference) {
-            // URI reference does not match
-            continue;
-        }
-        if found.is_some() {
-            // Found two instances, uh-oh.
-            return 0;
-        }
-        // We found one! Hopefully we don't find another...
-        found = Some(item.type_anchor)
-    }
-
-    return found.unwrap_or(0);
-}
-
 fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
     assert_eq!(pair.as_rule(), Rule::user_defined_type);
     let mut iter = iter_pairs(pair.into_inner());
@@ -152,7 +129,8 @@ fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
         .pop_if(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-    let uri_anchor = iter
+    // TODO: Handle uri_anchor; validate that it matches the anchor
+    let _uri_anchor = iter
         .pop_if(Rule::uri_anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
@@ -163,7 +141,22 @@ fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
     };
     iter.done();
 
-    let anchor = reconcile_anchor(scope.extensions(), name, anchor, uri_anchor);
+    let anchor = match anchor {
+        None => match scope.extensions().lookup_type(name) {
+            Ok(t) => t.type_anchor,
+            Err(e) => {
+                scope.push_error(e.into());
+                0
+            }
+        },
+        Some(anchor) => match scope.extensions().find_type_with_anchor(name, anchor) {
+            Ok(t) => t.type_anchor,
+            Err(e) => {
+                scope.push_error(e.into());
+                anchor
+            }
+        },
+    };
 
     Type {
         kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
@@ -197,10 +190,7 @@ mod tests {
     use pest::Parser;
     use substrait::proto::r#type::{I64, Kind, Nullability};
 
-    use crate::{
-        extensions::SimpleExtensions, fixtures::TestContext, parser::ExpressionParser,
-        textify::ErrorVec,
-    };
+    use crate::{fixtures::TestContext, parser::ExpressionParser, textify::ErrorQueue};
 
     use super::*;
 
@@ -238,8 +228,8 @@ mod tests {
     #[test]
     fn test_parse_type() {
         let ctx = TestContext::default();
-        let mut errors = ErrorVec::default();
-        let mut scope = ctx.scope(&mut errors);
+        let errors = ErrorQueue::default();
+        let mut scope = ctx.scope(&errors);
 
         let mut pairs = ExpressionParser::parse(Rule::r#type, "i64").unwrap();
         let pair = pairs.next().unwrap();
@@ -259,8 +249,8 @@ mod tests {
     #[test]
     fn test_parse_list_type() {
         let ctx = TestContext::default();
-        let mut errors = ErrorVec::default();
-        let mut scope = ctx.scope(&mut errors);
+        let errors = ErrorQueue::default();
+        let mut scope = ctx.scope(&errors);
 
         let mut pairs = ExpressionParser::parse(Rule::list_type, "list<i64>").unwrap();
         let pair = pairs.next().unwrap();
@@ -286,8 +276,8 @@ mod tests {
     #[test]
     fn test_parse_parameters() {
         let ctx = TestContext::default();
-        let mut errors = ErrorVec::default();
-        let mut scope = ctx.scope(&mut errors);
+        let errors = ErrorQueue::default();
+        let mut scope = ctx.scope(&errors);
 
         let mut pairs = ExpressionParser::parse(Rule::parameters, "<i64?,string>").unwrap();
         let pair = pairs.next().unwrap();
@@ -319,8 +309,8 @@ mod tests {
     #[test]
     fn test_udts() {
         let ctx = TestContext::default();
-        let mut errors = ErrorVec::default();
-        let mut scope = ctx.scope(&mut errors);
+        let errors = ErrorQueue::default();
+        let mut scope = ctx.scope(&errors);
 
         let mut pairs = ExpressionParser::parse(Rule::user_defined_type, "udt#42<i64?>").unwrap();
         let pair = pairs.next().unwrap();

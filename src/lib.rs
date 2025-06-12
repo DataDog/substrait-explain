@@ -36,5 +36,4 @@
 pub mod extensions;
 pub mod fixtures;
 pub mod parser;
-pub mod structure;
 pub mod textify;

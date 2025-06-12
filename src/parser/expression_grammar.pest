@@ -6,7 +6,7 @@ sp = _{ whitespace* }
 
 // Basic Terminals
 identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-integer    = @{ ASCII_DIGIT+ }
+integer    = @{ "-"? ~ ASCII_DIGIT+ }
 
 // Basic string literals, does not handle escape sequences for simplicity here.
 // String literals are for literal values
@@ -33,7 +33,7 @@ name = { identifier | quoted_name }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal = { integer | string_literal }
+literal = { (integer | string_literal) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
@@ -126,7 +126,6 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
 function_call = {
     name ~ sp ~  // Function name
-  parameters? ~ sp ~  // Optional parameters, e.g. <T, V>
   // options? ~ sp ~  // Options, e.g. []
   anchor? ~ sp ~  // Optional Anchor, e.g. #1
   uri_anchor? ~ sp ~  // Optional URI Anchor, e.g. @1

@@ -1,7 +1,19 @@
 use std::str::FromStr;
 
 use super::{ParsePair, Rule, unwrap_single_pair};
-use crate::structure::{SimpleExtensionDeclaration, URIExtensionDeclaration};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct URIExtensionDeclaration {
+    pub anchor: u32,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleExtensionDeclaration {
+    pub anchor: u32,
+    pub uri_anchor: u32,
+    pub name: String,
+}
 
 impl ParsePair for URIExtensionDeclaration {
     fn rule() -> Rule {

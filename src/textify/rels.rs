@@ -10,8 +10,8 @@ impl Textify for Rel {
         "Rel"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
-        ctx.expect(w, &self.rel_type)
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.expect(&self.rel_type))
     }
 }
 
@@ -20,7 +20,7 @@ impl Textify for ReadRel {
         "ReadRel"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &mut S, _w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, _w: &mut W) -> fmt::Result {
         todo!();
         // let mut first = true;
 
@@ -44,167 +44,55 @@ impl Textify for RelType {
         "RelType"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let mut unimplemented = |name: &'static str| {
+            let token = ctx.failure(TextifyError::unimplemented(
+                "RelType",
+                Some(name),
+                "RelType not yet implemented",
+            ));
+            write!(w, "{}", token)
+        };
+
         match self {
-            RelType::Read(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented("RelType", Some("Read"), "RelType not yet implemented"),
-            ),
+            RelType::Read(_r) => unimplemented("Read"),
 
-            RelType::Filter(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Filter"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Project(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Project"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Fetch(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Fetch"),
-                    "RelType not yet implemented",
-                ),
-            ),
+            RelType::Filter(_r) => unimplemented("Filter"),
+            RelType::Project(_r) => unimplemented("Project"),
+            RelType::Fetch(_r) => unimplemented("Fetch"),
 
-            RelType::Aggregate(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Aggregate"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Sort(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented("RelType", Some("Sort"), "RelType not yet implemented"),
-            ),
+            RelType::Aggregate(_r) => unimplemented("Aggregate"),
+            RelType::Sort(_r) => unimplemented("Sort"),
 
-            RelType::HashJoin(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("HashJoin"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Exchange(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Exchange"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Window(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Window"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Join(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented("RelType", Some("Join"), "RelType not yet implemented"),
-            ),
-            RelType::Set(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented("RelType", Some("Set"), "RelType not yet implemented"),
-            ),
-            RelType::ExtensionSingle(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("ExtensionSingle"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::ExtensionMulti(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("ExtensionMulti"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::ExtensionLeaf(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("ExtensionLeaf"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Cross(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Cross"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Reference(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Reference"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Write(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Write"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Ddl(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented("RelType", Some("Ddl"), "RelType not yet implemented"),
-            ),
-            RelType::Update(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Update"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::MergeJoin(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("MergeJoin"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::NestedLoopJoin(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("NestedLoopJoin"),
-                    "RelType not yet implemented",
-                ),
-            ),
-            RelType::Expand(_r) => ctx.failure(
-                w,
-                TextifyError::unimplemented(
-                    "RelType",
-                    Some("Expand"),
-                    "RelType not yet implemented",
-                ),
-            ),
+            RelType::HashJoin(_r) => unimplemented("HashJoin"),
+            RelType::Exchange(_r) => unimplemented("Exchange"),
+            RelType::Window(_r) => unimplemented("Window"),
+
+            RelType::Join(_r) => unimplemented("Join"),
+
+            RelType::Set(_r) => unimplemented("Set"),
+
+            RelType::ExtensionSingle(_r) => unimplemented("ExtensionSingle"),
+
+            RelType::ExtensionMulti(_r) => unimplemented("ExtensionMulti"),
+
+            RelType::ExtensionLeaf(_r) => unimplemented("ExtensionLeaf"),
+
+            RelType::Cross(_r) => unimplemented("Cross"),
+
+            RelType::Reference(_r) => unimplemented("Reference"),
+
+            RelType::Write(_r) => unimplemented("Write"),
+
+            RelType::Ddl(_r) => unimplemented("Ddl"),
+
+            RelType::Update(_r) => unimplemented("Update"),
+
+            RelType::MergeJoin(_r) => unimplemented("MergeJoin"),
+
+            RelType::NestedLoopJoin(_r) => unimplemented("NestedLoopJoin"),
+
+            RelType::Expand(_r) => unimplemented("Expand"),
         }
     }
 }

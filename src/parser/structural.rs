@@ -5,10 +5,10 @@
 //! each line separately.
 
 use std::fmt;
+use std::str::FromStr;
 
 use thiserror::Error;
 
-use super::FromStr;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{ExtensionError, SimpleExtensions};
 
@@ -140,7 +140,7 @@ impl ExtensionParser {
             //
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let uri = crate::structure::URIExtensionDeclaration::from_str(s)?;
+                let uri = super::extensions::URIExtensionDeclaration::from_str(s)?;
                 self.extensions.add_extension_uri(uri.uri, uri.anchor)?;
                 Ok(())
             }
@@ -156,7 +156,7 @@ impl ExtensionParser {
         match line {
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let decl = crate::structure::SimpleExtensionDeclaration::from_str(s)?;
+                let decl = super::extensions::SimpleExtensionDeclaration::from_str(s)?;
                 match extension_kind {
                     ExtensionKind::Function => self.extensions.add_extension_function(
                         decl.uri_anchor,

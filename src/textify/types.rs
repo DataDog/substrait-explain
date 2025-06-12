@@ -2,14 +2,13 @@ use std::fmt;
 
 use ptype::parameter::Parameter;
 use substrait::proto;
-use substrait::proto::extensions::simple_extension_declaration::ExtensionTypeVariation;
 use substrait::proto::r#type as ptype;
 
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{Textify, TextifyError};
 use crate::extensions::ExtensionLookup;
+use crate::textify::foundation::MaybeToken;
 
-const UNKNOWN_TYPE_VARIATION: &str = "!{unknown_variant}";
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
 
 impl Textify for ptype::Nullability {
@@ -17,14 +16,17 @@ impl Textify for ptype::Nullability {
         "Nullability"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
             ptype::Nullability::Unspecified => {
-                ctx.push_error(TextifyError::invalid(
-                    "Nullability",
-                    NONSPECIFIC,
-                    "Nullability left Unspecified",
-                ));
+                ctx.push_error(
+                    TextifyError::invalid(
+                        "Nullability",
+                        NONSPECIFIC,
+                        "Nullability left Unspecified",
+                    )
+                    .into(),
+                );
 
                 // TODO: what should unspecified Nullabilitylook like?
                 w.write_str(NULLABILITY_UNSPECIFIED)?;
@@ -36,78 +38,68 @@ impl Textify for ptype::Nullability {
     }
 }
 
-fn textify_type_variation<S: Scope, W: fmt::Write>(
-    ctx: &mut S,
-    f: &mut W,
-    name: &str,
-    anchor: u32,
-) -> fmt::Result {
-    if anchor == 0 {
-        // This is the default, this doesn't count as a type variation
-        return Ok(());
+pub struct Anchor(pub u32);
+
+impl Textify for Anchor {
+    fn name() -> &'static str {
+        "Anchor"
     }
-    let type_variation: Option<ExtensionTypeVariation> =
-        ctx.extensions().find_type_variation(anchor);
 
-    let (name, uri) = match type_variation {
-        Some(ref ext) => (ext.name.as_str(), Some(ext.extension_uri_reference)),
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "#{}", self.0)
+    }
+}
 
-        None => {
-            ctx.push_error(TextifyError::invalid(
-                "ExtensionTypeVariation",
-                Some(name.to_string()),
-                format!("Unknown type variation {}", anchor),
-            ));
-            (UNKNOWN_TYPE_VARIATION, None)
+impl fmt::Display for Anchor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+struct TypeVariation(u32);
+
+impl Textify for TypeVariation {
+    fn name() -> &'static str {
+        "TypeVariation"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let &TypeVariation(anchor) = self;
+        if anchor == 0 {
+            // This is the default, this doesn't count as a type variation
+            return Ok(());
         }
-    };
+        let type_variation = ctx.extensions().find_type_variation(anchor);
 
-    write!(f, "[{}", name)?;
+        let name = MaybeToken(match type_variation {
+            Ok(ref ext) => Ok(ext.name.as_str()),
+            Err(e) => Err(ctx.failure(e)),
+        });
 
-    if ctx.options().show_simple_extension_anchors || type_variation.is_none() {
-        write!(f, "#{}", anchor)?;
+        write!(w, "[{name}{anchor}]", name = name, anchor = Anchor(anchor))
     }
-
-    if let Some(uri) = uri {
-        if ctx.options().show_extension_uris {
-            write!(f, "@{}", uri)?;
-        }
-    }
-    write!(f, "]")?;
-
-    Ok(())
 }
 
 // Textify a standard type with parameters.
 //
 // P will generally be the Parameter type, but it can be any type that
 // implements Textify.
-fn textify_type<S: Scope, W: fmt::Write, P: Textify, I: IntoIterator<Item = Option<P>>>(
-    ctx: &mut S,
+fn textify_type<S: Scope, W: fmt::Write>(
+    ctx: &S,
     f: &mut W,
     name: impl AsRef<str>,
     nullability: ptype::Nullability,
     variant: u32,
-    params: I,
+    params: Parameters,
 ) -> fmt::Result {
-    write!(f, "{}", name.as_ref())?;
-    nullability.textify(ctx, f)?;
-    textify_type_variation(ctx, f, name.as_ref(), variant)?;
-
-    let mut first = true;
-    for param in params.into_iter() {
-        if first {
-            write!(f, "<")?;
-            first = false;
-        } else {
-            write!(f, ", ")?;
-        }
-        ctx.expect(f, &param)?;
-    }
-    if !first {
-        write!(f, ">")?;
-    }
-    Ok(())
+    write!(
+        f,
+        "{name}{null}{var}{params}",
+        name = name.as_ref(),
+        null = ctx.display(&nullability),
+        var = ctx.display(&TypeVariation(variant)),
+        params = ctx.display(&params)
+    )
 }
 
 macro_rules! textify_kind {
@@ -118,7 +110,7 @@ macro_rules! textify_kind {
             $name,
             $kind.nullability(),
             $kind.type_variation_reference,
-            [] as [Option<Parameter>; 0],
+            Parameters(&[]),
         )
     };
 }
@@ -128,11 +120,11 @@ impl Textify for Parameter {
         "Parameter"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
             Parameter::Boolean(true) => write!(w, "true")?,
             Parameter::Boolean(false) => write!(w, "false")?,
-            Parameter::DataType(t) => t.textify(ctx, w)?,
+            Parameter::DataType(t) => write!(w, "{}", ctx.display(t))?,
             Parameter::Enum(e) => write!(w, "{}", e)?,
             Parameter::Integer(i) => write!(w, "{}", i)?,
             // TODO: Do we just put the string in directly?
@@ -148,8 +140,34 @@ impl Textify for ptype::Parameter {
         "Parameter"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
-        ctx.expect(w, &self.parameter)
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.expect(&self.parameter))
+    }
+}
+
+struct Parameters<'a>(&'a [Option<Parameter>]);
+
+impl<'a> Textify for Parameters<'a> {
+    fn name() -> &'static str {
+        "Parameters"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let mut first = true;
+        for param in self.0.iter() {
+            if first {
+                write!(w, "<")?;
+            } else {
+                write!(w, ", ")?;
+            }
+            write!(w, "{}", ctx.expect(param))?;
+            first = false;
+        }
+        if !first {
+            write!(w, ">")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -158,31 +176,35 @@ impl Textify for ptype::UserDefined {
         "UserDefined"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         {
             let type_reference = ctx.extensions().find_type(self.type_reference);
-            let params = self.type_parameters.iter().map(|t| Some(t.clone()));
+            let param_vec: Vec<Option<Parameter>> = self
+                .type_parameters
+                .iter()
+                .map(|t| t.parameter.clone())
+                .collect();
+            let params = Parameters(&param_vec);
             let typ = match type_reference {
-                Some(t) => t,
-                None => {
-                    return ctx.failure(
+                Ok(t) => t,
+                Err(e) => {
+                    return write!(
                         w,
-                        TextifyError::invalid(
-                            "UserDefined",
-                            Some(format!("{}", self.type_reference)),
-                            format!("Type reference {} not found", self.type_reference),
-                        ),
+                        "{err}{anchor}",
+                        err = ctx.failure(e),
+                        anchor = ctx.display(&Anchor(self.type_reference))
                     );
                 }
             };
 
-            textify_type(
-                ctx,
+            write!(
                 w,
-                typ.name,
-                self.nullability(),
-                self.type_variation_reference,
-                params,
+                "{name}{anchor}{null}{var}{params}",
+                name = typ.name,
+                anchor = ctx.display(&Anchor(self.type_reference)),
+                null = ctx.display(&self.nullability()),
+                var = ctx.display(&TypeVariation(self.type_variation_reference)),
+                params = ctx.display(&params)
             )
         }
     }
@@ -193,7 +215,7 @@ impl Textify for ptype::Kind {
         "Kind"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
             // This is the expansion of:
             //     textify_kind!(ctx, w, k, "boolean")
@@ -204,7 +226,7 @@ impl Textify for ptype::Kind {
                 "boolean",
                 k.nullability(),
                 k.type_variation_reference,
-                [] as [Option<Parameter>; 0],
+                Parameters(&[]),
             ),
             ptype::Kind::I8(k) => textify_kind!(ctx, w, k, "i8"),
             ptype::Kind::I16(k) => textify_kind!(ctx, w, k, "i16"),
@@ -233,7 +255,7 @@ impl Textify for ptype::Kind {
                 i.nullability(),
                 i.type_variation_reference,
                 // Precision defaults to 6 if unspecified
-                [Some(Parameter::Integer(i.precision.unwrap_or(6) as i64))],
+                Parameters(&[Some(Parameter::Integer(i.precision.unwrap_or(6) as i64))]),
             ),
             ptype::Kind::IntervalCompound(i) => textify_type(
                 ctx,
@@ -241,7 +263,7 @@ impl Textify for ptype::Kind {
                 "interval_compound",
                 i.nullability(),
                 i.type_variation_reference,
-                [Some(Parameter::Integer(i.precision as i64))],
+                Parameters(&[Some(Parameter::Integer(i.precision as i64))]),
             ),
             ptype::Kind::FixedChar(c) => textify_type(
                 ctx,
@@ -249,7 +271,7 @@ impl Textify for ptype::Kind {
                 "fixedchar",
                 c.nullability(),
                 c.type_variation_reference,
-                [Some(Parameter::Integer(c.length as i64))],
+                Parameters(&[Some(Parameter::Integer(c.length as i64))]),
             ),
             ptype::Kind::Varchar(_c) => todo!(),
             ptype::Kind::FixedBinary(_b) => todo!(),
@@ -260,7 +282,7 @@ impl Textify for ptype::Kind {
                 "precisiontime",
                 p.nullability(),
                 p.type_variation_reference,
-                [Some(Parameter::Integer(p.precision as i64))],
+                Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
             ),
             ptype::Kind::PrecisionTimestamp(p) => textify_type(
                 ctx,
@@ -268,7 +290,7 @@ impl Textify for ptype::Kind {
                 "precisiontimestamp",
                 p.nullability(),
                 p.type_variation_reference,
-                [Some(Parameter::Integer(p.precision as i64))],
+                Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
             ),
             ptype::Kind::PrecisionTimestampTz(_p) => todo!(),
             ptype::Kind::Struct(s) => textify_type(
@@ -277,7 +299,12 @@ impl Textify for ptype::Kind {
                 "struct",
                 s.nullability(),
                 s.type_variation_reference,
-                s.types.iter().map(|t| Some(Parameter::DataType(t.clone()))),
+                Parameters(
+                    &s.types
+                        .iter()
+                        .map(|t| Some(Parameter::DataType(t.clone())))
+                        .collect::<Vec<_>>(),
+                ),
             ),
             ptype::Kind::List(l) => {
                 let p = l
@@ -290,7 +317,7 @@ impl Textify for ptype::Kind {
                     "list",
                     l.nullability(),
                     l.type_variation_reference,
-                    [p],
+                    Parameters(&[p]),
                 )
             }
             ptype::Kind::Map(m) => {
@@ -308,7 +335,7 @@ impl Textify for ptype::Kind {
                     "map",
                     m.nullability(),
                     m.type_variation_reference,
-                    [k, v],
+                    Parameters(&[k, v]),
                 )
             }
             ptype::Kind::UserDefined(u) => u.textify(ctx, w),
@@ -332,15 +359,19 @@ impl Textify for proto::Type {
         "Type"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result {
-        ctx.expect(w, &self.kind)
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.expect(&self.kind))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::TestContext;
+    use crate::{
+        extensions::simple::{ExtensionKind, MissingReference},
+        fixtures::TestContext,
+        textify::foundation::Error,
+    };
 
     #[test]
     fn type_display() {
@@ -356,23 +387,7 @@ mod tests {
         };
 
         let s = ctx.textify_no_errors(t);
-        assert_eq!(s, "boolean?[u8]");
-
-        let t = proto::Type {
-            kind: Some(ptype::Kind::Bool(ptype::Boolean {
-                type_variation_reference: 200,
-                nullability: ptype::Nullability::Nullable as i32,
-            })),
-        };
-        let (s, errs) = ctx.textify(t);
-        assert_eq!(s, "boolean?[!{unknown_variant}#200]");
-        assert_eq!(errs.0.len(), 1);
-        assert_eq!(errs.0[0].message, "ExtensionTypeVariation");
-        assert_eq!(
-            errs.0[0].lookup.as_ref().map(|t| t.as_ref()),
-            Some("boolean")
-        );
-        assert_eq!(errs.0[0].description, "Unknown type variation 200");
+        assert_eq!(s, "boolean?[u8#2]");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::I8(ptype::I8 {
@@ -411,6 +426,23 @@ mod tests {
             .with_type(1, 100, "cow");
 
         let t = proto::Type {
+            kind: Some(ptype::Kind::Bool(ptype::Boolean {
+                type_variation_reference: 200,
+                nullability: ptype::Nullability::Nullable as i32,
+            })),
+        };
+        let (s, errs) = ctx.textify(t);
+        assert_eq!(s, "boolean?[!{type_variation}#200]");
+        let err = errs.first();
+        let (&k, &a) = match err {
+            Error::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
+            _ => panic!("Expected Lookup MissingAnchor: {}", err),
+        };
+
+        assert_eq!(k, ExtensionKind::TypeVariation);
+        assert_eq!(a, 200);
+
+        let t = proto::Type {
             kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
                 type_variation_reference: 0,
                 nullability: ptype::Nullability::Required as i32,
@@ -420,8 +452,8 @@ mod tests {
         };
 
         let (s, errs) = ctx.textify(t);
-        assert!(errs.0.is_empty(), "{}", errs);
-        assert_eq!(s, "u!cow");
+        assert!(errs.is_empty());
+        assert_eq!(s, "cow#100");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
@@ -433,11 +465,14 @@ mod tests {
         };
 
         let (s, errs) = ctx.textify(t);
-        assert_eq!(errs.0.len(), 1);
-        assert_eq!(errs.0[0].message, "UserDefined");
-        assert_eq!(errs.0[0].lookup, Some("12589".into()));
-        assert_eq!(errs.0[0].description, "Type reference 12589 not found");
-        assert_eq!(s, "!{UserDefined: 12589}");
+        let err = errs.first();
+        let (&k, &a) = match err {
+            Error::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
+            _ => panic!("Expected Lookup MissingAnchor: {}", err),
+        };
+        assert_eq!(k, ExtensionKind::Type);
+        assert_eq!(a, 12589);
+        assert_eq!(s, "!{type}#12589");
     }
 
     #[test]

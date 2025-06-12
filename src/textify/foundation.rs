@@ -2,12 +2,13 @@ use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::fmt;
 use std::ops::DerefMut;
+use std::rc::Rc;
+use std::sync::mpsc;
 
 use crate::extensions::ExtensionLookup;
-use crate::extensions::simple::ExtensionKind;
+use crate::extensions::simple::MissingReference;
+use thiserror::Error;
 
-const ERROR_MARKER_START: &str = "!{"; // "!❬";
-const ERROR_MARKER_END: &str = "}"; // "❭";
 pub const NONSPECIFIC: Option<&'static str> = None;
 
 /// OutputOptions holds the options for textifying a Substrait type.
@@ -52,23 +53,42 @@ impl Default for OutputOptions {
         }
     }
 }
-pub trait ErrorAccumulator {
-    fn push(&mut self, e: TextifyError);
+pub trait ErrorAccumulator: Clone {
+    fn push(&self, e: Error);
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct ErrorVec(pub Vec<TextifyError>);
+#[derive(Debug, Clone)]
+pub struct ErrorQueue {
+    sender: mpsc::Sender<Error>,
+    receiver: Rc<mpsc::Receiver<Error>>,
+}
 
-impl ErrorAccumulator for ErrorVec {
-    fn push(&mut self, e: TextifyError) {
-        self.0.push(e);
+impl Default for ErrorQueue {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            sender,
+            receiver: Rc::new(receiver),
+        }
     }
 }
 
-impl fmt::Display for ErrorVec {
+impl From<ErrorQueue> for Vec<Error> {
+    fn from(v: ErrorQueue) -> Vec<Error> {
+        v.receiver.try_iter().collect()
+    }
+}
+
+impl ErrorAccumulator for ErrorQueue {
+    fn push(&self, e: Error) {
+        self.sender.send(e).unwrap();
+    }
+}
+
+impl fmt::Display for ErrorQueue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
-        for e in &self.0 {
+        for e in self.receiver.try_iter() {
             if first {
                 first = false;
             } else {
@@ -77,6 +97,65 @@ impl fmt::Display for ErrorVec {
             write!(f, "{}", e)?;
         }
         Ok(())
+    }
+}
+
+impl ErrorQueue {
+    pub fn errs(self) -> Result<(), ErrorList> {
+        let errors: Vec<Error> = self.receiver.try_iter().collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ErrorList(errors))
+        }
+    }
+}
+
+// A list of errors, used to return errors from textify operations.
+pub struct ErrorList(pub Vec<Error>);
+
+impl ErrorList {
+    pub fn first(&self) -> &Error {
+        self.0
+            .first()
+            .expect("Expected at least one error in ErrorList")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Display for ErrorList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{}", e)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ErrorList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i == 0 {
+                writeln!(f, "Errors:")?;
+            }
+            writeln!(f, "! {:?}", e)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'e> IntoIterator for &'e ErrorQueue {
+    type Item = Error;
+    type IntoIter = std::sync::mpsc::TryIter<'e, Error>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.receiver.try_iter()
     }
 }
 
@@ -93,7 +172,7 @@ pub struct IndentStack<'a> {
 }
 
 pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> {
-    errors: &'a mut Err,
+    errors: &'a Err,
     options: &'a OutputOptions,
     extensions: &'a Ext,
     indent: IndentStack<'a>,
@@ -120,7 +199,7 @@ impl<'a> IndentTracker for IndentStack<'a> {
 }
 
 impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> ScopedContext<'a, Err, Ext> {
-    pub fn new(options: &'a OutputOptions, errors: &'a mut Err, extensions: &'a Ext) -> Self {
+    pub fn new(options: &'a OutputOptions, errors: &'a Err, extensions: &'a Ext) -> Self {
         Self {
             options,
             errors,
@@ -152,6 +231,23 @@ impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T: Textify + prost::Messag
     }
 }
 
+#[derive(Error, Debug, Clone)]
+pub enum Error {
+    #[error("Lookup error: {0}")]
+    Lookup(#[from] MissingReference),
+    #[error("Textify error: {0}")]
+    Textify(#[from] TextifyError),
+}
+
+impl Error {
+    pub fn message(&self) -> &'static str {
+        match self {
+            Error::Lookup(m) => m.kind().name(),
+            Error::Textify(m) => m.message,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TextifyError {
     // The message this originated in
@@ -162,13 +258,6 @@ pub struct TextifyError {
     pub description: Cow<'static, str>,
     // The error type
     pub error_type: TextifyErrorType,
-}
-
-pub enum MissingReference {
-    MissingAnchor(ExtensionKind, u32),
-    MissingName(ExtensionKind, String),
-    /// When the name of the value does not match the expected name
-    Mismatched(ExtensionKind, String, u32),
 }
 
 impl TextifyError {
@@ -217,7 +306,6 @@ pub enum TextifyErrorType {
     InvalidValue,
     Unimplemented,
     Internal,
-    Fmt,
 }
 
 impl fmt::Display for TextifyErrorType {
@@ -226,18 +314,6 @@ impl fmt::Display for TextifyErrorType {
             TextifyErrorType::InvalidValue => write!(f, "InvalidValue"),
             TextifyErrorType::Unimplemented => write!(f, "Unimplemented"),
             TextifyErrorType::Internal => write!(f, "Internal"),
-            TextifyErrorType::Fmt => write!(f, "Fmt"),
-        }
-    }
-}
-
-impl From<fmt::Error> for TextifyError {
-    fn from(_: fmt::Error) -> Self {
-        Self {
-            message: "fmt",
-            lookup: None,
-            description: Cow::Borrowed("fmt error"),
-            error_type: TextifyErrorType::Fmt,
         }
     }
 }
@@ -254,6 +330,29 @@ impl fmt::Display for TextifyError {
     }
 }
 
+/// A token used to represent an error in the textified output.
+pub struct ErrorToken(
+    /// The kind of item this is in place of.
+    &'static str,
+);
+
+impl fmt::Display for ErrorToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "!{{{}}}", self.0)
+    }
+}
+
+pub struct MaybeToken<V: fmt::Display>(pub Result<V, ErrorToken>);
+
+impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Ok(t) => t.fmt(f),
+            Err(e) => e.fmt(f),
+        }
+    }
+}
+
 /// A trait for types that can be textified.
 ///
 /// This trait is used to convert a Substrait type into a string representation.
@@ -261,7 +360,7 @@ impl fmt::Display for TextifyError {
 /// TODO: Split into Resolve and Display traits, where Resolve is used to resolve
 /// references to their names and may error, and Display never errors.
 pub trait Textify {
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &mut S, w: &mut W) -> fmt::Result;
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result;
 
     // TODO: Prost can give this to us if substrait was generated with `enable_type_names`
     // <https://docs.rs/prost-build/latest/prost_build/struct.Config.html#method.enable_type_names>
@@ -277,38 +376,106 @@ pub trait Scope: Sized {
 
     fn options(&self) -> &OutputOptions;
     fn extensions(&self) -> &Self::Extensions;
-    fn errors(&mut self) -> &mut Self::Errors;
+    fn errors(&self) -> &Self::Errors;
 
-    fn push_error(&mut self, e: TextifyError) {
+    fn push_error(&self, e: Error) {
         self.errors().push(e);
     }
 
     /// Handle a failure to textify a value. Textify errors are written as
     /// "!{name}" to the output (where "name" is the type name), and
     /// the error is pushed to the error accumulator.
-    fn failure<W: fmt::Write>(&mut self, w: &mut W, e: TextifyError) -> Result<(), fmt::Error> {
-        match e.error_type {
-            TextifyErrorType::Fmt => return Err(fmt::Error),
-            _ => {
-                write!(w, "{}{}", ERROR_MARKER_START, e.message)?;
-                if let Some(ref lookup) = e.lookup {
-                    write!(w, ": {}", lookup)?;
-                }
-                write!(w, "{}", ERROR_MARKER_END)?;
-                self.errors().push(e.clone());
+    fn failure<E: Into<Error>>(&self, e: E) -> ErrorToken {
+        let e = e.into();
+        let token = ErrorToken(e.message());
+        self.push_error(e);
+        token
+    }
+
+    fn expect<'a, T: Textify>(&'a self, t: &'a Option<T>) -> MaybeToken<impl fmt::Display> {
+        match t {
+            Some(t) => MaybeToken(Ok(self.display(t))),
+            None => {
+                let err = TextifyError::invalid(
+                    T::name(),
+                    NONSPECIFIC,
+                    "Required field missing, None found",
+                );
+                let err_token = self.failure(err);
+                MaybeToken(Err(err_token))
             }
+        }
+    }
+
+    fn expect_ok<'a, T: Textify, E: Into<Error>>(
+        &'a self,
+        result: Result<&'a T, E>,
+    ) -> MaybeToken<impl fmt::Display + 'a> {
+        MaybeToken(match result {
+            Ok(t) => Ok(self.display(t)),
+            Err(e) => Err(self.failure(e)),
+        })
+    }
+
+    fn display<'a, T: Textify>(&'a self, value: &'a T) -> Displayable<'a, Self, T> {
+        Displayable { scope: self, value }
+    }
+
+    /// Wrap an iterator over textifiable items into a displayable that will
+    /// separate them with the given separator.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let items = vec![1, 2, 3];
+    /// let separated = self.separated(&items, ", ");
+    /// ```
+    fn separated<'a, T: Textify, I: IntoIterator<Item = &'a T> + Clone>(
+        &'a self,
+        items: I,
+        separator: &'static str,
+    ) -> Separated<'a, Self, T, I> {
+        Separated {
+            scope: self,
+            items,
+            separator,
+        }
+    }
+}
+
+pub struct Separated<'a, S: Scope, T: Textify + 'a, I: IntoIterator<Item = &'a T> + Clone> {
+    scope: &'a S,
+    items: I,
+    separator: &'static str,
+}
+
+impl<'a, S: Scope, T: Textify, I: IntoIterator<Item = &'a T> + Clone> fmt::Display
+    for Separated<'a, S, T, I>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, item) in self.items.clone().into_iter().enumerate() {
+            if i > 0 {
+                f.write_str(self.separator)?;
+            }
+            item.textify(self.scope, f)?;
         }
         Ok(())
     }
+}
 
-    fn expect<W: fmt::Write, T: Textify>(&mut self, w: &mut W, t: &Option<T>) -> fmt::Result {
-        match t {
-            Some(t) => t.textify(self, w),
-            None => self.failure(
-                w,
-                TextifyError::invalid(T::name(), NONSPECIFIC, "Required field missing, None found"),
-            ),
-        }
+pub struct Displayable<'a, S: Scope, T: Textify> {
+    scope: &'a S,
+    value: &'a T,
+}
+impl<'a, S: Scope, T: Textify> Displayable<'a, S, T> {
+    pub fn new(scope: &'a S, value: &'a T) -> Self {
+        Self { scope, value }
+    }
+}
+
+impl<'a, S: Scope, T: Textify> fmt::Display for Displayable<'a, S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value.textify(self.scope, f)
     }
 }
 
@@ -330,7 +497,7 @@ impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> Scope for ScopedContext<'a
         self.extensions
     }
 
-    fn errors(&mut self) -> &mut Self::Errors {
+    fn errors(&self) -> &Self::Errors {
         self.errors
     }
 }

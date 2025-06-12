@@ -1,5 +1,6 @@
 use crate::parser::{self, ScopedParse};
-use crate::textify::{ErrorVec, OutputOptions, ScopedContext, Textify};
+use crate::textify::foundation::ErrorList;
+use crate::textify::{ErrorQueue, OutputOptions, ScopedContext, Textify};
 use crate::{
     extensions::{ExtensionLookup, SimpleExtensions},
     textify::{Scope, foundation::ErrorAccumulator},
@@ -37,7 +38,7 @@ impl TestContext {
     }
 
     pub fn with_function(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_some());
+        assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
             .add_extension_function(uri, anchor, name.into())
             .unwrap();
@@ -45,7 +46,7 @@ impl TestContext {
     }
 
     pub fn with_type(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_some());
+        assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
             .add_extension_type(uri, anchor, name.into())
             .unwrap();
@@ -53,38 +54,39 @@ impl TestContext {
     }
 
     pub fn with_type_variation(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_some());
+        assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
             .add_extension_type_variation(uri, anchor, name.into())
             .unwrap();
         self
     }
 
-    pub fn scope<'e, E: ErrorAccumulator>(&'e self, errors: &'e mut E) -> impl Scope + 'e {
+    pub fn scope<'e, E: ErrorAccumulator>(&'e self, errors: &'e E) -> impl Scope + 'e {
         ScopedContext::new(&self.options, errors, &self.extensions)
     }
 
-    pub fn textify<T: Textify>(&self, t: T) -> (String, ErrorVec) {
-        let mut errors = ErrorVec::default();
+    pub fn textify<T: Textify>(&self, t: T) -> (String, ErrorList) {
+        let errors = ErrorQueue::default();
         let mut output = String::new();
-        {
-            let mut scope = self.scope(&mut errors);
-            t.textify(&mut scope, &mut output).unwrap();
-        }
-        (output, errors)
+
+        let scope = self.scope(&errors);
+        t.textify(&scope, &mut output).unwrap();
+
+        let evec = errors.into_iter().collect();
+        (output, ErrorList(evec))
     }
 
     pub fn textify_no_errors<T: Textify>(&self, t: T) -> String {
         let (s, errs) = self.textify(t);
-        assert!(errs.0.is_empty(), "{}", errs);
+        assert!(errs.is_empty(), "{} Errors: {}", errs.0.len(), errs.0[0]);
         s
     }
 
-    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<(T, ErrorVec), parser::Error> {
-        let mut errors = ErrorVec::default();
+    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<(T, ErrorQueue), parser::Error> {
+        let errors = ErrorQueue::default();
 
         let value = {
-            let mut scope = self.scope(&mut errors);
+            let mut scope = self.scope(&errors);
             T::parse(&mut scope, input)?
         };
         Ok((value, errors))
