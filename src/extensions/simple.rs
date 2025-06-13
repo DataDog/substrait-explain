@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::fmt;
 
-use pext::simple_extension_declaration::{
-    ExtensionFunction, ExtensionType, ExtensionTypeVariation, MappingType,
-};
+use pext::simple_extension_declaration::MappingType;
 use substrait::proto::extensions as pext;
 use thiserror::Error;
 
@@ -14,9 +12,9 @@ pub const EXTENSION_FUNCTIONS_HEADER: &str = "Functions:";
 pub const EXTENSION_TYPES_HEADER: &str = "Types:";
 pub const EXTENSION_TYPE_VARIATIONS_HEADER: &str = "Type Variations:";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExtensionKind {
-    Uri,
+    // Uri,
     Function,
     Type,
     TypeVariation,
@@ -25,7 +23,7 @@ pub enum ExtensionKind {
 impl ExtensionKind {
     pub fn name(&self) -> &'static str {
         match self {
-            ExtensionKind::Uri => "uri",
+            // ExtensionKind::Uri => "uri",
             ExtensionKind::Function => "function",
             ExtensionKind::Type => "type",
             ExtensionKind::TypeVariation => "type_variation",
@@ -36,7 +34,7 @@ impl ExtensionKind {
 impl fmt::Display for ExtensionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExtensionKind::Uri => write!(f, "URI"),
+            // ExtensionKind::Uri => write!(f, "URI"),
             ExtensionKind::Function => write!(f, "Function"),
             ExtensionKind::Type => write!(f, "Type"),
             ExtensionKind::TypeVariation => write!(f, "Type Variation"),
@@ -48,6 +46,14 @@ impl fmt::Display for ExtensionKind {
 pub enum ExtensionError {
     #[error("Extension declaration missing mapping type")]
     MissingMappingType,
+
+    #[error("Duplicate URI anchor {anchor} for {prev} and {name}")]
+    DuplicateUriAnchor {
+        anchor: u32,
+        prev: String,
+        name: String,
+    },
+
     #[error("Duplicate extension {kind} anchor {anchor} for {prev} and {name}")]
     DuplicateAnchor {
         kind: ExtensionKind,
@@ -81,13 +87,9 @@ pub enum ExtensionError {
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct SimpleExtensions {
     // Maps from extension URI anchor to URI
-    uris: BTreeMap<u32, pext::SimpleExtensionUri>,
-    // Maps from function anchor to (extension URI anchor, function name)
-    functions: BTreeMap<u32, ExtensionFunction>,
-    // Maps from type anchor to (extension URI anchor, type name)
-    types: BTreeMap<u32, ExtensionType>,
-    // Maps from type variation anchor to (extension URI anchor, type variation name)
-    type_variations: BTreeMap<u32, ExtensionTypeVariation>,
+    uris: BTreeMap<u32, String>,
+    // Maps from anchor and extension kind to (URI, name)
+    extensions: BTreeMap<(u32, ExtensionKind), (u32, String)>,
 }
 
 impl SimpleExtensions {
@@ -115,14 +117,18 @@ impl SimpleExtensions {
         for extension in extensions {
             match extension.mapping_type {
                 Some(MappingType::ExtensionType(t)) => {
-                    if let Err(e) =
-                        exts.add_extension_type(t.extension_uri_reference, t.type_anchor, t.name)
-                    {
+                    if let Err(e) = exts.add_extension(
+                        ExtensionKind::Type,
+                        t.extension_uri_reference,
+                        t.type_anchor,
+                        t.name,
+                    ) {
                         errors.push(e);
                     }
                 }
                 Some(MappingType::ExtensionFunction(f)) => {
-                    if let Err(e) = exts.add_extension_function(
+                    if let Err(e) = exts.add_extension(
+                        ExtensionKind::Function,
                         f.extension_uri_reference,
                         f.function_anchor,
                         f.name,
@@ -131,7 +137,8 @@ impl SimpleExtensions {
                     }
                 }
                 Some(MappingType::ExtensionTypeVariation(v)) => {
-                    if let Err(e) = exts.add_extension_type_variation(
+                    if let Err(e) = exts.add_extension(
+                        ExtensionKind::TypeVariation,
                         v.extension_uri_reference,
                         v.type_variation_anchor,
                         v.name,
@@ -151,34 +158,36 @@ impl SimpleExtensions {
     pub fn add_extension_uri(&mut self, uri: String, anchor: u32) -> Result<(), ExtensionError> {
         match self.uris.entry(anchor) {
             Entry::Occupied(e) => {
-                return Err(ExtensionError::DuplicateAnchor {
-                    kind: ExtensionKind::Uri,
+                return Err(ExtensionError::DuplicateUriAnchor {
                     anchor,
-                    prev: e.get().uri.clone(),
+                    prev: e.get().clone(),
                     name: uri,
                 });
             }
             Entry::Vacant(e) => {
-                e.insert(pext::SimpleExtensionUri {
-                    extension_uri_anchor: anchor,
-                    uri,
-                });
+                e.insert(uri);
             }
         }
         Ok(())
     }
 
-    // Helper function to return the correct error for missing URIs and/or duplicate anchors
-    fn missing_or_duplicate_error(
-        // Set to true if the URI is missing
-        missing_uri: bool,
+    pub fn add_extension(
+        &mut self,
         kind: ExtensionKind,
+        uri: u32,
         anchor: u32,
         name: String,
-        // Set to Some(name) if duplicate
-        prev: Option<String>,
-        uri: u32,
     ) -> Result<(), ExtensionError> {
+        let missing_uri = !self.uris.contains_key(&uri);
+
+        let prev = match self.extensions.entry((anchor, kind)) {
+            Entry::Occupied(e) => Some(e.get().1.clone()),
+            Entry::Vacant(v) => {
+                v.insert((uri, name.clone()));
+                None
+            }
+        };
+
         match (missing_uri, prev) {
             (true, Some(prev)) => Err(ExtensionError::DuplicateAndMissingUri {
                 kind,
@@ -203,107 +212,12 @@ impl SimpleExtensions {
         }
     }
 
-    pub fn add_extension_function(
-        &mut self,
-        uri: u32,
-        anchor: u32,
-        name: String,
-    ) -> Result<(), ExtensionError> {
-        let missing_uri = !self.uris.contains_key(&uri);
-
-        let duplicate = match self.functions.entry(anchor) {
-            Entry::Occupied(e) => Some(e.get().name.clone()),
-            Entry::Vacant(v) => {
-                v.insert(ExtensionFunction {
-                    extension_uri_reference: uri,
-                    function_anchor: anchor,
-                    name: name.clone(),
-                });
-                None
-            }
-        };
-        Self::missing_or_duplicate_error(
-            missing_uri,
-            ExtensionKind::Function,
-            anchor,
-            name,
-            duplicate,
-            uri,
-        )
-    }
-
-    pub fn add_extension_type(
-        &mut self,
-        uri: u32,
-        anchor: u32,
-        name: String,
-    ) -> Result<(), ExtensionError> {
-        let missing_uri = !self.uris.contains_key(&uri);
-
-        let duplicate = match self.types.entry(anchor) {
-            Entry::Occupied(e) => Some(e.get().name.clone()),
-            Entry::Vacant(v) => {
-                v.insert(ExtensionType {
-                    extension_uri_reference: uri,
-                    type_anchor: anchor,
-                    name: name.clone(),
-                });
-                None
-            }
-        };
-        Self::missing_or_duplicate_error(
-            missing_uri,
-            ExtensionKind::Type,
-            anchor,
-            name,
-            duplicate,
-            uri,
-        )
-    }
-
-    pub fn add_extension_type_variation(
-        &mut self,
-        uri: u32,
-        anchor: u32,
-        name: String,
-    ) -> Result<(), ExtensionError> {
-        let missing_uri = !self.uris.contains_key(&uri);
-
-        let duplicate = match self.type_variations.entry(anchor) {
-            Entry::Occupied(e) => Some(e.get().name.clone()),
-            Entry::Vacant(v) => {
-                v.insert(ExtensionTypeVariation {
-                    extension_uri_reference: uri,
-                    type_variation_anchor: anchor,
-                    name: name.clone(),
-                });
-                None
-            }
-        };
-
-        Self::missing_or_duplicate_error(
-            missing_uri,
-            ExtensionKind::TypeVariation,
-            anchor,
-            name,
-            duplicate,
-            uri,
-        )
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.uris.is_empty()
-            && self.functions.is_empty()
-            && self.types.is_empty()
-            && self.type_variations.is_empty()
+        self.uris.is_empty() && self.extensions.is_empty()
     }
 
     pub fn write<W: fmt::Write>(&self, w: &mut W, indent: &str) -> fmt::Result {
-        if self.uris.is_empty()
-            && self.functions.is_empty()
-            && self.types.is_empty()
-            && self.type_variations.is_empty()
-        {
+        if self.is_empty() {
             // No extensions, so no need to write anything.
             return Ok(());
         }
@@ -313,46 +227,31 @@ impl SimpleExtensions {
         if !self.uris.is_empty() {
             writeln!(w, "{}", EXTENSION_URIS_HEADER)?;
             for (anchor, uri) in &self.uris {
-                writeln!(w, "{}@{:3}: {}", indent, anchor, uri.uri)?;
+                writeln!(w, "{indent}@{anchor:3}: {uri}")?;
             }
         }
-        if !self.functions.is_empty() {
-            writeln!(w, "{}", EXTENSION_FUNCTIONS_HEADER)?;
-            for (anchor, function) in &self.functions {
-                writeln!(
-                    w,
-                    "{}#{anchor:3} @{uri_ref:3}: {name}",
-                    indent,
-                    anchor = anchor,
-                    uri_ref = function.extension_uri_reference,
-                    name = function.name
-                )?;
+
+        let kinds_and_headers = [
+            (ExtensionKind::Function, EXTENSION_FUNCTIONS_HEADER),
+            (ExtensionKind::Type, EXTENSION_TYPES_HEADER),
+            (
+                ExtensionKind::TypeVariation,
+                EXTENSION_TYPE_VARIATIONS_HEADER,
+            ),
+        ];
+        for (kind, header) in kinds_and_headers {
+            let mut filtered = self
+                .extensions
+                .iter()
+                .filter(|((_a, k), _)| *k == kind)
+                .peekable();
+            if filtered.peek().is_none() {
+                continue;
             }
-        }
-        if !self.types.is_empty() {
-            writeln!(w, "{}", EXTENSION_TYPES_HEADER)?;
-            for (anchor, typ) in &self.types {
-                writeln!(
-                    w,
-                    "{}#{anchor:3} @{uri_ref:3}: {name}",
-                    indent,
-                    anchor = anchor,
-                    uri_ref = typ.extension_uri_reference,
-                    name = typ.name
-                )?;
-            }
-        }
-        if !self.type_variations.is_empty() {
-            writeln!(w, "{}", EXTENSION_TYPE_VARIATIONS_HEADER)?;
-            for (anchor, variation) in &self.type_variations {
-                writeln!(
-                    w,
-                    "{}#{anchor:3} @{uri_ref:3}: {name}",
-                    indent,
-                    anchor = anchor,
-                    uri_ref = variation.extension_uri_reference,
-                    name = variation.name
-                )?;
+
+            writeln!(w, "{}", header)?;
+            for ((anchor, _), (uri_ref, name)) in filtered {
+                writeln!(w, "{}#{anchor:3} @{uri_ref:3}: {name}", indent, name = name)?;
             }
         }
         Ok(())
@@ -376,197 +275,107 @@ pub enum MissingReference {
     #[error("Mismatched {0}: {1}#{2}")]
     /// When the name of the value does not match the expected name
     Mismatched(ExtensionKind, String, u32),
-    #[error("Duplicate name without anchorfor {0}: {1}")]
+    #[error("Duplicate name without anchor for {0}: {1}")]
     DuplicateName(ExtensionKind, String),
 }
 
-impl MissingReference {
-    pub fn kind(&self) -> ExtensionKind {
-        match self {
-            MissingReference::MissingUri(_) => ExtensionKind::Uri,
-            MissingReference::MissingAnchor(k, _) => *k,
-            MissingReference::MissingName(k, _) => *k,
-            MissingReference::Mismatched(k, _, _) => *k,
-            MissingReference::DuplicateName(k, _) => *k,
-        }
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleExtension {
+    pub kind: ExtensionKind,
+    pub name: String,
+    pub anchor: u32,
+    pub uri: u32,
 }
 
-/// ExtensionLookup is a trait that provides methods for looking up extensions
-/// by anchor or name.
-///
-/// TODO: This is rather duplicative; can we combine many of these into simpler
-/// find<T>(anchor: u32), find<T>(name: &str) methods?
-pub trait ExtensionLookup {
-    fn find_uri(&self, anchor: u32) -> Result<pext::SimpleExtensionUri, MissingReference>;
-    fn find_function(&self, anchor: u32) -> Result<ExtensionFunction, MissingReference>;
-    fn find_type(&self, anchor: u32) -> Result<ExtensionType, MissingReference>;
-    fn find_type_variation(&self, anchor: u32) -> Result<ExtensionTypeVariation, MissingReference>;
-
-    fn find_functions(&self, name: &str) -> impl Iterator<Item = &ExtensionFunction>;
-    fn find_types(&self, name: &str) -> impl Iterator<Item = &ExtensionType>;
-    fn find_variations(&self, name: &str) -> impl Iterator<Item = &ExtensionTypeVariation>;
-
-    fn find_function_with_anchor(
-        &self,
-        name: &str,
-        anchor: u32,
-    ) -> Result<ExtensionFunction, MissingReference> {
-        let func = self.find_function(anchor)?;
-        if func.name != name {
-            return Err(MissingReference::Mismatched(
-                ExtensionKind::Function,
-                name.to_string(),
-                anchor,
-            ));
-        }
-        Ok(func)
-    }
-
-    fn find_type_with_anchor(
-        &self,
-        name: &str,
-        anchor: u32,
-    ) -> Result<ExtensionType, MissingReference> {
-        let typ = self.find_type(anchor)?;
-        if typ.name != name {
-            return Err(MissingReference::Mismatched(
-                ExtensionKind::Type,
-                name.to_string(),
-                anchor,
-            ));
-        }
-        Ok(typ)
-    }
-
-    fn find_type_variation_with_anchor(
-        &self,
-        name: &str,
-        anchor: u32,
-    ) -> Result<ExtensionTypeVariation, MissingReference> {
-        let var = self.find_type_variation(anchor)?;
-        if var.name != name {
-            return Err(MissingReference::Mismatched(
-                ExtensionKind::TypeVariation,
-                name.to_string(),
-                anchor,
-            ));
-        }
-        Ok(var)
-    }
-
-    fn lookup_type(&self, name: &str) -> Result<ExtensionType, MissingReference> {
-        let mut iter = self.find_types(name);
-        let first = match iter.next() {
-            Some(t) => t,
-            None => {
-                return Err(MissingReference::MissingName(
-                    ExtensionKind::Type,
-                    name.to_string(),
-                ));
-            }
-        };
-        if iter.next().is_some() {
-            return Err(MissingReference::DuplicateName(
-                ExtensionKind::Type,
-                name.to_string(),
-            ));
-        }
-        Ok(first.clone())
-    }
-
-    fn lookup_function(&self, name: &str) -> Result<ExtensionFunction, MissingReference> {
-        let mut iter = self.find_functions(name);
-        let first = match iter.next() {
-            Some(f) => f,
-            None => {
-                return Err(MissingReference::MissingName(
-                    ExtensionKind::Function,
-                    name.to_string(),
-                ));
-            }
-        };
-
-        if iter.next().is_some() {
-            return Err(MissingReference::DuplicateName(
-                ExtensionKind::Function,
-                name.to_string(),
-            ));
-        }
-        Ok(first.clone())
-    }
-
-    fn lookup_type_variation(
-        &self,
-        name: &str,
-    ) -> Result<ExtensionTypeVariation, MissingReference> {
-        let mut iter = self.find_variations(name);
-        let first = match iter.next() {
-            Some(v) => v,
-            None => {
-                return Err(MissingReference::MissingName(
-                    ExtensionKind::TypeVariation,
-                    name.to_string(),
-                ));
-            }
-        };
-        if iter.next().is_some() {
-            return Err(MissingReference::DuplicateName(
-                ExtensionKind::TypeVariation,
-                name.to_string(),
-            ));
-        }
-        Ok(first.clone())
-    }
-}
-
-impl ExtensionLookup for SimpleExtensions {
-    fn find_uri(&self, anchor: u32) -> Result<pext::SimpleExtensionUri, MissingReference> {
+impl SimpleExtensions {
+    pub fn find_uri(&self, anchor: u32) -> Result<&str, MissingReference> {
         self.uris
             .get(&anchor)
-            .cloned()
+            .map(String::as_str)
             .ok_or(MissingReference::MissingUri(anchor))
     }
 
-    fn find_function(&self, anchor: u32) -> Result<ExtensionFunction, MissingReference> {
-        self.functions
-            .get(&anchor)
-            .cloned()
-            .ok_or(MissingReference::MissingAnchor(
-                ExtensionKind::Function,
-                anchor,
-            ))
+    pub fn find_by_anchor(
+        &self,
+        kind: ExtensionKind,
+        anchor: u32,
+    ) -> Result<(u32, &str), MissingReference> {
+        let &(uri, ref name) = self
+            .extensions
+            .get(&(anchor, kind))
+            .ok_or(MissingReference::MissingAnchor(kind, anchor))?;
+
+        Ok((uri, name))
     }
 
-    fn find_type(&self, anchor: u32) -> Result<ExtensionType, MissingReference> {
-        self.types
-            .get(&anchor)
-            .cloned()
-            .ok_or(MissingReference::MissingAnchor(ExtensionKind::Type, anchor))
+    pub fn find_by_name<'a>(
+        &'a self,
+        kind: ExtensionKind,
+        name: &'a str,
+    ) -> Result<u32, MissingReference> {
+        let mut matches = self
+            .extensions
+            .iter()
+            .filter(move |((_a, k), (_, n))| *k == kind && n.as_str() == name)
+            .map(|((anchor, _), _)| *anchor);
+
+        let anchor = matches
+            .next()
+            .ok_or(MissingReference::MissingName(kind, name.to_string()))?;
+
+        match matches.next() {
+            Some(_) => Err(MissingReference::DuplicateName(kind, name.to_string())),
+            None => Ok(anchor),
+        }
     }
 
-    fn find_type_variation(&self, anchor: u32) -> Result<ExtensionTypeVariation, MissingReference> {
-        self.type_variations
-            .get(&anchor)
-            .cloned()
-            .ok_or(MissingReference::MissingAnchor(
-                ExtensionKind::TypeVariation,
-                anchor,
-            ))
-    }
+    // Validate that the extension exists, has the given name and anchor, and
+    // returns true if the name is unique for that extension kind.
+    //
+    // If the name is not unique, returns Ok(false). This is a valid case where
+    // two extensions have the same name (and presumably different URIs), but
+    // different anchors.
+    pub fn is_name_unique(
+        &self,
+        kind: ExtensionKind,
+        anchor: u32,
+        name: &str,
+    ) -> Result<bool, MissingReference> {
+        let mut found = false;
+        let mut other = false;
+        for (&(a, k), (_, n)) in self.extensions.iter() {
+            if k != kind {
+                continue;
+            }
 
-    fn find_functions(&self, name: &str) -> impl Iterator<Item = &ExtensionFunction> {
-        self.functions.values().filter(move |f| f.name == name)
-    }
+            if a == anchor {
+                found = true;
+                if n != name {
+                    return Err(MissingReference::Mismatched(kind, name.to_string(), anchor));
+                }
+                continue;
+            }
 
-    fn find_types(&self, name: &str) -> impl Iterator<Item = &ExtensionType> {
-        self.types.values().filter(move |f| f.name == name)
-    }
+            if n.as_str() != name {
+                // Neither anchor nor name match, so this is irrelevant.
+                continue;
+            }
 
-    fn find_variations(&self, name: &str) -> impl Iterator<Item = &ExtensionTypeVariation> {
-        self.type_variations
-            .values()
-            .filter(move |f| f.name == name)
+            // At this point, the anchor is different, but the name is the same.
+            other = true;
+            if found {
+                break;
+            }
+        }
+
+        match (found, other) {
+            // Found the one we're looking for, and no other matches.
+            (true, false) => Ok(true),
+            // Found the one we're looking for, and another match.
+            (true, true) => Ok(false),
+            // Didn't find the one we're looking for;
+            (false, _) => Err(MissingReference::MissingAnchor(kind, anchor)),
+        }
     }
 }
 
@@ -630,7 +439,6 @@ mod tests {
         extensions: impl IntoIterator<Item = pext::SimpleExtensionDeclaration>,
     ) -> SimpleExtensions {
         let (exts, errs) = SimpleExtensions::from_extensions(uris, extensions);
-        dbg!(&exts);
         assert_no_errors(&errs);
         exts
     }
@@ -639,12 +447,20 @@ mod tests {
     fn test_extension_lookup_empty() {
         let lookup = SimpleExtensions::new();
         assert!(lookup.find_uri(1).is_err());
-        assert!(lookup.find_function(1).is_err());
-        assert!(lookup.find_type(1).is_err());
-        assert!(lookup.find_type_variation(1).is_err());
-        assert_eq!(lookup.find_functions("any").count(), 0);
-        assert_eq!(lookup.find_types("any").count(), 0);
-        assert_eq!(lookup.find_variations("any").count(), 0);
+        assert!(lookup.find_by_anchor(ExtensionKind::Function, 1).is_err());
+        assert!(lookup.find_by_anchor(ExtensionKind::Type, 1).is_err());
+        assert!(
+            lookup
+                .find_by_anchor(ExtensionKind::TypeVariation, 1)
+                .is_err()
+        );
+        assert!(lookup.find_by_name(ExtensionKind::Function, "any").is_err());
+        assert!(lookup.find_by_name(ExtensionKind::Type, "any").is_err());
+        assert!(
+            lookup
+                .find_by_name(ExtensionKind::TypeVariation, "any")
+                .is_err()
+        );
     }
 
     #[test]
@@ -657,28 +473,33 @@ mod tests {
         ];
         let exts = unwrap_new_extensions(uris, extensions);
 
-        assert_eq!(exts.find_uri(1).unwrap().uri, "uri1");
-        assert_eq!(exts.find_uri(2).unwrap().uri, "uri2");
+        assert_eq!(exts.find_uri(1).unwrap(), "uri1");
+        assert_eq!(exts.find_uri(2).unwrap(), "uri2");
         assert!(exts.find_uri(3).is_err());
 
-        let func1 = exts.find_function(10).unwrap();
-        assert_eq!(func1.name, "func1");
-        assert_eq!(func1.extension_uri_reference, 1);
-        assert!(exts.find_function(11).is_err());
+        let (uri, name) = exts.find_by_anchor(ExtensionKind::Function, 10).unwrap();
+        assert_eq!(name, "func1");
+        assert_eq!(uri, 1);
+        assert!(exts.find_by_anchor(ExtensionKind::Function, 11).is_err());
 
-        let type1 = exts.find_type(20).unwrap();
-        assert_eq!(type1.name, "type1");
-        assert_eq!(type1.extension_uri_reference, 1);
-        assert!(exts.find_type(21).is_err());
+        let (uri, name) = exts.find_by_anchor(ExtensionKind::Type, 20).unwrap();
+        assert_eq!(name, "type1");
+        assert_eq!(uri, 1);
+        assert!(exts.find_by_anchor(ExtensionKind::Type, 21).is_err());
 
-        let var1 = exts.find_type_variation(30).unwrap();
-        assert_eq!(var1.name, "var1");
-        assert_eq!(var1.extension_uri_reference, 2);
-        assert!(exts.find_type_variation(31).is_err());
+        let (uri, name) = exts
+            .find_by_anchor(ExtensionKind::TypeVariation, 30)
+            .unwrap();
+        assert_eq!(name, "var1");
+        assert_eq!(uri, 2);
+        assert!(
+            exts.find_by_anchor(ExtensionKind::TypeVariation, 31)
+                .is_err()
+        );
     }
 
     #[test]
-    fn test_from_extensions_duplicates_overwrite() {
+    fn test_from_extensions_duplicates() {
         let uris = vec![
             new_uri(1, "uri_old"),
             new_uri(1, "uri_new"),
@@ -693,8 +514,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                ExtensionError::DuplicateAnchor {
-                    kind: ExtensionKind::Uri,
+                ExtensionError::DuplicateUriAnchor {
                     anchor: 1,
                     name: "uri_new".to_string(),
                     prev: "uri_old".to_string()
@@ -714,8 +534,12 @@ mod tests {
             ]
         );
 
-        assert_eq!(exts.find_uri(1).unwrap().uri, "uri_old");
-        assert_eq!(exts.find_function(10).unwrap().name, "func_old");
+        // This is a duplicate anchor, so the first one is used.
+        assert_eq!(exts.find_uri(1).unwrap(), "uri_old");
+        assert_eq!(
+            exts.find_by_anchor(ExtensionKind::Function, 10).unwrap(),
+            (1, "func_old")
+        );
     }
 
     #[test]
@@ -740,26 +564,48 @@ mod tests {
         ];
         let exts = unwrap_new_extensions(uris, extensions);
 
-        let funcs_name1: Vec<_> = exts.find_functions("name1").collect();
-        assert_eq!(funcs_name1.len(), 2);
-        assert!(funcs_name1.iter().any(|f| f.function_anchor == 10));
-        assert!(funcs_name1.iter().any(|f| f.function_anchor == 12));
+        let err = exts
+            .find_by_name(ExtensionKind::Function, "name1")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            MissingReference::DuplicateName(ExtensionKind::Function, "name1".to_string())
+        );
 
-        let funcs_name2: Vec<_> = exts.find_functions("name2").collect();
-        assert_eq!(funcs_name2.len(), 1);
-        assert_eq!(funcs_name2[0].function_anchor, 11);
+        let found = exts.find_by_name(ExtensionKind::Function, "name2").unwrap();
+        assert_eq!(found, 11);
 
-        assert_eq!(exts.find_functions("non_existent_name").count(), 0);
+        let found = exts
+            .find_by_name(ExtensionKind::Type, "type_name1")
+            .unwrap();
+        assert_eq!(found, 20);
 
-        let types_name1: Vec<_> = exts.find_types("type_name1").collect();
-        assert_eq!(types_name1.len(), 1);
-        assert_eq!(types_name1[0].type_anchor, 20);
-        assert_eq!(exts.find_types("non_existent_type_name").count(), 0);
+        let err = exts
+            .find_by_name(ExtensionKind::Type, "non_existent_type_name")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            MissingReference::MissingName(
+                ExtensionKind::Type,
+                "non_existent_type_name".to_string()
+            )
+        );
 
-        let vars_name1: Vec<_> = exts.find_variations("var_name1").collect();
-        assert_eq!(vars_name1.len(), 1);
-        assert_eq!(vars_name1[0].type_variation_anchor, 30);
-        assert_eq!(exts.find_variations("non_existent_var_name").count(), 0);
+        let found = exts
+            .find_by_name(ExtensionKind::TypeVariation, "var_name1")
+            .unwrap();
+        assert_eq!(found, 30);
+
+        let err = exts
+            .find_by_name(ExtensionKind::TypeVariation, "non_existent_var_name")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            MissingReference::MissingName(
+                ExtensionKind::TypeVariation,
+                "non_existent_var_name".to_string()
+            )
+        );
     }
 
     #[test]

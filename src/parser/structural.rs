@@ -157,29 +157,12 @@ impl ExtensionParser {
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
                 let decl = super::extensions::SimpleExtensionDeclaration::from_str(s)?;
-                match extension_kind {
-                    ExtensionKind::Function => self.extensions.add_extension_function(
-                        decl.uri_anchor,
-                        decl.anchor,
-                        decl.name,
-                    )?,
-                    ExtensionKind::Type => self.extensions.add_extension_type(
-                        decl.uri_anchor,
-                        decl.anchor,
-                        decl.name,
-                    )?,
-                    ExtensionKind::TypeVariation => self.extensions.add_extension_type_variation(
-                        decl.uri_anchor,
-                        decl.anchor,
-                        decl.name,
-                    )?,
-                    ExtensionKind::Uri => {
-                        // This case should ideally not be reached if state management is correct,
-                        // as URIs are handled by parse_extension_uris.
-                        // However, to be exhaustive:
-                        return Err(ExtensionParseError::UnexpectedLine(self.state));
-                    }
-                }
+                self.extensions.add_extension(
+                    extension_kind,
+                    decl.uri_anchor,
+                    decl.anchor,
+                    decl.name,
+                )?;
                 Ok(())
             }
             _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
@@ -324,16 +307,16 @@ mod tests {
             .add_extension_uri("/uri/specific_funcs".to_string(), 2)
             .unwrap();
         expected_extensions
-            .add_extension_function(1, 10, "func_a".to_string())
+            .add_extension(ExtensionKind::Function, 1, 10, "func_a".to_string())
             .unwrap();
         expected_extensions
-            .add_extension_function(2, 11, "func_b_special".to_string())
+            .add_extension(ExtensionKind::Function, 2, 11, "func_b_special".to_string())
             .unwrap();
         expected_extensions
-            .add_extension_type(1, 20, "SomeType".to_string())
+            .add_extension(ExtensionKind::Type, 1, 20, "SomeType".to_string())
             .unwrap();
         expected_extensions
-            .add_extension_type_variation(2, 30, "VarX".to_string())
+            .add_extension(ExtensionKind::TypeVariation, 2, 30, "VarX".to_string())
             .unwrap();
 
         let mut parser = ExtensionParser::new();

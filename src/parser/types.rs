@@ -1,12 +1,36 @@
 use pest::iterators::Pair;
-use substrait::proto::{
-    self, Type,
-    r#type::{Kind, Nullability, Parameter},
-};
-
-use crate::{extensions::ExtensionLookup, textify::Scope};
+use substrait::proto::r#type::{Kind, Nullability, Parameter};
+use substrait::proto::{self, Type};
 
 use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
+use crate::extensions::simple::ExtensionKind;
+use crate::textify::Scope;
+
+// Given a name and an optional anchor, get the anchor and validate it. Errors will be pushed to the Scope error accumulator,
+// and the anchor will be returned if it is valid.
+pub(crate) fn get_and_validate_anchor(
+    scope: &impl Scope,
+    kind: ExtensionKind,
+    anchor: Option<u32>,
+    name: &str,
+) -> u32 {
+    match anchor {
+        Some(a) => match scope.extensions().is_name_unique(kind, a, name) {
+            Ok(_) => a,
+            Err(e) => {
+                scope.push_error(e.into());
+                a
+            }
+        },
+        None => match scope.extensions().find_by_name(kind, name) {
+            Ok(a) => a,
+            Err(e) => {
+                scope.push_error(e.into());
+                0
+            }
+        },
+    }
+}
 
 impl ParsePair for Nullability {
     fn rule() -> Rule {
@@ -136,27 +160,12 @@ fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
 
     let nullability = iter.parse_next::<Nullability>();
     let parameters = match iter.pop_if(Rule::parameters) {
-        Some(p) => dbg!(parse_parameters(scope, p)),
+        Some(p) => parse_parameters(scope, p),
         None => Vec::new(),
     };
     iter.done();
 
-    let anchor = match anchor {
-        None => match scope.extensions().lookup_type(name) {
-            Ok(t) => t.type_anchor,
-            Err(e) => {
-                scope.push_error(e.into());
-                0
-            }
-        },
-        Some(anchor) => match scope.extensions().find_type_with_anchor(name, anchor) {
-            Ok(t) => t.type_anchor,
-            Err(e) => {
-                scope.push_error(e.into());
-                anchor
-            }
-        },
-    };
+    let anchor = get_and_validate_anchor(scope, ExtensionKind::Type, anchor, name);
 
     Type {
         kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
@@ -190,9 +199,10 @@ mod tests {
     use pest::Parser;
     use substrait::proto::r#type::{I64, Kind, Nullability};
 
-    use crate::{fixtures::TestContext, parser::ExpressionParser, textify::ErrorQueue};
-
     use super::*;
+    use crate::fixtures::TestContext;
+    use crate::parser::ExpressionParser;
+    use crate::textify::ErrorQueue;
 
     #[test]
     fn test_parse_simple_type() {

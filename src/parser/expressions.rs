@@ -1,20 +1,17 @@
-use substrait::proto::{
-    Expression, FunctionArgument, Type,
-    expression::{
-        FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction,
-        field_reference::ReferenceType, literal::LiteralType, reference_segment,
-    },
-    function_argument::ArgType,
-    r#type::{I64, Kind, Nullability},
+use substrait::proto::expression::field_reference::ReferenceType;
+use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::{
+    FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
 };
-
-use crate::{
-    extensions::ExtensionLookup,
-    parser::ScopedParsePair,
-    textify::{Scope, TextifyError},
-};
+use substrait::proto::function_argument::ArgType;
+use substrait::proto::r#type::{I64, Kind, Nullability};
+use substrait::proto::{Expression, FunctionArgument, Type};
 
 use super::{ParsePair, Rule, unescape_string, unwrap_single_pair};
+use crate::extensions::simple::ExtensionKind;
+use crate::parser::ScopedParsePair;
+use crate::parser::types::get_and_validate_anchor;
+use crate::textify::{Scope, TextifyError};
 
 fn reference(index: i32) -> FieldReference {
     // XXX: Why is it so hard to make a struct field reference? This is
@@ -171,22 +168,7 @@ impl ScopedParsePair for ScalarFunction {
             panic!("Expected no more pairs, found '{}': {:?}", v.as_str(), v);
         }
 
-        let anchor = match anchor {
-            Some(a) => match scope.extensions().find_function_with_anchor(&name.0, a) {
-                Ok(_) => a,
-                Err(e) => {
-                    scope.push_error(e.into());
-                    a
-                }
-            },
-            None => match scope.extensions().lookup_function(&name.0) {
-                Ok(f) => f.function_anchor,
-                Err(e) => {
-                    scope.push_error(e.into());
-                    0
-                }
-            },
-        };
+        let anchor = get_and_validate_anchor(scope, ExtensionKind::Function, anchor, &name.0);
 
         ScalarFunction {
             function_reference: anchor,
@@ -250,9 +232,12 @@ impl ParsePair for Name {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{fixtures::TestContext, parser::ExpressionParser, textify::ErrorQueue};
     use pest::Parser as PestParser;
+
+    use super::*;
+    use crate::fixtures::TestContext;
+    use crate::parser::ExpressionParser;
+    use crate::textify::ErrorQueue;
 
     fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();

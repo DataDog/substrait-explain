@@ -1,10 +1,8 @@
+use crate::extensions::SimpleExtensions;
+use crate::extensions::simple::ExtensionKind;
 use crate::parser::{self, ScopedParse};
-use crate::textify::foundation::ErrorList;
-use crate::textify::{ErrorQueue, OutputOptions, ScopedContext, Textify};
-use crate::{
-    extensions::{ExtensionLookup, SimpleExtensions},
-    textify::{Scope, foundation::ErrorAccumulator},
-};
+use crate::textify::foundation::{ErrorAccumulator, ErrorList};
+use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
 
 pub struct TestContext {
     pub options: OutputOptions,
@@ -40,7 +38,7 @@ impl TestContext {
     pub fn with_function(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
-            .add_extension_function(uri, anchor, name.into())
+            .add_extension(ExtensionKind::Function, uri, anchor, name.into())
             .unwrap();
         self
     }
@@ -48,7 +46,7 @@ impl TestContext {
     pub fn with_type(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
-            .add_extension_type(uri, anchor, name.into())
+            .add_extension(ExtensionKind::Type, uri, anchor, name.into())
             .unwrap();
         self
     }
@@ -56,7 +54,7 @@ impl TestContext {
     pub fn with_type_variation(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
         assert!(self.extensions.find_uri(uri).is_ok());
         self.extensions
-            .add_extension_type_variation(uri, anchor, name.into())
+            .add_extension(ExtensionKind::TypeVariation, uri, anchor, name.into())
             .unwrap();
         self
     }
@@ -65,7 +63,7 @@ impl TestContext {
         ScopedContext::new(&self.options, errors, &self.extensions)
     }
 
-    pub fn textify<T: Textify>(&self, t: T) -> (String, ErrorList) {
+    pub fn textify<T: Textify>(&self, t: &T) -> (String, ErrorList) {
         let errors = ErrorQueue::default();
         let mut output = String::new();
 
@@ -76,7 +74,7 @@ impl TestContext {
         (output, ErrorList(evec))
     }
 
-    pub fn textify_no_errors<T: Textify>(&self, t: T) -> String {
+    pub fn textify_no_errors<T: Textify>(&self, t: &T) -> String {
         let (s, errs) = self.textify(t);
         assert!(errs.is_empty(), "{} Errors: {}", errs.0.len(), errs.0[0]);
         s

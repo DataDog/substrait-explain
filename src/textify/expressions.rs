@@ -9,9 +9,9 @@ use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
 
 use super::{Scope, Textify, TextifyError};
-use crate::extensions::ExtensionLookup;
-use crate::textify::foundation::MaybeToken;
-use crate::textify::types::{Anchor, OutputType};
+use crate::extensions::SimpleExtensions;
+use crate::extensions::simple::ExtensionKind;
+use crate::textify::types::{NamedAnchor, OutputType};
 
 // …(…) for function call
 // […] for variant
@@ -107,11 +107,11 @@ pub fn timestamp_to_string(t: i64) -> String {
 }
 
 trait Kinded {
-    fn kind<E: ExtensionLookup>(&self, ctx: &E) -> Option<Kind>;
+    fn kind(&self, ctx: &SimpleExtensions) -> Option<Kind>;
 }
 
 impl Kinded for LiteralType {
-    fn kind<E: ExtensionLookup>(&self, _ctx: &E) -> Option<Kind> {
+    fn kind(&self, _ctx: &SimpleExtensions) -> Option<Kind> {
         match self {
             LiteralType::Boolean(_) => Some(Kind::Bool(ptype::Boolean {
                 type_variation_reference: 0,
@@ -552,12 +552,9 @@ impl Textify for ScalarFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let ext_lookup = ctx.extensions();
-        let ext = ext_lookup.find_function(self.function_reference);
-        let name = MaybeToken(match ext {
-            Ok(ref extf) => Ok(extf.name.as_str()),
-            Err(e) => Err(ctx.failure(e)),
-        });
+        let name_and_anchor =
+            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
+        let name_and_anchor = ctx.display(&name_and_anchor);
 
         let args = ctx.separated(&self.arguments, ", ");
         let options = ctx.separated(&self.options, ", ");
@@ -566,11 +563,14 @@ impl Textify for ScalarFunction {
         } else {
             ", "
         };
-        let anchor = Anchor(self.function_reference);
-        let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
 
-        write!(w, "{name}{anchor}({args}{between}{options}){output_type}")?;
+        let output = OutputType(self.output_type.as_ref());
+        let output_type = ctx.optional(&output, ctx.options().fn_types);
+
+        write!(
+            w,
+            "{name_and_anchor}({args}{between}{options}){output_type}"
+        )?;
         Ok(())
     }
 }
@@ -736,7 +736,6 @@ impl Textify for Expression {
 
 #[cfg(test)]
 mod tests {
-    use super::super::OutputOptions;
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
@@ -747,7 +746,7 @@ mod tests {
         let ctx = TestContext::new();
 
         let literal = LiteralType::Boolean(true);
-        assert_eq!(ctx.textify_no_errors(literal), "true");
+        assert_eq!(ctx.textify_no_errors(&literal), "true");
     }
 
     #[test]
@@ -756,7 +755,7 @@ mod tests {
 
         // Test empty expression
         let expr_empty = Expression { rex_type: None }; // Renamed to avoid conflict
-        let (s, errs) = ctx.textify(expr_empty);
+        let (s, errs) = ctx.textify(&expr_empty);
         assert!(!errs.is_empty());
         assert_eq!(s, "!{RexType}");
 
@@ -768,7 +767,7 @@ mod tests {
                 literal_type: Some(expr::literal::LiteralType::Boolean(true)),
             })),
         };
-        assert_eq!(ctx.textify_no_errors(expr_lit), "true");
+        assert_eq!(ctx.textify_no_errors(&expr_lit), "true");
     }
 
     #[test]
@@ -787,7 +786,7 @@ mod tests {
         // If strict=true, it would be an error.
         // Assuming default OutputOptions has strict = false.
         // ScopedContext.options() has strict. Default OutputOptions has strict: false.
-        let (s, errq) = ctx.textify(func);
+        let (s, errq) = ctx.textify(&func);
         let errs: Vec<_> = errq.0;
         match errs[0] {
             Error::Lookup(MissingReference::MissingAnchor(k, a)) => {
@@ -807,14 +806,12 @@ mod tests {
             #[allow(deprecated)]
             args: vec![],
         });
-        let s = ctx.textify_no_errors(func);
-        assert_eq!(s, "first#100()");
+        let s = ctx.textify_no_errors(&func);
+        assert_eq!(s, "first()");
 
         // Test for duplicated function name requiring anchor
-        let options_show_anchor = OutputOptions {
-            show_simple_extension_anchors: false, // Will be overridden by duplicate detection
-            ..Default::default()
-        };
+        let options_show_anchor = Default::default();
+
         let ctx = TestContext::new()
             .with_options(options_show_anchor)
             .with_uri(1, "somewhere_on_the_internet")
@@ -838,7 +835,7 @@ mod tests {
             #[allow(deprecated)]
             args: vec![],
         });
-        let s = ctx.textify_no_errors(rex_dup);
+        let s = ctx.textify_no_errors(&rex_dup);
         assert_eq!(s, "duplicated#231(true)");
     }
 }

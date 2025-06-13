@@ -28,3 +28,9 @@ cargo +nightly fmt -- --unstable-features --config imports_granularity=Module,gr
 - [`group_imports`](https://rust-lang.github.io/rustfmt/?version=v1.8.0&search=#group_imports) sets how imports are grouped; `StdExternalCrate` puts standard library in one group, external dependencies in another, and ones from this crate in a third.
 
 As these require a nightly release, they aren't currently part of the git hooks or CI.
+
+## TODO
+
+- Some Rels
+- Minimal Documentation
+- Release

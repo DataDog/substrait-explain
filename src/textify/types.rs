@@ -7,8 +7,8 @@ use substrait::proto::r#type as ptype;
 
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{Textify, TextifyError};
-use crate::extensions::ExtensionLookup;
-use crate::textify::foundation::MaybeToken;
+use crate::extensions::simple::ExtensionKind;
+use crate::textify::foundation::{ErrorToken, MaybeToken, Visibility};
 
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
 
@@ -39,21 +39,85 @@ impl Textify for ptype::Nullability {
     }
 }
 
-pub struct Anchor(pub u32);
+#[derive(Debug, Copy, Clone)]
+pub struct Anchor {
+    reference: u32,
+    required: bool,
+}
+
+impl Anchor {
+    pub fn new(reference: u32, required: bool) -> Self {
+        Self {
+            reference,
+            required,
+        }
+    }
+}
 
 impl Textify for Anchor {
     fn name() -> &'static str {
         "Anchor"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "#{}", self.0)
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match ctx.options().show_simple_extension_anchors {
+            Visibility::Never => return Ok(()),
+            Visibility::Required if !self.required => {
+                return Ok(());
+            }
+            Visibility::Required => {}
+            Visibility::Always => {}
+        }
+        write!(w, "#{}", self.reference)
     }
 }
 
-impl fmt::Display for Anchor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}", self.0)
+#[derive(Debug, Copy, Clone)]
+pub struct NamedAnchor<'a> {
+    pub name: MaybeToken<&'a str>,
+    pub anchor: u32,
+    // True if the name is valid and unique for the extension kind, false if not.
+    pub unique: bool,
+}
+
+impl<'a> NamedAnchor<'a> {
+    /// Lookup an anchor in the extensions, and return a NamedAnchor. Errors will be pushed to the ErrorAccumulator along the way.
+    pub fn lookup<S: Scope>(ctx: &'a S, kind: ExtensionKind, anchor: u32) -> Self {
+        let ext = ctx.extensions().find_by_anchor(kind, anchor);
+        let found = ext.map_err(|e| ctx.push_error(e.into())).ok();
+
+        let (name, unique) = match found {
+            Some((_, n)) => match ctx.extensions().is_name_unique(kind, anchor, n) {
+                // Nothing wrong; may or may not be unique.
+                Ok(unique) => (MaybeToken(Ok(n)), unique),
+                Err(e) => {
+                    ctx.push_error(e.into());
+                    (MaybeToken(Err(ErrorToken(kind.name()))), false)
+                }
+            },
+            None => (MaybeToken(Err(ErrorToken(kind.name()))), false),
+        };
+        Self {
+            name,
+            anchor,
+            unique,
+        }
+    }
+}
+
+impl<'a> Textify for NamedAnchor<'a> {
+    fn name() -> &'static str {
+        "NamedAnchor"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let anchor = Anchor::new(self.anchor, !self.unique);
+        write!(
+            w,
+            "{name}{anchor}",
+            name = self.name,
+            anchor = ctx.display(&anchor)
+        )
     }
 }
 
@@ -61,6 +125,7 @@ impl fmt::Display for Anchor {
 ///
 /// This is optional, and if present, it must be the last argument in the
 /// function call.
+#[derive(Debug, Copy, Clone)]
 pub struct OutputType<T: Deref<Target = proto::Type>>(pub Option<T>);
 
 impl<T: Deref<Target = proto::Type>> Textify for OutputType<T> {
@@ -89,14 +154,13 @@ impl Textify for TypeVariation {
             // This is the default, this doesn't count as a type variation
             return Ok(());
         }
-        let type_variation = ctx.extensions().find_type_variation(anchor);
+        let name_and_anchor = NamedAnchor::lookup(ctx, ExtensionKind::TypeVariation, anchor);
 
-        let name = MaybeToken(match type_variation {
-            Ok(ref ext) => Ok(ext.name.as_str()),
-            Err(e) => Err(ctx.failure(e)),
-        });
-
-        write!(w, "[{name}{anchor}]", name = name, anchor = Anchor(anchor))
+        write!(
+            w,
+            "[{name_and_anchor}]",
+            name_and_anchor = ctx.display(&name_and_anchor)
+        )
     }
 }
 
@@ -198,30 +262,20 @@ impl Textify for ptype::UserDefined {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         {
-            let type_reference = ctx.extensions().find_type(self.type_reference);
+            let name_and_anchor =
+                NamedAnchor::lookup(ctx, ExtensionKind::Type, self.type_reference);
+
             let param_vec: Vec<Option<Parameter>> = self
                 .type_parameters
                 .iter()
                 .map(|t| t.parameter.clone())
                 .collect();
             let params = Parameters(&param_vec);
-            let typ = match type_reference {
-                Ok(t) => t,
-                Err(e) => {
-                    return write!(
-                        w,
-                        "{err}{anchor}",
-                        err = ctx.failure(e),
-                        anchor = ctx.display(&Anchor(self.type_reference))
-                    );
-                }
-            };
 
             write!(
                 w,
-                "{name}{anchor}{null}{var}{params}",
-                name = typ.name,
-                anchor = ctx.display(&Anchor(self.type_reference)),
+                "{name_and_anchor}{null}{var}{params}",
+                name_and_anchor = ctx.display(&name_and_anchor),
                 null = ctx.display(&self.nullability()),
                 var = ctx.display(&TypeVariation(self.type_variation_reference)),
                 params = ctx.display(&params)
@@ -387,11 +441,9 @@ impl Textify for proto::Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        extensions::simple::{ExtensionKind, MissingReference},
-        fixtures::TestContext,
-        textify::foundation::Error,
-    };
+    use crate::extensions::simple::{ExtensionKind, MissingReference};
+    use crate::fixtures::TestContext;
+    use crate::textify::foundation::Error;
 
     #[test]
     fn type_display() {
@@ -406,8 +458,8 @@ mod tests {
             })),
         };
 
-        let s = ctx.textify_no_errors(t);
-        assert_eq!(s, "boolean?[u8#2]");
+        let s = ctx.textify_no_errors(&t);
+        assert_eq!(s, "boolean?[u8]");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::I8(ptype::I8 {
@@ -415,7 +467,7 @@ mod tests {
                 nullability: ptype::Nullability::Required as i32,
             })),
         };
-        assert_eq!(ctx.textify_no_errors(t), "i8");
+        assert_eq!(ctx.textify_no_errors(&t), "i8");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
@@ -424,10 +476,10 @@ mod tests {
                 precision: 3,
             })),
         };
-        assert_eq!(ctx.textify_no_errors(t), "precisiontimestamp?<3>");
+        assert_eq!(ctx.textify_no_errors(&t), "precisiontimestamp?<3>");
 
         let mut ctx = ctx.with_type_variation(1, 8, "int");
-        ctx.options.show_simple_extension_anchors = true;
+        ctx.options.show_simple_extension_anchors = Visibility::Always;
 
         let t = proto::Type {
             kind: Some(ptype::Kind::PrecisionTime(ptype::PrecisionTime {
@@ -436,7 +488,7 @@ mod tests {
                 precision: 9,
             })),
         };
-        assert_eq!(ctx.textify_no_errors(t), "precisiontime?[int#8]<9>");
+        assert_eq!(ctx.textify_no_errors(&t), "precisiontime?[int#8]<9>");
     }
 
     #[test]
@@ -451,7 +503,7 @@ mod tests {
                 nullability: ptype::Nullability::Nullable as i32,
             })),
         };
-        let (s, errs) = ctx.textify(t);
+        let (s, errs) = ctx.textify(&t);
         assert_eq!(s, "boolean?[!{type_variation}#200]");
         let err = errs.first();
         let (&k, &a) = match err {
@@ -471,9 +523,9 @@ mod tests {
             })),
         };
 
-        let (s, errs) = ctx.textify(t);
+        let (s, errs) = ctx.textify(&t);
         assert!(errs.is_empty());
-        assert_eq!(s, "cow#100");
+        assert_eq!(s, "cow");
 
         let t = proto::Type {
             kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
@@ -484,7 +536,7 @@ mod tests {
             })),
         };
 
-        let (s, errs) = ctx.textify(t);
+        let (s, errs) = ctx.textify(&t);
         let err = errs.first();
         let (&k, &a) = match err {
             Error::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
@@ -532,7 +584,7 @@ mod tests {
             })),
         };
         assert_eq!(
-            ctx.textify_no_errors(t),
+            ctx.textify_no_errors(&t),
             "struct?<string, i8, i32?, timestamp_tz>"
         );
     }

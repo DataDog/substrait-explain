@@ -5,11 +5,22 @@ use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crate::extensions::ExtensionLookup;
-use crate::extensions::simple::MissingReference;
 use thiserror::Error;
 
+use crate::extensions::SimpleExtensions;
+use crate::extensions::simple::MissingReference;
+
 pub const NONSPECIFIC: Option<&'static str> = None;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Visibility {
+    /// Never show the information
+    Never,
+    /// Show the information if it is required for the output to be complete.
+    Required,
+    /// Show it always.
+    Always,
+}
 
 /// OutputOptions holds the options for textifying a Substrait type.
 #[derive(Debug, Clone)]
@@ -21,13 +32,18 @@ pub struct OutputOptions {
     pub show_simple_extensions: bool,
     /// Show the anchors of simple extensions in the output, and not just their
     /// names.
-    pub show_simple_extension_anchors: bool,
+    ///
+    /// If `Required`, the anchor is shown for all simple extensions.
+    pub show_simple_extension_anchors: Visibility,
     /// Instead of showing the emitted columns inline, show the emits directly.
     pub show_emit: bool,
 
     /// Show the types for columns in a read
     pub read_types: bool,
-    /// Show the types for function parameters
+    /// Show the types for literals. If `Required`, the type is shown for anything other than
+    /// `i64`, `fp64`, `boolean`, or `string`.
+    pub literal_types: Visibility,
+    /// Show the output types for functions
     pub fn_types: bool,
     /// Show the nullability of types
     pub nullability: bool,
@@ -43,13 +59,34 @@ impl Default for OutputOptions {
         Self {
             show_extension_uris: false,
             show_simple_extensions: false,
-            show_simple_extension_anchors: false,
+            show_simple_extension_anchors: Visibility::Required,
+            literal_types: Visibility::Required,
             show_emit: false,
             read_types: false,
             fn_types: false,
             nullability: false,
             indent: "  ".to_string(),
             show_literal_binaries: false,
+        }
+    }
+}
+
+impl OutputOptions {
+    /// A verbose output options that shows all the necessary information for
+    /// reconstructing a plan.
+    pub fn verbose() -> Self {
+        Self {
+            show_extension_uris: true,
+            show_simple_extensions: true,
+            show_simple_extension_anchors: Visibility::Always,
+            literal_types: Visibility::Always,
+            // Emits are not required for a complete plan - just not a precise one.
+            show_emit: false,
+            read_types: true,
+            fn_types: true,
+            nullability: true,
+            indent: "  ".to_string(),
+            show_literal_binaries: true,
         }
     }
 }
@@ -166,15 +203,17 @@ pub trait IndentTracker {
     fn push(self) -> Self;
 }
 
+#[derive(Debug, Clone)]
 pub struct IndentStack<'a> {
     count: u32,
     indent: &'a str,
 }
 
-pub struct ScopedContext<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> {
+#[derive(Debug, Clone)]
+pub struct ScopedContext<'a, Err: ErrorAccumulator> {
     errors: &'a Err,
     options: &'a OutputOptions,
-    extensions: &'a Ext,
+    extensions: &'a SimpleExtensions,
     indent: IndentStack<'a>,
 }
 
@@ -198,8 +237,12 @@ impl<'a> IndentTracker for IndentStack<'a> {
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> ScopedContext<'a, Err, Ext> {
-    pub fn new(options: &'a OutputOptions, errors: &'a Err, extensions: &'a Ext) -> Self {
+impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
+    pub fn new(
+        options: &'a OutputOptions,
+        errors: &'a Err,
+        extensions: &'a SimpleExtensions,
+    ) -> Self {
         Self {
             options,
             errors,
@@ -209,21 +252,19 @@ impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> ScopedContext<'a, Err, Ext
     }
 }
 
-pub struct MessageWriter<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T> {
-    context: RefCell<ScopedContext<'a, Err, Ext>>,
+pub struct MessageWriter<'a, Err: ErrorAccumulator, T> {
+    context: RefCell<ScopedContext<'a, Err>>,
     message: &'a T,
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T: Textify + prost::Message>
-    MessageWriter<'a, Err, Ext, T>
-{
-    pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err, Ext>>, fmt::Error> {
+impl<'a, Err: ErrorAccumulator, T: Textify + prost::Message> MessageWriter<'a, Err, T> {
+    pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err>>, fmt::Error> {
         self.context.try_borrow_mut().map_err(|_| fmt::Error)
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup, T: Textify + prost::Message> fmt::Display
-    for MessageWriter<'a, Err, Ext, T>
+impl<'a, Err: ErrorAccumulator, T: Textify + prost::Message> fmt::Display
+    for MessageWriter<'a, Err, T>
 {
     fn fmt<'b>(&self, f: &mut fmt::Formatter<'b>) -> fmt::Result {
         let mut ctx_ref = self.ctx()?;
@@ -242,7 +283,13 @@ pub enum Error {
 impl Error {
     pub fn message(&self) -> &'static str {
         match self {
-            Error::Lookup(m) => m.kind().name(),
+            Error::Lookup(m) => match m {
+                MissingReference::MissingUri(_) => "uri",
+                MissingReference::MissingAnchor(k, _) => k.name(),
+                MissingReference::MissingName(k, _) => k.name(),
+                MissingReference::Mismatched(k, _, _) => k.name(),
+                MissingReference::DuplicateName(k, _) => k.name(),
+            },
             Error::Textify(m) => m.message,
         }
     }
@@ -330,10 +377,11 @@ impl fmt::Display for TextifyError {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 /// A token used to represent an error in the textified output.
 pub struct ErrorToken(
     /// The kind of item this is in place of.
-    &'static str,
+    pub &'static str,
 );
 
 impl fmt::Display for ErrorToken {
@@ -342,6 +390,7 @@ impl fmt::Display for ErrorToken {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct MaybeToken<V: fmt::Display>(pub Result<V, ErrorToken>);
 
 impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
@@ -369,13 +418,12 @@ pub trait Textify {
 
 pub trait Scope: Sized {
     type Errors: ErrorAccumulator;
-    type Extensions: ExtensionLookup;
     type Indent: IndentTracker;
 
     fn push_indent(self) -> Self;
 
     fn options(&self) -> &OutputOptions;
-    fn extensions(&self) -> &Self::Extensions;
+    fn extensions(&self) -> &SimpleExtensions;
     fn errors(&self) -> &Self::Errors;
 
     fn push_error(&self, e: Error) {
@@ -441,8 +489,22 @@ pub trait Scope: Sized {
             separator,
         }
     }
+
+    fn option<'a, T: Textify>(&'a self, value: Option<&'a T>) -> OptionalDisplayable<'a, Self, T> {
+        OptionalDisplayable { scope: self, value }
+    }
+
+    fn optional<'a, T: Textify>(
+        &'a self,
+        value: &'a T,
+        option: bool,
+    ) -> OptionalDisplayable<'a, Self, T> {
+        let value = if option { Some(value) } else { None };
+        OptionalDisplayable { scope: self, value }
+    }
 }
 
+#[derive(Clone)]
 pub struct Separated<'a, S: Scope, T: Textify + 'a, I: IntoIterator<Item = &'a T> + Clone> {
     scope: &'a S,
     items: I,
@@ -463,13 +525,42 @@ impl<'a, S: Scope, T: Textify, I: IntoIterator<Item = &'a T> + Clone> fmt::Displ
     }
 }
 
+impl<'a, S: Scope, T: Textify, I: IntoIterator<Item = &'a T> + Clone + fmt::Debug> fmt::Debug
+    for Separated<'a, S, T, I>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Separated{{items: {:?}, separator: {:?}}}",
+            self.items, self.separator
+        )
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct Displayable<'a, S: Scope, T: Textify> {
     scope: &'a S,
     value: &'a T,
 }
+
+impl<'a, S: Scope, T: Textify + fmt::Debug> fmt::Debug for Displayable<'a, S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Displayable({:?})", self.value)
+    }
+}
+
 impl<'a, S: Scope, T: Textify> Displayable<'a, S, T> {
     pub fn new(scope: &'a S, value: &'a T) -> Self {
         Self { scope, value }
+    }
+
+    /// Display only if the option is true, otherwise, do not display anything.
+    pub fn optional(self, option: bool) -> OptionalDisplayable<'a, S, T> {
+        let value = if option { Some(self.value) } else { None };
+        OptionalDisplayable {
+            scope: self.scope,
+            value,
+        }
     }
 }
 
@@ -479,9 +570,29 @@ impl<'a, S: Scope, T: Textify> fmt::Display for Displayable<'a, S, T> {
     }
 }
 
-impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> Scope for ScopedContext<'a, Err, Ext> {
+#[derive(Copy, Clone)]
+pub struct OptionalDisplayable<'a, S: Scope, T: Textify> {
+    scope: &'a S,
+    value: Option<&'a T>,
+}
+
+impl<'a, S: Scope, T: Textify> fmt::Display for OptionalDisplayable<'a, S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.value {
+            Some(t) => t.textify(self.scope, f),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'a, S: Scope, T: Textify + fmt::Debug> fmt::Debug for OptionalDisplayable<'a, S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "OptionalDisplayable({:?})", self.value)
+    }
+}
+
+impl<'a, Err: ErrorAccumulator> Scope for ScopedContext<'a, Err> {
     type Errors = Err;
-    type Extensions = Ext;
     type Indent = IndentStack<'a>;
 
     fn push_indent(mut self) -> Self {
@@ -493,11 +604,11 @@ impl<'a, Err: ErrorAccumulator, Ext: ExtensionLookup> Scope for ScopedContext<'a
         self.options
     }
 
-    fn extensions(&self) -> &Self::Extensions {
-        self.extensions
-    }
-
     fn errors(&self) -> &Self::Errors {
         self.errors
+    }
+
+    fn extensions(&self) -> &SimpleExtensions {
+        self.extensions
     }
 }
