@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Deref;
 
 use ptype::parameter::Parameter;
 use substrait::proto;
@@ -53,6 +54,25 @@ impl Textify for Anchor {
 impl fmt::Display for Anchor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
+    }
+}
+
+/// The type desciptor of the output of a function call.
+///
+/// This is optional, and if present, it must be the last argument in the
+/// function call.
+pub struct OutputType<T: Deref<Target = proto::Type>>(pub Option<T>);
+
+impl<T: Deref<Target = proto::Type>> Textify for OutputType<T> {
+    fn name() -> &'static str {
+        "OutputType"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self.0 {
+            Some(ref t) => write!(w, ":{}", ctx.display(t.deref())),
+            None => Ok(()),
+        }
     }
 }
 

@@ -165,7 +165,11 @@ impl ScopedParsePair for ScalarFunction {
             })
             .collect();
 
-        assert_eq!(pairs.next(), None);
+        let output_type = pairs.next().map(|t| Type::parse_pair(scope, t));
+
+        if let Some(v) = pairs.next() {
+            panic!("Expected no more pairs, found '{}': {:?}", v.as_str(), v);
+        }
 
         let anchor = match anchor {
             Some(a) => match scope.extensions().find_function_with_anchor(&name.0, a) {
@@ -189,8 +193,7 @@ impl ScopedParsePair for ScalarFunction {
             arguments,
             // TODO: Function Options.
             options: vec![],
-            // TODO: Output Type.
-            output_type: None,
+            output_type,
             #[allow(deprecated)]
             args: vec![],
         }

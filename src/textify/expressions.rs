@@ -11,7 +11,7 @@ use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression 
 use super::{Scope, Textify, TextifyError};
 use crate::extensions::ExtensionLookup;
 use crate::textify::foundation::MaybeToken;
-use crate::textify::types::Anchor;
+use crate::textify::types::{Anchor, OutputType};
 
 // …(…) for function call
 // […] for variant
@@ -567,8 +567,10 @@ impl Textify for ScalarFunction {
             ", "
         };
         let anchor = Anchor(self.function_reference);
+        let output = OutputType(self.output_type.as_ref());
+        let output_type = ctx.display(&output);
 
-        write!(w, "{name}{anchor}({args}{between}{options})",)?;
+        write!(w, "{name}{anchor}({args}{between}{options}){output_type}")?;
         Ok(())
     }
 }

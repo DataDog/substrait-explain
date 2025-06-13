@@ -91,6 +91,7 @@ fn test_expression() {
     assert_roundtrip::<Literal>(&ctx, "12:i32");
     roundtrip_parse::<FieldReference>(&ctx, "$1");
     assert_roundtrip::<ScalarFunction>(&ctx, "foo#12()");
+    assert_roundtrip::<ScalarFunction>(&ctx, "foo#12():i64");
     assert_roundtrip::<Expression>(&ctx, "bar#14(12)");
     assert_roundtrip::<Expression>(&ctx, "foo#12(bar#14(12:i16, 18), -4:i16)");
     assert_roundtrip::<Expression>(&ctx, "foo#12($2, bar#14($5, 18), -4:i16)");

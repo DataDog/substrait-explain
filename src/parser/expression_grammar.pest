@@ -124,12 +124,14 @@ type = { simple_type | compound_type | user_defined_type }
 
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
+// Scalar function call:
+// - Function name
+// - Optional Anchor, e.g. #1
+// - Optional URI Anchor, e.g. @1
+// - Arguments `()` are required, e.g. (1, 2, 3)
+// - Optional output type, e.g. :i64
 function_call = {
-    name ~ sp ~  // Function name
-  // options? ~ sp ~  // Options, e.g. []
-  anchor? ~ sp ~  // Optional Anchor, e.g. #1
-  uri_anchor? ~ sp ~  // Optional URI Anchor, e.g. @1
-  argument_list // Arguments `()` are required, e.g. (1, 2, 3)
+    name ~ sp ~ anchor? ~ sp ~ uri_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
 // Top-level Expression Rule
