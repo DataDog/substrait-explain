@@ -131,7 +131,7 @@ impl fmt::Display for ErrorQueue {
             } else {
                 writeln!(f)?;
             }
-            write!(f, "{}", e)?;
+            write!(f, "{e}")?;
         }
         Ok(())
     }
@@ -169,7 +169,7 @@ impl fmt::Display for ErrorList {
             if i > 0 {
                 writeln!(f)?;
             }
-            write!(f, "{}", e)?;
+            write!(f, "{e}")?;
         }
         Ok(())
     }
@@ -181,7 +181,7 @@ impl fmt::Debug for ErrorList {
             if i == 0 {
                 writeln!(f, "Errors:")?;
             }
-            writeln!(f, "! {:?}", e)?;
+            writeln!(f, "! {e:?}")?;
         }
         Ok(())
     }

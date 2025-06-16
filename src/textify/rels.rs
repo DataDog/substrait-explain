@@ -331,7 +331,7 @@ pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], TextifyError>
         _ => Err(TextifyError::unimplemented(
             "ReadRel",
             Some("table_name"),
-            format!("Unexpected read type {:?}", rel) as String,
+            format!("Unexpected read type {rel:?}") as String,
         )),
     }
 }

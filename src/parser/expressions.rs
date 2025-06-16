@@ -88,7 +88,7 @@ fn to_int_literal(
                 TextifyError::invalid(
                     "int_literal_type",
                     Some(value.as_str().to_string()),
-                    format!("Invalid type for integer literal: {:?}", k),
+                    format!("Invalid type for integer literal: {k:?}"),
                 )
                 .into(),
             );

@@ -70,7 +70,7 @@ impl fmt::Display for ExtensionParserState {
             ExtensionParserState::Extensions => write!(f, "Subsection Header, e.g. 'URIs:'"),
             ExtensionParserState::ExtensionUris => write!(f, "Extension URIs"),
             ExtensionParserState::ExtensionDeclarations(kind) => {
-                write!(f, "Extension Declaration for {}", kind)
+                write!(f, "Extension Declaration for {kind}")
             }
         }
     }
@@ -182,7 +182,7 @@ pub enum State {
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 

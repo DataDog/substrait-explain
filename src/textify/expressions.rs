@@ -31,7 +31,7 @@ pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W)
     if ctx.options().show_literal_binaries {
         write!(w, "0x")?;
         for &n in items {
-            write!(w, "{:02x}", n)?;
+            write!(w, "{n:02x}")?;
         }
     } else {
         write!(w, "{{binary}}")?;
@@ -172,13 +172,13 @@ impl Textify for LiteralType {
         match self {
             LiteralType::Boolean(true) => write!(w, "true")?,
             LiteralType::Boolean(false) => write!(w, "false")?,
-            LiteralType::I8(i) => write!(w, "{}:i8", i)?,
-            LiteralType::I16(i) => write!(w, "{}:i16", i)?,
-            LiteralType::I32(i) => write!(w, "{}:i32", i)?,
+            LiteralType::I8(i) => write!(w, "{i}:i8")?,
+            LiteralType::I16(i) => write!(w, "{i}:i16")?,
+            LiteralType::I32(i) => write!(w, "{i}:i32")?,
             // Int64 and Float64 are special cases, they do not need a type suffix
-            LiteralType::I64(i) => write!(w, "{}", i)?,
-            LiteralType::Fp32(f) => write!(w, "{}:fp32", f)?,
-            LiteralType::Fp64(f) => write!(w, "{}", f)?,
+            LiteralType::I64(i) => write!(w, "{i}")?,
+            LiteralType::Fp32(f) => write!(w, "{f}:fp32")?,
+            LiteralType::Fp64(f) => write!(w, "{f}")?,
             LiteralType::String(s) => write!(w, "\"{}\"", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
             LiteralType::Timestamp(t) => {
@@ -188,7 +188,7 @@ impl Textify for LiteralType {
                         let err = TextifyError::internal(
                             "LiteralType",
                             Some("Timestamp"),
-                            format!("No kind found for {:?}", self),
+                            format!("No kind found for {self:?}"),
                         );
                         write!(w, "{}", ctx.failure(err))?;
                         return Ok(());
@@ -477,7 +477,7 @@ impl Textify for Reference {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", self)
+        write!(w, "{self}")
     }
 }
 
@@ -582,7 +582,7 @@ impl Textify for FunctionOption {
             } else {
                 first = false;
             }
-            write!(w, "{}", pref)?;
+            write!(w, "{pref}")?;
         }
         write!(w, "]")?;
         Ok(())

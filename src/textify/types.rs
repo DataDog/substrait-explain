@@ -91,7 +91,7 @@ impl<'a> Textify for Name<'a> {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", self)
+        write!(w, "{self}")
     }
 }
 
@@ -265,10 +265,10 @@ impl Textify for Parameter {
             Parameter::Boolean(true) => write!(w, "true")?,
             Parameter::Boolean(false) => write!(w, "false")?,
             Parameter::DataType(t) => write!(w, "{}", ctx.display(t))?,
-            Parameter::Enum(e) => write!(w, "{}", e)?,
-            Parameter::Integer(i) => write!(w, "{}", i)?,
+            Parameter::Enum(e) => write!(w, "{e}")?,
+            Parameter::Integer(i) => write!(w, "{i}")?,
             // TODO: Do we just put the string in directly?
-            Parameter::String(s) => write!(w, "{}", s)?,
+            Parameter::String(s) => write!(w, "{s}")?,
             Parameter::Null(_) => write!(w, "null")?,
         };
 

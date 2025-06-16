@@ -225,7 +225,7 @@ impl SimpleExtensions {
         // TODO: write the header. I think we can put this in the main block
         // writeln!(w, "{}", EXTENSIONS_HEADER)?;
         if !self.uris.is_empty() {
-            writeln!(w, "{}", EXTENSION_URIS_HEADER)?;
+            writeln!(w, "{EXTENSION_URIS_HEADER}")?;
             for (anchor, uri) in &self.uris {
                 writeln!(w, "{indent}@{anchor:3}: {uri}")?;
             }
@@ -249,9 +249,9 @@ impl SimpleExtensions {
                 continue;
             }
 
-            writeln!(w, "{}", header)?;
+            writeln!(w, "{header}")?;
             for ((anchor, _), (uri_ref, name)) in filtered {
-                writeln!(w, "{}#{anchor:3} @{uri_ref:3}: {name}", indent, name = name)?;
+                writeln!(w, "{indent}#{anchor:3} @{uri_ref:3}: {name}")?;
             }
         }
         Ok(())
