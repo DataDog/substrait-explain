@@ -3,7 +3,7 @@ use std::ops::Deref;
 
 use ptype::parameter::Parameter;
 use substrait::proto;
-use substrait::proto::r#type as ptype;
+use substrait::proto::r#type::{self as ptype};
 
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{Textify, TextifyError};
@@ -36,6 +36,62 @@ impl Textify for ptype::Nullability {
             ptype::Nullability::Required => {}
         };
         Ok(())
+    }
+}
+
+/// A valid identifier is a sequence of ASCII letters, digits, and underscores,
+/// starting with a letter.
+///
+/// We could expand this at some point to include any valid Unicode identifier
+/// (see <https://docs.rs/unicode-ident/latest/unicode_ident/>), but that seems
+/// overboard for now.
+pub fn is_identifer(s: &str) -> bool {
+    let mut chars = s.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    for c in chars {
+        if !c.is_ascii_alphanumeric() && c != '_' {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Escape a string for use in a literal or quoted identifier.
+pub fn escaped(s: &str) -> impl fmt::Display + fmt::Debug {
+    s.escape_debug()
+}
+
+/// The name of a something to be represented. It will be displayed on its own
+/// if the string is a proper identifier, or in double quotes if it is not.
+#[derive(Debug, Copy, Clone)]
+pub struct Name<'a>(pub &'a str);
+
+impl<'a> fmt::Display for Name<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if is_identifer(self.0) {
+            write!(f, "{}", self.0)
+        } else {
+            write!(f, "\"{}\"", escaped(self.0))
+        }
+    }
+}
+
+impl<'a> Textify for Name<'a> {
+    fn name() -> &'static str {
+        "Name"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", self)
     }
 }
 
@@ -225,7 +281,7 @@ impl Textify for ptype::Parameter {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(&self.parameter))
+        write!(w, "{}", ctx.expect(self.parameter.as_ref()))
     }
 }
 
@@ -244,7 +300,7 @@ impl<'a> Textify for Parameters<'a> {
             } else {
                 write!(w, ", ")?;
             }
-            write!(w, "{}", ctx.expect(param))?;
+            write!(w, "{}", ctx.expect(param.as_ref()))?;
             first = false;
         }
         if !first {
@@ -434,12 +490,108 @@ impl Textify for proto::Type {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(&self.kind))
+        write!(w, "{}", ctx.expect(self.kind.as_ref()))
     }
 }
 
+// /// A schema is a named struct with a list of fields.
+// ///
+// /// This outputs the names and types of the fields in the struct,
+// /// comma-separated.
+// ///
+// /// Assumes that the struct is not nullable, that the type variation reference
+// /// is 0, and that the names and fields match up; otherwise, pushes errors.
+// ///
+// /// Names and fields are output without any bracketing; bring your own
+// /// bracketing.
+// pub struct Schema<'a>(pub &'a proto::NamedStruct);
+
+// impl<'a> Textify for Schema<'a> {
+//     fn name() -> &'static str {
+//         "Schema"
+//     }
+
+//     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+//         let mut fields = self
+//             .0
+//             .r#struct
+//             .as_ref()
+//             .map(|s| s.types.iter())
+//             .into_iter()
+//             .flatten();
+//         let mut names = self.0.names.iter();
+
+//         let field_count = self.0.r#struct.as_ref().map(|s| s.types.len()).unwrap_or(0);
+//         let name_count = self.0.names.len();
+
+//         if field_count != name_count {
+//             ctx.push_error(
+//                 TextifyError::invalid(
+//                     "Schema",
+//                     NONSPECIFIC,
+//                     format!(
+//                         "Field count ({}) does not match name count ({})",
+//                         field_count, name_count
+//                     ),
+//                 )
+//                 .into(),
+//             );
+//         }
+
+//         write!(w, "[")?;
+//         let mut first = true;
+//         loop {
+//             let field = fields.next();
+//             let name = names.next().map(|n| Name(n));
+//             if field.is_none() && name.is_none() {
+//                 break;
+//             }
+
+//             if first {
+//                 first = false;
+//             } else {
+//                 write!(w, ", ")?;
+//             }
+
+//             write!(w, "{}:{}", ctx.expect(name.as_ref()), ctx.expect(field))?;
+//         }
+//         write!(w, "]")?;
+
+//         let s = match &self.0.r#struct {
+//             None => return Ok(()),
+//             Some(s) => s,
+//         };
+
+//         if s.nullability() != Nullability::Required {
+//             ctx.push_error(
+//                 TextifyError::invalid(
+//                     "Schema",
+//                     Some("nullabilility"),
+//                     "Expected schema to be Nullability::Required",
+//                 )
+//                 .into(),
+//             );
+//             s.nullability().textify(ctx, w)?;
+//         }
+//         if s.type_variation_reference != 0 {
+//             ctx.push_error(
+//                 TextifyError::invalid(
+//                     "Schema",
+//                     Some("type_variation_reference"),
+//                     "Expected schema to have type_variation_reference 0",
+//                 )
+//                 .into(),
+//             );
+//             TypeVariation(s.type_variation_reference).textify(ctx, w)?;
+//         }
+
+//         Ok(())
+//     }
+// }
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
@@ -588,4 +740,107 @@ mod tests {
             "struct?<string, i8, i32?, timestamp_tz>"
         );
     }
+
+    #[test]
+    fn names_display() {
+        let ctx = TestContext::new();
+
+        let n = Name("name");
+        assert_eq!(ctx.textify_no_errors(&n), "name");
+
+        let n = Name("name with spaces");
+        assert_eq!(ctx.textify_no_errors(&n), "\"name with spaces\"");
+    }
+
+    // #[test]
+    // fn schema_display() {
+    //     let ctx = TestContext::new();
+
+    //     let s = ptype::Struct {
+    //         type_variation_reference: 0,
+    //         nullability: ptype::Nullability::Required as i32,
+    //         types: vec![
+    //             proto::Type {
+    //                 kind: Some(ptype::Kind::String(ptype::String {
+    //                     type_variation_reference: 0,
+    //                     nullability: ptype::Nullability::Required as i32,
+    //                 })),
+    //             },
+    //             proto::Type {
+    //                 kind: Some(ptype::Kind::I8(ptype::I8 {
+    //                     type_variation_reference: 0,
+    //                     nullability: ptype::Nullability::Required as i32,
+    //                 })),
+    //             },
+    //             proto::Type {
+    //                 kind: Some(ptype::Kind::I32(ptype::I32 {
+    //                     type_variation_reference: 0,
+    //                     nullability: ptype::Nullability::Nullable as i32,
+    //                 })),
+    //             },
+    //             proto::Type {
+    //                 kind: Some(ptype::Kind::TimestampTz(ptype::TimestampTz {
+    //                     type_variation_reference: 0,
+    //                     nullability: ptype::Nullability::Required as i32,
+    //                 })),
+    //             },
+    //         ],
+    //     };
+
+    //     let names = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+    //     let schema = proto::NamedStruct {
+    //         names,
+    //         r#struct: Some(s),
+    //     };
+
+    //     assert_eq!(
+    //         ctx.textify_no_errors(&Schema(&schema)),
+    //         "[a:string, b:i8, c:i32?, d:timestamp_tz]"
+    //     );
+    // }
+
+    // #[test]
+    // fn schema_display_with_errors() {
+    //     let ctx = TestContext::new();
+    //     let string = proto::Type {
+    //         kind: Some(ptype::Kind::String(ptype::String {
+    //             type_variation_reference: 0,
+    //             nullability: ptype::Nullability::Required as i32,
+    //         })),
+    //     };
+    //     let i64 = proto::Type {
+    //         kind: Some(ptype::Kind::I8(ptype::I8 {
+    //             type_variation_reference: 0,
+    //             nullability: ptype::Nullability::Nullable as i32,
+    //         })),
+    //     };
+    //     let fp64 = proto::Type {
+    //         kind: Some(ptype::Kind::Fp64(ptype::Fp64 {
+    //             type_variation_reference: 0,
+    //             nullability: ptype::Nullability::Nullable as i32,
+    //         })),
+    //     };
+
+    //     let s = ptype::Struct {
+    //         type_variation_reference: 0,
+    //         nullability: ptype::Nullability::Required as i32,
+    //         types: vec![string.clone(), i64, fp64, string],
+    //     };
+
+    //     let names = ["name", "id", "distance", "street address"]
+    //         .iter()
+    //         .map(|s| s.to_string())
+    //         .collect();
+    //     let schema = proto::NamedStruct {
+    //         names,
+    //         r#struct: Some(s),
+    //     };
+
+    //     let (s, errs) = ctx.textify(&Schema(&schema));
+    //     assert_eq!(
+    //         s,
+    //         "name:string, id:i8?, distance:fp64?, \"street address\":string"
+    //     );
+    //     assert!(errs.is_empty());
+    // }
 }

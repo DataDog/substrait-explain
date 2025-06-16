@@ -13,8 +13,9 @@ use crate::parser::ScopedParsePair;
 use crate::parser::types::get_and_validate_anchor;
 use crate::textify::{Scope, TextifyError};
 
-fn reference(index: i32) -> FieldReference {
-    // XXX: Why is it so hard to make a struct field reference? This is
+/// Create a reference to a particular field.
+pub fn reference(index: i32) -> FieldReference {
+    // XXX: Why is it so many layers to make a struct field reference? This is
     // surprisingly complex
     FieldReference {
         reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {

@@ -440,12 +440,13 @@ pub trait Scope: Sized {
         token
     }
 
-    fn expect<'a, T: Textify>(&'a self, t: &'a Option<T>) -> MaybeToken<impl fmt::Display> {
+    fn expect<'a, T: Textify>(&'a self, t: Option<&'a T>) -> MaybeToken<impl fmt::Display> {
         match t {
             Some(t) => MaybeToken(Ok(self.display(t))),
             None => {
                 let err = TextifyError::invalid(
                     T::name(),
+                    // TODO: Make this an optional input
                     NONSPECIFIC,
                     "Required field missing, None found",
                 );

@@ -1,9 +1,11 @@
-use std::fmt;
+use std::fmt::{self};
 
 use expr::RexType;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
-use substrait::proto::expression::{FieldReference, ScalarFunction, reference_segment};
+use substrait::proto::expression::{
+    FieldReference, ReferenceSegment, ScalarFunction, reference_segment,
+};
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
@@ -11,7 +13,7 @@ use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression 
 use super::{Scope, Textify, TextifyError};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::types::{NamedAnchor, OutputType};
+use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
 // […] for variant
@@ -37,68 +39,19 @@ pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W)
     Ok(())
 }
 
-/// Escapes a string for use in a literal.
-pub fn as_escaped_string(s: &str) -> String {
-    // This uses Rust escaping, is that fine?
-    format!(
-        "\"{}\"",
-        s.chars().flat_map(|c| c.escape_debug()).collect::<String>()
-    )
-}
-
 pub fn textify_literal_from_string<S: Scope, W: fmt::Write>(
     s: &str,
     t: Kind,
     ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
-    let escaped = as_escaped_string(s);
-    write!(w, "\"{}\":", escaped)?;
-    t.textify(ctx, w)
-}
-
-/// A valid identifier is a sequence of ASCII letters, digits, and underscores,
-/// starting with a letter.
-///
-/// We could expand this at some point to include any valid Unicode identifier
-/// (see <https://docs.rs/unicode-ident/latest/unicode_ident/>), but that seems
-/// overboard for now.
-pub fn is_identifer(s: &str) -> bool {
-    let mut chars = s.chars();
-    let first = match chars.next() {
-        Some(c) => c,
-        None => return false,
-    };
-
-    if !first.is_ascii_alphabetic() {
-        return false;
-    }
-
-    for c in chars {
-        if !c.is_ascii_alphanumeric() && c != '_' {
-            return false;
-        }
-    }
-
-    true
-}
-
-pub fn textify_identifier<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fmt::Result {
-    if is_identifer(s) {
-        write!(w, "{}", s)?;
-        return Ok(());
-    }
-
-    let escaped = as_escaped_string(s);
-    write!(w, "'{}'", escaped)?;
-    Ok(())
+    write!(w, "\'{}\':{}", escaped(s), ctx.display(&t))
 }
 
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
 /// a valid identifier; otherwise, they are written as `&'<escaped_string>'`.
-pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, ctx: &S, w: &mut W) -> fmt::Result {
-    write!(w, "&")?;
-    textify_identifier(s, ctx, w)
+pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fmt::Result {
+    write!(w, "&{}", Name(s))
 }
 
 pub fn timestamp_to_string(t: i64) -> String {
@@ -226,7 +179,7 @@ impl Textify for LiteralType {
             LiteralType::I64(i) => write!(w, "{}", i)?,
             LiteralType::Fp32(f) => write!(w, "{}:fp32", f)?,
             LiteralType::Fp64(f) => write!(w, "{}", f)?,
-            LiteralType::String(s) => write!(w, "\"{}\"", s.escape_default())?,
+            LiteralType::String(s) => write!(w, "\"{}\"", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
             LiteralType::Timestamp(t) => {
                 let k = match self.kind(ctx.extensions()) {
@@ -486,7 +439,45 @@ impl Textify for expr::Literal {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(&self.literal_type))
+        write!(w, "{}", ctx.expect(self.literal_type.as_ref()))
+    }
+}
+
+pub struct Reference(pub i32);
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "${}", self.0)
+    }
+}
+
+impl From<Reference> for Expression {
+    fn from(r: Reference) -> Self {
+        // XXX: Why is it so many layers to make a struct field reference? This is
+        // surprisingly complex
+        Expression {
+            rex_type: Some(RexType::Selection(Box::new(FieldReference {
+                reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
+                    reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
+                        reference_segment::StructField {
+                            field: r.0,
+                            child: None,
+                        },
+                    ))),
+                })),
+                root_type: None,
+            }))),
+        }
+    }
+}
+
+impl Textify for Reference {
+    fn name() -> &'static str {
+        "Reference"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", self)
     }
 }
 
@@ -523,6 +514,9 @@ impl Textify for FieldReference {
         };
 
         match &ref_type.reference_type {
+            Some(reference_segment::ReferenceType::StructField(s)) => {
+                write!(w, "{}", Reference(s.field))
+            }
             None => write!(
                 w,
                 "{}",
@@ -532,7 +526,6 @@ impl Textify for FieldReference {
                     "Required field missing, None found",
                 )
             ),
-            Some(reference_segment::ReferenceType::StructField(s)) => write!(w, "${}", s.field),
             _ => write!(
                 w,
                 "{}",
@@ -602,7 +595,7 @@ impl Textify for FunctionArgument {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(&self.arg_type))
+        write!(w, "{}", ctx.expect(self.arg_type.as_ref()))
     }
 }
 
@@ -730,7 +723,7 @@ impl Textify for Expression {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(&self.rex_type))
+        write!(w, "{}", ctx.expect(self.rex_type.as_ref()))
     }
 }
 
