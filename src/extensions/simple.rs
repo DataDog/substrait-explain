@@ -216,6 +216,52 @@ impl SimpleExtensions {
         self.uris.is_empty() && self.extensions.is_empty()
     }
 
+    /// Convert the extension URIs to protobuf format for Plan construction.
+    pub fn to_extension_uris(&self) -> Vec<pext::SimpleExtensionUri> {
+        self.uris
+            .iter()
+            .map(|(anchor, uri)| pext::SimpleExtensionUri {
+                extension_uri_anchor: *anchor,
+                uri: uri.clone(),
+            })
+            .collect()
+    }
+
+    /// Convert the extensions to protobuf format for Plan construction.
+    pub fn to_extension_declarations(&self) -> Vec<pext::SimpleExtensionDeclaration> {
+        self.extensions
+            .iter()
+            .map(|((anchor, kind), (uri_ref, name))| {
+                let mapping_type = match kind {
+                    ExtensionKind::Function => MappingType::ExtensionFunction(
+                        pext::simple_extension_declaration::ExtensionFunction {
+                            extension_uri_reference: *uri_ref,
+                            function_anchor: *anchor,
+                            name: name.clone(),
+                        },
+                    ),
+                    ExtensionKind::Type => MappingType::ExtensionType(
+                        pext::simple_extension_declaration::ExtensionType {
+                            extension_uri_reference: *uri_ref,
+                            type_anchor: *anchor,
+                            name: name.clone(),
+                        },
+                    ),
+                    ExtensionKind::TypeVariation => MappingType::ExtensionTypeVariation(
+                        pext::simple_extension_declaration::ExtensionTypeVariation {
+                            extension_uri_reference: *uri_ref,
+                            type_variation_anchor: *anchor,
+                            name: name.clone(),
+                        },
+                    ),
+                };
+                pext::SimpleExtensionDeclaration {
+                    mapping_type: Some(mapping_type),
+                }
+            })
+            .collect()
+    }
+
     pub fn write<W: fmt::Write>(&self, w: &mut W, indent: &str) -> fmt::Result {
         if self.is_empty() {
             // No extensions, so no need to write anything.
@@ -649,5 +695,47 @@ Type Variations:
   # 30 @ 42: my_var
 ";
         assert_eq!(display_str, expected.trim_start());
+    }
+
+    #[test]
+    fn test_extensions_output() {
+        // Manually build the extensions
+        let mut extensions = SimpleExtensions::new();
+        extensions
+            .add_extension_uri("/uri/common".to_string(), 1)
+            .unwrap();
+        extensions
+            .add_extension_uri("/uri/specific_funcs".to_string(), 2)
+            .unwrap();
+        extensions
+            .add_extension(ExtensionKind::Function, 1, 10, "func_a".to_string())
+            .unwrap();
+        extensions
+            .add_extension(ExtensionKind::Function, 2, 11, "func_b_special".to_string())
+            .unwrap();
+        extensions
+            .add_extension(ExtensionKind::Type, 1, 20, "SomeType".to_string())
+            .unwrap();
+        extensions
+            .add_extension(ExtensionKind::TypeVariation, 2, 30, "VarX".to_string())
+            .unwrap();
+
+        // Convert to string
+        let output = extensions.to_string("  ");
+
+        // The output should match the expected format
+        let expected_output = r#"URIs:
+  @  1: /uri/common
+  @  2: /uri/specific_funcs
+Functions:
+  # 10 @  1: func_a
+  # 11 @  2: func_b_special
+Types:
+  # 20 @  1: SomeType
+Type Variations:
+  # 30 @  2: VarX
+"#;
+
+        assert_eq!(output, expected_output);
     }
 }

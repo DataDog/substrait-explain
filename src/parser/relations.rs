@@ -6,6 +6,28 @@ use crate::extensions::SimpleExtensions;
 use crate::parser::expressions::Name;
 use crate::parser::{MessageParseError, ParsePair, RuleIter};
 
+/// A trait for parsing relations with full context needed for tree building.
+/// This includes extensions, the parsed pair, input children, and output field count.
+pub trait RelationParsePair: Sized {
+    fn rule() -> Rule;
+
+    fn message() -> &'static str;
+
+    /// Parse a relation with full context for tree building.
+    ///
+    /// Args:
+    /// - extensions: The extensions context
+    /// - pair: The parsed pest pair
+    /// - input_children: The input relations (for wiring)
+    /// - input_field_count: Number of output fields from input children (for output mapping)
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: &[substrait::proto::Rel],
+        input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, MessageParseError>;
+}
+
 pub struct TableName(Vec<String>);
 
 impl ParsePair for TableName {
@@ -79,6 +101,82 @@ impl ScopedParsePair for NamedColumnList {
             columns.push(Column::parse_pair(extensions, col)?);
         }
         Ok(Self(columns))
+    }
+}
+
+impl RelationParsePair for substrait::proto::ReadRel {
+    fn rule() -> Rule {
+        Rule::read_relation
+    }
+
+    fn message() -> &'static str {
+        "ReadRel"
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: &[substrait::proto::Rel],
+        input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, MessageParseError> {
+        // ReadRel is a leaf node - it should have no input children and 0 input fields
+        if !input_children.is_empty() {
+            let error = pest::error::Error::new_from_span(
+                pest::error::ErrorVariant::CustomError {
+                    message: "ReadRel should have no input children".to_string(),
+                },
+                pair.as_span(),
+            );
+            return Err(MessageParseError::new(
+                "ReadRel",
+                crate::parser::ErrorKind::InvalidValue,
+                Box::new(error),
+            ));
+        }
+        if input_field_count != 0 {
+            let error = pest::error::Error::new_from_span(
+                pest::error::ErrorVariant::CustomError {
+                    message: "ReadRel should have 0 input fields".to_string(),
+                },
+                pair.as_span(),
+            );
+            return Err(MessageParseError::new(
+                "ReadRel",
+                crate::parser::ErrorKind::InvalidValue,
+                Box::new(error),
+            ));
+        }
+
+        let mut pairs = pair.into_inner();
+        let table = TableName::parse_pair(pairs.next().unwrap()).0;
+        let columns = NamedColumnList::parse_pair(extensions, pairs.next().unwrap())?.0;
+        assert!(pairs.next().is_none());
+
+        let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
+        let struct_ = substrait::proto::r#type::Struct {
+            types,
+            type_variation_reference: 0,
+            nullability: substrait::proto::r#type::Nullability::Required as i32,
+        };
+        let named_struct = substrait::proto::NamedStruct {
+            names,
+            r#struct: Some(struct_),
+        };
+
+        let read_rel = substrait::proto::ReadRel {
+            base_schema: Some(named_struct),
+            read_type: Some(substrait::proto::read_rel::ReadType::NamedTable(
+                substrait::proto::read_rel::NamedTable {
+                    names: table,
+                    advanced_extension: None,
+                },
+            )),
+            ..Default::default()
+        };
+
+        Ok(substrait::proto::Rel {
+            rel_type: Some(substrait::proto::rel::RelType::Read(Box::new(read_rel))),
+        })
     }
 }
 
@@ -164,12 +262,63 @@ impl ScopedParsePair for substrait::proto::FilterRel {
     }
 }
 
+impl RelationParsePair for substrait::proto::FilterRel {
+    fn rule() -> Rule {
+        Rule::filter_relation
+    }
+
+    fn message() -> &'static str {
+        "FilterRel"
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: &[substrait::proto::Rel],
+        _input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, MessageParseError> {
+        let mut pairs = pair.into_inner();
+        let condition = Expression::parse_pair(extensions, pairs.next().unwrap())?;
+        let references_pair = pairs.next().unwrap();
+        let output_mapping = references_pair
+            .into_inner()
+            .map(|p| {
+                let inner = crate::parser::unwrap_single_pair(p);
+                inner.as_str().parse::<i32>().unwrap()
+            })
+            .collect::<Vec<i32>>();
+
+        let emit = EmitKind::Emit(Emit { output_mapping });
+        let common = substrait::proto::RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+
+        assert!(pairs.next().is_none());
+
+        let mut filter_rel = substrait::proto::FilterRel {
+            input: None,
+            condition: Some(Box::new(condition)),
+            common: Some(common),
+            advanced_extension: None,
+        };
+
+        // Wire in the first input child if available
+        if let Some(input_child) = input_children.first() {
+            filter_rel.input = Some(Box::new(input_child.clone()));
+        }
+
+        Ok(substrait::proto::Rel {
+            rel_type: Some(substrait::proto::rel::RelType::Filter(Box::new(filter_rel))),
+        })
+    }
+}
+
 /// Parse a ProjectRel with input context
 pub fn parse_project_relation(
     extensions: &SimpleExtensions,
     pair: pest::iterators::Pair<Rule>,
     input_field_count: usize,
-    input_rel: Box<substrait::proto::Rel>,
 ) -> Result<substrait::proto::ProjectRel, MessageParseError> {
     let mut pairs = pair.into_inner();
     let arguments_pair = pairs.next().unwrap();
@@ -205,11 +354,44 @@ pub fn parse_project_relation(
     };
 
     Ok(substrait::proto::ProjectRel {
-        input: Some(input_rel),
+        input: None, // Will be set by wire-as-we-go approach
         expressions,
         common: Some(common),
         advanced_extension: None,
     })
+}
+
+// Wrapper struct for ProjectRel to implement RelationParsePair
+pub struct ProjectRelWrapper;
+
+impl RelationParsePair for ProjectRelWrapper {
+    fn rule() -> Rule {
+        Rule::project_relation
+    }
+
+    fn message() -> &'static str {
+        "ProjectRel"
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: &[substrait::proto::Rel],
+        input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, MessageParseError> {
+        let mut project_rel = parse_project_relation(extensions, pair, input_field_count)?;
+
+        // Wire in the first input child if available
+        if let Some(input_child) = input_children.first() {
+            project_rel.input = Some(Box::new(input_child.clone()));
+        }
+
+        Ok(substrait::proto::Rel {
+            rel_type: Some(substrait::proto::rel::RelType::Project(Box::new(
+                project_rel,
+            ))),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -271,7 +453,6 @@ mod tests {
             &extensions,
             parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
             5, // Assume 5 input fields
-            Box::default(),
         )
         .unwrap();
 
@@ -294,7 +475,6 @@ mod tests {
             &extensions,
             parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
             5, // Assume 5 input fields
-            Box::default(),
         )
         .unwrap();
 

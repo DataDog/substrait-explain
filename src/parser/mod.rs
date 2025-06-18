@@ -5,4 +5,6 @@ mod relations;
 mod structural;
 mod types;
 pub use common::*;
-pub use structural::{ExtensionParseError, LineParseError, Parser};
+pub use extensions::ExtensionParseError;
+pub use relations::{ProjectRelWrapper, RelationParsePair};
+pub use structural::{LineParseError, Parser};

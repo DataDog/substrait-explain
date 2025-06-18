@@ -31,6 +31,7 @@ As these require a nightly release, they aren't currently part of the git hooks 
 
 ## TODO
 
-- Some Rels
 - Minimal Documentation
+- CLI
+- Log consistency errors in parsing - e.g. function anchors without
 - Release
