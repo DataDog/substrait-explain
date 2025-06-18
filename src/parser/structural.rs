@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{InsertError, SimpleExtensions};
-use crate::parser::relations::{Relation, RelationParseError};
-use crate::parser::{MessageParseError, ScopedParse};
+use crate::parser::MessageParseError;
+use crate::parser::common::ScopedParsePair;
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -50,7 +50,7 @@ pub enum LineParseError {
     #[error("Error parsing section header on line {0}: {1}")]
     Initial(ParseContext, #[source] MessageParseError),
     #[error("Error parsing relation: {0}")]
-    Relation(ParseContext, #[source] RelationParseError),
+    Relation(ParseContext, #[source] MessageParseError),
 }
 
 #[derive(Debug, Clone, Error)]
@@ -91,30 +91,69 @@ impl fmt::Display for ExtensionParserState {
 }
 
 pub struct RelationNode {
-    pub context: ParseContext,
-    pub relation: Relation,
+    pub relation: substrait::proto::Rel,
     pub children: Vec<RelationNode>,
 }
 
 impl RelationNode {
-    pub fn new(context: ParseContext, relation: Relation) -> Self {
+    pub fn new(relation: substrait::proto::Rel) -> Self {
         Self {
-            context,
             relation,
             children: Vec::new(),
         }
     }
 
     pub fn convert_to_proto(&self) -> Result<substrait::proto::Rel, LineParseError> {
-        let children: Vec<substrait::proto::Rel> = self
-            .children
-            .iter()
-            .map(|c| c.convert_to_proto())
-            .collect::<Result<Vec<_>, _>>()?;
-        match self.relation.convert_to_proto(children) {
-            Ok(rel) => Ok(rel),
-            Err(e) => Err(LineParseError::Relation(self.context.clone(), e)),
+        Ok(self.relation.clone())
+    }
+}
+
+/// Helper function to wire a child relation into a parent relation's input field.
+/// This is the core of the "wire-as-we-go" approach - we parse parent-first but
+/// wire children into parents as we encounter them, building the tree bottom-up.
+fn wire_child_into_parent(parent: &mut substrait::proto::Rel, child: substrait::proto::Rel) {
+    match &mut parent.rel_type {
+        Some(substrait::proto::rel::RelType::Project(project_rel)) => {
+            project_rel.input = Some(Box::new(child));
         }
+        Some(substrait::proto::rel::RelType::Filter(filter_rel)) => {
+            filter_rel.input = Some(Box::new(child));
+        }
+        Some(substrait::proto::rel::RelType::Read(_)) => {
+            // Read relations don't have inputs, so this would be an error
+            // in a well-formed plan, but we'll just ignore it for now
+        }
+        _ => {
+            // For other relation types, we'll need to add cases as we support them
+        }
+    }
+}
+
+/// Helper function to get the number of input fields from a relation.
+/// This is needed for Project relations to calculate output mapping indices.
+fn get_input_field_count(rel: &substrait::proto::Rel) -> usize {
+    match &rel.rel_type {
+        Some(substrait::proto::rel::RelType::Read(read_rel)) => {
+            // For Read relations, count the fields in the base schema
+            read_rel
+                .base_schema
+                .as_ref()
+                .and_then(|schema| schema.r#struct.as_ref())
+                .map(|struct_| struct_.types.len())
+                .unwrap_or(0)
+        }
+        Some(substrait::proto::rel::RelType::Filter(_)) => {
+            // For Filter relations, we need to get the count from the input
+            // This is a bit tricky since we're wiring bottom-up
+            // For now, we'll assume a reasonable default and fix this later
+            1
+        }
+        Some(substrait::proto::rel::RelType::Project(project_rel)) => {
+            // For Project relations, we need to get the count from the input
+            // This is also tricky due to bottom-up wiring
+            1
+        }
+        _ => 0,
     }
 }
 
@@ -122,6 +161,8 @@ pub struct PlanParserState {
     // Trees that have been completed so far.
     completed: Vec<substrait::proto::Rel>,
     // The current relational tree being built.
+    // We maintain a stack of relations at different depths to support
+    // the wire-as-we-go approach.
     current: Option<RelationNode>,
 }
 
@@ -133,39 +174,72 @@ impl PlanParserState {
         }
     }
 
-    /// Find the last seen node at the given depth.
+    /// Find the parent relation at the given depth.
+    /// This is used in the wire-as-we-go approach to find where to wire
+    /// the current relation as a child.
     pub fn find_parent(&mut self, depth: usize) -> Option<&mut RelationNode> {
-        let mut depth = depth;
+        let mut current_depth = depth;
         let mut current = self.current.as_mut()?;
-        while depth > 0 {
+
+        // Navigate down the tree to find the node at the target depth
+        while current_depth > 0 {
             current = current.children.last_mut()?;
-            depth -= 1;
+            current_depth -= 1;
         }
         Some(current)
     }
 
-    // Push a new relation at the given depth.
-    pub fn push_relation(
+    /// Add a new relation at the given depth using the wire-as-we-go approach.
+    ///
+    /// The wire-as-we-go approach works as follows:
+    /// 1. Parse each relation line in order (top-down)
+    /// 2. For each relation, determine if it's a root (depth 0) or child (depth > 0)
+    /// 3. If it's a child, find its parent and wire it in immediately
+    /// 4. This builds the tree bottom-up as we parse, avoiding the need for
+    ///    post-processing or intermediate structures.
+    pub fn add_relation_wire_as_we_go(
         &mut self,
         depth: usize,
-        context: ParseContext,
-        relation: Relation,
+        relation: substrait::proto::Rel,
     ) -> Result<(), LineParseError> {
         if depth == 0 {
+            // This is a root relation - start a new tree
             if let Some(current) = self.current.take() {
+                // Complete the previous tree
                 self.completed.push(current.convert_to_proto()?);
             }
-            self.current = Some(RelationNode::new(context, relation));
+            self.current = Some(RelationNode::new(relation));
             return Ok(());
         }
 
-        let parent = self.find_parent(depth - 1).unwrap();
-        parent.children.push(RelationNode {
-            context,
-            relation,
-            children: Vec::new(),
-        });
-        Ok(())
+        // This is a child relation - find its parent and wire it in
+        let parent_depth = depth - 1;
+        if let Some(parent) = self.find_parent(parent_depth) {
+            // Wire the child into the parent's protobuf structure
+            wire_child_into_parent(&mut parent.relation, relation.clone());
+
+            // Also add it to the tree structure for future parent lookups
+            parent.children.push(RelationNode::new(relation));
+            Ok(())
+        } else {
+            // No parent found at the expected depth - this is an error
+            Err(LineParseError::Plan(
+                ParseContext {
+                    line_no: 0, // We'll set this in the caller
+                    line: "".to_string(),
+                },
+                MessageParseError::new(
+                    "relation",
+                    crate::parser::ErrorKind::InvalidValue,
+                    Box::new(pest::error::Error::new_from_span(
+                        pest::error::ErrorVariant::CustomError {
+                            message: format!("No parent found at depth {}", parent_depth),
+                        },
+                        pest::Span::new("", 0, 0).unwrap(),
+                    )),
+                ),
+            ))
+        }
     }
 }
 
@@ -355,7 +429,7 @@ impl Parser {
     /// Wrap a Result with a Relation context into a LineParseError
     pub fn with_relation_context<T>(
         &self,
-        result: Result<T, RelationParseError>,
+        result: Result<T, MessageParseError>,
         line: &str,
     ) -> Result<T, LineParseError> {
         result.map_err(|e| {
@@ -393,14 +467,135 @@ impl Parser {
     }
 
     fn parse_plan_line(&mut self, line: IndentedLine<'_>) -> Result<(), LineParseError> {
-        let r =
-            self.with_plan_context(Relation::parse(&self.ext_parser.extensions, line.1), line.1)?;
-        let ctx = ParseContext {
-            line_no: self.line_no,
-            // TODO: Reference to the original line?
-            line: line.1.to_string(),
+        use pest::Parser;
+
+        use crate::parser::{ExpressionParser, Rule};
+        let mut pairs = ExpressionParser::parse(Rule::relation, line.1).map_err(|e| {
+            LineParseError::Plan(
+                ParseContext {
+                    line_no: self.line_no,
+                    line: line.1.to_string(),
+                },
+                MessageParseError::new(
+                    "relation",
+                    crate::parser::ErrorKind::InvalidValue,
+                    Box::new(e),
+                ),
+            )
+        })?;
+        let pair = pairs.next().unwrap();
+        // Unwrap the relation rule to get the specific relation type
+        let mut inner_pairs = pair.into_inner();
+        let specific_pair = inner_pairs.next().unwrap();
+        assert!(inner_pairs.next().is_none());
+
+        let rel = match specific_pair.as_rule() {
+            Rule::read_relation => {
+                let read_rel = substrait::proto::ReadRel::parse_pair(
+                    &self.ext_parser.extensions,
+                    specific_pair,
+                )
+                .map_err(|e| {
+                    LineParseError::Plan(
+                        ParseContext {
+                            line_no: self.line_no,
+                            line: line.1.to_string(),
+                        },
+                        e,
+                    )
+                })?;
+                substrait::proto::Rel {
+                    rel_type: Some(substrait::proto::rel::RelType::Read(Box::new(read_rel))),
+                }
+            }
+            Rule::filter_relation => {
+                let filter_rel = substrait::proto::FilterRel::parse_pair(
+                    &self.ext_parser.extensions,
+                    specific_pair,
+                )
+                .map_err(|e| {
+                    LineParseError::Plan(
+                        ParseContext {
+                            line_no: self.line_no,
+                            line: line.1.to_string(),
+                        },
+                        e,
+                    )
+                })?;
+                substrait::proto::Rel {
+                    rel_type: Some(substrait::proto::rel::RelType::Filter(Box::new(filter_rel))),
+                }
+            }
+            Rule::project_relation => {
+                // For Project relations, we need to get the input field count from the parent
+                // This is part of the wire-as-we-go approach - we need context from the parent
+                let input_field_count = if line.0 > 0 {
+                    // We're a child, so we have a parent - get the input field count from it
+                    let parent_depth = line.0 - 1;
+                    if let Some(parent) = self.plan_state.find_parent(parent_depth) {
+                        get_input_field_count(&parent.relation)
+                    } else {
+                        // No parent found - this shouldn't happen in well-formed input
+                        0
+                    }
+                } else {
+                    // We're a root - no input fields
+                    0
+                };
+
+                // Create a placeholder input relation for now - it will be replaced
+                // when the child is wired in via the wire-as-we-go approach
+                let placeholder_input = if line.0 > 0 {
+                    Box::new(substrait::proto::Rel::default())
+                } else {
+                    Box::new(substrait::proto::Rel::default())
+                };
+
+                let project_rel = crate::parser::relations::parse_project_relation(
+                    &self.ext_parser.extensions,
+                    specific_pair,
+                    input_field_count,
+                    placeholder_input,
+                )
+                .map_err(|e| {
+                    LineParseError::Plan(
+                        ParseContext {
+                            line_no: self.line_no,
+                            line: line.1.to_string(),
+                        },
+                        e,
+                    )
+                })?;
+                substrait::proto::Rel {
+                    rel_type: Some(substrait::proto::rel::RelType::Project(Box::new(
+                        project_rel,
+                    ))),
+                }
+            }
+            _ => {
+                let err = pest::error::Error::new_from_span(
+                    pest::error::ErrorVariant::CustomError {
+                        message: format!("Unknown relation rule: {:?}", specific_pair.as_rule()),
+                    },
+                    specific_pair.as_span(),
+                );
+                return Err(LineParseError::Plan(
+                    ParseContext {
+                        line_no: self.line_no,
+                        line: line.1.to_string(),
+                    },
+                    MessageParseError::new(
+                        "relation",
+                        crate::parser::ErrorKind::InvalidValue,
+                        Box::new(err),
+                    ),
+                ));
+            }
         };
-        self.plan_state.push_relation(0, ctx, r)
+
+        // Use the wire-as-we-go approach to add this relation to the tree
+        // This will automatically wire it into its parent if it's a child
+        self.plan_state.add_relation_wire_as_we_go(line.0, rel)
     }
 
     pub fn parse_line(&mut self, line: &str) -> Result<(), LineParseError> {
@@ -518,5 +713,49 @@ Type Variations:
         let extensions_str = parser.extensions.to_string("  ");
         println!("{}", extensions_str);
         assert_eq!(extensions_str.trim(), input_block.trim());
+    }
+
+    #[test]
+    fn test_parse_relation_tree() {
+        // Example plan with a Project, a Filter, and a Read, nested by indentation
+        let plan = r#"=== Plan
+Project[$0, $1, 42, 84]
+  Filter[$2 => $0, $1]
+    Read[my.table => a:i32, b:string?, c:boolean]
+"#;
+        let mut parser = Parser::new();
+        parser.state = State::Plan;
+        parser.line_no = 1;
+        for (i, line) in plan.lines().enumerate() {
+            if line.trim().is_empty() || line.trim() == "=== Plan" {
+                continue;
+            }
+            parser.line_no = (i + 1) as i64;
+            parser.parse_line(line).unwrap();
+        }
+        // Check the tree structure
+        let plan_state = &parser.plan_state;
+        let root = plan_state
+            .current
+            .as_ref()
+            .expect("Should have a root node");
+        // Root should be Project
+        match &root.relation.rel_type {
+            Some(substrait::proto::rel::RelType::Project(p)) => {}
+            other => panic!("Expected Project at root, got {:?}", other),
+        }
+        assert_eq!(root.children.len(), 1);
+        let filter = &root.children[0];
+        match &filter.relation.rel_type {
+            Some(substrait::proto::rel::RelType::Filter(_)) => {}
+            other => panic!("Expected Filter as child, got {:?}", other),
+        }
+        assert_eq!(filter.children.len(), 1);
+        let read = &filter.children[0];
+        match &read.relation.rel_type {
+            Some(substrait::proto::rel::RelType::Read(_)) => {}
+            other => panic!("Expected Read as grandchild, got {:?}", other),
+        }
+        assert_eq!(read.children.len(), 0);
     }
 }

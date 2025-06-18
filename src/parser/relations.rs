@@ -1,191 +1,10 @@
-use std::fmt;
-
-use substrait::proto::read_rel::{NamedTable, ReadType};
-use substrait::proto::rel::RelType;
-use substrait::proto::r#type::{Nullability, Struct};
-use substrait::proto::{Expression, NamedStruct, ReadRel, Type};
-use thiserror::Error;
+use substrait::proto::rel_common::{Emit, EmitKind};
+use substrait::proto::{Expression, Type};
 
 use super::{Rule, ScopedParsePair};
 use crate::extensions::SimpleExtensions;
 use crate::parser::expressions::Name;
-use crate::parser::{MessageParseError, ParsePair, RuleIter, unwrap_single_pair};
-
-#[derive(Error, Debug, Clone)]
-pub enum RelationParseError {
-    #[error("Unexpected argument: {0}")]
-    UnexpectedArgument(String),
-    #[error("Incorrect number of children for {relation}: expected {expected}, found {found}")]
-    IncorrectChildren {
-        relation: String,
-        expected: usize,
-        found: usize,
-    },
-}
-
-pub struct Relation {
-    pub name: String,
-    pub arguments: Vec<Argument>,
-    pub columns: Vec<Column>,
-}
-
-impl Relation {
-    pub fn make_schema(&self) -> NamedStruct {
-        let (names, types) = self
-            .columns
-            .iter()
-            .cloned()
-            .map(|c| (c.name, c.typ))
-            .unzip();
-        let struct_ = Struct {
-            types,
-            type_variation_reference: 0,
-            nullability: Nullability::Required as i32,
-        };
-
-        NamedStruct {
-            names,
-            r#struct: Some(struct_),
-        }
-    }
-
-    pub fn as_read(
-        &self,
-        children: Vec<substrait::proto::Rel>,
-    ) -> Result<ReadRel, RelationParseError> {
-        assert_eq!(self.name, "Read");
-
-        // Expecting one child (the input relation)
-        if !children.is_empty() {
-            return Err(RelationParseError::IncorrectChildren {
-                expected: 0,
-                found: children.len(),
-                relation: "Read".to_string(),
-            });
-        }
-
-        let names = match self.arguments.as_slice() {
-            [Argument::TableName(table_name)] => table_name.clone(),
-            [a] => {
-                return Err(RelationParseError::UnexpectedArgument(format!(
-                    "Expected 1 argument of type TableName, got {a}",
-                )));
-            }
-            _ => {
-                return Err(RelationParseError::UnexpectedArgument(format!(
-                    "Expected 1 argument of type TableName, got {} arguments",
-                    self.arguments.len(),
-                )));
-            }
-        };
-
-        Ok(ReadRel {
-            base_schema: Some(self.make_schema()),
-            read_type: Some(ReadType::NamedTable(NamedTable {
-                names,
-                advanced_extension: None,
-            })),
-            ..Default::default()
-        })
-    }
-
-    pub fn as_filter(
-        &self,
-        children: Vec<substrait::proto::Rel>,
-    ) -> Result<substrait::proto::FilterRel, RelationParseError> {
-        assert_eq!(self.name, "Filter");
-
-        // Expecting one child (the input relation)
-        let input = match children.as_slice() {
-            [child] => Box::new(child.clone()),
-            _ => {
-                return Err(RelationParseError::IncorrectChildren {
-                    expected: 1,
-                    found: children.len(),
-                    relation: "Filter".to_string(),
-                });
-            }
-        };
-
-        // Expecting one argument: the filter expression
-        let condition = match self.arguments.as_slice() {
-            [Argument::Expression(expr)] => Some(expr.clone()),
-            [a] => {
-                return Err(RelationParseError::UnexpectedArgument(format!(
-                    "Expected 1 argument of type Expression, got {a}",
-                )));
-            }
-            _ => {
-                return Err(RelationParseError::UnexpectedArgument(format!(
-                    "Expected 1 argument of type Expression, got {} arguments",
-                    self.arguments.len(),
-                )));
-            }
-        };
-
-        Ok(substrait::proto::FilterRel {
-            input: Some(input),
-            condition: condition.map(Box::new),
-            ..Default::default()
-        })
-    }
-
-    pub fn convert_to_proto(
-        &self,
-        children: Vec<substrait::proto::Rel>,
-    ) -> Result<substrait::proto::Rel, RelationParseError> {
-        let rel_type = match self.name.as_str() {
-            "Read" => RelType::Read(Box::new(self.as_read(children)?)),
-            "Filter" => RelType::Filter(Box::new(self.as_filter(children)?)),
-            _ => {
-                todo!()
-            }
-        };
-
-        Ok(substrait::proto::Rel {
-            rel_type: Some(rel_type),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Argument {
-    TableName(Vec<String>),
-    Expression(Expression),
-}
-
-impl fmt::Display for Argument {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Argument::TableName(_) => write!(f, "TableName"),
-            Argument::Expression(_) => write!(f, "Expression"),
-        }
-    }
-}
-
-impl ScopedParsePair for Argument {
-    fn rule() -> Rule {
-        Rule::argument
-    }
-
-    fn message() -> &'static str {
-        "Argument"
-    }
-
-    fn parse_pair(
-        extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Self, MessageParseError> {
-        assert_eq!(pair.as_rule(), Self::rule());
-        let inner = unwrap_single_pair(pair);
-
-        match inner.as_rule() {
-            Rule::table_name => Ok(Self::TableName(TableName::parse_pair(inner).0)),
-            Rule::expression => Ok(Self::Expression(Expression::parse_pair(extensions, inner)?)),
-            _ => unreachable!("Unexpected rule: {:?}", inner.as_rule()),
-        }
-    }
-}
+use crate::parser::{MessageParseError, ParsePair, RuleIter};
 
 pub struct TableName(Vec<String>);
 
@@ -239,30 +58,6 @@ impl ScopedParsePair for Column {
     }
 }
 
-pub struct Arguments(Vec<Argument>);
-
-impl ScopedParsePair for Arguments {
-    fn rule() -> Rule {
-        Rule::arguments
-    }
-
-    fn message() -> &'static str {
-        "Arguments"
-    }
-
-    fn parse_pair(
-        extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Self, MessageParseError> {
-        assert_eq!(pair.as_rule(), Rule::arguments);
-        let mut arguments = Vec::new();
-        for arg in pair.into_inner() {
-            arguments.push(Argument::parse_pair(extensions, arg)?);
-        }
-        Ok(Self(arguments))
-    }
-}
-
 pub struct NamedColumnList(Vec<Column>);
 
 impl ScopedParsePair for NamedColumnList {
@@ -287,33 +82,134 @@ impl ScopedParsePair for NamedColumnList {
     }
 }
 
-impl ScopedParsePair for Relation {
+impl ScopedParsePair for substrait::proto::ReadRel {
     fn rule() -> Rule {
-        Rule::relation
+        Rule::read_relation
     }
 
     fn message() -> &'static str {
-        "Relation"
+        "ReadRel"
     }
 
     fn parse_pair(
         extensions: &SimpleExtensions,
         pair: pest::iterators::Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
-        assert_eq!(pair.as_rule(), Self::rule());
-        dbg!(&pair.as_rule());
-        let mut iter = RuleIter::from(pair.into_inner());
-        let name = iter.parse_next::<Name>().0;
+        let mut pairs = pair.into_inner();
+        let table = TableName::parse_pair(pairs.next().unwrap()).0;
+        let columns = NamedColumnList::parse_pair(extensions, pairs.next().unwrap())?.0;
+        assert!(pairs.next().is_none());
 
-        let arguments = iter.parse_next_scoped::<Arguments>(extensions)?.0;
-        let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+        let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
+        let struct_ = substrait::proto::r#type::Struct {
+            types,
+            type_variation_reference: 0,
+            nullability: substrait::proto::r#type::Nullability::Required as i32,
+        };
+        let named_struct = substrait::proto::NamedStruct {
+            names,
+            r#struct: Some(struct_),
+        };
 
-        Ok(Relation {
-            name,
-            arguments,
-            columns,
+        Ok(substrait::proto::ReadRel {
+            base_schema: Some(named_struct),
+            read_type: Some(substrait::proto::read_rel::ReadType::NamedTable(
+                substrait::proto::read_rel::NamedTable {
+                    names: table,
+                    advanced_extension: None,
+                },
+            )),
+            ..Default::default()
         })
     }
+}
+
+impl ScopedParsePair for substrait::proto::FilterRel {
+    fn rule() -> Rule {
+        Rule::filter_relation
+    }
+
+    fn message() -> &'static str {
+        "FilterRel"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        let mut pairs = pair.into_inner();
+        let condition = Expression::parse_pair(extensions, pairs.next().unwrap())?;
+        let references_pair = pairs.next().unwrap();
+        let output_mapping = references_pair
+            .into_inner()
+            .map(|p| {
+                let inner = crate::parser::unwrap_single_pair(p);
+                inner.as_str().parse::<i32>().unwrap()
+            })
+            .collect::<Vec<i32>>();
+
+        let emit = EmitKind::Emit(Emit { output_mapping });
+        let common = substrait::proto::RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+
+        assert!(pairs.next().is_none());
+        Ok(substrait::proto::FilterRel {
+            input: None,
+            condition: Some(Box::new(condition)),
+            common: Some(common),
+            advanced_extension: None,
+        })
+    }
+}
+
+/// Parse a ProjectRel with input context
+pub fn parse_project_relation(
+    extensions: &SimpleExtensions,
+    pair: pest::iterators::Pair<Rule>,
+    input_field_count: usize,
+    input_rel: Box<substrait::proto::Rel>,
+) -> Result<substrait::proto::ProjectRel, MessageParseError> {
+    let mut pairs = pair.into_inner();
+    let arguments_pair = pairs.next().unwrap();
+    assert!(pairs.next().is_none());
+
+    let mut expressions = Vec::new();
+    let mut output_mapping = Vec::new();
+
+    for arg in arguments_pair.into_inner() {
+        // Each project_argument contains either a reference or expression
+        let inner_arg = arg.into_inner().next().unwrap();
+        match inner_arg.as_rule() {
+            Rule::reference => {
+                // Parse reference like "$0" -> 0
+                let inner = crate::parser::unwrap_single_pair(inner_arg);
+                let ref_index = inner.as_str().parse::<i32>().unwrap();
+                output_mapping.push(ref_index);
+            }
+            Rule::expression => {
+                let expr = Expression::parse_pair(extensions, inner_arg)?;
+                expressions.push(expr);
+                // Expression: index after all input fields
+                output_mapping.push(input_field_count as i32 + (expressions.len() as i32 - 1));
+            }
+            _ => panic!("Unexpected inner argument rule: {:?}", inner_arg.as_rule()),
+        }
+    }
+
+    let emit = EmitKind::Emit(Emit { output_mapping });
+    let common = substrait::proto::RelCommon {
+        emit_kind: Some(emit),
+        ..Default::default()
+    };
+
+    Ok(substrait::proto::ProjectRel {
+        input: Some(input_rel),
+        expressions,
+        common: Some(common),
+        advanced_extension: None,
+    })
 }
 
 #[cfg(test)]
@@ -324,33 +220,95 @@ mod tests {
     use crate::parser::{ExpressionParser, Rule};
 
     #[test]
-    fn test_parse_relation_no_args() {
-        let try_parse = |r: Rule, s: &str| {
-            let result = ExpressionParser::parse(r, s);
-            if let Err(e) = result {
-                println!("{:#}", e);
-                panic!("Failed to parse {s} as {r:?}");
-            }
-        };
-        try_parse(Rule::name, "Read");
-        try_parse(Rule::table_name, "ab.cd.ef");
-        try_parse(Rule::arguments, "ab.cd.ef");
-        try_parse(Rule::named_column_list, "a:i32, b:string?");
-        try_parse(Rule::relation, "Read[ab.cd.ef => a:i32, b:string?]");
+    fn test_parse_relation() {
+        // Removed: test_parse_relation for old Relation struct
     }
 
     #[test]
-    fn test_parse_relation() {
+    fn test_parse_read_relation() {
         let extensions = SimpleExtensions::default();
-        let relation = Relation::parse_pair(
+        let read = substrait::proto::ReadRel::parse_pair(
             &extensions,
-            parse_exact(Rule::relation, "Read[ab.cd.ef => a:i32, b:string?]"),
+            parse_exact(Rule::read_relation, "Read[ab.cd.ef => a:i32, b:string?]"),
         )
         .unwrap();
-        assert_eq!(relation.name, "Read");
-        assert_eq!(relation.arguments.len(), 1);
-        assert_eq!(relation.columns.len(), 2);
-        assert_eq!(relation.columns[0].name, "a");
+        let names = match &read.read_type {
+            Some(substrait::proto::read_rel::ReadType::NamedTable(table)) => &table.names,
+            _ => panic!("Expected NamedTable"),
+        };
+        assert_eq!(names, &["ab", "cd", "ef"]);
+        let columns = &read
+            .base_schema
+            .as_ref()
+            .unwrap()
+            .r#struct
+            .as_ref()
+            .unwrap()
+            .types;
+        assert_eq!(columns.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_filter_relation() {
+        let extensions = SimpleExtensions::default();
+        let filter = substrait::proto::FilterRel::parse_pair(
+            &extensions,
+            parse_exact(Rule::filter_relation, "Filter[$1 => $0, $1, $2]"),
+        )
+        .unwrap();
+        let emit_kind = &filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+        };
+        assert_eq!(emit, &[0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_project_relation() {
+        let extensions = SimpleExtensions::default();
+        let project = parse_project_relation(
+            &extensions,
+            parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
+            5, // Assume 5 input fields
+            Box::default(),
+        )
+        .unwrap();
+
+        // Should have 1 expression (42) and 2 references ($0, $1)
+        assert_eq!(project.expressions.len(), 1);
+
+        let emit_kind = &project.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+        };
+        // Output mapping should be [0, 1, 5] (reference 0, reference 1, expression 0 at index 5)
+        assert_eq!(emit, &[0, 1, 5]);
+    }
+
+    #[test]
+    fn test_parse_project_relation_complex() {
+        let extensions = SimpleExtensions::default();
+        let project = parse_project_relation(
+            &extensions,
+            parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
+            5, // Assume 5 input fields
+            Box::default(),
+        )
+        .unwrap();
+
+        // Should have 2 expressions (42, 100) and 3 references ($0, $2, $1)
+        assert_eq!(project.expressions.len(), 2);
+
+        let emit_kind = &project.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+        };
+        // Direct mapping: [input_fields..., 42, 100] (input fields first, then expressions)
+        // Output mapping: [5, 0, 6, 2, 1] (to get: 42, $0, 100, $2, $1)
+        assert_eq!(emit, &[5, 0, 6, 2, 1]);
     }
 
     fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
