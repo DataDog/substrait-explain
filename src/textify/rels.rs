@@ -166,7 +166,7 @@ impl<'a> Textify for Emitted<'a> {
 }
 
 pub struct Relation<'a> {
-    pub name: &'static str,
+    pub name: &'a str,
     pub arguments: Vec<Value<'a>>,
     pub columns: Vec<Value<'a>>,
     pub emit: Option<&'a EmitKind>,

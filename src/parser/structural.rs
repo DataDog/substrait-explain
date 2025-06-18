@@ -10,7 +10,9 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::extensions::simple::{self, ExtensionKind};
-use crate::extensions::{ExtensionError, SimpleExtensions};
+use crate::extensions::{InsertError, SimpleExtensions};
+use crate::parser::relations::{Relation, RelationParseError};
+use crate::parser::{MessageParseError, ScopedParse};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -40,13 +42,25 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
 }
 
 #[derive(Debug, Clone, Error)]
+pub enum LineParseError {
+    #[error("Error parsing extension on line {0}: {1}")]
+    Extension(ParseContext, #[source] ExtensionParseError),
+    #[error("Error parsing plan on line {0}: {1}")]
+    Plan(ParseContext, #[source] MessageParseError),
+    #[error("Error parsing section header on line {0}: {1}")]
+    Initial(ParseContext, #[source] MessageParseError),
+    #[error("Error parsing relation: {0}")]
+    Relation(ParseContext, #[source] RelationParseError),
+}
+
+#[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
     #[error("Unexpected line, expected {0}")]
     UnexpectedLine(ExtensionParserState),
-    #[error("Extension error: {0}")]
-    ExtensionError(#[from] ExtensionError),
-    #[error("Error parsing line: {0}")]
-    LineParseError(#[from] super::Error),
+    #[error("Error adding extension: {0}")]
+    ExtensionError(#[from] InsertError),
+    #[error("Error parsing message: {0}")]
+    Message(#[from] MessageParseError),
 }
 
 /// The state of the extension parser - tracking what section of extension
@@ -76,6 +90,85 @@ impl fmt::Display for ExtensionParserState {
     }
 }
 
+pub struct RelationNode {
+    pub context: ParseContext,
+    pub relation: Relation,
+    pub children: Vec<RelationNode>,
+}
+
+impl RelationNode {
+    pub fn new(context: ParseContext, relation: Relation) -> Self {
+        Self {
+            context,
+            relation,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn convert_to_proto(&self) -> Result<substrait::proto::Rel, LineParseError> {
+        let children: Vec<substrait::proto::Rel> = self
+            .children
+            .iter()
+            .map(|c| c.convert_to_proto())
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.relation.convert_to_proto(children) {
+            Ok(rel) => Ok(rel),
+            Err(e) => Err(LineParseError::Relation(self.context.clone(), e)),
+        }
+    }
+}
+
+pub struct PlanParserState {
+    // Trees that have been completed so far.
+    completed: Vec<substrait::proto::Rel>,
+    // The current relational tree being built.
+    current: Option<RelationNode>,
+}
+
+impl PlanParserState {
+    pub fn new() -> Self {
+        Self {
+            completed: Vec::new(),
+            current: None,
+        }
+    }
+
+    /// Find the last seen node at the given depth.
+    pub fn find_parent(&mut self, depth: usize) -> Option<&mut RelationNode> {
+        let mut depth = depth;
+        let mut current = self.current.as_mut()?;
+        while depth > 0 {
+            current = current.children.last_mut()?;
+            depth -= 1;
+        }
+        Some(current)
+    }
+
+    // Push a new relation at the given depth.
+    pub fn push_relation(
+        &mut self,
+        depth: usize,
+        context: ParseContext,
+        relation: Relation,
+    ) -> Result<(), LineParseError> {
+        if depth == 0 {
+            if let Some(current) = self.current.take() {
+                self.completed.push(current.convert_to_proto()?);
+            }
+            self.current = Some(RelationNode::new(context, relation));
+            return Ok(());
+        }
+
+        let parent = self.find_parent(depth - 1).unwrap();
+        parent.children.push(RelationNode {
+            context,
+            relation,
+            children: Vec::new(),
+        });
+        Ok(())
+    }
+}
+
 /// The parser for the extension section of the Substrait file format.
 ///
 /// This is responsible for parsing the extension section of the file, which
@@ -96,7 +189,7 @@ impl ExtensionParser {
     }
 
     pub fn parse_line(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
-        if let IndentedLine(_, "") = line {
+        if line.1.is_empty() {
             // Blank lines are allowed between subsections, so if we see
             // one, we revert out of the subsection.
             self.state = ExtensionParserState::Extensions;
@@ -137,10 +230,10 @@ impl ExtensionParser {
 
     fn parse_extension_uris(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
         match line {
-            //
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let uri = super::extensions::URIExtensionDeclaration::from_str(s)?;
+                let uri = super::extensions::URIExtensionDeclaration::from_str(s)
+                    .map_err(ExtensionParseError::Message)?;
                 self.extensions.add_extension_uri(uri.uri, uri.anchor)?;
                 Ok(())
             }
@@ -186,12 +279,6 @@ impl fmt::Display for State {
     }
 }
 
-#[derive(Debug, Clone, Error)]
-pub enum ParseError {
-    #[error("Error parsing extensions: {0}")]
-    ExtensionError(#[from] ExtensionParseError),
-}
-
 #[derive(Debug, Clone)]
 pub struct ParseContext {
     pub line_no: i64,
@@ -200,16 +287,8 @@ pub struct ParseContext {
 
 impl fmt::Display for ParseContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: '{}'", self.line_no, self.line)
+        write!(f, "line {} ('{}')", self.line_no, self.line)
     }
-}
-
-#[derive(Debug, Clone, Error)]
-#[error("Error parsing {context}: {error}")]
-pub struct ParseErrorWithContext {
-    #[source]
-    error: ParseError,
-    context: ParseContext,
 }
 
 /// The parser for the substrait-explain format.
@@ -219,7 +298,8 @@ pub struct ParseErrorWithContext {
 pub struct Parser {
     line_no: i64,
     state: State,
-    extensions: ExtensionParser,
+    ext_parser: ExtensionParser,
+    plan_state: PlanParserState,
 }
 
 impl Default for Parser {
@@ -233,13 +313,63 @@ impl Parser {
         Self {
             line_no: 1,
             state: State::Initial,
-            extensions: ExtensionParser::new(),
+            ext_parser: ExtensionParser::new(),
+            plan_state: PlanParserState::new(),
         }
     }
-}
 
-impl Parser {
-    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
+    /// Wrap a Result with a Plan context into a LineParseError
+    pub fn with_plan_context<T>(
+        &self,
+        result: Result<T, MessageParseError>,
+        line: &str,
+    ) -> Result<T, LineParseError> {
+        result.map_err(|e| {
+            LineParseError::Plan(
+                ParseContext {
+                    line_no: self.line_no,
+                    line: line.to_string(),
+                },
+                e,
+            )
+        })
+    }
+
+    /// Wrap a Result with an Initial context into a LineParseError
+    pub fn with_initial_context<T>(
+        &self,
+        result: Result<T, MessageParseError>,
+        line: &str,
+    ) -> Result<T, LineParseError> {
+        result.map_err(|e| {
+            LineParseError::Initial(
+                ParseContext {
+                    line_no: self.line_no,
+                    line: line.to_string(),
+                },
+                e,
+            )
+        })
+    }
+
+    /// Wrap a Result with a Relation context into a LineParseError
+    pub fn with_relation_context<T>(
+        &self,
+        result: Result<T, RelationParseError>,
+        line: &str,
+    ) -> Result<T, LineParseError> {
+        result.map_err(|e| {
+            LineParseError::Relation(
+                ParseContext {
+                    line_no: self.line_no,
+                    line: line.to_string(),
+                },
+                e,
+            )
+        })
+    }
+
+    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), LineParseError> {
         if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
             self.state = State::Extensions;
             return Ok(());
@@ -252,43 +382,43 @@ impl Parser {
         todo!()
     }
 
-    fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ParseError> {
+    fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
         if line == IndentedLine(0, PLAN_HEADER) {
             self.state = State::Plan;
             return Ok(());
         }
 
-        self.extensions.parse_line(line)?;
+        self.ext_parser.parse_line(line)?;
         Ok(())
     }
 
-    fn parse_plan(&mut self, _line: IndentedLine<'_>) -> Result<(), ParseError> {
-        todo!()
+    fn parse_plan_line(&mut self, line: IndentedLine<'_>) -> Result<(), LineParseError> {
+        let r =
+            self.with_plan_context(Relation::parse(&self.ext_parser.extensions, line.1), line.1)?;
+        let ctx = ParseContext {
+            line_no: self.line_no,
+            // TODO: Reference to the original line?
+            line: line.1.to_string(),
+        };
+        self.plan_state.push_relation(0, ctx, r)
     }
 
-    fn add_error_context(&self, line: String, error: ParseError) -> ParseErrorWithContext {
-        ParseErrorWithContext {
-            error,
-            context: ParseContext {
-                line_no: self.line_no,
-                line,
-            },
-        }
-    }
-
-    pub fn parse_line(&mut self, line: &str) -> Result<(), ParseErrorWithContext> {
+    pub fn parse_line(&mut self, line: &str) -> Result<(), LineParseError> {
         let (orig, line) = (line, IndentedLine::from(line));
 
-        let result = match self.state {
-            State::Initial => self.parse_initial(line),
-            State::Extensions => self.parse_extensions(line),
-            State::Plan => self.parse_plan(line),
+        let line_no = self.line_no;
+        let ctx = || ParseContext {
+            line_no,
+            line: orig.to_string(),
         };
-        if let Err(e) = result {
-            return Err(self.add_error_context(orig.to_string(), e));
-        }
 
-        Ok(())
+        match self.state {
+            State::Initial => self.parse_initial(line),
+            State::Extensions => self
+                .parse_extensions(line)
+                .map_err(|e| LineParseError::Extension(ctx(), e)),
+            State::Plan => self.parse_plan_line(line),
+        }
     }
 }
 

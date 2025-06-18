@@ -7,11 +7,13 @@ use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{I64, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, Type};
 
-use super::{ParsePair, Rule, unescape_string, unwrap_single_pair};
+use super::types::get_and_validate_anchor;
+use super::{
+    MessageParseError, ParsePair, Rule, ScopedParsePair, unescape_string, unwrap_single_pair,
+};
+use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
-use crate::parser::ScopedParsePair;
-use crate::parser::types::get_and_validate_anchor;
-use crate::textify::{Scope, TextifyError};
+use crate::parser::ErrorKind;
 
 /// Create a reference to a particular field.
 pub fn reference(index: i32) -> FieldReference {
@@ -35,6 +37,10 @@ impl ParsePair for FieldReference {
         Rule::reference
     }
 
+    fn message() -> &'static str {
+        "FieldReference"
+    }
+
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
@@ -46,10 +52,9 @@ impl ParsePair for FieldReference {
 }
 
 fn to_int_literal(
-    scope: &impl Scope,
     value: pest::iterators::Pair<Rule>,
     typ: Option<Type>,
-) -> Literal {
+) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::integer);
     let parsed_value: i64 = value.as_str().parse().unwrap();
 
@@ -84,27 +89,26 @@ fn to_int_literal(
             i.type_variation_reference,
         ),
         k => {
-            scope.push_error(
-                TextifyError::invalid(
-                    "int_literal_type",
-                    Some(value.as_str().to_string()),
-                    format!("Invalid type for integer literal: {k:?}"),
-                )
-                .into(),
+            let pest_error = pest::error::Error::new_from_span(
+                pest::error::ErrorVariant::CustomError {
+                    message: format!("Invalid type for integer literal: {k:?}"),
+                },
+                value.as_span(),
             );
-            (
-                LiteralType::I64(parsed_value),
-                Nullability::Required as i32,
-                0,
-            )
+            let error = MessageParseError {
+                message: "int_literal_type",
+                kind: ErrorKind::InvalidValue,
+                error: Box::new(pest_error),
+            };
+            return Err(error);
         }
     };
 
-    Literal {
+    Ok(Literal {
         literal_type: Some(lit),
         nullable: nullability != Nullability::Required as i32,
         type_variation_reference: tvar,
-    }
+    })
 }
 
 impl ScopedParsePair for Literal {
@@ -112,17 +116,27 @@ impl ScopedParsePair for Literal {
         Rule::literal
     }
 
-    fn parse_pair<S: Scope>(scope: &mut S, pair: pest::iterators::Pair<Rule>) -> Self {
+    fn message() -> &'static str {
+        "Literal"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
         let value = pairs.next().unwrap();
         let typ = pairs.next();
-        let typ = typ.map(|t| Type::parse_pair(scope, t));
+        let typ = match typ {
+            Some(t) => Some(Type::parse_pair(extensions, t)?),
+            None => None,
+        };
         assert!(pairs.next().is_none());
 
         match value.as_rule() {
-            Rule::integer => to_int_literal(scope, value, typ),
-            // Rule::string_literal => LiteralType::String(unescape_string(inner.as_str(), '\'', '\'')),
+            Rule::integer => to_int_literal(value, typ),
+            // Rule::string_literal => Ok(LiteralType::String(unescape_string(inner.as_str(), '\'', '\'))),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
     }
@@ -133,8 +147,16 @@ impl ScopedParsePair for ScalarFunction {
         Rule::function_call
     }
 
-    fn parse_pair<S: Scope>(scope: &mut S, pair: pest::iterators::Pair<Rule>) -> Self {
+    fn message() -> &'static str {
+        "ScalarFunction"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
         let mut pairs = pair.into_inner();
         let name = Name::parse_pair(pairs.next().unwrap());
         let mut next = pairs.next().unwrap();
@@ -155,23 +177,26 @@ impl ScopedParsePair for ScalarFunction {
         }
         assert_eq!(next.as_rule(), Rule::argument_list);
         // TODO: Handle enum and type arguments.
-        let arguments = next
-            .into_inner()
-            .map(|e| Expression::parse_pair(scope, e))
-            .map(|e| FunctionArgument {
-                arg_type: Some(ArgType::Value(e)),
-            })
-            .collect();
+        let mut arguments = Vec::new();
+        for e in next.into_inner() {
+            arguments.push(FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
+            });
+        }
 
-        let output_type = pairs.next().map(|t| Type::parse_pair(scope, t));
+        let output_type = match pairs.next() {
+            Some(t) => Some(Type::parse_pair(extensions, t)?),
+            None => None,
+        };
 
         if let Some(v) = pairs.next() {
             panic!("Expected no more pairs, found '{}': {:?}", v.as_str(), v);
         }
 
-        let anchor = get_and_validate_anchor(scope, ExtensionKind::Function, anchor, &name.0);
+        let anchor =
+            get_and_validate_anchor(extensions, ExtensionKind::Function, anchor, &name.0, span)?;
 
-        ScalarFunction {
+        Ok(ScalarFunction {
             function_reference: anchor,
             arguments,
             // TODO: Function Options.
@@ -179,7 +204,7 @@ impl ScopedParsePair for ScalarFunction {
             output_type,
             #[allow(deprecated)]
             args: vec![],
-        }
+        })
     }
 }
 
@@ -188,36 +213,45 @@ impl ScopedParsePair for Expression {
         Rule::expression
     }
 
-    fn parse_pair<S: Scope>(scope: &mut S, pair: pest::iterators::Pair<Rule>) -> Self {
+    fn message() -> &'static str {
+        "Expression"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
 
         match inner.as_rule() {
-            // Rule::reference => RexType::Selection(Reference::parse_pair(inner)),
-            // Expression::Reference(Reference::parse_pair(inner)),
-            Rule::literal => Expression {
-                rex_type: Some(RexType::Literal(Literal::parse_pair(scope, inner))),
-            },
-            Rule::function_call => Expression {
+            Rule::literal => Ok(Expression {
+                rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
+            }),
+            Rule::function_call => Ok(Expression {
                 rex_type: Some(RexType::ScalarFunction(ScalarFunction::parse_pair(
-                    scope, inner,
-                ))),
-            },
-            Rule::reference => Expression {
+                    extensions, inner,
+                )?)),
+            }),
+            Rule::reference => Ok(Expression {
                 rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
                     inner,
                 )))),
-            },
+            }),
             _ => unimplemented!("Expression unexpected rule: {:?}", inner.as_rule()),
         }
     }
 }
 
-struct Name(String);
+pub struct Name(pub String);
 
 impl ParsePair for Name {
     fn rule() -> Rule {
         Rule::name
+    }
+
+    fn message() -> &'static str {
+        "Name"
     }
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
@@ -236,9 +270,7 @@ mod tests {
     use pest::Parser as PestParser;
 
     use super::*;
-    use crate::fixtures::TestContext;
     use crate::parser::ExpressionParser;
-    use crate::textify::ErrorQueue;
 
     fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
@@ -254,13 +286,13 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    fn assert_parses_with<S: Scope, T: ScopedParsePair + PartialEq + std::fmt::Debug>(
-        scope: &mut S,
+    fn assert_parses_with<T: ScopedParsePair + PartialEq + std::fmt::Debug>(
+        ext: &SimpleExtensions,
         input: &str,
         expected: T,
     ) {
         let pair = parse_exact(T::rule(), input);
-        let actual = T::parse_pair(scope, pair);
+        let actual = T::parse_pair(ext, pair).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -271,14 +303,13 @@ mod tests {
 
     #[test]
     fn test_parse_integer_literal() {
-        let ctx = TestContext::new();
-        let errors = ErrorQueue::default();
+        let extensions = SimpleExtensions::default();
         let expected = Literal {
             literal_type: Some(LiteralType::I64(1)),
             nullable: false,
             type_variation_reference: 0,
         };
-        assert_parses_with(&mut ctx.scope(&errors), "1", expected);
+        assert_parses_with(&extensions, "1", expected);
     }
 
     // #[test]

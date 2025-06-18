@@ -3,30 +3,48 @@ use substrait::proto::r#type::{Kind, Nullability, Parameter};
 use substrait::proto::{self, Type};
 
 use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
+use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::Scope;
+use crate::parser::{ErrorKind, MessageParseError};
 
 // Given a name and an optional anchor, get the anchor and validate it. Errors will be pushed to the Scope error accumulator,
 // and the anchor will be returned if it is valid.
 pub(crate) fn get_and_validate_anchor(
-    scope: &impl Scope,
+    extensions: &SimpleExtensions,
     kind: ExtensionKind,
     anchor: Option<u32>,
     name: &str,
-) -> u32 {
+    span: pest::Span,
+) -> Result<u32, MessageParseError> {
     match anchor {
-        Some(a) => match scope.extensions().is_name_unique(kind, a, name) {
-            Ok(_) => a,
+        Some(a) => match extensions.is_name_unique(kind, a, name) {
+            Ok(_) => Ok(a),
             Err(e) => {
-                scope.push_error(e.into());
-                a
+                let message = "Error matching name to anchor".to_string();
+                let error = MessageParseError {
+                    message: kind.name(),
+                    kind: ErrorKind::Lookup(e),
+                    error: Box::new(pest::error::Error::new_from_span(
+                        pest::error::ErrorVariant::CustomError { message },
+                        span,
+                    )),
+                };
+                Err(error)
             }
         },
-        None => match scope.extensions().find_by_name(kind, name) {
-            Ok(a) => a,
+        None => match extensions.find_by_name(kind, name) {
+            Ok(a) => Ok(a),
             Err(e) => {
-                scope.push_error(e.into());
-                0
+                let message = "Error finding extension for name".to_string();
+                let error = MessageParseError {
+                    message: kind.name(),
+                    kind: ErrorKind::Lookup(e),
+                    error: Box::new(pest::error::Error::new_from_span(
+                        pest::error::ErrorVariant::CustomError { message },
+                        span,
+                    )),
+                };
+                Err(error)
             }
         },
     }
@@ -35,6 +53,10 @@ pub(crate) fn get_and_validate_anchor(
 impl ParsePair for Nullability {
     fn rule() -> Rule {
         Rule::nullability
+    }
+
+    fn message() -> &'static str {
+        "Nullability"
     }
 
     fn parse_pair(pair: Pair<Rule>) -> Self {
@@ -53,15 +75,22 @@ impl ScopedParsePair for Parameter {
         Rule::parameter
     }
 
-    fn parse_pair<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Self {
+    fn message() -> &'static str {
+        "Parameter"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Rule::parameter);
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
-            Rule::r#type => Parameter {
+            Rule::r#type => Ok(Parameter {
                 parameter: Some(proto::r#type::parameter::Parameter::DataType(
-                    Type::parse_pair(scope, inner),
+                    Type::parse_pair(extensions, inner)?,
                 )),
-            },
+            }),
             _ => unimplemented!("{:?}", inner.as_rule()),
         }
     }
@@ -105,46 +134,58 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
     Type { kind: Some(kind) }
 }
 
-fn parse_compound_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
+fn parse_compound_type(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Type, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::compound_type);
     let inner = unwrap_single_pair(pair);
     match inner.as_rule() {
-        Rule::list_type => parse_list_type(scope, inner),
+        Rule::list_type => parse_list_type(extensions, inner),
         // Rule::map_type => parse_map_type(inner),
         // Rule::struct_type => parse_struct_type(inner),
         _ => unimplemented!("{:?}", inner.as_rule()),
     }
 }
 
-fn parse_list_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
+fn parse_list_type(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Type, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::list_type);
     let mut iter = iter_pairs(pair.into_inner());
     let nullability = iter.parse_next::<Nullability>();
-    let inner = iter.parse_next_scoped::<_, Type>(scope);
+    let inner = iter.parse_next_scoped::<Type>(extensions)?;
     iter.done();
 
-    Type {
+    Ok(Type {
         kind: Some(Kind::List(Box::new(proto::r#type::List {
             nullability: nullability.into(),
             r#type: Some(Box::new(inner)),
             type_variation_reference: 0,
         }))),
-    }
+    })
 }
 
-fn parse_parameters<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Vec<Parameter> {
+fn parse_parameters(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Vec<Parameter>, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::parameters);
     let mut iter = iter_pairs(pair.into_inner());
     let mut params = Vec::new();
-    while let Some(param) = iter.parse_if_next_scoped::<Parameter, _>(scope) {
-        // TODO: Other kinds of parameters
-        params.push(param);
+    while let Some(param) = iter.parse_if_next_scoped::<Parameter>(extensions) {
+        params.push(param?);
     }
     iter.done();
-    params
+    Ok(params)
 }
 
-fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
+fn parse_user_defined_type(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Type, MessageParseError> {
+    let span = pair.as_span();
     assert_eq!(pair.as_rule(), Rule::user_defined_type);
     let mut iter = iter_pairs(pair.into_inner());
     let name = iter.pop_if(Rule::name).unwrap().as_str();
@@ -160,21 +201,21 @@ fn parse_user_defined_type<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Type {
 
     let nullability = iter.parse_next::<Nullability>();
     let parameters = match iter.pop_if(Rule::parameters) {
-        Some(p) => parse_parameters(scope, p),
+        Some(p) => parse_parameters(extensions, p)?,
         None => Vec::new(),
     };
     iter.done();
 
-    let anchor = get_and_validate_anchor(scope, ExtensionKind::Type, anchor, name);
+    let anchor = get_and_validate_anchor(extensions, ExtensionKind::Type, anchor, name, span)?;
 
-    Type {
+    Ok(Type {
         kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
             type_reference: anchor,
             nullability: nullability.into(),
             type_parameters: parameters,
             type_variation_reference: 0,
         })),
-    }
+    })
 }
 
 impl ScopedParsePair for Type {
@@ -182,13 +223,20 @@ impl ScopedParsePair for Type {
         Rule::r#type
     }
 
-    fn parse_pair<S: Scope>(scope: &mut S, pair: Pair<Rule>) -> Self {
+    fn message() -> &'static str {
+        "Type"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Rule::r#type);
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
-            Rule::simple_type => parse_simple_type(inner),
-            Rule::compound_type => parse_compound_type(scope, inner),
-            Rule::user_defined_type => parse_user_defined_type(scope, inner),
+            Rule::simple_type => Ok(parse_simple_type(inner)),
+            Rule::compound_type => parse_compound_type(extensions, inner),
+            Rule::user_defined_type => parse_user_defined_type(extensions, inner),
             _ => unimplemented!("{:?}", inner.as_rule()),
         }
     }
@@ -200,9 +248,7 @@ mod tests {
     use substrait::proto::r#type::{I64, Kind, Nullability};
 
     use super::*;
-    use crate::fixtures::TestContext;
     use crate::parser::ExpressionParser;
-    use crate::textify::ErrorQueue;
 
     #[test]
     fn test_parse_simple_type() {
@@ -237,14 +283,11 @@ mod tests {
 
     #[test]
     fn test_parse_type() {
-        let ctx = TestContext::default();
-        let errors = ErrorQueue::default();
-        let mut scope = ctx.scope(&errors);
-
+        let extensions = SimpleExtensions::default();
         let mut pairs = ExpressionParser::parse(Rule::r#type, "i64").unwrap();
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
-        let t = Type::parse_pair(&mut scope, pair);
+        let t = Type::parse_pair(&extensions, pair).unwrap();
         assert_eq!(
             t,
             Type {
@@ -258,14 +301,11 @@ mod tests {
 
     #[test]
     fn test_parse_list_type() {
-        let ctx = TestContext::default();
-        let errors = ErrorQueue::default();
-        let mut scope = ctx.scope(&errors);
-
+        let extensions = SimpleExtensions::default();
         let mut pairs = ExpressionParser::parse(Rule::list_type, "list<i64>").unwrap();
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
-        let t = parse_list_type(&mut scope, pair);
+        let t = parse_list_type(&extensions, pair).unwrap();
         assert_eq!(
             t,
             Type {
@@ -285,14 +325,11 @@ mod tests {
 
     #[test]
     fn test_parse_parameters() {
-        let ctx = TestContext::default();
-        let errors = ErrorQueue::default();
-        let mut scope = ctx.scope(&errors);
-
+        let extensions = SimpleExtensions::default();
         let mut pairs = ExpressionParser::parse(Rule::parameters, "<i64?,string>").unwrap();
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
-        let t = parse_parameters(&mut scope, pair);
+        let t = parse_parameters(&extensions, pair).unwrap();
         assert_eq!(
             t,
             vec![
@@ -318,15 +355,18 @@ mod tests {
 
     #[test]
     fn test_udts() {
-        let ctx = TestContext::default();
-        let errors = ErrorQueue::default();
-        let mut scope = ctx.scope(&errors);
-
+        let mut extensions = SimpleExtensions::default();
+        extensions
+            .add_extension_uri("some_source".to_string(), 4)
+            .unwrap();
+        extensions
+            .add_extension(ExtensionKind::Type, 4, 42, "udt".to_string())
+            .unwrap();
         let mut pairs = ExpressionParser::parse(Rule::user_defined_type, "udt#42<i64?>").unwrap();
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
 
-        let t = parse_user_defined_type(&mut scope, pair);
+        let t = parse_user_defined_type(&extensions, pair).unwrap();
         assert_eq!(
             t,
             Type {

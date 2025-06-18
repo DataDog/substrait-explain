@@ -20,6 +20,10 @@ impl ParsePair for URIExtensionDeclaration {
         Rule::extension_uri_declaration
     }
 
+    fn message() -> &'static str {
+        "URIExtensionDeclaration"
+    }
+
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -37,7 +41,7 @@ impl ParsePair for URIExtensionDeclaration {
 }
 
 impl FromStr for URIExtensionDeclaration {
-    type Err = super::Error;
+    type Err = super::MessageParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_str(s)
@@ -47,6 +51,10 @@ impl FromStr for URIExtensionDeclaration {
 impl ParsePair for SimpleExtensionDeclaration {
     fn rule() -> Rule {
         Rule::simple_extension
+    }
+
+    fn message() -> &'static str {
+        "SimpleExtensionDeclaration"
     }
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
@@ -71,7 +79,7 @@ impl ParsePair for SimpleExtensionDeclaration {
 }
 
 impl FromStr for SimpleExtensionDeclaration {
-    type Err = super::Error;
+    type Err = super::MessageParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_str(s)

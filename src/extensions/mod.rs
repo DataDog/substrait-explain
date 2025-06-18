@@ -4,4 +4,4 @@
 
 pub mod simple;
 
-pub use simple::{ExtensionError, SimpleExtension, SimpleExtensions};
+pub use simple::{InsertError, SimpleExtension, SimpleExtensions};

@@ -160,3 +160,29 @@ extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri_value }
 // `uri_anchor` is defined above as "@" ~ integer.
 // `name` is defined above as identifier | quoted_name.
 simple_extension = { anchor ~ sp ~ uri_anchor ~ sp ~ ":" ~ sp ~ name }
+
+// == Relations ==
+// These rules are for parsing relations - well, for parsing one relation on one line.
+// A relation is in the form:
+// NAME[parameters => columns]
+// 
+// Parameters are optional, and are a comma-separated list of expressions.
+// Columns are required, and are a comma-separated list of named columns.
+// 
+// Example:
+// 
+// name "[" (arguments "=>")? columns "]"
+// where:
+// - arguments are a comma-separated list of table names or expressions
+
+table_name = { (name ~ ("." ~ name)*) }
+argument   = { table_name | expression }
+
+arguments = { (argument ~ (sp ~ "," ~ sp ~ argument)*)? }
+
+named_column      = { name ~ ":" ~ type }
+named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
+
+relation = {
+    name ~ "[" ~ arguments ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]"
+}

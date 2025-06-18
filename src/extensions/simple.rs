@@ -43,7 +43,7 @@ impl fmt::Display for ExtensionKind {
 }
 
 #[derive(Error, Debug, PartialEq, Clone)]
-pub enum ExtensionError {
+pub enum InsertError {
     #[error("Extension declaration missing mapping type")]
     MissingMappingType,
 
@@ -100,13 +100,13 @@ impl SimpleExtensions {
     pub fn from_extensions(
         uris: impl IntoIterator<Item = pext::SimpleExtensionUri>,
         extensions: impl IntoIterator<Item = pext::SimpleExtensionDeclaration>,
-    ) -> (Self, Vec<ExtensionError>) {
+    ) -> (Self, Vec<InsertError>) {
         // TODO: this checks for missing URIs and duplicate anchors, but not
         // duplicate names with the same anchor.
 
         let mut exts = Self::new();
 
-        let mut errors = Vec::<ExtensionError>::new();
+        let mut errors = Vec::<InsertError>::new();
 
         for uri in uris {
             if let Err(e) = exts.add_extension_uri(uri.uri, uri.extension_uri_anchor) {
@@ -147,7 +147,7 @@ impl SimpleExtensions {
                     }
                 }
                 None => {
-                    errors.push(ExtensionError::MissingMappingType);
+                    errors.push(InsertError::MissingMappingType);
                 }
             }
         }
@@ -155,10 +155,10 @@ impl SimpleExtensions {
         (exts, errors)
     }
 
-    pub fn add_extension_uri(&mut self, uri: String, anchor: u32) -> Result<(), ExtensionError> {
+    pub fn add_extension_uri(&mut self, uri: String, anchor: u32) -> Result<(), InsertError> {
         match self.uris.entry(anchor) {
             Entry::Occupied(e) => {
-                return Err(ExtensionError::DuplicateUriAnchor {
+                return Err(InsertError::DuplicateUriAnchor {
                     anchor,
                     prev: e.get().clone(),
                     name: uri,
@@ -177,7 +177,7 @@ impl SimpleExtensions {
         uri: u32,
         anchor: u32,
         name: String,
-    ) -> Result<(), ExtensionError> {
+    ) -> Result<(), InsertError> {
         let missing_uri = !self.uris.contains_key(&uri);
 
         let prev = match self.extensions.entry((anchor, kind)) {
@@ -189,20 +189,20 @@ impl SimpleExtensions {
         };
 
         match (missing_uri, prev) {
-            (true, Some(prev)) => Err(ExtensionError::DuplicateAndMissingUri {
+            (true, Some(prev)) => Err(InsertError::DuplicateAndMissingUri {
                 kind,
                 anchor,
                 prev,
                 name,
                 uri,
             }),
-            (false, Some(prev)) => Err(ExtensionError::DuplicateAnchor {
+            (false, Some(prev)) => Err(InsertError::DuplicateAnchor {
                 kind,
                 anchor,
                 prev,
                 name,
             }),
-            (true, None) => Err(ExtensionError::MissingUri {
+            (true, None) => Err(InsertError::MissingUri {
                 kind,
                 anchor,
                 name,
@@ -427,7 +427,7 @@ mod tests {
         }
     }
 
-    fn assert_no_errors(errs: &[ExtensionError]) {
+    fn assert_no_errors(errs: &[InsertError]) {
         for err in errs {
             println!("Error: {:?}", err);
         }
@@ -514,18 +514,18 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                ExtensionError::DuplicateUriAnchor {
+                InsertError::DuplicateUriAnchor {
                     anchor: 1,
                     name: "uri_new".to_string(),
                     prev: "uri_old".to_string()
                 },
-                ExtensionError::DuplicateAnchor {
+                InsertError::DuplicateAnchor {
                     kind: ExtensionKind::Function,
                     anchor: 10,
                     prev: "func_old".to_string(),
                     name: "func_new".to_string()
                 },
-                ExtensionError::MissingUri {
+                InsertError::MissingUri {
                     kind: ExtensionKind::Function,
                     anchor: 11,
                     name: "func_missing".to_string(),
@@ -549,7 +549,7 @@ mod tests {
         let (_exts, errs) = SimpleExtensions::from_extensions(vec![], extensions);
         assert_eq!(errs.len(), 1);
         let err = &errs[0];
-        assert_eq!(err, &ExtensionError::MissingMappingType);
+        assert_eq!(err, &InsertError::MissingMappingType);
     }
 
     #[test]

@@ -1,13 +1,93 @@
+use std::fmt;
+
 use pest::Parser as PestParser;
-use pest_derive::Parser as PestParser;
+use pest_derive::Parser as PestDeriveParser;
+use thiserror::Error;
 
-use crate::textify::Scope;
+use crate::extensions::SimpleExtensions;
+use crate::extensions::simple::MissingReference;
 
-#[derive(PestParser)]
+#[derive(PestDeriveParser)]
 #[grammar = "parser/expression_grammar.pest"] // Path relative to src
 pub struct ExpressionParser;
 
-pub type Error = Box<pest::error::Error<Rule>>;
+/// An error that occurs when parsing a message within a specific line. Contains
+/// context pointing at that specific error.
+#[derive(Error, Debug, Clone)]
+#[error("{kind} Error parsing {message}: {error}")]
+pub struct MessageParseError {
+    pub message: &'static str,
+    pub kind: ErrorKind,
+    #[source]
+    pub error: Box<pest::error::Error<Rule>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ErrorKind {
+    Syntax,
+    InvalidValue,
+    Lookup(MissingReference),
+}
+
+impl MessageParseError {
+    pub fn syntax(message: &'static str, span: pest::Span, description: impl ToString) -> Self {
+        let error = pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: description.to_string(),
+            },
+            span,
+        );
+        Self::new(message, ErrorKind::Syntax, Box::new(error))
+    }
+    pub fn invalid(message: &'static str, span: pest::Span, description: impl ToString) -> Self {
+        let error = pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: description.to_string(),
+            },
+            span,
+        );
+        Self::new(message, ErrorKind::InvalidValue, Box::new(error))
+    }
+
+    pub fn lookup(
+        message: &'static str,
+        missing: MissingReference,
+        span: pest::Span,
+        description: impl ToString,
+    ) -> Self {
+        let error = pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: description.to_string(),
+            },
+            span,
+        );
+        Self::new(message, ErrorKind::Lookup(missing), Box::new(error))
+    }
+}
+
+impl MessageParseError {
+    pub fn new(
+        message: &'static str,
+        kind: ErrorKind,
+        error: Box<pest::error::Error<Rule>>,
+    ) -> Self {
+        Self {
+            message,
+            kind,
+            error,
+        }
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorKind::Syntax => write!(f, "Syntax"),
+            ErrorKind::InvalidValue => write!(f, "Invalid value"),
+            ErrorKind::Lookup(e) => write!(f, "Invalid reference ({e})"),
+        }
+    }
+}
 
 pub fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators::Pair<Rule> {
     let mut pairs = pair.into_inner();
@@ -53,13 +133,17 @@ pub trait ParsePair: Sized {
     // The rule that this type is parsed from.
     fn rule() -> Rule;
 
+    // The name of the protobuf message type that this type corresponds to.
+    fn message() -> &'static str;
+
     // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self;
 
-    fn parse_str(s: &str) -> Result<Self, Error> {
-        let mut pairs = ExpressionParser::parse(Self::rule(), s)?;
+    fn parse_str(s: &str) -> Result<Self, MessageParseError> {
+        let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(Self::rule(), s)
+            .map_err(|e| MessageParseError::new(Self::message(), ErrorKind::Syntax, Box::new(e)))?;
         assert_eq!(pairs.as_str(), s);
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
@@ -70,13 +154,13 @@ pub trait ParsePair: Sized {
 /// A trait for types that can be directly parsed from a string input,
 /// regardless of context.
 pub trait Parse {
-    fn parse(input: &str) -> Result<Self, Error>
+    fn parse(input: &str) -> Result<Self, MessageParseError>
     where
         Self: Sized;
 }
 
 impl<T: ParsePair> Parse for T {
-    fn parse(input: &str) -> Result<Self, Error> {
+    fn parse(input: &str) -> Result<Self, MessageParseError> {
         T::parse_str(input)
     }
 }
@@ -89,25 +173,32 @@ pub trait ScopedParsePair: Sized {
     // The rule that this type is parsed from.
     fn rule() -> Rule;
 
+    // The name of the protobuf message type that this type corresponds to.
+    fn message() -> &'static str;
+
     // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
-    fn parse_pair<S: Scope>(scope: &mut S, pair: pest::iterators::Pair<Rule>) -> Self;
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError>;
 }
 
 pub trait ScopedParse: Sized {
-    fn parse<S: Scope>(scope: &mut S, input: &str) -> Result<Self, Error>
+    fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError>
     where
         Self: Sized;
 }
 
 impl<T: ScopedParsePair> ScopedParse for T {
-    fn parse<S: Scope>(scope: &mut S, input: &str) -> Result<Self, Error> {
-        let mut pairs = ExpressionParser::parse(Self::rule(), input)?;
+    fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError> {
+        let mut pairs = ExpressionParser::parse(Self::rule(), input)
+            .map_err(|e| MessageParseError::new(Self::message(), ErrorKind::Syntax, Box::new(e)))?;
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();
         assert_eq!(pairs.next(), None);
-        Ok(Self::parse_pair(scope, pair))
+        Self::parse_pair(extensions, pair)
     }
 }
 
@@ -158,14 +249,14 @@ impl<'a> RuleIter<'a> {
     }
 
     // Parse the next pair if it matches the rule. Returns None if not.
-    pub fn parse_if_next_scoped<T: ScopedParsePair, S: Scope>(
+    pub fn parse_if_next_scoped<T: ScopedParsePair>(
         &mut self,
-        scope: &mut S,
-    ) -> Option<T> {
+        extensions: &SimpleExtensions,
+    ) -> Option<Result<T, MessageParseError>> {
         match self.peek() {
             Some(pair) if pair.as_rule() == T::rule() => {
                 self.iter.next();
-                Some(T::parse_pair(scope, pair))
+                Some(T::parse_pair(extensions, pair))
             }
             _ => None,
         }
@@ -178,9 +269,12 @@ impl<'a> RuleIter<'a> {
     }
 
     // Parse the next pair, assuming it matches the rule. Panics if not.
-    pub fn parse_next_scoped<S: Scope, T: ScopedParsePair>(&mut self, scope: &mut S) -> T {
+    pub fn parse_next_scoped<T: ScopedParsePair>(
+        &mut self,
+        extensions: &SimpleExtensions,
+    ) -> Result<T, MessageParseError> {
         let pair = self.iter.next().unwrap();
-        T::parse_pair(scope, pair)
+        T::parse_pair(extensions, pair)
     }
 
     pub fn done(mut self) {

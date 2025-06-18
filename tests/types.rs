@@ -26,8 +26,7 @@ fn assert_roundtrip<T: ScopedParse + Textify + std::fmt::Debug>(ctx: &TestContex
     let errors = ErrorQueue::default();
 
     let t = {
-        let mut scope = ctx.scope(&errors);
-        match T::parse(&mut scope, input) {
+        match T::parse(&ctx.extensions, input) {
             Ok(t) => t,
             Err(e) => {
                 println!("Error parsing {}:\n{}", input, e);
@@ -53,8 +52,7 @@ fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
     };
 
     let t = {
-        let mut scope = ctx1.scope(&errors);
-        match T::parse(&mut scope, verbose) {
+        match T::parse(&ctx1.extensions, verbose) {
             Ok(t) => t,
             Err(e) => {
                 println!("Error parsing {}:\n{}", verbose, e);

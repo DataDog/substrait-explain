@@ -203,13 +203,13 @@ pub trait IndentTracker {
     fn push(self) -> Self;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct IndentStack<'a> {
     count: u32,
     indent: &'a str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct ScopedContext<'a, Err: ErrorAccumulator> {
     errors: &'a Err,
     options: &'a OutputOptions,
