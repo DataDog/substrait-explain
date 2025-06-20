@@ -262,6 +262,9 @@ impl SimpleExtensions {
             .collect()
     }
 
+    /// Write the extensions to the given writer, with the given indent.
+    ///
+    /// The header will be included if there are any extensions.
     pub fn write<W: fmt::Write>(&self, w: &mut W, indent: &str) -> fmt::Result {
         if self.is_empty() {
             // No extensions, so no need to write anything.
@@ -269,7 +272,7 @@ impl SimpleExtensions {
         }
 
         // TODO: write the header. I think we can put this in the main block
-        // writeln!(w, "{}", EXTENSIONS_HEADER)?;
+        writeln!(w, "{EXTENSIONS_HEADER}")?;
         if !self.uris.is_empty() {
             writeln!(w, "{EXTENSION_URIS_HEADER}")?;
             for (anchor, uri) in &self.uris {
@@ -681,6 +684,7 @@ mod tests {
         let display_str = exts.to_string("  ");
 
         let expected = r"
+=== Extensions
 URIs:
   @  1: /my/uri1
   @ 42: /another/uri
@@ -724,7 +728,9 @@ Type Variations:
         let output = extensions.to_string("  ");
 
         // The output should match the expected format
-        let expected_output = r#"URIs:
+        let expected_output = r#"
+=== Extensions
+URIs:
   @  1: /uri/common
   @  2: /uri/specific_funcs
 Functions:
@@ -736,6 +742,6 @@ Type Variations:
   # 30 @  2: VarX
 "#;
 
-        assert_eq!(output, expected_output);
+        assert_eq!(output, expected_output.trim_start());
     }
 }

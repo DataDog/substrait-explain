@@ -1,10 +1,9 @@
 mod common;
 mod expressions;
-mod extensions;
+pub mod extensions;
 mod relations;
 mod structural;
 mod types;
 pub use common::*;
-pub use extensions::ExtensionParseError;
-pub use relations::{ProjectRelWrapper, RelationParsePair};
+pub use relations::RelationParsePair;
 pub use structural::{LineParseError, Parser};

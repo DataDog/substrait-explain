@@ -48,20 +48,24 @@ impl fmt::Display for ExtensionParserState {
 /// The parser for the extension section of the Substrait file format.
 ///
 /// This is responsible for parsing the extension section of the file, which
-/// contains the extension URIs and declarations.
+/// contains the extension URIs and declarations. Note that this parser does not
+/// parse the header; otherwise, this is symmetric with the
+/// SimpleExtensions::write method.
 pub struct ExtensionParser {
     state: ExtensionParserState,
     extensions: SimpleExtensions,
 }
 
-impl ExtensionParser {
-    pub fn new() -> Self {
+impl Default for ExtensionParser {
+    fn default() -> Self {
         Self {
             state: ExtensionParserState::Extensions,
             extensions: SimpleExtensions::new(),
         }
     }
+}
 
+impl ExtensionParser {
     pub fn parse_line(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
         if line.1.is_empty() {
             // Blank lines are allowed between subsections, so if we see
@@ -138,10 +142,6 @@ impl ExtensionParser {
 
     pub fn extensions(&self) -> &SimpleExtensions {
         &self.extensions
-    }
-
-    pub fn into_extensions(self) -> SimpleExtensions {
-        self.extensions
     }
 
     pub fn state(&self) -> ExtensionParserState {
@@ -236,6 +236,7 @@ impl FromStr for SimpleExtensionDeclaration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::Parser;
 
     #[test]
     fn test_parse_uri_extension_declaration() {
@@ -272,7 +273,9 @@ mod tests {
 
     #[test]
     fn test_extensions_round_trip_plan() {
-        let input = r#"URIs:
+        let input = r#"
+=== Extensions
+URIs:
   @  1: /uri/common
   @  2: /uri/specific_funcs
 Functions:
@@ -282,13 +285,11 @@ Types:
   # 20 @  1: SomeType
 Type Variations:
   # 30 @  2: VarX
-"#;
-
-        let input_with_header = format!("=== Extensions\n{input}");
+"#
+        .trim_start();
 
         // Parse the input using the structural parser
-        let mut parser = crate::parser::structural::Parser::new();
-        let plan = parser.parse_plan(&input_with_header).unwrap();
+        let plan = Parser::parse_plan(input).unwrap();
 
         // Verify the plan has the expected extensions
         assert_eq!(plan.extension_uris.len(), 2);
@@ -301,9 +302,7 @@ Type Variations:
         // Convert back to string
         let output = extensions.to_string("  ");
 
-        // The output should match the expected format (excluding the header)
-        let expected_output = input;
-
-        assert_eq!(output, expected_output);
+        // The output should match the input
+        assert_eq!(output, input);
     }
 }

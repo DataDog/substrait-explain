@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use substrait::proto::rel::RelType;
+use substrait::proto::{FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, plan_rel};
 use thiserror::Error;
 
 use crate::extensions::{SimpleExtensions, simple};
@@ -62,7 +64,14 @@ pub struct LineNode<'a> {
 }
 
 impl<'a> LineNode<'a> {
-    pub fn new(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
+    pub fn context(&self) -> ParseContext {
+        ParseContext {
+            line_no: self.line_no,
+            line: self.pair.as_str().to_string(),
+        }
+    }
+
+    pub fn parse(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
         // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
             <ExpressionParser as pest::Parser<Rule>>::parse(Rule::relation, line).map_err(|e| {
@@ -88,120 +97,13 @@ impl<'a> LineNode<'a> {
             children: Vec::new(),
         })
     }
-
-    /// Traverse down the tree, always taking the last child at each level, until reaching the specified depth.
-    pub fn get_at_depth(&mut self, depth: usize) -> &mut LineNode<'a> {
-        let mut node = self;
-        for _ in 0..depth {
-            if node.children.is_empty() {
-                break;
-            }
-            node = node.children.last_mut().unwrap();
-        }
-        node
-    }
-
-    /// Convert this line node and its children to a relation tree.
-    /// This is done bottom-up: children are converted first, then parents
-    /// can access their children's output schemas.
-    pub fn convert_to_relation(
-        &self,
-        extensions: &SimpleExtensions,
-    ) -> Result<substrait::proto::Rel, LineParseError> {
-        // Use the stored pair to get the specific relation pair
-        let mut inner_pairs = self.pair.clone().into_inner();
-        let specific_pair = inner_pairs.next().unwrap();
-        assert!(inner_pairs.next().is_none());
-
-        // Convert children first to get their output schemas
-        let child_relations: Vec<substrait::proto::Rel> = self
-            .children
-            .iter()
-            .map(|child| child.convert_to_relation(extensions))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Get the input field count from the first child (if any)
-        let input_field_count = child_relations
-            .first()
-            .map(get_input_field_count)
-            .unwrap_or(0);
-
-        // Parse the specific relation type using the new RelationParsePair trait
-        let rel = match specific_pair.as_rule() {
-            Rule::read_relation => substrait::proto::ReadRel::parse_pair_with_context(
-                extensions,
-                specific_pair,
-                &child_relations,
-                input_field_count,
-            )
-            .map_err(|e| {
-                LineParseError::Plan(
-                    ParseContext {
-                        line_no: self.line_no,
-                        line: self.pair.as_str().to_string(),
-                    },
-                    e,
-                )
-            })?,
-            Rule::filter_relation => substrait::proto::FilterRel::parse_pair_with_context(
-                extensions,
-                specific_pair,
-                &child_relations,
-                input_field_count,
-            )
-            .map_err(|e| {
-                LineParseError::Plan(
-                    ParseContext {
-                        line_no: self.line_no,
-                        line: self.pair.as_str().to_string(),
-                    },
-                    e,
-                )
-            })?,
-            Rule::project_relation => crate::parser::ProjectRelWrapper::parse_pair_with_context(
-                extensions,
-                specific_pair,
-                &child_relations,
-                input_field_count,
-            )
-            .map_err(|e| {
-                LineParseError::Plan(
-                    ParseContext {
-                        line_no: self.line_no,
-                        line: self.pair.as_str().to_string(),
-                    },
-                    e,
-                )
-            })?,
-            _ => {
-                let err = pest::error::Error::new_from_span(
-                    pest::error::ErrorVariant::CustomError {
-                        message: format!("Unknown relation rule: {:?}", specific_pair.as_rule()),
-                    },
-                    specific_pair.as_span(),
-                );
-                return Err(LineParseError::Plan(
-                    ParseContext {
-                        line_no: self.line_no,
-                        line: self.pair.as_str().to_string(),
-                    },
-                    MessageParseError::new(
-                        "relation",
-                        crate::parser::ErrorKind::InvalidValue,
-                        Box::new(err),
-                    ),
-                ));
-            }
-        };
-        Ok(rel)
-    }
 }
 
 /// Helper function to get the number of input fields from a relation.
 /// This is needed for Project relations to calculate output mapping indices.
-fn get_input_field_count(rel: &substrait::proto::Rel) -> usize {
+fn get_input_field_count(rel: &Rel) -> usize {
     match &rel.rel_type {
-        Some(substrait::proto::rel::RelType::Read(read_rel)) => {
+        Some(RelType::Read(read_rel)) => {
             // For Read relations, count the fields in the base schema
             read_rel
                 .base_schema
@@ -210,7 +112,7 @@ fn get_input_field_count(rel: &substrait::proto::Rel) -> usize {
                 .map(|struct_| struct_.types.len())
                 .unwrap_or(0)
         }
-        Some(substrait::proto::rel::RelType::Filter(filter_rel)) => {
+        Some(RelType::Filter(filter_rel)) => {
             // For Filter relations, get the count from the input
             filter_rel
                 .input
@@ -218,7 +120,7 @@ fn get_input_field_count(rel: &substrait::proto::Rel) -> usize {
                 .map(|input| get_input_field_count(input))
                 .unwrap_or(0)
         }
-        Some(substrait::proto::rel::RelType::Project(project_rel)) => {
+        Some(RelType::Project(project_rel)) => {
             // For Project relations, get the count from the input
             project_rel
                 .input
@@ -230,73 +132,7 @@ fn get_input_field_count(rel: &substrait::proto::Rel) -> usize {
     }
 }
 
-pub struct PlanParserState<'a> {
-    // Trees that have been completed so far.
-    completed: Vec<substrait::proto::Rel>,
-    // The current line tree being built.
-    current: Option<LineNode<'a>>,
-}
-
-impl<'a> PlanParserState<'a> {
-    pub fn new() -> Self {
-        Self {
-            completed: Vec::new(),
-            current: None,
-        }
-    }
-
-    pub fn add_line(
-        &mut self,
-        depth: usize,
-        line: &'a str,
-        line_no: i64,
-        extensions: &SimpleExtensions,
-    ) -> Result<(), LineParseError> {
-        if depth == 0 {
-            if let Some(current) = self.current.take() {
-                let relation = current.convert_to_relation(extensions)?;
-                self.completed.push(relation);
-            }
-            self.current = Some(LineNode::new(line, line_no)?);
-            return Ok(());
-        }
-        if let Some(root) = self.current.as_mut() {
-            let parent = root.get_at_depth(depth - 1);
-            parent.children.push(LineNode::new(line, line_no)?);
-            Ok(())
-        } else {
-            Err(LineParseError::Plan(
-                ParseContext {
-                    line_no,
-                    line: line.to_string(),
-                },
-                MessageParseError::new(
-                    "relation",
-                    crate::parser::ErrorKind::InvalidValue,
-                    Box::new(pest::error::Error::new_from_span(
-                        pest::error::ErrorVariant::CustomError {
-                            message: format!("No root found when adding at depth {}", depth),
-                        },
-                        pest::Span::new("", 0, 0).unwrap(),
-                    )),
-                ),
-            ))
-        }
-    }
-
-    pub fn complete_current_tree(
-        &mut self,
-        extensions: &SimpleExtensions,
-    ) -> Result<(), LineParseError> {
-        if let Some(current) = self.current.take() {
-            let relation = current.convert_to_relation(extensions)?;
-            self.completed.push(relation);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum State {
     // The initial state, before we have parsed any lines.
     Initial,
@@ -318,91 +154,267 @@ pub struct ParseContext {
     pub line: String,
 }
 
+impl ParseContext {
+    pub fn new(line_no: i64, line: String) -> Self {
+        Self { line_no, line }
+    }
+}
+
 impl fmt::Display for ParseContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "line {} ('{}')", self.line_no, self.line)
     }
 }
 
-/// The parser for the substrait-explain format.
-///
-/// This is responsible for parsing the file line by line, and tracking the
-/// current state of the parser.
+// An in-progress tree builder, building the tree of relations.
+#[derive(Debug, Clone, Default)]
+pub struct TreeBuilder<'a> {
+    // Current tree of nodes being built. These have been successfully parsed
+    // into Pest pairs, but have not yet been converted to substrait plans.
+    current: Option<LineNode<'a>>,
+    // Completed trees that have been built.
+    completed: Vec<LineNode<'a>>,
+}
+
+impl<'a> TreeBuilder<'a> {
+    /// Traverse down the tree, always taking the last child at each level, until reaching the specified depth.
+    pub fn get_at_depth(&mut self, depth: usize) -> Option<&mut LineNode<'a>> {
+        let mut node = self.current.as_mut()?;
+        for _ in 0..depth {
+            node = node.children.last_mut()?;
+        }
+        Some(node)
+    }
+
+    pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), LineParseError> {
+        if depth == 0 {
+            match self.current.take() {
+                None => self.current = Some(node),
+                Some(prev) => self.completed.push(prev),
+            }
+            return Ok(());
+        }
+
+        let parent = match self.get_at_depth(depth - 1) {
+            None => {
+                return Err(LineParseError::Plan(
+                    node.context(),
+                    MessageParseError::invalid(
+                        "relation",
+                        node.pair.as_span(),
+                        format!("No parent found for depth {depth}"),
+                    ),
+                ));
+            }
+            Some(parent) => parent,
+        };
+
+        parent.children.push(node.clone());
+        Ok(())
+    }
+
+    /// End of input - move any remaining nodes from stack to completed and
+    /// return any trees in progress. Resets the builder to its initial state
+    /// (empty)
+    pub fn finish(&mut self) -> Vec<LineNode<'a>> {
+        // Move any remaining nodes from stack to completed
+        if let Some(node) = self.current.take() {
+            self.completed.push(node);
+        }
+        std::mem::take(&mut self.completed)
+    }
+}
+
+// Relation parsing component - handles converting LineNodes to Relations
+#[derive(Debug, Clone, Default)]
+pub struct RelationParser<'a> {
+    tree: TreeBuilder<'a>,
+}
+
+impl<'a> RelationParser<'a> {
+    pub fn parse_line(
+        &mut self,
+        line: IndentedLine<'a>,
+        line_no: i64,
+    ) -> Result<(), LineParseError> {
+        let IndentedLine(depth, line) = line;
+        let node = LineNode::parse(line, line_no)?;
+        self.tree.add_line(depth, node)
+    }
+
+    /// Parse a relation from a Pest pair of rule 'relation' into a Substrait
+    /// Rel.
+    //
+    // Clippy says a Vec<Box<…>> is unnecessary, as the Vec is already on the
+    // heap, but this is what the protobuf requires so we allow it here
+    #[allow(clippy::vec_box)]
+    fn parse_relation(
+        &self,
+        extensions: &SimpleExtensions,
+        line_no: i64,
+        pair: pest::iterators::Pair<Rule>,
+        child_relations: Vec<Box<substrait::proto::Rel>>,
+        input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, LineParseError> {
+        assert_eq!(pair.as_rule(), Rule::relation);
+        let mut inner_pairs = pair.clone().into_inner();
+        let p = inner_pairs.next().unwrap();
+        assert!(inner_pairs.next().is_none());
+
+        let (e, l, p, c, ic) = (extensions, line_no, p, child_relations, input_field_count);
+
+        match p.as_rule() {
+            Rule::read_relation => self.parse_rel::<ReadRel>(e, l, p, c, ic),
+            Rule::filter_relation => self.parse_rel::<FilterRel>(e, l, p, c, ic),
+            Rule::project_relation => self.parse_rel::<ProjectRel>(e, l, p, c, ic),
+            _ => todo!(),
+        }
+    }
+
+    /// Parse a specific relation type from a Pest pair of matching rule into a
+    /// Substrait Rel.
+    //
+    // Clippy says a Vec<Box<…>> is unnecessary, as the Vec is already on the
+    // heap, but this is what the protobuf requires so we allow it here
+    #[allow(clippy::vec_box)]
+    fn parse_rel<T: RelationParsePair>(
+        &self,
+        extensions: &SimpleExtensions,
+        line_no: i64,
+        pair: pest::iterators::Pair<Rule>,
+        child_relations: Vec<Box<substrait::proto::Rel>>,
+        input_field_count: usize,
+    ) -> Result<substrait::proto::Rel, LineParseError> {
+        assert_eq!(pair.as_rule(), T::rule());
+
+        let line = pair.as_str();
+        let rel_type =
+            T::parse_pair_with_context(extensions, pair, child_relations, input_field_count);
+
+        match rel_type {
+            Ok(rel) => Ok(rel.into_rel()),
+            Err(e) => Err(LineParseError::Plan(
+                ParseContext::new(line_no, line.to_string()),
+                e,
+            )),
+        }
+    }
+
+    fn build_tree(
+        &self,
+        extensions: &SimpleExtensions,
+        node: LineNode,
+    ) -> Result<substrait::proto::Rel, LineParseError> {
+        // Parse children first to get their output schemas
+        let child_relations = node
+            .children
+            .into_iter()
+            .map(|c| self.build_tree(extensions, c).map(Box::new))
+            .collect::<Result<Vec<Box<Rel>>, LineParseError>>()?;
+
+        // Get the input field count from all the children
+        let input_field_count = child_relations
+            .iter()
+            .map(|r| get_input_field_count(r.as_ref()))
+            .reduce(|a, b| a + b)
+            .unwrap_or(0);
+
+        // Parse this node using the stored pair
+        self.parse_relation(
+            extensions,
+            node.line_no,
+            node.pair,
+            child_relations,
+            input_field_count,
+        )
+    }
+
+    fn build(mut self, extensions: &SimpleExtensions) -> Result<Vec<Rel>, LineParseError> {
+        let nodes = self.tree.finish();
+        nodes
+            .into_iter()
+            .map(|n| self.build_tree(extensions, n))
+            .collect::<Result<Vec<Rel>, LineParseError>>()
+    }
+}
+
+// Main parser that orchestrates the components
 pub struct Parser<'a> {
     line_no: i64,
     state: State,
-    ext_parser: ExtensionParser,
-    plan_state: PlanParserState<'a>,
+    extension_parser: ExtensionParser,
+    relation_parser: RelationParser<'a>,
 }
-
 impl<'a> Default for Parser<'a> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            line_no: 1,
+            state: State::Initial,
+            extension_parser: ExtensionParser::default(),
+            relation_parser: RelationParser::default(),
+        }
     }
 }
 
 impl<'a> Parser<'a> {
-    pub fn new() -> Self {
-        Self {
-            line_no: 1,
-            state: State::Initial,
-            ext_parser: ExtensionParser::new(),
-            plan_state: PlanParserState::new(),
+    pub fn parse_plan(input: &'a str) -> Result<Plan, LineParseError> {
+        let mut parser = Self::default();
+
+        for line in input.lines() {
+            if line.trim().is_empty() {
+                parser.line_no += 1;
+                continue;
+            }
+
+            parser.parse_line(line)?;
+            parser.line_no += 1;
+        }
+
+        parser.build_plan()
+    }
+
+    fn parse_line(&mut self, line: &'a str) -> Result<(), LineParseError> {
+        let indented_line = IndentedLine::from(line);
+        let line_no = self.line_no;
+        let ctx = || ParseContext {
+            line_no,
+            line: line.to_string(),
+        };
+
+        match self.state {
+            State::Initial => self.parse_initial(indented_line),
+            State::Extensions => self
+                .parse_extensions(indented_line)
+                .map_err(|e| LineParseError::Extension(ctx(), e)),
+            State::Plan => self.parse_plan_line(indented_line),
         }
     }
 
-    /// Wrap a Result with a Plan context into a LineParseError
-    pub fn with_plan_context<T>(
-        &self,
-        result: Result<T, MessageParseError>,
-        line: &str,
-    ) -> Result<T, LineParseError> {
-        result.map_err(|e| {
-            LineParseError::Plan(
-                ParseContext {
-                    line_no: self.line_no,
-                    line: line.to_string(),
-                },
-                e,
-            )
-        })
-    }
-
-    /// Wrap a Result with an Initial context into a LineParseError
-    pub fn with_initial_context<T>(
-        &self,
-        result: Result<T, MessageParseError>,
-        line: &str,
-    ) -> Result<T, LineParseError> {
-        result.map_err(|e| {
-            LineParseError::Initial(
-                ParseContext {
-                    line_no: self.line_no,
-                    line: line.to_string(),
-                },
-                e,
-            )
-        })
-    }
-
-    /// Wrap a Result with a Relation context into a LineParseError
-    pub fn with_relation_context<T>(
-        &self,
-        result: Result<T, MessageParseError>,
-        line: &str,
-    ) -> Result<T, LineParseError> {
-        result.map_err(|e| {
-            LineParseError::Relation(
-                ParseContext {
-                    line_no: self.line_no,
-                    line: line.to_string(),
-                },
-                e,
-            )
-        })
-    }
-
     fn parse_initial(&mut self, line: IndentedLine) -> Result<(), LineParseError> {
+        match line {
+            IndentedLine(0, l) if l.trim().is_empty() => {}
+            IndentedLine(0, simple::EXTENSIONS_HEADER) => {
+                self.state = State::Extensions;
+            }
+            IndentedLine(0, PLAN_HEADER) => {
+                self.state = State::Plan;
+            }
+            IndentedLine(n, l) => {
+                return Err(LineParseError::Initial(
+                    ParseContext::new(n as i64, l.to_string()),
+                    MessageParseError::invalid(
+                        "initial",
+                        pest::Span::new(l, 0, l.len()).expect("Invalid span?!"),
+                        format!("Unknown initial line: {l:?}"),
+                    ),
+                ));
+            }
+        }
+        if line.1.trim().is_empty() {
+            // Blank line - do nothing
+            return Ok(());
+        }
+
         if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
             self.state = State::Extensions;
             return Ok(());
@@ -411,7 +423,6 @@ impl<'a> Parser<'a> {
             self.state = State::Plan;
             return Ok(());
         }
-
         todo!()
     }
 
@@ -420,104 +431,46 @@ impl<'a> Parser<'a> {
             self.state = State::Plan;
             return Ok(());
         }
-
-        self.ext_parser.parse_line(line)?;
-        Ok(())
+        self.extension_parser.parse_line(line)
     }
 
     fn parse_plan_line(&mut self, line: IndentedLine<'a>) -> Result<(), LineParseError> {
-        // Simply add the line to the tree - parsing will happen during conversion
-        self.plan_state
-            .add_line(line.0, line.1, self.line_no, self.ext_parser.extensions())?;
-        Ok(())
+        self.relation_parser.parse_line(line, self.line_no)
     }
 
-    pub fn parse_line(&mut self, line: &'a str) -> Result<(), LineParseError> {
-        let (orig, line) = (line, IndentedLine::from(line));
+    fn build_plan(self) -> Result<Plan, LineParseError> {
+        let Parser {
+            relation_parser,
+            extension_parser,
+            ..
+        } = self;
 
-        let line_no = self.line_no;
-        let ctx = || ParseContext {
-            line_no,
-            line: orig.to_string(),
-        };
+        let extensions = extension_parser.extensions();
 
-        match self.state {
-            State::Initial => self.parse_initial(line),
-            State::Extensions => self
-                .parse_extensions(line)
-                .map_err(|e| LineParseError::Extension(ctx(), e)),
-            State::Plan => self.parse_plan_line(line),
-        }
-    }
+        // Parse the tree into relations
+        let relations = relation_parser.build(extensions)?;
 
-    /// Parse a complete Substrait plan from a string input.
-    ///
-    /// This function parses the entire input string line by line, handling
-    /// extensions and plan sections, and returns the final Substrait plan.
-    ///
-    /// The input should follow the substrait-explain format:
-    /// - Extensions section (optional) starting with "Extensions:"
-    /// - Plan section starting with "=== Plan"
-    /// - Relations with indentation indicating the tree structure
-    pub fn parse_plan(&mut self, input: &'a str) -> Result<substrait::proto::Plan, LineParseError> {
-        // Reset the parser state
-        self.line_no = 1;
-        self.state = State::Initial;
-        self.ext_parser = ExtensionParser::new();
-        self.plan_state = PlanParserState::new();
-
-        // Parse each line
-        for line in input.lines() {
-            if line.trim().is_empty() {
-                // Skip empty lines
-                self.line_no += 1;
-                continue;
-            }
-
-            self.parse_line(line)?;
-            self.line_no += 1;
-        }
-
-        // Get the final plan
-        self.get_plan()
-    }
-
-    /// Get the final Substrait plan from the parser state.
-    ///
-    /// This method completes any remaining tree and constructs the final
-    /// Substrait plan with extensions and relations.
-    pub fn get_plan(&mut self) -> Result<substrait::proto::Plan, LineParseError> {
-        // Complete the current tree if there is one
-        self.plan_state
-            .complete_current_tree(self.ext_parser.extensions())?;
+        let root_relations = relations
+            .into_iter()
+            .map(|r| PlanRel {
+                rel_type: Some(plan_rel::RelType::Rel(r)),
+            })
+            .collect();
 
         // Build the final plan
-        let mut plan = substrait::proto::Plan::default();
-
-        // Add extensions
-        if !self.ext_parser.extensions().is_empty() {
-            plan.extension_uris = self.ext_parser.extensions().to_extension_uris();
-            plan.extensions = self.ext_parser.extensions().to_extension_declarations();
-        }
-
-        // Add relations - convert from Rel to PlanRel
-        if !self.plan_state.completed.is_empty() {
-            plan.relations = self
-                .plan_state
-                .completed
-                .iter()
-                .map(|rel| substrait::proto::PlanRel {
-                    rel_type: Some(substrait::proto::plan_rel::RelType::Rel(rel.clone())),
-                })
-                .collect();
-        }
-
-        Ok(plan)
+        Ok(Plan {
+            extension_uris: extensions.to_extension_uris(),
+            extensions: extensions.to_extension_declarations(),
+            relations: root_relations,
+            ..Default::default()
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto::extensions::simple_extension_declaration::MappingType;
+
     use super::*;
     use crate::extensions::simple::ExtensionKind;
     use crate::parser::extensions::ExtensionParserState;
@@ -544,7 +497,7 @@ mod tests {
             .add_extension(ExtensionKind::TypeVariation, 2, 30, "VarX".to_string())
             .unwrap();
 
-        let mut parser = ExtensionParser::new();
+        let mut parser = ExtensionParser::default();
         let input_block = r#"
 URIs:
   @  1: /uri/common
@@ -567,8 +520,14 @@ Type Variations:
         assert_eq!(*parser.extensions(), expected_extensions);
 
         let extensions_str = parser.extensions().to_string("  ");
-        println!("{}", extensions_str);
-        assert_eq!(extensions_str.trim(), input_block.trim());
+        // The writer adds the header; the ExtensionParser does not parse the
+        // header, so we add it here for comparison.
+        let expected_str = format!(
+            "{}\n{}",
+            simple::EXTENSIONS_HEADER,
+            input_block.trim_start()
+        );
+        assert_eq!(extensions_str.trim(), expected_str.trim());
         // Check final state after all lines are processed.
         // The last significant line in input_block is a TypeVariation declaration.
         assert_eq!(
@@ -584,7 +543,7 @@ Type Variations:
     /// Test that we can parse a larger extensions block and it matches the input.
     #[test]
     fn test_parse_complete_extension_block() {
-        let mut parser = ExtensionParser::new();
+        let mut parser = ExtensionParser::default();
         let input_block = r#"
 URIs:
   @  1: /uri/common
@@ -611,8 +570,14 @@ Type Variations:
         }
 
         let extensions_str = parser.extensions().to_string("  ");
-        println!("{}", extensions_str);
-        assert_eq!(extensions_str.trim(), input_block.trim());
+        // The writer adds the header; the ExtensionParser does not parse the
+        // header, so we add it here for comparison.
+        let expected_str = format!(
+            "{}\n{}",
+            simple::EXTENSIONS_HEADER,
+            input_block.trim_start()
+        );
+        assert_eq!(extensions_str.trim(), expected_str.trim());
     }
 
     #[test]
@@ -623,68 +588,55 @@ Project[$0, $1, 42, 84]
   Filter[$2 => $0, $1]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;
-        let mut parser = Parser::new();
-        parser.state = State::Plan;
-        parser.line_no = 1;
-        for (i, line) in plan.lines().enumerate() {
-            if line.trim().is_empty() || line.trim() == "=== Plan" {
-                continue;
-            }
-            parser.line_no = (i + 1) as i64;
+        let mut parser = Parser::default();
+        for line in plan.lines() {
             parser.parse_line(line).unwrap();
         }
 
         // Complete the current tree to convert it to relations
-        parser
-            .plan_state
-            .complete_current_tree(parser.ext_parser.extensions())
-            .unwrap();
+        let plan = parser.build_plan().unwrap();
 
-        // Check the tree structure - now we have relations in completed
-        let plan_state = &parser.plan_state;
-        assert_eq!(plan_state.completed.len(), 1);
-
-        let root_rel = &plan_state.completed[0];
+        let root_rel = &plan.relations[0].rel_type;
+        let first_rel = match root_rel {
+            Some(plan_rel::RelType::Rel(rel)) => rel,
+            _ => panic!("Expected Rel type, got {:?}", root_rel),
+        };
         // Root should be Project
-        match &root_rel.rel_type {
-            Some(substrait::proto::rel::RelType::Project(_p)) => {}
+        let project = match &first_rel.rel_type {
+            Some(RelType::Project(p)) => p,
             other => panic!("Expected Project at root, got {:?}", other),
-        }
+        };
 
         // Check that Project has Filter as input
-        match &root_rel.rel_type {
-            Some(substrait::proto::rel::RelType::Project(project)) => {
-                assert!(project.input.is_some());
-                let filter_input = project.input.as_ref().unwrap();
+        assert!(project.input.is_some());
+        let filter_input = project.input.as_ref().unwrap();
 
-                // Check that Filter has Read as input
+        // Check that Filter has Read as input
+        match &filter_input.rel_type {
+            Some(RelType::Filter(_)) => {
                 match &filter_input.rel_type {
-                    Some(substrait::proto::rel::RelType::Filter(_)) => {
-                        match &filter_input.rel_type {
-                            Some(substrait::proto::rel::RelType::Filter(filter)) => {
-                                assert!(filter.input.is_some());
-                                let read_input = filter.input.as_ref().unwrap();
+                    Some(RelType::Filter(filter)) => {
+                        assert!(filter.input.is_some());
+                        let read_input = filter.input.as_ref().unwrap();
 
-                                // Check that Read has no input (it's a leaf)
-                                match &read_input.rel_type {
-                                    Some(substrait::proto::rel::RelType::Read(_)) => {}
-                                    other => panic!("Expected Read relation, got {:?}", other),
-                                }
-                            }
-                            other => panic!("Expected Filter relation, got {:?}", other),
+                        // Check that Read has no input (it's a leaf)
+                        match &read_input.rel_type {
+                            Some(RelType::Read(_)) => {}
+                            other => panic!("Expected Read relation, got {:?}", other),
                         }
                     }
                     other => panic!("Expected Filter relation, got {:?}", other),
                 }
             }
-            other => panic!("Expected Project relation, got {:?}", other),
+            other => panic!("Expected Filter relation, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_full_plan() {
         // Test a complete Substrait plan with extensions and relations
-        let input = r#"=== Extensions
+        let input = r#"
+=== Extensions
 URIs:
   @  1: /uri/common
   @  2: /uri/specific_funcs
@@ -695,14 +647,14 @@ Types:
   # 20 @  1: SomeType
 Type Variations:
   # 30 @  2: VarX
+
 === Plan
 Project[$0, $1, 42, 84]
   Filter[$2 => $0, $1]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;
 
-        let mut parser = Parser::new();
-        let plan = parser.parse_plan(input).unwrap();
+        let plan = Parser::parse_plan(input).unwrap();
 
         // Verify the plan structure
         assert_eq!(plan.extension_uris.len(), 2);
@@ -721,7 +673,7 @@ Project[$0, $1, 42, 84]
         // Verify extensions
         let func1 = &plan.extensions[0];
         match &func1.mapping_type {
-            Some(substrait::proto::extensions::simple_extension_declaration::MappingType::ExtensionFunction(f)) => {
+            Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 10);
                 assert_eq!(f.extension_uri_reference, 1);
                 assert_eq!(f.name, "func_a");
@@ -731,7 +683,7 @@ Project[$0, $1, 42, 84]
 
         let func2 = &plan.extensions[1];
         match &func2.mapping_type {
-            Some(substrait::proto::extensions::simple_extension_declaration::MappingType::ExtensionFunction(f)) => {
+            Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 11);
                 assert_eq!(f.extension_uri_reference, 2);
                 assert_eq!(f.name, "func_b_special");
@@ -741,7 +693,7 @@ Project[$0, $1, 42, 84]
 
         let type1 = &plan.extensions[2];
         match &type1.mapping_type {
-            Some(substrait::proto::extensions::simple_extension_declaration::MappingType::ExtensionType(t)) => {
+            Some(MappingType::ExtensionType(t)) => {
                 assert_eq!(t.type_anchor, 20);
                 assert_eq!(t.extension_uri_reference, 1);
                 assert_eq!(t.name, "SomeType");
@@ -751,7 +703,7 @@ Project[$0, $1, 42, 84]
 
         let var1 = &plan.extensions[3];
         match &var1.mapping_type {
-            Some(substrait::proto::extensions::simple_extension_declaration::MappingType::ExtensionTypeVariation(v)) => {
+            Some(MappingType::ExtensionTypeVariation(v)) => {
                 assert_eq!(v.type_variation_anchor, 30);
                 assert_eq!(v.extension_uri_reference, 2);
                 assert_eq!(v.name, "VarX");
@@ -762,9 +714,9 @@ Project[$0, $1, 42, 84]
         // Verify the relation tree structure
         let root_rel = &plan.relations[0];
         match &root_rel.rel_type {
-            Some(substrait::proto::plan_rel::RelType::Rel(rel)) => {
+            Some(plan_rel::RelType::Rel(rel)) => {
                 match &rel.rel_type {
-                    Some(substrait::proto::rel::RelType::Project(project)) => {
+                    Some(RelType::Project(project)) => {
                         // Verify Project relation
                         assert_eq!(project.expressions.len(), 2); // 42 and 84
                         println!("Project input: {:?}", project.input.is_some());
@@ -773,14 +725,14 @@ Project[$0, $1, 42, 84]
                         // Check the Filter input
                         let filter_input = project.input.as_ref().unwrap();
                         match &filter_input.rel_type {
-                            Some(substrait::proto::rel::RelType::Filter(filter)) => {
+                            Some(RelType::Filter(filter)) => {
                                 println!("Filter input: {:?}", filter.input.is_some());
                                 assert!(filter.input.is_some()); // Should have Read as input
 
                                 // Check the Read input
                                 let read_input = filter.input.as_ref().unwrap();
                                 match &read_input.rel_type {
-                                    Some(substrait::proto::rel::RelType::Read(read)) => {
+                                    Some(RelType::Read(read)) => {
                                         // Verify Read relation
                                         let schema = read.base_schema.as_ref().unwrap();
                                         assert_eq!(schema.names.len(), 3);

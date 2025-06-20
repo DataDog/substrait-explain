@@ -202,7 +202,7 @@ impl<T: ScopedParsePair> ScopedParse for T {
     }
 }
 
-pub fn iter_pairs(pair: pest::iterators::Pairs<Rule>) -> RuleIter<'_> {
+pub fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_> {
     RuleIter {
         iter: pair,
         done: false,
