@@ -732,6 +732,81 @@ Project[$0, $1, 42, 84]
     }
 
     #[test]
+    fn test_parse_root_relation() {
+        // Test a plan with a Root relation
+        let plan = r#"=== Plan
+Root[result]
+  Project[$0, $1]
+    Read[my.table => a:i32, b:string?]
+"#;
+        let mut parser = Parser::default();
+        for line in plan.lines() {
+            parser.parse_line(line).unwrap();
+        }
+
+        let plan = parser.build_plan().unwrap();
+
+        // Check that we have exactly one relation
+        assert_eq!(plan.relations.len(), 1);
+
+        let root_rel = &plan.relations[0].rel_type;
+        let rel_root = match root_rel {
+            Some(plan_rel::RelType::Root(rel_root)) => rel_root,
+            other => panic!("Expected Root type, got {:?}", other),
+        };
+
+        // Check that the root has the correct name
+        assert_eq!(rel_root.names, vec!["result"]);
+
+        // Check that the root has a Project as input
+        let project_input = match &rel_root.input {
+            Some(rel) => rel,
+            None => panic!("Root should have an input"),
+        };
+
+        let project = match &project_input.rel_type {
+            Some(RelType::Project(p)) => p,
+            other => panic!("Expected Project as root input, got {:?}", other),
+        };
+
+        // Check that Project has Read as input
+        let read_input = match &project.input {
+            Some(rel) => rel,
+            None => panic!("Project should have an input"),
+        };
+
+        match &read_input.rel_type {
+            Some(RelType::Read(_)) => {}
+            other => panic!("Expected Read relation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_root_relation_no_names() {
+        // Test a plan with a Root relation with no names
+        let plan = r#"=== Plan
+Root[]
+  Project[$0, $1]
+    Read[my.table => a:i32, b:string?]
+"#;
+        let mut parser = Parser::default();
+        for line in plan.lines() {
+            parser.parse_line(line).unwrap();
+        }
+
+        let plan = parser.build_plan().unwrap();
+
+        let root_rel = &plan.relations[0].rel_type;
+        let rel_root = match root_rel {
+            Some(plan_rel::RelType::Root(rel_root)) => rel_root,
+            other => panic!("Expected Root type, got {:?}", other),
+        };
+
+        // Check that the root has no names
+        assert_eq!(rel_root.names, Vec::<String>::new());
+    }
+
+    #[test]
     fn test_parse_full_plan() {
         // Test a complete Substrait plan with extensions and relations
         let input = r#"
