@@ -1,10 +1,11 @@
 use std::fmt;
 
+use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::{
-    Expression, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel, RelCommon, Type,
+    Expression, FilterRel, NamedStruct, PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, Type,
 };
 
 use super::expressions::Reference;
@@ -183,7 +184,20 @@ impl Textify for Relation<'_> {
         let args = ctx.separated(self.arguments.iter(), ", ");
         let cols = Emitted::new(&self.columns, self.emit);
 
-        write!(w, "{}[{} | {}]", self.name, args, ctx.display(&cols))?;
+        write!(
+            w,
+            "{}{}[{} | {}]",
+            ctx.indent(),
+            self.name,
+            args,
+            ctx.display(&cols)
+        )?;
+        let child_scope = ctx.push_indent();
+        for child in self.children.iter().flatten() {
+            writeln!(w)?;
+            child.textify(&child_scope, w)?;
+        }
+
         Ok(())
     }
 }
@@ -451,8 +465,58 @@ impl<'a> From<&'a Rel> for Relation<'a> {
         match rel.rel_type.as_ref() {
             Some(RelType::Read(r)) => Relation::from(r.as_ref()),
             Some(RelType::Filter(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Project(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
         }
+    }
+}
+
+impl Textify for RelRoot {
+    fn name() -> &'static str {
+        "RelRoot"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let names = self.names.iter().map(|n| Name(n)).collect::<Vec<_>>();
+
+        write!(
+            w,
+            "{}Root[{}]",
+            ctx.indent(),
+            ctx.separated(names.iter(), ", ")
+        )?;
+        let child_scope = ctx.push_indent();
+        for child in self.input.iter() {
+            let child = Relation::from(child);
+            write!(w, "\n{}{}", child_scope.indent(), ctx.display(&child))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Textify for PlanRelType {
+    fn name() -> &'static str {
+        "PlanRelType"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self {
+            PlanRelType::Rel(rel) => Relation::from(rel).textify(ctx, w),
+            PlanRelType::Root(root) => root.textify(ctx, w),
+        }
+    }
+}
+
+impl Textify for PlanRel {
+    fn name() -> &'static str {
+        "PlanRel"
+    }
+
+    /// Write the relation as a string. Inputs are ignored - those are handled
+    /// separately.
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.expect(self.rel_type.as_ref()))
     }
 }
 
@@ -598,12 +662,10 @@ mod tests {
 
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-        assert_eq!(result, "Filter[gt($0, 10:i32) | $0, $1]");
-
-        let child = rel.children[0].as_ref().unwrap();
-        let (cs, cerr) = ctx.textify(child);
-
-        assert!(cerr.is_empty(), "Expected no errors, got: {:?}", cerr);
-        assert_eq!(cs, "Read[test_table | col1:i32?, col2:i32?]");
+        let expected = r#"
+Filter[gt($0, 10:i32) | $0, $1]
+  Read[test_table | col1:i32?, col2:i32?]"#
+            .trim_start();
+        assert_eq!(result, expected);
     }
 }

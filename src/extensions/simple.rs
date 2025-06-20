@@ -97,9 +97,9 @@ impl SimpleExtensions {
         Self::default()
     }
 
-    pub fn from_extensions(
-        uris: impl IntoIterator<Item = pext::SimpleExtensionUri>,
-        extensions: impl IntoIterator<Item = pext::SimpleExtensionDeclaration>,
+    pub fn from_extensions<'a>(
+        uris: impl IntoIterator<Item = &'a pext::SimpleExtensionUri>,
+        extensions: impl IntoIterator<Item = &'a pext::SimpleExtensionDeclaration>,
     ) -> (Self, Vec<InsertError>) {
         // TODO: this checks for missing URIs and duplicate anchors, but not
         // duplicate names with the same anchor.
@@ -109,19 +109,19 @@ impl SimpleExtensions {
         let mut errors = Vec::<InsertError>::new();
 
         for uri in uris {
-            if let Err(e) = exts.add_extension_uri(uri.uri, uri.extension_uri_anchor) {
+            if let Err(e) = exts.add_extension_uri(uri.uri.clone(), uri.extension_uri_anchor) {
                 errors.push(e);
             }
         }
 
         for extension in extensions {
-            match extension.mapping_type {
+            match &extension.mapping_type {
                 Some(MappingType::ExtensionType(t)) => {
                     if let Err(e) = exts.add_extension(
                         ExtensionKind::Type,
                         t.extension_uri_reference,
                         t.type_anchor,
-                        t.name,
+                        t.name.clone(),
                     ) {
                         errors.push(e);
                     }
@@ -131,7 +131,7 @@ impl SimpleExtensions {
                         ExtensionKind::Function,
                         f.extension_uri_reference,
                         f.function_anchor,
-                        f.name,
+                        f.name.clone(),
                     ) {
                         errors.push(e);
                     }
@@ -141,7 +141,7 @@ impl SimpleExtensions {
                         ExtensionKind::TypeVariation,
                         v.extension_uri_reference,
                         v.type_variation_anchor,
-                        v.name,
+                        v.name.clone(),
                     ) {
                         errors.push(e);
                     }
@@ -271,7 +271,6 @@ impl SimpleExtensions {
             return Ok(());
         }
 
-        // TODO: write the header. I think we can put this in the main block
         writeln!(w, "{EXTENSIONS_HEADER}")?;
         if !self.uris.is_empty() {
             writeln!(w, "{EXTENSION_URIS_HEADER}")?;
@@ -483,9 +482,9 @@ mod tests {
         assert!(errs.is_empty());
     }
 
-    fn unwrap_new_extensions(
-        uris: impl IntoIterator<Item = pext::SimpleExtensionUri>,
-        extensions: impl IntoIterator<Item = pext::SimpleExtensionDeclaration>,
+    fn unwrap_new_extensions<'a>(
+        uris: impl IntoIterator<Item = &'a pext::SimpleExtensionUri>,
+        extensions: impl IntoIterator<Item = &'a pext::SimpleExtensionDeclaration>,
     ) -> SimpleExtensions {
         let (exts, errs) = SimpleExtensions::from_extensions(uris, extensions);
         assert_no_errors(&errs);
@@ -520,7 +519,7 @@ mod tests {
             new_ext_type(20, 1, "type1"),
             new_type_var(30, 2, "var1"),
         ];
-        let exts = unwrap_new_extensions(uris, extensions);
+        let exts = unwrap_new_extensions(&uris, &extensions);
 
         assert_eq!(exts.find_uri(1).unwrap(), "uri1");
         assert_eq!(exts.find_uri(2).unwrap(), "uri2");
@@ -559,7 +558,7 @@ mod tests {
             new_ext_fn(10, 2, "func_new"), // Duplicate function anchor
             new_ext_fn(11, 3, "func_missing"),
         ];
-        let (exts, errs) = SimpleExtensions::from_extensions(uris, extensions);
+        let (exts, errs) = SimpleExtensions::from_extensions(&uris, &extensions);
         assert_eq!(
             errs,
             vec![
@@ -595,7 +594,7 @@ mod tests {
     fn test_from_extensions_invalid_mapping_type() {
         let extensions = vec![pext::SimpleExtensionDeclaration { mapping_type: None }];
 
-        let (_exts, errs) = SimpleExtensions::from_extensions(vec![], extensions);
+        let (_exts, errs) = SimpleExtensions::from_extensions(vec![], &extensions);
         assert_eq!(errs.len(), 1);
         let err = &errs[0];
         assert_eq!(err, &InsertError::MissingMappingType);
@@ -611,7 +610,7 @@ mod tests {
             new_ext_type(20, 1, "type_name1"),
             new_type_var(30, 1, "var_name1"),
         ];
-        let exts = unwrap_new_extensions(uris, extensions);
+        let exts = unwrap_new_extensions(&uris, &extensions);
 
         let err = exts
             .find_by_name(ExtensionKind::Function, "name1")
@@ -680,7 +679,7 @@ mod tests {
             new_ext_fn(11, 42, "another_func"),
             new_ext_fn(108812, 4091, "big_func"),
         ];
-        let exts = unwrap_new_extensions(uris, extensions);
+        let exts = unwrap_new_extensions(&uris, &extensions);
         let display_str = exts.to_string("  ");
 
         let expected = r"

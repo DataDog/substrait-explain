@@ -297,7 +297,7 @@ Type Variations:
 
         // Convert the plan extensions back to SimpleExtensions
         let (extensions, _errors) =
-            SimpleExtensions::from_extensions(plan.extension_uris, plan.extensions);
+            SimpleExtensions::from_extensions(&plan.extension_uris, &plan.extensions);
 
         // Convert back to string
         let output = extensions.to_string("  ");

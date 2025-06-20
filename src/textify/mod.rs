@@ -1,5 +1,6 @@
 pub mod expressions;
 pub(crate) mod foundation;
+pub mod plan;
 pub mod rels;
 pub mod types;
 

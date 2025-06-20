@@ -7,8 +7,8 @@ use std::sync::mpsc;
 
 use thiserror::Error;
 
-use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::MissingReference;
+use crate::extensions::{InsertError, SimpleExtensions};
 
 pub const NONSPECIFIC: Option<&'static str> = None;
 
@@ -209,6 +209,15 @@ pub struct IndentStack<'a> {
     indent: &'a str,
 }
 
+impl<'a> fmt::Display for IndentStack<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for _ in 0..self.count {
+            f.write_str(self.indent)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct ScopedContext<'a, Err: ErrorAccumulator> {
     errors: &'a Err,
@@ -274,23 +283,28 @@ impl<'a, Err: ErrorAccumulator, T: Textify + prost::Message> fmt::Display
 
 #[derive(Error, Debug, Clone)]
 pub enum Error {
-    #[error("Lookup error: {0}")]
+    #[error("Error adding extension: {0}")]
+    Insert(#[from] InsertError),
+    #[error("Error finding extension: {0}")]
     Lookup(#[from] MissingReference),
-    #[error("Textify error: {0}")]
+    #[error("Error textifying: {0}")]
     Textify(#[from] TextifyError),
 }
 
 impl Error {
     pub fn message(&self) -> &'static str {
         match self {
-            Error::Lookup(m) => match m {
-                MissingReference::MissingUri(_) => "uri",
-                MissingReference::MissingAnchor(k, _) => k.name(),
-                MissingReference::MissingName(k, _) => k.name(),
-                MissingReference::Mismatched(k, _, _) => k.name(),
-                MissingReference::DuplicateName(k, _) => k.name(),
-            },
+            Error::Lookup(MissingReference::MissingUri(_)) => "uri",
+            Error::Lookup(MissingReference::MissingAnchor(k, _)) => k.name(),
+            Error::Lookup(MissingReference::MissingName(k, _)) => k.name(),
+            Error::Lookup(MissingReference::Mismatched(k, _, _)) => k.name(),
+            Error::Lookup(MissingReference::DuplicateName(k, _)) => k.name(),
             Error::Textify(m) => m.message,
+            Error::Insert(InsertError::MissingMappingType) => "extension",
+            Error::Insert(InsertError::DuplicateUriAnchor { .. }) => "uri",
+            Error::Insert(InsertError::DuplicateAnchor { .. }) => "extension",
+            Error::Insert(InsertError::MissingUri { .. }) => "uri",
+            Error::Insert(InsertError::DuplicateAndMissingUri { .. }) => "uri",
         }
     }
 }
@@ -420,7 +434,8 @@ pub trait Scope: Sized {
     type Errors: ErrorAccumulator;
     type Indent: IndentTracker;
 
-    fn push_indent(self) -> Self;
+    fn indent(&self) -> impl fmt::Display;
+    fn push_indent(&self) -> Self;
 
     fn options(&self) -> &OutputOptions;
     fn extensions(&self) -> &SimpleExtensions;
@@ -596,9 +611,15 @@ impl<'a, Err: ErrorAccumulator> Scope for ScopedContext<'a, Err> {
     type Errors = Err;
     type Indent = IndentStack<'a>;
 
-    fn push_indent(mut self) -> Self {
-        self.indent = self.indent.push();
-        self
+    fn indent(&self) -> impl fmt::Display {
+        self.indent
+    }
+
+    fn push_indent(&self) -> Self {
+        Self {
+            indent: self.indent.push(),
+            ..*self
+        }
     }
 
     fn options(&self) -> &OutputOptions {

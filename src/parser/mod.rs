@@ -5,5 +5,6 @@ mod relations;
 mod structural;
 mod types;
 pub use common::*;
+pub use expressions::reference;
 pub use relations::RelationParsePair;
-pub use structural::{LineParseError, Parser};
+pub use structural::{LineParseError, PLAN_HEADER, Parser};
