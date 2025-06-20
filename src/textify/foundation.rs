@@ -1,7 +1,5 @@
 use std::borrow::Cow;
-use std::cell::{RefCell, RefMut};
 use std::fmt;
-use std::ops::DerefMut;
 use std::rc::Rc;
 use std::sync::mpsc;
 
@@ -258,26 +256,6 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
             extensions,
             indent: IndentStack::new(options.indent.as_str()),
         }
-    }
-}
-
-pub struct MessageWriter<'a, Err: ErrorAccumulator, T> {
-    context: RefCell<ScopedContext<'a, Err>>,
-    message: &'a T,
-}
-
-impl<'a, Err: ErrorAccumulator, T: Textify + prost::Message> MessageWriter<'a, Err, T> {
-    pub fn ctx(&self) -> Result<RefMut<ScopedContext<'a, Err>>, fmt::Error> {
-        self.context.try_borrow_mut().map_err(|_| fmt::Error)
-    }
-}
-
-impl<'a, Err: ErrorAccumulator, T: Textify + prost::Message> fmt::Display
-    for MessageWriter<'a, Err, T>
-{
-    fn fmt<'b>(&self, f: &mut fmt::Formatter<'b>) -> fmt::Result {
-        let mut ctx_ref = self.ctx()?;
-        self.message.textify(ctx_ref.deref_mut(), f)
     }
 }
 

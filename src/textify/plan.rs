@@ -2,13 +2,11 @@ use std::fmt;
 
 use substrait::proto;
 
-use crate::{
-    extensions::SimpleExtensions,
-    parser::PLAN_HEADER,
-    textify::{OutputOptions, ScopedContext, foundation::ErrorAccumulator},
-};
-
 use super::Textify;
+use crate::extensions::SimpleExtensions;
+use crate::parser::PLAN_HEADER;
+use crate::textify::foundation::ErrorAccumulator;
+use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
 pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
@@ -48,7 +46,7 @@ impl<'a, E: ErrorAccumulator + Default> PlanWriter<'a, E> {
 
     pub fn write_relations(&self, w: &mut impl fmt::Write) -> fmt::Result {
         // We always write the plan header, even if there are no relations.
-        writeln!(w, "{}", PLAN_HEADER)?;
+        writeln!(w, "{PLAN_HEADER}")?;
         let scope = self.scope();
         for relation in self.relations {
             relation.textify(&scope, w)?;
@@ -70,17 +68,20 @@ impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::parser::reference;
-    use crate::textify::ErrorQueue;
-    use pext::simple_extension_declaration::{ExtensionFunction, MappingType};
     use std::fmt::Write;
+
+    use pext::simple_extension_declaration::{ExtensionFunction, MappingType};
     use substrait::proto::expression::{RexType, ScalarFunction};
-    use substrait::proto::extensions as pext;
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
     use substrait::proto::r#type::{Kind, Nullability, Struct};
-    use substrait::proto::{Expression, FunctionArgument, NamedStruct, ReadRel, Type};
+    use substrait::proto::{
+        Expression, FunctionArgument, NamedStruct, ReadRel, Type, extensions as pext,
+    };
+
+    use super::*;
+    use crate::parser::reference;
+    use crate::textify::ErrorQueue;
 
     /// Test a fairly basic plan with an extension, read, and project.
     ///
