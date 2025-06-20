@@ -217,10 +217,10 @@ impl<'a> TreeBuilder<'a> {
 
     pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), LineParseError> {
         if depth == 0 {
-            match self.current.take() {
-                None => self.current = Some(node),
-                Some(prev) => self.completed.push(prev),
+            if let Some(prev) = self.current.take() {
+                self.completed.push(prev)
             }
+            self.current = Some(node);
             return Ok(());
         }
 
