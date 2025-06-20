@@ -186,11 +186,20 @@ relation = {
   | project_relation
 }
 
+// At the top level, we can have a RelRoot, or a regular relation; both are valid.
+top_level_relation = {
+    root_relation
+  | relation
+}
+
+root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
+root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
+
 read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]" }
 
 filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
-reference_list  = { reference ~ (sp ~ "," ~ sp ~ reference)* }
+reference_list  = { (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
 
 project_relation      = { "Project" ~ "[" ~ project_argument_list ~ "]" }
-project_argument_list = { project_argument ~ (sp ~ "," ~ sp ~ project_argument)* }
+project_argument_list = { (project_argument ~ (sp ~ "," ~ sp ~ project_argument)*)? }
 project_argument      = { reference | expression }
