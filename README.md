@@ -108,6 +108,11 @@ Suddenly you can see exactly what the query does: filter orders where some calcu
 - **Error handling**: Graceful error handling that doesn't prevent output generation
 - **Flexible formatting**: Configurable output options for different use cases
 
+### Documentation
+
+- **[Grammar Specification](GRAMMAR.md)**: Complete reference for the text format grammar
+- **API Documentation**: Available on [docs.rs](https://docs.rs/substrait-explain) (TODO: Once this is released!)
+
 ## Installation
 
 Add this to your `Cargo.toml`:
@@ -138,7 +143,7 @@ Project[ | $0, $1, add($0, $1)]
   Read[table1 | col1:i32?, col2:i32?]
 "#;
 
-let plan = Parser::parse_plan(plan_text).unwrap();
+let plan = Parser::parse(plan_text).unwrap();
 
 // Convert to human-readable format
 let options = OutputOptions::default();

@@ -51,6 +51,7 @@ impl fmt::Display for ExtensionParserState {
 /// contains the extension URIs and declarations. Note that this parser does not
 /// parse the header; otherwise, this is symmetric with the
 /// SimpleExtensions::write method.
+#[derive(Debug)]
 pub struct ExtensionParser {
     state: ExtensionParserState,
     extensions: SimpleExtensions,

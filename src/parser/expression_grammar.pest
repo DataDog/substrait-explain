@@ -7,6 +7,8 @@ sp = _{ whitespace* }
 // Basic Terminals
 identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 integer    = @{ "-"? ~ ASCII_DIGIT+ }
+float      = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+boolean    = @{ "true" | "false" }
 
 // Basic string literals, does not handle escape sequences for simplicity here.
 // String literals are for literal values
@@ -33,7 +35,7 @@ name = { identifier | quoted_name }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal = { (integer | string_literal) ~ (":" ~ sp ~ type)? }
+literal = { (integer | float | boolean | string_literal) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }

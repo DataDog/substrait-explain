@@ -6,7 +6,7 @@ use substrait::proto;
 use substrait::proto::r#type::{self as ptype};
 
 use super::foundation::{NONSPECIFIC, Scope};
-use super::{Textify, TextifyError};
+use super::{PlanError, Textify};
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::foundation::{ErrorToken, MaybeToken, Visibility};
 
@@ -21,12 +21,8 @@ impl Textify for ptype::Nullability {
         match self {
             ptype::Nullability::Unspecified => {
                 ctx.push_error(
-                    TextifyError::invalid(
-                        "Nullability",
-                        NONSPECIFIC,
-                        "Nullability left Unspecified",
-                    )
-                    .into(),
+                    PlanError::invalid("Nullability", NONSPECIFIC, "Nullability left Unspecified")
+                        .into(),
                 );
 
                 // TODO: what should unspecified Nullabilitylook like?
@@ -595,7 +591,7 @@ mod tests {
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
-    use crate::textify::foundation::Error;
+    use crate::textify::foundation::FormatError;
 
     #[test]
     fn type_display() {
@@ -659,7 +655,7 @@ mod tests {
         assert_eq!(s, "boolean?[!{type_variation}#200]");
         let err = errs.first();
         let (&k, &a) = match err {
-            Error::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
+            FormatError::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
             _ => panic!("Expected Lookup MissingAnchor: {}", err),
         };
 
@@ -691,7 +687,7 @@ mod tests {
         let (s, errs) = ctx.textify(&t);
         let err = errs.first();
         let (&k, &a) = match err {
-            Error::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
+            FormatError::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
             _ => panic!("Expected Lookup MissingAnchor: {}", err),
         };
         assert_eq!(k, ExtensionKind::Type);

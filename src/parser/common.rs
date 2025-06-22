@@ -165,7 +165,7 @@ impl<T: ParsePair> Parse for T {
     }
 }
 
-/// A trait for types that are parsed from a pest::iterators::Pair<Rule> that
+/// A trait for types that are parsed from a `pest::iterators::Pair<Rule>` that
 /// depends on the context - e.g. extension lookups or other contextual
 /// information. This is used for types that are not directly parsed from the
 /// grammar, but rather require additional context to parse correctly.
@@ -176,7 +176,7 @@ pub trait ScopedParsePair: Sized {
     // The name of the protobuf message type that this type corresponds to.
     fn message() -> &'static str;
 
-    // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
+    // Parse a single instance of this type from a `pest::iterators::Pair<Rule>`.
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
     fn parse_pair(

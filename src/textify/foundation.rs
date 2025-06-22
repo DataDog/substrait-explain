@@ -1,3 +1,5 @@
+//! Foundation types for textifying a plan.
+
 use std::borrow::Cow;
 use std::fmt;
 use std::rc::Rc;
@@ -89,13 +91,13 @@ impl OutputOptions {
     }
 }
 pub trait ErrorAccumulator: Clone {
-    fn push(&self, e: Error);
+    fn push(&self, e: FormatError);
 }
 
 #[derive(Debug, Clone)]
 pub struct ErrorQueue {
-    sender: mpsc::Sender<Error>,
-    receiver: Rc<mpsc::Receiver<Error>>,
+    sender: mpsc::Sender<FormatError>,
+    receiver: Rc<mpsc::Receiver<FormatError>>,
 }
 
 impl Default for ErrorQueue {
@@ -108,14 +110,14 @@ impl Default for ErrorQueue {
     }
 }
 
-impl From<ErrorQueue> for Vec<Error> {
-    fn from(v: ErrorQueue) -> Vec<Error> {
+impl From<ErrorQueue> for Vec<FormatError> {
+    fn from(v: ErrorQueue) -> Vec<FormatError> {
         v.receiver.try_iter().collect()
     }
 }
 
 impl ErrorAccumulator for ErrorQueue {
-    fn push(&self, e: Error) {
+    fn push(&self, e: FormatError) {
         self.sender.send(e).unwrap();
     }
 }
@@ -137,7 +139,7 @@ impl fmt::Display for ErrorQueue {
 
 impl ErrorQueue {
     pub fn errs(self) -> Result<(), ErrorList> {
-        let errors: Vec<Error> = self.receiver.try_iter().collect();
+        let errors: Vec<FormatError> = self.receiver.try_iter().collect();
         if errors.is_empty() {
             Ok(())
         } else {
@@ -147,10 +149,10 @@ impl ErrorQueue {
 }
 
 // A list of errors, used to return errors from textify operations.
-pub struct ErrorList(pub Vec<Error>);
+pub struct ErrorList(pub Vec<FormatError>);
 
 impl ErrorList {
-    pub fn first(&self) -> &Error {
+    pub fn first(&self) -> &FormatError {
         self.0
             .first()
             .expect("Expected at least one error in ErrorList")
@@ -186,8 +188,8 @@ impl fmt::Debug for ErrorList {
 }
 
 impl<'e> IntoIterator for &'e ErrorQueue {
-    type Item = Error;
-    type IntoIter = std::sync::mpsc::TryIter<'e, Error>;
+    type Item = FormatError;
+    type IntoIter = std::sync::mpsc::TryIter<'e, FormatError>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.receiver.try_iter()
@@ -259,36 +261,41 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
     }
 }
 
+/// Errors that can occur when formatting a plan.
 #[derive(Error, Debug, Clone)]
-pub enum Error {
+pub enum FormatError {
+    /// Error in adding extensions to the plan - e.g. duplicates, invalid URI
+    /// references, etc.
     #[error("Error adding extension: {0}")]
     Insert(#[from] InsertError),
+    /// Error in looking up an extension - e.g. missing URI, anchor, name, etc.
     #[error("Error finding extension: {0}")]
     Lookup(#[from] MissingReference),
-    #[error("Error textifying: {0}")]
-    Textify(#[from] TextifyError),
+    /// Error in formatting the plan - e.g. invalid value, unimplemented, etc.
+    #[error("Error formatting output: {0}")]
+    Format(#[from] PlanError),
 }
 
-impl Error {
+impl FormatError {
     pub fn message(&self) -> &'static str {
         match self {
-            Error::Lookup(MissingReference::MissingUri(_)) => "uri",
-            Error::Lookup(MissingReference::MissingAnchor(k, _)) => k.name(),
-            Error::Lookup(MissingReference::MissingName(k, _)) => k.name(),
-            Error::Lookup(MissingReference::Mismatched(k, _, _)) => k.name(),
-            Error::Lookup(MissingReference::DuplicateName(k, _)) => k.name(),
-            Error::Textify(m) => m.message,
-            Error::Insert(InsertError::MissingMappingType) => "extension",
-            Error::Insert(InsertError::DuplicateUriAnchor { .. }) => "uri",
-            Error::Insert(InsertError::DuplicateAnchor { .. }) => "extension",
-            Error::Insert(InsertError::MissingUri { .. }) => "uri",
-            Error::Insert(InsertError::DuplicateAndMissingUri { .. }) => "uri",
+            FormatError::Lookup(MissingReference::MissingUri(_)) => "uri",
+            FormatError::Lookup(MissingReference::MissingAnchor(k, _)) => k.name(),
+            FormatError::Lookup(MissingReference::MissingName(k, _)) => k.name(),
+            FormatError::Lookup(MissingReference::Mismatched(k, _, _)) => k.name(),
+            FormatError::Lookup(MissingReference::DuplicateName(k, _)) => k.name(),
+            FormatError::Format(m) => m.message,
+            FormatError::Insert(InsertError::MissingMappingType) => "extension",
+            FormatError::Insert(InsertError::DuplicateUriAnchor { .. }) => "uri",
+            FormatError::Insert(InsertError::DuplicateAnchor { .. }) => "extension",
+            FormatError::Insert(InsertError::MissingUri { .. }) => "uri",
+            FormatError::Insert(InsertError::DuplicateAndMissingUri { .. }) => "uri",
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct TextifyError {
+pub struct PlanError {
     // The message this originated in
     pub message: &'static str,
     // The specific lookup that failed, if specifiable
@@ -296,10 +303,10 @@ pub struct TextifyError {
     // The description of the error
     pub description: Cow<'static, str>,
     // The error type
-    pub error_type: TextifyErrorType,
+    pub error_type: FormatErrorType,
 }
 
-impl TextifyError {
+impl PlanError {
     pub fn invalid(
         message: &'static str,
         specific: Option<impl Into<Cow<'static, str>>>,
@@ -309,7 +316,7 @@ impl TextifyError {
             message,
             lookup: specific.map(|s| s.into()),
             description: description.into(),
-            error_type: TextifyErrorType::InvalidValue,
+            error_type: FormatErrorType::InvalidValue,
         }
     }
 
@@ -322,7 +329,7 @@ impl TextifyError {
             message,
             lookup: specific.map(|s| s.into()),
             description: description.into(),
-            error_type: TextifyErrorType::Unimplemented,
+            error_type: FormatErrorType::Unimplemented,
         }
     }
 
@@ -335,31 +342,31 @@ impl TextifyError {
             message,
             lookup: specific.map(|s| s.into()),
             description: description.into(),
-            error_type: TextifyErrorType::Internal,
+            error_type: FormatErrorType::Internal,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
-pub enum TextifyErrorType {
+pub enum FormatErrorType {
     InvalidValue,
     Unimplemented,
     Internal,
 }
 
-impl fmt::Display for TextifyErrorType {
+impl fmt::Display for FormatErrorType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TextifyErrorType::InvalidValue => write!(f, "InvalidValue"),
-            TextifyErrorType::Unimplemented => write!(f, "Unimplemented"),
-            TextifyErrorType::Internal => write!(f, "Internal"),
+            FormatErrorType::InvalidValue => write!(f, "InvalidValue"),
+            FormatErrorType::Unimplemented => write!(f, "Unimplemented"),
+            FormatErrorType::Internal => write!(f, "Internal"),
         }
     }
 }
 
-impl std::error::Error for TextifyError {}
+impl std::error::Error for PlanError {}
 
-impl fmt::Display for TextifyError {
+impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -394,12 +401,10 @@ impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
     }
 }
 
-/// A trait for types that can be textified.
+/// A trait for types that can be output in text format.
 ///
-/// This trait is used to convert a Substrait type into a string representation.
-///
-/// TODO: Split into Resolve and Display traits, where Resolve is used to resolve
-/// references to their names and may error, and Display never errors.
+/// This trait is used to convert a Substrait type into a string representation
+/// that can be written to a text writer.
 pub trait Textify {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result;
 
@@ -408,25 +413,39 @@ pub trait Textify {
     fn name() -> &'static str;
 }
 
+/// Holds the context for outputting a plan.
+///
+/// This includes:
+/// - Options (`&`[`OutputOptions`]) for formatting
+/// - Errors (`&`[`ErrorAccumulator`]) for collecting errors
+/// - Extensions (`&`[`SimpleExtensions`]) for looking up function and type
+///   names
+/// - Indent (`&`[`IndentTracker`]) for tracking the current indent level
+///
+/// The `Scope` trait is used to provide the context for textifying a plan.
 pub trait Scope: Sized {
+    /// The type of errors that can occur when textifying a plan.
     type Errors: ErrorAccumulator;
     type Indent: IndentTracker;
 
+    /// Get the current indent level.
     fn indent(&self) -> impl fmt::Display;
+    /// Push a new indent level.
     fn push_indent(&self) -> Self;
 
+    /// Get the options for formatting the plan.
     fn options(&self) -> &OutputOptions;
     fn extensions(&self) -> &SimpleExtensions;
     fn errors(&self) -> &Self::Errors;
 
-    fn push_error(&self, e: Error) {
+    fn push_error(&self, e: FormatError) {
         self.errors().push(e);
     }
 
     /// Handle a failure to textify a value. Textify errors are written as
     /// "!{name}" to the output (where "name" is the type name), and
     /// the error is pushed to the error accumulator.
-    fn failure<E: Into<Error>>(&self, e: E) -> ErrorToken {
+    fn failure<E: Into<FormatError>>(&self, e: E) -> ErrorToken {
         let e = e.into();
         let token = ErrorToken(e.message());
         self.push_error(e);
@@ -437,7 +456,7 @@ pub trait Scope: Sized {
         match t {
             Some(t) => MaybeToken(Ok(self.display(t))),
             None => {
-                let err = TextifyError::invalid(
+                let err = PlanError::invalid(
                     T::name(),
                     // TODO: Make this an optional input
                     NONSPECIFIC,
@@ -449,7 +468,7 @@ pub trait Scope: Sized {
         }
     }
 
-    fn expect_ok<'a, T: Textify, E: Into<Error>>(
+    fn expect_ok<'a, T: Textify, E: Into<FormatError>>(
         &'a self,
         result: Result<&'a T, E>,
     ) -> MaybeToken<impl fmt::Display + 'a> {

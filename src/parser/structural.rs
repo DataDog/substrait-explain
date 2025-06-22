@@ -426,7 +426,116 @@ impl<'a> RelationParser<'a> {
     }
 }
 
-// Main parser that orchestrates the components
+/// A parser for Substrait query plans in text format.
+///
+/// The `Parser` converts human-readable Substrait text format into Substrait
+/// protobuf plans. It handles both the extensions section (which defines
+/// functions, types, etc.) and the plan section (which defines the actual query
+/// structure).
+///
+/// ## Usage
+///
+/// The simplest entry point is the static `parse()` method:
+///
+/// ```rust
+/// use substrait_explain::parser::Parser;
+///
+/// let plan_text = r#"
+/// === Plan
+/// Root[c, d]
+///   Project[$1, 42]
+///     Read[schema.table => a:i64, b:string?]
+/// "#;
+///
+/// let plan = Parser::parse(plan_text).unwrap();
+/// ```
+///
+/// ## Input Format
+///
+/// The parser expects input in the following format:
+///
+/// ```text
+/// === Extensions
+/// URIs:
+///   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+/// Functions:
+///   # 10 @  1: add
+/// === Plan
+/// Root[columns]
+///   Relation[arguments => columns]
+///     ChildRelation[arguments => columns]
+/// ```
+///
+/// - **Extensions section** (optional): Defines URIs and function/type declarations
+/// - **Plan section** (required): Defines the query structure with indented relations
+///
+/// ## Error Handling
+///
+/// The parser provides detailed error information including:
+/// - Line number where the error occurred
+/// - The actual line content that failed to parse
+/// - Specific error type and description
+///
+/// ```rust
+/// use substrait_explain::parser::Parser;
+///
+/// let invalid_plan = r#"
+/// === Plan
+/// InvalidRelation[invalid syntax]
+/// "#;
+///
+/// match Parser::parse(invalid_plan) {
+///     Ok(plan) => println!("Successfully parsed"),
+///     Err(e) => eprintln!("Parse error: {}", e),
+/// }
+/// ```
+///
+/// ## Supported Relations
+///
+/// The parser supports all standard Substrait relations:
+/// - `Read[table => columns]` - Read from a table
+/// - `Project[expressions]` - Project columns/expressions
+/// - `Filter[condition => columns]` - Filter rows
+/// - `Root[columns]` - Root relation with output columns
+/// - And more...
+///
+/// ## Extensions Support
+///
+/// The parser fully supports Substrait Simple Extensions, allowing you to:
+/// - Define custom functions with URIs and anchors
+/// - Reference functions by name in expressions
+/// - Use custom types and type variations
+///
+/// ```rust
+/// use substrait_explain::parser::Parser;
+///
+/// let plan_with_extensions = r#"
+/// === Extensions
+/// URIs:
+///   @  1: https://example.com/functions.yaml
+/// Functions:
+///   ## 10 @  1: my_custom_function
+/// === Plan
+/// Root[result]
+///   Project[my_custom_function($0, $1)]
+///     Read[table => col1:i32, col2:i32]
+/// "#;
+///
+/// let plan = Parser::parse(plan_with_extensions).unwrap();
+/// ```
+///
+/// ## Performance
+///
+/// The parser is designed for efficiency:
+/// - Single-pass parsing with minimal allocations
+/// - Early error detection and reporting
+/// - Memory-efficient tree building
+///
+/// ## Thread Safety
+///
+/// `Parser` instances are not thread-safe and should not be shared between threads.
+/// However, the static `parse()` method is safe to call from multiple threads.
+#[derive(Debug)]
 pub struct Parser<'a> {
     line_no: i64,
     state: State,
@@ -466,15 +575,12 @@ impl<'a> Parser<'a> {
     ///     Read[schema.table => a:i64, b:string?]
     /// "#;
     ///
-    /// match Parser::parse(plan_text) {
-    ///     Ok(plan) => println!("Successfully parsed plan"),
-    ///     Err(e) => eprintln!("Parse error: {}", e),
-    /// }
+    /// let plan = Parser::parse(plan_text).unwrap();
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns a `LineParseError` if the input cannot be parsed. The error includes
+    /// Returns a [`ParseError`] if the input cannot be parsed. The error includes
     /// the line number and content where parsing failed, along with a description
     /// of what went wrong.
     pub fn parse(input: &'a str) -> Result<Plan, ParseError> {
@@ -493,6 +599,7 @@ impl<'a> Parser<'a> {
         parser.build_plan()
     }
 
+    /// Parse a single line of input, updating the parser state.
     fn parse_line(&mut self, line: &'a str) -> Result<(), ParseError> {
         let indented_line = IndentedLine::from(line);
         let line_no = self.line_no;
@@ -510,6 +617,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the initial line(s) of the input, which is either a blank line or
+    /// the extensions or plan header.
     fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
             IndentedLine(0, l) if l.trim().is_empty() => {}
@@ -546,6 +655,8 @@ impl<'a> Parser<'a> {
         todo!()
     }
 
+    /// Parse a single line from the extensions section of the input, updating
+    /// the parser state.
     fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
         if line == IndentedLine(0, PLAN_HEADER) {
             self.state = State::Plan;
@@ -554,10 +665,13 @@ impl<'a> Parser<'a> {
         self.extension_parser.parse_line(line)
     }
 
+    /// Parse a single line from the plan section of the input, updating the
+    /// parser state.
     fn parse_plan_line(&mut self, line: IndentedLine<'a>) -> Result<(), ParseError> {
         self.relation_parser.parse_line(line, self.line_no)
     }
 
+    /// Build the plan from the parser state.
     fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
             relation_parser,
