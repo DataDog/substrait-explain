@@ -86,7 +86,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::parser::reference;
+    use crate::parser::expressions::reference;
     use crate::textify::ErrorQueue;
 
     /// Test a fairly basic plan with an extension, read, and project.

@@ -40,7 +40,7 @@ Root[revenue]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 
-    match Parser::parse_plan(plan_text) {
+    match Parser::parse(plan_text) {
         Ok(plan) => {
             // Output with standard options
             print_plan(&plan, &OutputOptions::default(), "Standard output");

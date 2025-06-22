@@ -14,7 +14,7 @@ pub struct ExpressionParser;
 /// An error that occurs when parsing a message within a specific line. Contains
 /// context pointing at that specific error.
 #[derive(Error, Debug, Clone)]
-#[error("{kind} Error parsing {message}: {error}")]
+#[error("{kind} Error parsing {message}:\n{error}")]
 pub struct MessageParseError {
     pub message: &'static str,
     pub kind: ErrorKind,

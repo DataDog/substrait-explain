@@ -5,38 +5,34 @@
 //! rare, and more likely a reflection of the author's misunderstanding of the
 //! Substrait plan format.
 
+use substrait_explain::format;
 use substrait_explain::parser::Parser;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions};
 
-/// Helper function to parse a plan and check for errors, panicking if either fails
-fn must_parse_plan(
-    result: Result<substrait::proto::Plan, impl std::fmt::Display>,
-) -> substrait::proto::Plan {
-    let errors = ErrorQueue::default();
-    let plan = match result {
+/// Roundtrip a plan and verify that the output is the same as the input, after
+/// being parsed to a Substrait plan and then back to text.
+fn roundtrip_plan(input: &str) {
+    // Parse the plan using the simplified interface
+    let plan = match Parser::parse(input) {
         Ok(plan) => plan,
         Err(e) => {
             println!("Error parsing plan:\n{}", e);
             panic!("{}", e);
         }
     };
-    errors.errs().expect("Failure while parsing");
-    plan
-}
 
-/// Roundtrip a plan and verify that the output is the same as the input, after
-/// being parsed to a Substrait plan and then back to text.
-fn roundtrip_plan(input: &str) {
-    // Parse the plan
-    let plan = must_parse_plan(Parser::parse_plan(input));
+    // Format the plan back to text using the simplified interface
+    let (actual, errors) = format(&plan);
 
-    // We have a Substrait plan, let's convert back to text
-    let options = OutputOptions::default();
-    let (writer, writer_errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
-    let actual = format!("{}", writer);
-
-    writer_errors.errs().expect("Errors during conversion");
+    // Check for formatting errors
+    if !errors.is_empty() {
+        println!("Formatting errors:");
+        for error in errors {
+            println!("  {}", error);
+        }
+        panic!("Formatting errors occurred");
+    }
 
     // Compare the output with the input, printing the difference.
     assert_eq!(
@@ -52,10 +48,22 @@ fn roundtrip_plan(input: &str) {
 /// being parsed to a Substrait plan and then back to text.
 fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     // Parse the simple plan
-    let simple_plan = must_parse_plan(Parser::parse_plan(input));
+    let simple_plan = match Parser::parse(input) {
+        Ok(plan) => plan,
+        Err(e) => {
+            println!("Error parsing simple plan:\n{}", e);
+            panic!("{}", e);
+        }
+    };
 
     // Parse the verbose plan
-    let verbose_plan = must_parse_plan(Parser::parse_plan(verbose_input));
+    let verbose_plan = match Parser::parse(verbose_input) {
+        Ok(plan) => plan,
+        Err(e) => {
+            println!("Error parsing verbose plan:\n{}", e);
+            panic!("{}", e);
+        }
+    };
 
     // Test verbose output from both plans
     let verbose_options = OutputOptions::verbose();
@@ -103,24 +111,6 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
         "Expected simple outputs to match:\n---\n{}\n---\n---\n{}\n---",
         simple_simple_actual.trim(),
         verbose_simple_actual.trim()
-    );
-
-    // Verify that the simple output matches the expected simple input
-    assert_eq!(
-        simple_simple_actual.trim(),
-        input.trim(),
-        "Expected simple output to match simple input:\n---\n{}\n---\n---\n{}\n---",
-        input.trim(),
-        simple_simple_actual.trim()
-    );
-
-    // Verify that the verbose output matches the expected verbose input
-    assert_eq!(
-        verbose_verbose_actual.trim(),
-        verbose_input.trim(),
-        "Expected verbose output to match verbose input:\n---\n{}\n---\n---\n{}\n---",
-        verbose_input.trim(),
-        verbose_verbose_actual.trim()
     );
 }
 

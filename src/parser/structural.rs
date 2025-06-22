@@ -44,10 +44,10 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
 }
 
 #[derive(Debug, Clone, Error)]
-pub enum LineParseError {
+pub enum ParseError {
     #[error("Error parsing extension on line {0}: {1}")]
     Extension(ParseContext, #[source] ExtensionParseError),
-    #[error("Error parsing plan on line {0}: {1}")]
+    #[error("Error parsing plan on {0}: {1}")]
     Plan(ParseContext, #[source] MessageParseError),
     #[error("Error parsing section header on line {0}: {1}")]
     Initial(ParseContext, #[source] MessageParseError),
@@ -73,12 +73,11 @@ impl<'a> LineNode<'a> {
         }
     }
 
-    /// Parse a line of text into a [`LineNode`], with empty children.
-    pub fn parse(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
+    pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
         // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
             <ExpressionParser as pest::Parser<Rule>>::parse(Rule::relation, line).map_err(|e| {
-                LineParseError::Plan(
+                ParseError::Plan(
                     ParseContext {
                         line_no,
                         line: line.to_string(),
@@ -98,17 +97,20 @@ impl<'a> LineNode<'a> {
     }
 
     /// Parse the root relation of a plan, at depth 0.
-    pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
+    pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
         // Parse the line as a top-level relation (either root_relation or regular relation)
-        let parsed =
-            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::top_level_relation, line);
-
-        let mut pairs: pest::iterators::Pairs<'a, Rule> = parsed.map_err(|e| {
-            LineParseError::Plan(
-                ParseContext::new(line_no, line.to_string()),
-                MessageParseError::new("top_level_relation", ErrorKind::Syntax, Box::new(e)),
-            )
-        })?;
+        let mut pairs: pest::iterators::Pairs<'a, Rule> =
+            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::top_level_relation, line)
+                .map_err(|e| {
+                    ParseError::Plan(
+                        ParseContext::new(line_no, line.to_string()),
+                        MessageParseError::new(
+                            "top_level_relation",
+                            crate::parser::ErrorKind::Syntax,
+                            Box::new(e),
+                        ),
+                    )
+                })?;
 
         let pair = pairs.next().unwrap();
         assert!(pairs.next().is_none());
@@ -211,7 +213,7 @@ impl<'a> TreeBuilder<'a> {
         Some(node)
     }
 
-    pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), LineParseError> {
+    pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), ParseError> {
         if depth == 0 {
             if let Some(prev) = self.current.take() {
                 self.completed.push(prev)
@@ -222,7 +224,7 @@ impl<'a> TreeBuilder<'a> {
 
         let parent = match self.get_at_depth(depth - 1) {
             None => {
-                return Err(LineParseError::Plan(
+                return Err(ParseError::Plan(
                     node.context(),
                     MessageParseError::invalid(
                         "relation",
@@ -257,11 +259,7 @@ pub struct RelationParser<'a> {
 }
 
 impl<'a> RelationParser<'a> {
-    pub fn parse_line(
-        &mut self,
-        line: IndentedLine<'a>,
-        line_no: i64,
-    ) -> Result<(), LineParseError> {
+    pub fn parse_line(&mut self, line: IndentedLine<'a>, line_no: i64) -> Result<(), ParseError> {
         let IndentedLine(depth, line) = line;
 
         // Use parse_root for depth 0 (top-level relations), parse for other depths
@@ -287,7 +285,7 @@ impl<'a> RelationParser<'a> {
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
-    ) -> Result<substrait::proto::Rel, LineParseError> {
+    ) -> Result<substrait::proto::Rel, ParseError> {
         assert_eq!(pair.as_rule(), Rule::relation);
         let mut inner_pairs = pair.clone().into_inner();
         let p = inner_pairs.next().unwrap();
@@ -316,7 +314,7 @@ impl<'a> RelationParser<'a> {
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
-    ) -> Result<substrait::proto::Rel, LineParseError> {
+    ) -> Result<substrait::proto::Rel, ParseError> {
         assert_eq!(pair.as_rule(), T::rule());
 
         let line = pair.as_str();
@@ -325,7 +323,7 @@ impl<'a> RelationParser<'a> {
 
         match rel_type {
             Ok(rel) => Ok(rel.into_rel()),
-            Err(e) => Err(LineParseError::Plan(
+            Err(e) => Err(ParseError::Plan(
                 ParseContext::new(line_no, line.to_string()),
                 e,
             )),
@@ -337,13 +335,13 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         node: LineNode,
-    ) -> Result<substrait::proto::Rel, LineParseError> {
+    ) -> Result<substrait::proto::Rel, ParseError> {
         // Parse children first to get their output schemas
         let child_relations = node
             .children
             .into_iter()
             .map(|c| self.build_rel(extensions, c).map(Box::new))
-            .collect::<Result<Vec<Box<Rel>>, LineParseError>>()?;
+            .collect::<Result<Vec<Box<Rel>>, ParseError>>()?;
 
         // Get the input field count from all the children
         let input_field_count = child_relations
@@ -368,7 +366,7 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         mut node: LineNode,
-    ) -> Result<PlanRel, LineParseError> {
+    ) -> Result<PlanRel, ParseError> {
         // Plain relations are allowed as root relations, they just don't have names.
         if node.pair.as_rule() == Rule::relation {
             let rel = self.build_rel(extensions, node)?;
@@ -397,7 +395,7 @@ impl<'a> RelationParser<'a> {
         let child = match node.children.len() {
             1 => self.build_rel(extensions, node.children.pop().unwrap())?,
             n => {
-                return Err(LineParseError::Plan(
+                return Err(ParseError::Plan(
                     context,
                     MessageParseError::invalid(
                         "root_relation",
@@ -419,12 +417,12 @@ impl<'a> RelationParser<'a> {
     }
 
     /// Build all the trees we have into `PlanRel`s.
-    fn build(mut self, extensions: &SimpleExtensions) -> Result<Vec<PlanRel>, LineParseError> {
+    fn build(mut self, extensions: &SimpleExtensions) -> Result<Vec<PlanRel>, ParseError> {
         let nodes = self.tree.finish();
         nodes
             .into_iter()
             .map(|n| self.build_plan_rel(extensions, n))
-            .collect::<Result<Vec<PlanRel>, LineParseError>>()
+            .collect::<Result<Vec<PlanRel>, ParseError>>()
     }
 }
 
@@ -447,7 +445,39 @@ impl<'a> Default for Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse_plan(input: &'a str) -> Result<Plan, LineParseError> {
+    /// Parse a Substrait plan from text format.
+    ///
+    /// This is the main entry point for parsing well-formed plans.
+    /// Returns a clear error if parsing fails.
+    ///
+    /// The input should be in the Substrait text format, which consists of:
+    /// - An optional extensions section starting with "=== Extensions"
+    /// - A plan section starting with "=== Plan"
+    /// - Indented relation definitions
+    ///
+    /// # Example
+    /// ```rust
+    /// use substrait_explain::parser::Parser;
+    ///
+    /// let plan_text = r#"
+    /// === Plan
+    /// Root[c, d]
+    ///   Project[$1, 42]
+    ///     Read[schema.table => a:i64, b:string?]
+    /// "#;
+    ///
+    /// match Parser::parse(plan_text) {
+    ///     Ok(plan) => println!("Successfully parsed plan"),
+    ///     Err(e) => eprintln!("Parse error: {}", e),
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a `LineParseError` if the input cannot be parsed. The error includes
+    /// the line number and content where parsing failed, along with a description
+    /// of what went wrong.
+    pub fn parse(input: &'a str) -> Result<Plan, ParseError> {
         let mut parser = Self::default();
 
         for line in input.lines() {
@@ -463,7 +493,7 @@ impl<'a> Parser<'a> {
         parser.build_plan()
     }
 
-    fn parse_line(&mut self, line: &'a str) -> Result<(), LineParseError> {
+    fn parse_line(&mut self, line: &'a str) -> Result<(), ParseError> {
         let indented_line = IndentedLine::from(line);
         let line_no = self.line_no;
         let ctx = || ParseContext {
@@ -475,12 +505,12 @@ impl<'a> Parser<'a> {
             State::Initial => self.parse_initial(indented_line),
             State::Extensions => self
                 .parse_extensions(indented_line)
-                .map_err(|e| LineParseError::Extension(ctx(), e)),
+                .map_err(|e| ParseError::Extension(ctx(), e)),
             State::Plan => self.parse_plan_line(indented_line),
         }
     }
 
-    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), LineParseError> {
+    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
             IndentedLine(0, l) if l.trim().is_empty() => {}
             IndentedLine(0, simple::EXTENSIONS_HEADER) => {
@@ -490,7 +520,7 @@ impl<'a> Parser<'a> {
                 self.state = State::Plan;
             }
             IndentedLine(n, l) => {
-                return Err(LineParseError::Initial(
+                return Err(ParseError::Initial(
                     ParseContext::new(n as i64, l.to_string()),
                     MessageParseError::invalid(
                         "initial",
@@ -524,11 +554,11 @@ impl<'a> Parser<'a> {
         self.extension_parser.parse_line(line)
     }
 
-    fn parse_plan_line(&mut self, line: IndentedLine<'a>) -> Result<(), LineParseError> {
+    fn parse_plan_line(&mut self, line: IndentedLine<'a>) -> Result<(), ParseError> {
         self.relation_parser.parse_line(line, self.line_no)
     }
 
-    fn build_plan(self) -> Result<Plan, LineParseError> {
+    fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
             relation_parser,
             extension_parser,
@@ -812,7 +842,7 @@ Project[$0, $1, 42, 84]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;
 
-        let plan = Parser::parse_plan(input).unwrap();
+        let plan = Parser::parse(input).unwrap();
 
         // Verify the plan structure
         assert_eq!(plan.extension_uris.len(), 2);

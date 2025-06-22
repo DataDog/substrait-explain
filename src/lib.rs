@@ -37,3 +37,79 @@ pub mod extensions;
 pub mod fixtures;
 pub mod parser;
 pub mod textify;
+
+// Re-export commonly used types for easier access
+pub use parser::{ParseError, Parser};
+use substrait::proto::Plan;
+use textify::foundation::ErrorQueue;
+pub use textify::foundation::{Error as TextifyError, OutputOptions};
+use textify::plan::PlanWriter;
+
+/// Format a Substrait plan to text format.
+///
+/// This is the main entry point for formatting plans to text.
+/// The plan may not be entirely well-formed - errors will be marked in the output
+/// with `!{error_type}` placeholders, but the function will still produce output
+/// for everything that can be formatted.
+///
+/// Returns both the formatted text and any errors that occurred during formatting.
+/// Users can ignore the errors if they don't need them.
+///
+/// # Example
+/// ```rust
+/// use substrait_explain::format;
+/// use substrait::proto::Plan;
+///
+/// let plan = Plan::default();
+/// let (text, errors) = format(&plan);
+/// println!("{}", text);
+///
+/// if !errors.is_empty() {
+///     println!("Formatting errors:");
+///     for error in errors {
+///         println!("  {}", error);
+///     }
+/// }
+/// ```
+pub fn format(plan: &Plan) -> (String, Vec<TextifyError>) {
+    let options = OutputOptions::default();
+    let (writer, error_queue) = PlanWriter::<ErrorQueue>::new(&options, plan);
+    let text = format!("{writer}");
+
+    // Collect errors from the error queue
+    let errors: Vec<TextifyError> = error_queue.into_iter().collect();
+
+    (text, errors)
+}
+
+/// Format a Substrait plan to text format with custom options.
+///
+/// This allows you to customize the output format (e.g., verbose mode).
+/// Returns both the formatted text and any errors that occurred during formatting.
+///
+/// # Example
+/// ```rust
+/// use substrait_explain::{format_with_options, OutputOptions};
+/// use substrait::proto::Plan;
+///
+/// let plan = Plan::default();
+/// let options = OutputOptions::verbose();
+/// let (text, errors) = format_with_options(&plan, &options);
+/// println!("{}", text);
+///
+/// if !errors.is_empty() {
+///     println!("Formatting errors:");
+///     for error in errors {
+///         println!("  {}", error);
+///     }
+/// }
+/// ```
+pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec<TextifyError>) {
+    let (writer, error_queue) = PlanWriter::<ErrorQueue>::new(options, plan);
+    let text = format!("{writer}");
+
+    // Collect errors from the error queue
+    let errors: Vec<TextifyError> = error_queue.into_iter().collect();
+
+    (text, errors)
+}

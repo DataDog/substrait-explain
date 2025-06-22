@@ -289,7 +289,7 @@ Type Variations:
         .trim_start();
 
         // Parse the input using the structural parser
-        let plan = Parser::parse_plan(input).unwrap();
+        let plan = Parser::parse(input).unwrap();
 
         // Verify the plan has the expected extensions
         assert_eq!(plan.extension_uris.len(), 2);
