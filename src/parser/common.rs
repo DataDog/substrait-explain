@@ -227,7 +227,7 @@ impl<'a> RuleIter<'a> {
     }
 
     // Pop the next pair if it matches the rule. Returns None if not.
-    pub fn pop_if(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
+    pub fn try_pop(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
         match self.peek() {
             Some(pair) if pair.as_rule() == rule => {
                 self.iter.next();
@@ -235,6 +235,19 @@ impl<'a> RuleIter<'a> {
             }
             _ => None,
         }
+    }
+
+    // Pop the next pair, asserting it matches the given rule. Panics if not.
+    pub fn pop(&mut self, rule: Rule) -> pest::iterators::Pair<'a, Rule> {
+        let pair = self.iter.next().expect("expected another pair");
+        assert_eq!(
+            pair.as_rule(),
+            rule,
+            "expected rule {:?}, got {:?}",
+            rule,
+            pair.as_rule()
+        );
+        pair
     }
 
     // Parse the next pair if it matches the rule. Returns None if not.

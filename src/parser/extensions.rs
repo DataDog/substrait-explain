@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
-use super::{ParsePair, Rule, unwrap_single_pair};
+use super::{ParsePair, Rule, RuleIter, unwrap_single_pair};
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{InsertError, SimpleExtensions};
 use crate::parser::structural::IndentedLine;
@@ -175,16 +175,16 @@ impl ParsePair for URIExtensionDeclaration {
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
-        let mut pairs = pair.into_inner();
-        let anchor = pairs.next().unwrap();
-        let anchor_int = unwrap_single_pair(anchor).as_str().parse::<u32>().unwrap();
-        let uri = pairs.next().unwrap();
-        assert_eq!(pairs.next(), None);
+        let mut iter = RuleIter::from(pair.into_inner());
+        let anchor_pair = iter.pop(Rule::uri_anchor);
+        let anchor = unwrap_single_pair(anchor_pair)
+            .as_str()
+            .parse::<u32>()
+            .unwrap();
+        let uri = iter.pop(Rule::uri).as_str().to_string();
+        iter.done();
 
-        URIExtensionDeclaration {
-            anchor: anchor_int,
-            uri: uri.as_str().to_string(),
-        }
+        URIExtensionDeclaration { anchor, uri }
     }
 }
 
@@ -207,21 +207,25 @@ impl ParsePair for SimpleExtensionDeclaration {
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
-        let mut pairs = pair.into_inner();
-        let anchor = pairs.next().unwrap();
-        let anchor_int = unwrap_single_pair(anchor).as_str().parse::<u32>().unwrap();
-        let uri_anchor = pairs.next().unwrap();
-        let uri_anchor_int = unwrap_single_pair(uri_anchor)
+        let mut iter = RuleIter::from(pair.into_inner());
+        let anchor_pair = iter.pop(Rule::anchor);
+        let anchor = unwrap_single_pair(anchor_pair)
             .as_str()
             .parse::<u32>()
             .unwrap();
-        let name = pairs.next().unwrap();
-        let name_str = unwrap_single_pair(name).as_str();
+        let uri_anchor_pair = iter.pop(Rule::uri_anchor);
+        let uri_anchor = unwrap_single_pair(uri_anchor_pair)
+            .as_str()
+            .parse::<u32>()
+            .unwrap();
+        let name_pair = iter.pop(Rule::name);
+        let name = unwrap_single_pair(name_pair).as_str().to_string();
+        iter.done();
 
         SimpleExtensionDeclaration {
-            anchor: anchor_int,
-            uri_anchor: uri_anchor_int,
-            name: name_str.to_string(),
+            anchor,
+            uri_anchor,
+            name,
         }
     }
 }

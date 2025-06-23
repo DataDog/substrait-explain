@@ -220,3 +220,37 @@ Root[name, some_value]
 
     roundtrip_plan(plan);
 }
+
+#[test]
+fn test_aggregate_relation_roundtrip() {
+    let plan = r#"=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+  # 11 @  1: count
+
+=== Plan
+Root[category, total, count]
+  Aggregate[$0 => sum($1), count($1)]
+    Read[orders => category:string?, amount:fp64?]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_aggregate_relation() {
+    let plan = r#"=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+  # 11 @  1: count
+
+=== Plan
+Root[category, region, total, count]
+  Aggregate[$0, $1 => sum($2), $0, count($2)]
+    Read[orders => category:string?, region:string?, amount:fp64?]"#;
+
+    roundtrip_plan(plan);
+}
