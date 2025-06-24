@@ -7,12 +7,14 @@
 use std::fmt;
 
 use substrait::proto::rel::RelType;
-use substrait::proto::{FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, plan_rel};
+use substrait::proto::{FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot, plan_rel};
 use thiserror::Error;
 
 use crate::extensions::{SimpleExtensions, simple};
+use crate::parser::common::{MessageParseError, ParsePair};
+use crate::parser::expressions::Name;
 use crate::parser::extensions::{ExtensionParseError, ExtensionParser};
-use crate::parser::{ExpressionParser, MessageParseError, RelationParsePair, Rule};
+use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -53,9 +55,9 @@ pub enum LineParseError {
     Relation(ParseContext, #[source] MessageParseError),
 }
 
-/// Represents a line in the tree structure before it's converted to a relation.
-/// This allows us to build the tree structure first, then convert to relations
-/// with proper parent-child relationships.
+/// Represents a line in the [`Plan`] tree structure before it's converted to a
+/// relation. This allows us to build the tree structure first, then convert to
+/// relations with proper parent-child relationships.
 #[derive(Debug, Clone)]
 pub struct LineNode<'a> {
     pub pair: pest::iterators::Pair<'a, Rule>,
@@ -71,6 +73,7 @@ impl<'a> LineNode<'a> {
         }
     }
 
+    /// Parse a line of text into a [`LineNode`], with empty children.
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
         // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
@@ -80,11 +83,7 @@ impl<'a> LineNode<'a> {
                         line_no,
                         line: line.to_string(),
                     },
-                    MessageParseError::new(
-                        "relation",
-                        crate::parser::ErrorKind::InvalidValue,
-                        Box::new(e),
-                    ),
+                    MessageParseError::new("relation", ErrorKind::InvalidValue, Box::new(e)),
                 )
             })?;
 
@@ -93,6 +92,32 @@ impl<'a> LineNode<'a> {
 
         Ok(Self {
             pair,
+            line_no,
+            children: Vec::new(),
+        })
+    }
+
+    /// Parse the root relation of a plan, at depth 0.
+    pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
+        // Parse the line as a top-level relation (either root_relation or regular relation)
+        let parsed =
+            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::top_level_relation, line);
+
+        let mut pairs: pest::iterators::Pairs<'a, Rule> = parsed.map_err(|e| {
+            LineParseError::Plan(
+                ParseContext::new(line_no, line.to_string()),
+                MessageParseError::new("top_level_relation", ErrorKind::Syntax, Box::new(e)),
+            )
+        })?;
+
+        let pair = pairs.next().unwrap();
+        assert!(pairs.next().is_none());
+
+        // Get the inner pair, which is either a root relation or a regular relation
+        let inner_pair = unwrap_single_pair(pair);
+
+        Ok(Self {
+            pair: inner_pair,
             line_no,
             children: Vec::new(),
         })
@@ -188,10 +213,10 @@ impl<'a> TreeBuilder<'a> {
 
     pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), LineParseError> {
         if depth == 0 {
-            match self.current.take() {
-                None => self.current = Some(node),
-                Some(prev) => self.completed.push(prev),
+            if let Some(prev) = self.current.take() {
+                self.completed.push(prev)
             }
+            self.current = Some(node);
             return Ok(());
         }
 
@@ -238,7 +263,14 @@ impl<'a> RelationParser<'a> {
         line_no: i64,
     ) -> Result<(), LineParseError> {
         let IndentedLine(depth, line) = line;
-        let node = LineNode::parse(line, line_no)?;
+
+        // Use parse_root for depth 0 (top-level relations), parse for other depths
+        let node = if depth == 0 {
+            LineNode::parse_root(line, line_no)?
+        } else {
+            LineNode::parse(line, line_no)?
+        };
+
         self.tree.add_line(depth, node)
     }
 
@@ -300,7 +332,8 @@ impl<'a> RelationParser<'a> {
         }
     }
 
-    fn build_tree(
+    /// Convert a given LineNode into a Substrait Rel. Also recursively builds children.
+    fn build_rel(
         &self,
         extensions: &SimpleExtensions,
         node: LineNode,
@@ -309,7 +342,7 @@ impl<'a> RelationParser<'a> {
         let child_relations = node
             .children
             .into_iter()
-            .map(|c| self.build_tree(extensions, c).map(Box::new))
+            .map(|c| self.build_rel(extensions, c).map(Box::new))
             .collect::<Result<Vec<Box<Rel>>, LineParseError>>()?;
 
         // Get the input field count from all the children
@@ -329,12 +362,69 @@ impl<'a> RelationParser<'a> {
         )
     }
 
-    fn build(mut self, extensions: &SimpleExtensions) -> Result<Vec<Rel>, LineParseError> {
+    /// Build a tree of relations from a LineNode, with the root in the form of
+    /// a PlanRel - the root type in a Substrait Plan.
+    fn build_plan_rel(
+        &self,
+        extensions: &SimpleExtensions,
+        mut node: LineNode,
+    ) -> Result<PlanRel, LineParseError> {
+        // Plain relations are allowed as root relations, they just don't have names.
+        if node.pair.as_rule() == Rule::relation {
+            let rel = self.build_rel(extensions, node)?;
+            return Ok(PlanRel {
+                rel_type: Some(plan_rel::RelType::Rel(rel)),
+            });
+        }
+
+        // Otherwise, it must be a root relation.
+        assert_eq!(node.pair.as_rule(), Rule::root_relation);
+        let context = node.context();
+        let span = node.pair.as_span();
+
+        // Parse the column names
+        let column_names_pair = unwrap_single_pair(node.pair);
+        assert_eq!(column_names_pair.as_rule(), Rule::root_name_list);
+
+        let names: Vec<String> = column_names_pair
+            .into_inner()
+            .map(|name_pair| {
+                assert_eq!(name_pair.as_rule(), Rule::name);
+                Name::parse_pair(name_pair).0
+            })
+            .collect();
+
+        let child = match node.children.len() {
+            1 => self.build_rel(extensions, node.children.pop().unwrap())?,
+            n => {
+                return Err(LineParseError::Plan(
+                    context,
+                    MessageParseError::invalid(
+                        "root_relation",
+                        span,
+                        format!("Root relation must have exactly one child, found {n}"),
+                    ),
+                ));
+            }
+        };
+
+        let rel_root = RelRoot {
+            names,
+            input: Some(child),
+        };
+
+        Ok(PlanRel {
+            rel_type: Some(plan_rel::RelType::Root(rel_root)),
+        })
+    }
+
+    /// Build all the trees we have into `PlanRel`s.
+    fn build(mut self, extensions: &SimpleExtensions) -> Result<Vec<PlanRel>, LineParseError> {
         let nodes = self.tree.finish();
         nodes
             .into_iter()
-            .map(|n| self.build_tree(extensions, n))
-            .collect::<Result<Vec<Rel>, LineParseError>>()
+            .map(|n| self.build_plan_rel(extensions, n))
+            .collect::<Result<Vec<PlanRel>, LineParseError>>()
     }
 }
 
@@ -448,14 +538,7 @@ impl<'a> Parser<'a> {
         let extensions = extension_parser.extensions();
 
         // Parse the tree into relations
-        let relations = relation_parser.build(extensions)?;
-
-        let root_relations = relations
-            .into_iter()
-            .map(|r| PlanRel {
-                rel_type: Some(plan_rel::RelType::Rel(r)),
-            })
-            .collect();
+        let root_relations = relation_parser.build(extensions)?;
 
         // Build the final plan
         Ok(Plan {
@@ -630,6 +713,81 @@ Project[$0, $1, 42, 84]
             }
             other => panic!("Expected Filter relation, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_root_relation() {
+        // Test a plan with a Root relation
+        let plan = r#"=== Plan
+Root[result]
+  Project[$0, $1]
+    Read[my.table => a:i32, b:string?]
+"#;
+        let mut parser = Parser::default();
+        for line in plan.lines() {
+            parser.parse_line(line).unwrap();
+        }
+
+        let plan = parser.build_plan().unwrap();
+
+        // Check that we have exactly one relation
+        assert_eq!(plan.relations.len(), 1);
+
+        let root_rel = &plan.relations[0].rel_type;
+        let rel_root = match root_rel {
+            Some(plan_rel::RelType::Root(rel_root)) => rel_root,
+            other => panic!("Expected Root type, got {:?}", other),
+        };
+
+        // Check that the root has the correct name
+        assert_eq!(rel_root.names, vec!["result"]);
+
+        // Check that the root has a Project as input
+        let project_input = match &rel_root.input {
+            Some(rel) => rel,
+            None => panic!("Root should have an input"),
+        };
+
+        let project = match &project_input.rel_type {
+            Some(RelType::Project(p)) => p,
+            other => panic!("Expected Project as root input, got {:?}", other),
+        };
+
+        // Check that Project has Read as input
+        let read_input = match &project.input {
+            Some(rel) => rel,
+            None => panic!("Project should have an input"),
+        };
+
+        match &read_input.rel_type {
+            Some(RelType::Read(_)) => {}
+            other => panic!("Expected Read relation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_root_relation_no_names() {
+        // Test a plan with a Root relation with no names
+        let plan = r#"=== Plan
+Root[]
+  Project[$0, $1]
+    Read[my.table => a:i32, b:string?]
+"#;
+        let mut parser = Parser::default();
+        for line in plan.lines() {
+            parser.parse_line(line).unwrap();
+        }
+
+        let plan = parser.build_plan().unwrap();
+
+        let root_rel = &plan.relations[0].rel_type;
+        let rel_root = match root_rel {
+            Some(plan_rel::RelType::Root(rel_root)) => rel_root,
+            other => panic!("Expected Root type, got {:?}", other),
+        };
+
+        // Check that the root has no names
+        assert_eq!(rel_root.names, Vec::<String>::new());
     }
 
     #[test]

@@ -48,7 +48,10 @@ impl<'a, E: ErrorAccumulator + Default> PlanWriter<'a, E> {
         // We always write the plan header, even if there are no relations.
         writeln!(w, "{PLAN_HEADER}")?;
         let scope = self.scope();
-        for relation in self.relations {
+        for (i, relation) in self.relations.iter().enumerate() {
+            if i > 0 {
+                writeln!(w)?;
+            }
             relation.textify(&scope, w)?;
         }
         Ok(())
@@ -187,8 +190,8 @@ Functions:
   # 10 @  1: add
 
 === Plan
-Project[ | $0, $1, add($0, $1)]
-  Read[table1 | col1:i32?, col2:i32?]"#
+Project[$0, $1, add($0, $1)]
+  Read[table1 => col1:i32?, col2:i32?]"#
             .trim_start();
 
         assert_eq!(

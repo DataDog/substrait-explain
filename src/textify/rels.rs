@@ -184,20 +184,19 @@ impl Textify for Relation<'_> {
         let args = ctx.separated(self.arguments.iter(), ", ");
         let cols = Emitted::new(&self.columns, self.emit);
 
-        write!(
-            w,
-            "{}{}[{} | {}]",
-            ctx.indent(),
-            self.name,
-            args,
-            ctx.display(&cols)
-        )?;
+        let indent = ctx.indent();
+        let name = self.name;
+        let cols = ctx.display(&cols);
+        if self.arguments.is_empty() {
+            write!(w, "{indent}{name}[{cols}]")?;
+        } else {
+            write!(w, "{indent}{name}[{args} => {cols}]")?;
+        }
         let child_scope = ctx.push_indent();
         for child in self.children.iter().flatten() {
             writeln!(w)?;
             child.textify(&child_scope, w)?;
         }
-
         Ok(())
     }
 }
@@ -488,7 +487,8 @@ impl Textify for RelRoot {
         let child_scope = ctx.push_indent();
         for child in self.input.iter() {
             let child = Relation::from(child);
-            write!(w, "\n{}{}", child_scope.indent(), ctx.display(&child))?;
+            writeln!(w)?;
+            child.textify(&child_scope, w)?;
         }
 
         Ok(())
@@ -576,7 +576,7 @@ mod tests {
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(
             result,
-            "Read[some_db.test_table | col1:i32?, \"column 2\":string?]"
+            "Read[some_db.test_table => col1:i32?, \"column 2\":string?]"
         );
     }
 
@@ -663,8 +663,8 @@ mod tests {
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         let expected = r#"
-Filter[gt($0, 10:i32) | $0, $1]
-  Read[test_table | col1:i32?, col2:i32?]"#
+Filter[gt($0, 10:i32) => $0, $1]
+  Read[test_table => col1:i32?, col2:i32?]"#
             .trim_start();
         assert_eq!(result, expected);
     }

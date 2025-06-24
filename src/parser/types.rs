@@ -124,6 +124,14 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
+        "fp32" => Kind::Fp32(proto::r#type::Fp32 {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "fp64" => Kind::Fp64(proto::r#type::Fp64 {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
         "string" => Kind::String(proto::r#type::String {
             nullability: nullability.into(),
             type_variation_reference: 0,
