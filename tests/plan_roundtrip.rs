@@ -1,3 +1,10 @@
+//! Test that we can roundtrip a plan from text to a Substrait plan and back to
+//! text. Many features can be tested this way - in general, if it can survive a
+//! round-trip, it's probably correct; it could be stored incorrectly and both
+//! parser and formatter handle it the same incorrect way, but that is probably
+//! rare, and more likely a reflection of the author's misunderstanding of the
+//! Substrait plan format.
+
 use substrait_explain::parser::Parser;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions};
@@ -25,7 +32,7 @@ fn roundtrip_plan(input: &str) {
     let writer = PlanWriter::<ErrorQueue>::new(&options, &plan);
     let actual = format!("{}", writer);
 
-    // Compare the output with the input
+    // Compare the output with the input, printing the difference.
     assert_eq!(
         actual.trim(),
         input.trim(),

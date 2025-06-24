@@ -12,8 +12,9 @@ use thiserror::Error;
 
 use crate::extensions::{SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, ParsePair};
+use crate::parser::expressions::Name;
 use crate::parser::extensions::{ExtensionParseError, ExtensionParser};
-use crate::parser::{ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
+use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -54,9 +55,9 @@ pub enum LineParseError {
     Relation(ParseContext, #[source] MessageParseError),
 }
 
-/// Represents a line in the tree structure before it's converted to a relation.
-/// This allows us to build the tree structure first, then convert to relations
-/// with proper parent-child relationships.
+/// Represents a line in the [`Plan`] tree structure before it's converted to a
+/// relation. This allows us to build the tree structure first, then convert to
+/// relations with proper parent-child relationships.
 #[derive(Debug, Clone)]
 pub struct LineNode<'a> {
     pub pair: pest::iterators::Pair<'a, Rule>,
@@ -72,6 +73,7 @@ impl<'a> LineNode<'a> {
         }
     }
 
+    /// Parse a line of text into a [`LineNode`], with empty children.
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
         // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
@@ -81,11 +83,7 @@ impl<'a> LineNode<'a> {
                         line_no,
                         line: line.to_string(),
                     },
-                    MessageParseError::new(
-                        "relation",
-                        crate::parser::ErrorKind::InvalidValue,
-                        Box::new(e),
-                    ),
+                    MessageParseError::new("relation", ErrorKind::InvalidValue, Box::new(e)),
                 )
             })?;
 
@@ -99,20 +97,18 @@ impl<'a> LineNode<'a> {
         })
     }
 
+    /// Parse the root relation of a plan, at depth 0.
     pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, LineParseError> {
         // Parse the line as a top-level relation (either root_relation or regular relation)
-        let mut pairs: pest::iterators::Pairs<'a, Rule> =
-            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::top_level_relation, line)
-                .map_err(|e| {
-                    LineParseError::Plan(
-                        ParseContext::new(line_no, line.to_string()),
-                        MessageParseError::new(
-                            "top_level_relation",
-                            crate::parser::ErrorKind::Syntax,
-                            Box::new(e),
-                        ),
-                    )
-                })?;
+        let parsed =
+            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::top_level_relation, line);
+
+        let mut pairs: pest::iterators::Pairs<'a, Rule> = parsed.map_err(|e| {
+            LineParseError::Plan(
+                ParseContext::new(line_no, line.to_string()),
+                MessageParseError::new("top_level_relation", ErrorKind::Syntax, Box::new(e)),
+            )
+        })?;
 
         let pair = pairs.next().unwrap();
         assert!(pairs.next().is_none());
@@ -383,16 +379,29 @@ impl<'a> RelationParser<'a> {
 
         // Otherwise, it must be a root relation.
         assert_eq!(node.pair.as_rule(), Rule::root_relation);
+        let context = node.context();
+        let span = node.pair.as_span();
 
-        let names = self.parse_root_names(&node.pair)?;
+        // Parse the column names
+        let column_names_pair = unwrap_single_pair(node.pair);
+        assert_eq!(column_names_pair.as_rule(), Rule::root_name_list);
+
+        let names: Vec<String> = column_names_pair
+            .into_inner()
+            .map(|name_pair| {
+                assert_eq!(name_pair.as_rule(), Rule::name);
+                Name::parse_pair(name_pair).0
+            })
+            .collect();
+
         let child = match node.children.len() {
             1 => self.build_rel(extensions, node.children.pop().unwrap())?,
             n => {
                 return Err(LineParseError::Plan(
-                    node.context(),
+                    context,
                     MessageParseError::invalid(
                         "root_relation",
-                        node.pair.as_span(),
+                        span,
                         format!("Root relation must have exactly one child, found {n}"),
                     ),
                 ));
@@ -416,31 +425,6 @@ impl<'a> RelationParser<'a> {
             .into_iter()
             .map(|n| self.build_plan_rel(extensions, n))
             .collect::<Result<Vec<PlanRel>, LineParseError>>()
-    }
-
-    fn parse_root_names(
-        &self,
-        pair: &pest::iterators::Pair<Rule>,
-    ) -> Result<Vec<String>, LineParseError> {
-        assert_eq!(pair.as_rule(), Rule::root_relation);
-        let mut inner_pairs = pair.clone().into_inner();
-        let root_name_list_pair = inner_pairs.next().unwrap();
-        assert!(inner_pairs.next().is_none());
-
-        if root_name_list_pair.as_rule() == Rule::root_name_list {
-            let mut names = Vec::new();
-            for name_pair in root_name_list_pair.into_inner() {
-                if name_pair.as_rule() == Rule::name {
-                    // Parse the name using the existing Name struct
-                    let name = crate::parser::expressions::Name::parse_pair(name_pair);
-                    names.push(name.0);
-                }
-            }
-            Ok(names)
-        } else {
-            // Empty root name list
-            Ok(Vec::new())
-        }
     }
 }
 
