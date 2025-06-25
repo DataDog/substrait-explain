@@ -9,37 +9,34 @@ use substrait_explain::parser::Parser;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions};
 
-/// Roundtrip a plan and verify that the output is the same as the input, after
-/// being parsed to a Substrait plan and then back to text.
-fn roundtrip_plan(input: &str) {
+/// Helper function to parse a plan and check for errors, panicking if either fails
+fn must_parse_plan(
+    result: Result<substrait::proto::Plan, impl std::fmt::Display>,
+) -> substrait::proto::Plan {
     let errors = ErrorQueue::default();
-
-    // Parse the plan
-    let plan = match Parser::parse_plan(input) {
+    let plan = match result {
         Ok(plan) => plan,
         Err(e) => {
             println!("Error parsing plan:\n{}", e);
             panic!("{}", e);
         }
     };
-    if let Err(e) = errors.errs() {
-        println!("Error parsing plan:\n{}", e);
-        panic!("{}", e);
-    }
+    errors.errs().expect("Failure while parsing");
+    plan
+}
+
+/// Roundtrip a plan and verify that the output is the same as the input, after
+/// being parsed to a Substrait plan and then back to text.
+fn roundtrip_plan(input: &str) {
+    // Parse the plan
+    let plan = must_parse_plan(Parser::parse_plan(input));
 
     // We have a Substrait plan, let's convert back to text
     let options = OutputOptions::default();
     let (writer, writer_errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
     let actual = format!("{}", writer);
 
-    // Check for errors
-    let writer_errors: Vec<_> = writer_errors.into();
-    if !writer_errors.is_empty() {
-        println!("Warnings during conversion:");
-        for error in writer_errors {
-            println!("  - {}", error);
-        }
-    }
+    writer_errors.errs().expect("Errors during conversion");
 
     // Compare the output with the input, printing the difference.
     assert_eq!(
@@ -55,58 +52,26 @@ fn roundtrip_plan(input: &str) {
 /// being parsed to a Substrait plan and then back to text.
 fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     // Parse the simple plan
-    let simple_errors = ErrorQueue::default();
-    let simple_plan = match Parser::parse_plan(input) {
-        Ok(plan) => plan,
-        Err(e) => {
-            println!("Error parsing simple plan:\n{}", e);
-            panic!("{}", e);
-        }
-    };
-    simple_errors
-        .errs()
-        .expect("Failure while parsing simple plan");
+    let simple_plan = must_parse_plan(Parser::parse_plan(input));
 
     // Parse the verbose plan
-    let verbose_errors = ErrorQueue::default();
-    let verbose_plan = match Parser::parse_plan(verbose_input) {
-        Ok(plan) => plan,
-        Err(e) => {
-            println!("Error parsing verbose plan:\n{}", e);
-            panic!("{}", e);
-        }
-    };
-    verbose_errors
-        .errs()
-        .expect("Failure while parsing verbose plan");
+    let verbose_plan = must_parse_plan(Parser::parse_plan(verbose_input));
 
     // Test verbose output from both plans
     let verbose_options = OutputOptions::verbose();
     let (simple_verbose_writer, simple_verbose_errors) =
         PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan);
     let simple_verbose_actual = format!("{}", simple_verbose_writer);
-
-    // Check for errors
-    let simple_verbose_errors: Vec<_> = simple_verbose_errors.into();
-    if !simple_verbose_errors.is_empty() {
-        println!("Warnings during simple verbose conversion:");
-        for error in simple_verbose_errors {
-            println!("  - {}", error);
-        }
-    }
+    simple_verbose_errors
+        .errs()
+        .expect("Errors during simple -> verbose conversion");
 
     let (verbose_verbose_writer, verbose_verbose_errors) =
         PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan);
     let verbose_verbose_actual = format!("{}", verbose_verbose_writer);
-
-    // Check for errors
-    let verbose_verbose_errors: Vec<_> = verbose_verbose_errors.into();
-    if !verbose_verbose_errors.is_empty() {
-        println!("Warnings during verbose verbose conversion:");
-        for error in verbose_verbose_errors {
-            println!("  - {}", error);
-        }
-    }
+    verbose_verbose_errors
+        .errs()
+        .expect("Errors during verbose -> verbose conversion");
 
     assert_eq!(
         simple_verbose_actual.trim(),
@@ -121,28 +86,16 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let (simple_simple_writer, simple_simple_errors) =
         PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan);
     let simple_simple_actual = format!("{}", simple_simple_writer);
-
-    // Check for errors
-    let simple_simple_errors: Vec<_> = simple_simple_errors.into();
-    if !simple_simple_errors.is_empty() {
-        println!("Warnings during simple simple conversion:");
-        for error in simple_simple_errors {
-            println!("  - {}", error);
-        }
-    }
+    simple_simple_errors
+        .errs()
+        .expect("Errors during simple -> simple conversion");
 
     let (verbose_simple_writer, verbose_simple_errors) =
         PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan);
     let verbose_simple_actual = format!("{}", verbose_simple_writer);
-
-    // Check for errors
-    let verbose_simple_errors: Vec<_> = verbose_simple_errors.into();
-    if !verbose_simple_errors.is_empty() {
-        println!("Warnings during verbose simple conversion:");
-        for error in verbose_simple_errors {
-            println!("  - {}", error);
-        }
-    }
+    verbose_simple_errors
+        .errs()
+        .expect("Errors during verbose -> simple conversion");
 
     assert_eq!(
         simple_simple_actual.trim(),

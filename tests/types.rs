@@ -6,10 +6,10 @@ use substrait_explain::fixtures::TestContext;
 use substrait_explain::parser::{Parse, ScopedParse};
 use substrait_explain::textify::{ErrorQueue, OutputOptions, Textify};
 
-fn roundtrip_parse<T: Parse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
+/// Helper function to parse and check for errors, panicking if either fails
+fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {
     let errors = ErrorQueue::default();
-
-    let t = match T::parse(input) {
+    let t = match result {
         Ok(t) => t,
         Err(e) => {
             println!("Error parsing {}:\n{}", input, e);
@@ -17,24 +17,18 @@ fn roundtrip_parse<T: Parse + Textify + std::fmt::Debug>(ctx: &TestContext, inpu
         }
     };
     errors.errs().expect("Failure while parsing");
+    t
+}
+
+fn roundtrip_parse<T: Parse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
+    let t = must_parse(T::parse(input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
 }
 
 fn assert_roundtrip<T: ScopedParse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
-    let errors = ErrorQueue::default();
-
-    let t = {
-        match T::parse(&ctx.extensions, input) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("Error parsing {}:\n{}", input, e);
-                panic!("{}", e);
-            }
-        }
-    };
-    errors.errs().expect("Failure while parsing");
+    let t = must_parse(T::parse(&ctx.extensions, input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
@@ -45,22 +39,12 @@ fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
     verbose: &str,
     simple: &str,
 ) {
-    let errors = ErrorQueue::default();
     let ctx1 = TestContext {
         options: OutputOptions::verbose(),
         extensions,
     };
 
-    let t = {
-        match T::parse(&ctx1.extensions, verbose) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("Error parsing {}:\n{}", verbose, e);
-                panic!("{}", e);
-            }
-        }
-    };
-    errors.errs().expect("Failure while parsing");
+    let t = must_parse(T::parse(&ctx1.extensions, verbose), verbose);
 
     let actual = ctx1.textify_no_errors(&t);
     assert_eq!(
