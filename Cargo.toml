@@ -3,9 +3,16 @@ name = "substrait-explain"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "advanced_usage"
+path = "examples/advanced_usage.rs"
+required-features = ["serde"]
+
 [features]
 # Use a pre-built protoc binary instead of building from source. Useful for CI.
 protoc = ["substrait/protoc"]
+# Used in examples, otherwise not helpful
+serde = ["substrait/serde"]
 
 [dependencies]
 chrono = "0.4.41"
@@ -14,3 +21,8 @@ pest_derive = "2.8.0"
 prost = "0.13.5"
 substrait = "0.57.0"
 thiserror = "2.0.12"
+
+[dev-dependencies]
+# Used in examples
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"

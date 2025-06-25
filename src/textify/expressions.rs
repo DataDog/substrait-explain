@@ -10,7 +10,7 @@ use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
 
-use super::{Scope, Textify, TextifyError};
+use super::{Scope, Textify, TextifyError, Visibility};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
@@ -175,10 +175,21 @@ impl Textify for LiteralType {
             LiteralType::I8(i) => write!(w, "{i}:i8")?,
             LiteralType::I16(i) => write!(w, "{i}:i16")?,
             LiteralType::I32(i) => write!(w, "{i}:i32")?,
-            // Int64 and Float64 are special cases, they do not need a type suffix
-            LiteralType::I64(i) => write!(w, "{i}")?,
+            LiteralType::I64(i) => {
+                match ctx.options().literal_types {
+                    Visibility::Always => write!(w, "{i}:i64")?,
+                    Visibility::Required => write!(w, "{i}")?, // I64 is the default, no suffix needed
+                    Visibility::Never => write!(w, "{i}")?,
+                }
+            }
             LiteralType::Fp32(f) => write!(w, "{f}:fp32")?,
-            LiteralType::Fp64(f) => write!(w, "{f}")?,
+            LiteralType::Fp64(f) => {
+                match ctx.options().literal_types {
+                    Visibility::Always => write!(w, "{f}:fp64")?,
+                    Visibility::Required => write!(w, "{f}")?, // Fp64 is the default, no suffix needed
+                    Visibility::Never => write!(w, "{f}")?,
+                }
+            }
             LiteralType::String(s) => write!(w, "\"{}\"", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
             LiteralType::Timestamp(t) => {
