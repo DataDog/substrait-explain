@@ -1,10 +1,18 @@
 //! # Substrait-Explain
 //!
-//! **Transform complex Substrait protobuf plans into readable, SQL EXPLAIN-like text**
+//! **Transform complex Substrait protobuf plans into readable, SQL EXPLAIN-like
+//! text**
 //!
 //! ## What does it do?
 //!
-//! Ever tried to debug a Substrait query plan? Outputting the raw protobuf as text ends up quite difficult to read:
+//! Ever tried to debug a Substrait query plan? Outputting the raw protobuf as
+//! text ends up quite difficult to read:
+//!
+//! #### YAML Format
+//!
+//! <details>
+//!
+//! <summary><b><i>Substrait plan in 72 lines of YAML</i></b></summary>
 //!
 //! ```yaml
 //! extensionUris:
@@ -81,7 +89,12 @@
 //!         - revenue
 //! ```
 //!
-//! **Substrait-Explain converts this into:**
+//! </details>
+//!
+//! #### Text Format
+//!
+//! With Substrait-Explain, you can convert this into something more readable,
+//! with one line per relation:
 //!
 //! ```text
 //! === Extensions
@@ -98,15 +111,23 @@
 //!       Read[orders => quantity:i32?, price:fp64?]
 //! ```
 //!
-//! Suddenly you can see exactly what the query does: filter orders where some calculated value is greater than 100, then project the quantity, price, and their product.
+//! Suddenly you can see exactly what the query does: filter orders where some
+//! calculated value is greater than 100, then project the quantity, price, and
+//! their product.
 //!
 //! ## Key Features
 //!
-//! - **Human-readable output**: Convert complex Substrait plans into simple, readable text
+//! - **Human-readable output**: Convert complex Substrait plans into simple,
+//!   readable text
 //! - **Bidirectional conversion**: Parse text format back into Substrait plans
-//! - **Extension support**: Full support for Substrait extensions and custom functions
-//! - **Error handling**: Graceful error handling that doesn't prevent output generation
-//! - **Flexible formatting**: Configurable output options for different use cases
+//! - **Extension support**: Full support for Substrait extensions and custom
+//!   functions
+//! - **Error handling**: Graceful error handling that doesn't prevent output
+//!   generation
+//! - **Flexible formatting**: Configurable output options for different use
+//!   cases
+//! - **Complete grammar**: Full specification of the text format in the
+//!   [`grammar`] module
 //!
 //! ## Installation
 //!
@@ -259,7 +280,9 @@
 //!
 //! ## Output Format
 //!
-//! The library produces a structured text format that's easy to read and parse:
+//! The library produces a structured text format that's easy to read and parse.
+//! For a complete specification of the text format grammar, see the [`grammar`]
+//! module.
 //!
 //! ### Basic Plan Structure
 //!
@@ -328,7 +351,8 @@
 //!
 //! ### Advanced Usage
 //!
-//! For a comprehensive demonstration including different output options and protobuf comparison, see the `advanced_usage` example:
+//! For a comprehensive demonstration including different output options and
+//! protobuf comparison, see the `advanced_usage` example:
 //!
 //! ```bash
 //! cargo run --example advanced_usage --features serde
@@ -397,9 +421,9 @@
 //! 5. **Graceful errors**: Errors don't prevent output generation but are
 //!    returned for inspection
 
-pub mod docs;
 pub mod extensions;
 pub mod fixtures;
+pub mod grammar;
 pub mod parser;
 pub mod textify;
 
