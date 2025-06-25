@@ -115,7 +115,7 @@ Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
 substrait-explain = "0.1.0"
-substrait = "0.37.0"  # For protobuf types
+substrait = "0.57.0"  # For protobuf types
 ```
 
 ## Quick Start
@@ -125,7 +125,6 @@ substrait = "0.37.0"  # For protobuf types
 ```rust
 use substrait_explain::textify::{PlanWriter, OutputOptions, ErrorQueue};
 use substrait_explain::parser::Parser;
-use substrait::proto::Plan;
 
 // Parse a Substrait plan from text format
 let plan_text = r#"
@@ -383,8 +382,8 @@ cargo +nightly fmt -- --unstable-features --config imports_granularity=Module,gr
 
 ## License
 
-[Add your license information here]
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
-[Add contribution guidelines here]
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to get started.
