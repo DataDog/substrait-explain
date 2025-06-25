@@ -16,8 +16,8 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     errors: E,
 }
 
-impl<'a, E: ErrorAccumulator + Default> PlanWriter<'a, E> {
-    pub fn new(options: &'a OutputOptions, plan: &'a proto::Plan) -> Self {
+impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
+    pub fn new(options: &'a OutputOptions, plan: &'a proto::Plan) -> (Self, E) {
         let (extensions, errs) =
             SimpleExtensions::from_extensions(&plan.extension_uris, &plan.extensions);
 
@@ -28,12 +28,15 @@ impl<'a, E: ErrorAccumulator + Default> PlanWriter<'a, E> {
 
         let relations = plan.relations.as_slice();
 
-        Self {
-            options,
-            extensions,
-            relations,
+        (
+            Self {
+                options,
+                extensions,
+                relations,
+                errors: errors.clone(),
+            },
             errors,
-        }
+        )
     }
 
     pub fn scope(&'a self) -> ScopedContext<'a, E> {
@@ -178,9 +181,13 @@ mod tests {
         });
 
         let options = OutputOptions::default();
-        let writer = PlanWriter::<ErrorQueue>::new(&options, &plan);
+        let (writer, errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
         let mut output = String::new();
         write!(output, "{}", writer).unwrap();
+
+        // Assert that there are no errors
+        let errors: Vec<_> = errors.into();
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
 
         let expected = r#"
 === Extensions

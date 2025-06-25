@@ -6,6 +6,22 @@ use substrait_explain::parser::Parser;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions};
 
+/// Helper function to create a writer and print output with error checking
+fn print_plan(plan: &substrait::proto::Plan, options: &OutputOptions, title: &str) {
+    println!("{}:", title);
+    let (writer, errors) = PlanWriter::<ErrorQueue>::new(options, plan);
+    println!("{}", writer);
+
+    // Check for errors
+    let errors: Vec<_> = errors.into();
+    if !errors.is_empty() {
+        println!("Warnings during conversion:");
+        for error in errors {
+            println!("  - {}", error);
+        }
+    }
+}
+
 fn main() {
     println!("=== Substrait-Explain Basic Usage ===\n");
 
@@ -15,28 +31,22 @@ fn main() {
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
-  # 10 @  1: add
+  # 10 @  1: gt
   # 11 @  1: multiply
 === Plan
-Root[result]
-  Filter[*] condition=gt:fp64_fp64($2, 100)
-    Project[$0, $1, multiply:fp64($0, $1)]
-      Read[quantity::i32?, price::fp64?] table=orders
+Root[revenue]
+  Filter[gt($2, 100) => $0, $1]
+    Project[$0, $1, multiply($0, $1)]
+      Read[orders => quantity:i32?, price:fp64?]
 "#;
 
     match Parser::parse_plan(plan_text) {
         Ok(plan) => {
             // Output with standard options
-            println!("Standard output:");
-            let options = OutputOptions::default();
-            let writer = PlanWriter::<ErrorQueue>::new(&options, &plan);
-            println!("{}", writer);
+            print_plan(&plan, &OutputOptions::default(), "Standard output");
 
             // Output with verbose options
-            println!("\nVerbose output:");
-            let verbose_options = OutputOptions::verbose();
-            let verbose_writer = PlanWriter::<ErrorQueue>::new(&verbose_options, &plan);
-            println!("{}", verbose_writer);
+            print_plan(&plan, &OutputOptions::verbose(), "Verbose output");
         }
         Err(e) => println!("Error parsing plan: {}", e),
     }

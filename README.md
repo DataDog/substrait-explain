@@ -1,12 +1,106 @@
 # Substrait-Explain
 
-A Rust library for displaying Substrait query plans in a human-readable, EXPLAIN-like format.
+**Transform complex Substrait protobuf plans into readable, SQL EXPLAIN-like text**
 
-## Overview
+## What does it do?
 
-Substrait-Explain converts Substrait protobuf plans into a concise, readable text format that's similar to SQL EXPLAIN output. It provides both parsing and formatting capabilities, making it easy to work with Substrait plans in a human-friendly way.
+Ever tried to debug a Substrait query plan? Outputting the raw protobuf as text ends up quite difficult to read:
 
-### Key Features
+```yaml
+extensionUris:
+  - extensionUriAnchor: 1
+    uri: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+extensions:
+  - extensionFunction:
+      extensionUriReference: 1
+      functionAnchor: 10
+      name: gt
+  - extensionFunction:
+      extensionUriReference: 1
+      functionAnchor: 11
+      name: multiply
+relations:
+  - root:
+      input:
+        filter:
+          common:
+            emit:
+              outputMapping:
+                - 0
+                - 1
+          input:
+            project:
+              common:
+                emit:
+                  outputMapping:
+                    - 0
+                    - 1
+                    - 2
+              input:
+                read:
+                  baseSchema:
+                    names:
+                      - quantity
+                      - price
+                    struct:
+                      types:
+                        - i32:
+                            nullability: NULLABILITY_NULLABLE
+                        - fp64:
+                            nullability: NULLABILITY_NULLABLE
+                      nullability: NULLABILITY_REQUIRED
+                  namedTable:
+                    names:
+                      - orders
+              expressions:
+                - scalarFunction:
+                    functionReference: 11
+                    arguments:
+                      - value:
+                          selection:
+                            directReference:
+                              structField: {}
+                      - value:
+                          selection:
+                            directReference:
+                              structField:
+                                field: 1
+          condition:
+            scalarFunction:
+              functionReference: 10
+              arguments:
+                - value:
+                    selection:
+                      directReference:
+                        structField:
+                          field: 2
+                - value:
+                    literal:
+                      i64: "100"
+      names:
+        - revenue
+```
+
+**Substrait-Explain converts this into:**
+
+```
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: gt
+  # 11 @  1: multiply
+
+=== Plan
+Root[revenue]
+  Filter[gt($2, 100) => $0, $1]
+    Project[$0, $1, multiply($0, $1)]
+      Read[orders => quantity:i32?, price:fp64?]
+```
+
+Suddenly you can see exactly what the query does: filter orders where some calculated value is greater than 100, then project the quantity, price, and their product.
+
+## Key Features
 
 - **Human-readable output**: Convert complex Substrait plans into simple, readable text
 - **Bidirectional conversion**: Parse text format back into Substrait plans
@@ -196,6 +290,29 @@ if !errors.is_empty() {
 ```
 
 ## Examples
+
+### Basic Usage
+
+For a simple introduction, see the `basic_usage` example:
+
+```bash
+cargo run --example basic_usage
+```
+
+### Advanced Usage
+
+For a comprehensive demonstration including different output options and protobuf comparison, see the `advanced_usage` example:
+
+```bash
+cargo run --example advanced_usage --features serde
+```
+
+This example shows:
+
+- Standard vs verbose output formatting
+- Custom output options (different indentation, type visibility)
+- Comparison with the original YAML representation
+- Explanation of what the query transformation accomplishes
 
 ### Simple Query Plan
 

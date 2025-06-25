@@ -114,7 +114,7 @@ impl ScopedParsePair for NamedColumnList {
 /// trait passes a Vec of children, because some relations have multiple
 /// children - but most accept exactly one child.
 #[allow(clippy::vec_box)]
-fn expect_one_child(
+pub(crate) fn expect_one_child(
     message: &'static str,
     pair: &pest::iterators::Pair<Rule>,
     mut input_children: Vec<Box<Rel>>,

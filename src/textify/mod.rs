@@ -6,4 +6,5 @@ pub mod types;
 
 pub use foundation::{
     ErrorQueue, OutputOptions, Scope, ScopedContext, Textify, TextifyError, TextifyErrorType,
+    Visibility,
 };

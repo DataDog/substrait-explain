@@ -29,8 +29,17 @@ fn roundtrip_plan(input: &str) {
 
     // We have a Substrait plan, let's convert back to text
     let options = OutputOptions::default();
-    let writer = PlanWriter::<ErrorQueue>::new(&options, &plan);
+    let (writer, writer_errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
     let actual = format!("{}", writer);
+
+    // Check for errors
+    let writer_errors: Vec<_> = writer_errors.into();
+    if !writer_errors.is_empty() {
+        println!("Warnings during conversion:");
+        for error in writer_errors {
+            println!("  - {}", error);
+        }
+    }
 
     // Compare the output with the input, printing the difference.
     assert_eq!(
@@ -73,11 +82,31 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
 
     // Test verbose output from both plans
     let verbose_options = OutputOptions::verbose();
-    let simple_verbose_writer = PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan);
+    let (simple_verbose_writer, simple_verbose_errors) =
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan);
     let simple_verbose_actual = format!("{}", simple_verbose_writer);
 
-    let verbose_verbose_writer = PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan);
+    // Check for errors
+    let simple_verbose_errors: Vec<_> = simple_verbose_errors.into();
+    if !simple_verbose_errors.is_empty() {
+        println!("Warnings during simple verbose conversion:");
+        for error in simple_verbose_errors {
+            println!("  - {}", error);
+        }
+    }
+
+    let (verbose_verbose_writer, verbose_verbose_errors) =
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan);
     let verbose_verbose_actual = format!("{}", verbose_verbose_writer);
+
+    // Check for errors
+    let verbose_verbose_errors: Vec<_> = verbose_verbose_errors.into();
+    if !verbose_verbose_errors.is_empty() {
+        println!("Warnings during verbose verbose conversion:");
+        for error in verbose_verbose_errors {
+            println!("  - {}", error);
+        }
+    }
 
     assert_eq!(
         simple_verbose_actual.trim(),
@@ -89,11 +118,31 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
 
     // Test simple output from both plans
     let simple_options = OutputOptions::default();
-    let simple_simple_writer = PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan);
+    let (simple_simple_writer, simple_simple_errors) =
+        PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan);
     let simple_simple_actual = format!("{}", simple_simple_writer);
 
-    let verbose_simple_writer = PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan);
+    // Check for errors
+    let simple_simple_errors: Vec<_> = simple_simple_errors.into();
+    if !simple_simple_errors.is_empty() {
+        println!("Warnings during simple simple conversion:");
+        for error in simple_simple_errors {
+            println!("  - {}", error);
+        }
+    }
+
+    let (verbose_simple_writer, verbose_simple_errors) =
+        PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan);
     let verbose_simple_actual = format!("{}", verbose_simple_writer);
+
+    // Check for errors
+    let verbose_simple_errors: Vec<_> = verbose_simple_errors.into();
+    if !verbose_simple_errors.is_empty() {
+        println!("Warnings during verbose simple conversion:");
+        for error in verbose_simple_errors {
+            println!("  - {}", error);
+        }
+    }
 
     assert_eq!(
         simple_simple_actual.trim(),
