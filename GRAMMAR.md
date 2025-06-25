@@ -13,7 +13,7 @@ The Substrait text format consists of two main sections:
 
 The grammar is designed around several concrete choices that make it practical and consistent:
 
-### 1. **Single-Line Relations with Consistent Pattern**
+### 1. Single-Line Relations with Consistent Pattern
 
 All relations follow the same structure: `Name[arguments => columns]`
 
@@ -24,7 +24,7 @@ All relations follow the same structure: `Name[arguments => columns]`
 
 Every relation fits on one line with indentation showing hierarchy. This uniform pattern makes it easy to parse any relation, understand input/output structure, and add new relation types.
 
-### 2. **SQL-Like Field References and Literals**
+### 2. SQL-Like Field References and Literals
 
 - Uses `$0`, `$1`, `$2` for field references (like SQL's positional references)
 - Types are shown inline with literals and column names: `42:i64`, `'hello':string`
@@ -32,7 +32,7 @@ Every relation fits on one line with indentation showing hierarchy. This uniform
 
 This prevents ambiguity and makes plans self-documenting while being familiar to SQL developers.
 
-### 3. **Extension Support and Structured Syntax**
+### 3. Extension Support and Structured Syntax
 
 - Extensions section defines URIs and function mappings
 - Function calls can include anchors: `add#10@1($0, $1)`
@@ -40,7 +40,7 @@ This prevents ambiguity and makes plans self-documenting while being familiar to
 
 This maintains full Substrait compatibility while keeping the text format readable and parseable.
 
-### 4. **Hierarchical Organization**
+### 4. Hierarchical Organization
 
 - Section headers (`===`) separate major components
 - 2-space indentation shows query plan hierarchy
@@ -65,18 +65,28 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 
 ## Basic Example
 
-```
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
-  # 10 @  1: add
-  # 11 @  1: multiply
+  ## 10 @  1: add
+  ## 11 @  1: multiply
 
 === Plan
 Root[result]
   Project[$0, $1, add($0, $1)]
     Read[orders => quantity:i32?, price:i64]
+# "#;
+#
+# let plan = match Parser::parse(plan_text) {
+#     Ok(plan) => plan,
+#     Err(e) => panic!("{}", e),
+# };
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Document Structure
@@ -92,19 +102,19 @@ The document uses `===` headers to separate major sections:
 
 #### Extension format
 
-```
+```text
 === Extensions
 URIs:
   @  uri_anchor: uri
   …
 Functions:
-  #  anchor @  uri_anchor: name
+  ##  anchor @  uri_anchor: name
   …
 Types:
-  #  anchor @  uri_anchor: name
+  ##  anchor @  uri_anchor: name
   …
 Type Variations:
-  #  anchor @  uri_anchor: name
+  ##  anchor @  uri_anchor: name
   …
 ```
 
@@ -120,12 +130,28 @@ Relations use indentation to show the query plan hierarchy:
 
 **Example**:
 
-```
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: gt
+
 === Plan
-Root[result]                    // Level 0 (no indentation)
+Root[result]                   // Level 0 (no indentation)
   Project[$0, $1]              // Level 1 (2 spaces)
     Filter[gt($0, 10) => $0]   // Level 2 (4 spaces)
       Read[data => a:i64]      // Level 3 (6 spaces)
+# "#;
+#
+# let plan = match Parser::parse(plan_text) {
+#     Ok(plan) => plan,
+#     Err(e) => panic!("{}", e),
+# };
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Basic Terminals
@@ -166,7 +192,7 @@ The type syntax in this grammar generally follows the [standard Substrait type d
 
 The standard Substrait type syntax follows this pattern:
 
-```
+```text
 name?<param0,...,paramN>
 ```
 
@@ -230,9 +256,21 @@ Simple types are the basic Substrait types with optional nullability.
 
 **Examples**:
 
-```
-i64        // non-nullable 64-bit integer
-string?    // nullable string
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
+Root[result]
+  Project[$0, $1]
+    Read[data => int_field:i64, string_field:string?]
+"#;
+
+let plan = match Parser::parse(plan_text) {
+    Ok(plan) => plan,
+    Err(e) => panic!("{}", e),
+};
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Compound Types
@@ -241,10 +279,20 @@ Compound types follow the same syntax as standard Substrait parameterized types.
 
 **Examples**:
 
-```
-list<i64>                    // list of non-nullable integers
-map<string, i64>             // map from string to integer
-struct<i64, string?>         // struct with two fields
+// TODO: This example uses `map` type, which is not yet implemented in the parser.
+
+```text
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
+Root[result]
+  Project[$0, $1, $2]
+    Read[data => list_field:list<i64>, map_field:map<string, i64>, struct_field:struct<i64, string?>]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### User-Defined Types
@@ -253,10 +301,30 @@ struct<i64, string?>         // struct with two fields
 
 **Examples**:
 
-```
-point#8@2?<i8>     // user-defined type with anchor and URI
-my_type#10         // user-defined type with anchor only
-u!custom_type      // user-defined type with u! prefix
+// TODO: This example uses user-defined types with anchors, which are not yet fully supported by the parser.
+
+```text
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://example.com/types
+  @  2: https://example.com/functions
+Types:
+  ##  8 @  1: point
+  ##  9 @  1: custom_type
+Functions:
+  ## 10 @  2: add
+
+=== Plan
+Root[result]
+  Project[$0, $1, $2]
+    Read[data => point_field:point#8@2?<i8>, custom_field:my_type#10, prefixed_field:u!custom_type]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Expressions
@@ -269,10 +337,18 @@ Currently, only references to fields in the Relations' input are supported.
 
 **Examples**:
 
-```
-$0    // reference to field 0
-$1    // reference to field 1
-$42   // reference to field 42
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
+Root[result]
+  Project[$0, $1, $42]
+    Read[data => field0:i64, field1:string, field42:boolean]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Function Calls
@@ -289,10 +365,25 @@ $42   // reference to field 42
 
 **Examples**:
 
-```
-add($0, $1)                    // simple function call
-add#10@1($0, $1)              // function with anchor and URI
-multiply($0, $1):i64          // function with output type
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: add
+  ## 11 @  1: multiply
+
+=== Plan
+Root[result]
+  Project[add($0, $1), add#10@1($0, $1), multiply($0, $1):i64]
+    Read[data => a:i64, b:i64]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Expression Grammar
@@ -301,10 +392,24 @@ multiply($0, $1):i64          // function with output type
 
 **Examples**:
 
-```
-$0                    // field reference
-42                    // literal
-multiply($0, 10)      // function call
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: multiply
+
+=== Plan
+Root[result]
+  Project[$0, 42, multiply($0, 10)]
+    Read[data => field:i64]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Relations
@@ -315,7 +420,7 @@ Relations represent the operations in a query plan. Each relation is displayed o
 
 All relations follow this general pattern:
 
-```
+```text
 RelationName[arguments => columns]
 ```
 
@@ -328,11 +433,27 @@ Where:
 
 **Examples of the pattern**:
 
-```
-Read[table_name => col1:type1, col2:type2]           // arguments: table, columns: named types
-Filter[boolean_expr => $0, $1, $2]                   // arguments: expression, columns: field refs
-Project[expr1, expr2]                                // arguments: expressions, no => separator
+// TODO: This example is illustrative and not meant to be parsed by the current implementation.
+
+```text
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: gt
+
+=== Plan
 Root[output_names]                                   // special case: just output names, no arguments
+  Project[expr1, expr2]                                // arguments: expressions, no => separator
+    Filter[gt($0, 10) => $0, $1, $2]                   // arguments: expression, columns: field refs
+      Read[table_name => col1:type1, col2:type2]           // arguments: table, columns: named types
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 **Special cases**:
@@ -349,8 +470,18 @@ The exact structure varies by relation type, but all follow this basic pattern.
 
 **Example**:
 
-```
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
 Root[c, d]           // root with output columns c and d
+  Project[$0, $1]
+    Read[data => a:i64, b:string]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Read Relation
@@ -364,9 +495,21 @@ Root[c, d]           // root with output columns c and d
 
 **Examples**:
 
-```
-Read[schema.table => a:i64, b:string?]
-Read[orders => quantity:i32?, price:i64]
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
+Root[result]
+  Project[$0, $1]
+    Read[schema.table => a:i64, b:string?]
+Root[result2]
+  Project[$0, $1]
+    Read[orders => quantity:i32?, price:i64]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 2);
 ```
 
 ### Filter Relation
@@ -380,8 +523,25 @@ Read[orders => quantity:i32?, price:i64]
 
 **Example**:
 
-```
-Filter[gt($2, 100) => $0, $1, $2]
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: gt
+
+=== Plan
+Root[result]
+  Filter[gt($2, 100) => $0, $1, $2]
+    Project[$0, $1, $2]
+      Read[data => a:i64, b:string, c:i32]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Project Relation
@@ -394,26 +554,43 @@ Filter[gt($2, 100) => $0, $1, $2]
 
 **Example**:
 
-```
-Project[$1, 42]                    // project field 1 and literal 42
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Plan
+Root[result]
+  Project[$1, 42]                    // project field 1 and literal 42
+    Read[data => a:i64, b:string]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Complete Example
 
 A complete query that reads from an orders table, multiplies quantity and price, filters for high-value orders, and outputs the revenue:
 
-```
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
-  # 10 @  1: add
-  # 11 @  1: multiply
-  # 12 @  1: gt
+  ## 10 @  1: add
+  ## 11 @  1: multiply
+  ## 12 @  1: gt
 
 === Plan
 Root[revenue]
   Filter[gt($2, 100) => $0, $1, $2]
     Project[$0, $1, multiply($0, $1)]
       Read[orders => quantity:i32?, price:i64]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
 ```

@@ -110,8 +110,8 @@ Suddenly you can see exactly what the query does: filter orders where some calcu
 
 ### Documentation
 
-- **[Grammar Specification](GRAMMAR.md)**: Complete reference for the text format grammar
-- **API Documentation**: Available on [docs.rs](https://docs.rs/substrait-explain) (TODO: Once this is released!)
+- **[Grammar Specification](https://docs.rs/substrait-explain/latest/substrait_explain/docs/)**: Complete reference for the text format grammar (available in the Rust documentation)
+- **API Documentation**: Available on [docs.rs](https://docs.rs/substrait-explain) (TODO: Fix these links once this is released!)
 
 ## Installation
 
@@ -139,8 +139,8 @@ URIs:
 Functions:
   # 10 @  1: add
 === Plan
-Project[ | $0, $1, add($0, $1)]
-  Read[table1 | col1:i32?, col2:i32?]
+Project[$0, $1, add($0, $1)]
+  Read[table1 => col1:i32?, col2:i32?]
 "#;
 
 let plan = Parser::parse(plan_text).unwrap();
@@ -224,14 +224,14 @@ URIs:
 Functions:
   # 10 @  1: add
 === Plan
-Project[ | $0, $1, add($0, $1)]
-  Read[table1 | col1:i32?, col2:i32?]
+Project[$0, $1, add($0, $1)]
+  Read[table1 => col1:i32?, col2:i32?]
 ```
 
 ### Relation Format
 
 Each relation is displayed on a single line with the format:
-`RelationName[arguments | columns]`
+`RelationName[arguments => columns]`
 
 - **arguments**: Input expressions, field references, or function calls
 - **columns**: Output column names and types
@@ -323,8 +323,8 @@ This example shows:
 ```rust
 let plan_text = r#"
 === Plan
-Project[ | $0, $1, add($0, $1)]
-  Read[table1 | col1:i32?, col2:i32?]
+Project[$0, $1, add($0, $1)]
+  Read[table1 => col1:i32?, col2:i32?]
 "#;
 
 let plan = Parser::parse_plan(plan_text).unwrap();

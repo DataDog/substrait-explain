@@ -9,14 +9,14 @@ use substrait_explain::parser::Parser;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions, Visibility};
 
-/// Helper function to create a writer and print output with error checking
-fn print_plan(plan: &Plan, options: &OutputOptions, title: &str) {
-    println!("{}:", title);
-    let (writer, errors) = PlanWriter::<ErrorQueue>::new(options, plan);
-    println!("{}", writer);
+/// Helper function to format a plan with given options and print the result with error handling
+fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) {
+    let options = options.unwrap_or(&OutputOptions::default());
+    let (formatter, errors) = PlanWriter::<ErrorQueue>::new(options, plan);
+
+    println!("{}", formatter);
 
     // Check for errors
-    let errors: Vec<_> = errors.into();
     if !errors.is_empty() {
         println!("Warnings during conversion:");
         for error in errors {
@@ -42,7 +42,7 @@ Root[revenue]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 
-    match Parser::parse_plan(plan_text) {
+    match Parser::parse(plan_text) {
         Ok(plan) => {
             // Show the plan in YAML format
             println!("Plan Structure (YAML):");
@@ -53,22 +53,20 @@ Root[revenue]
             println!();
 
             // Standard output (concise)
-            print_plan(&plan, &OutputOptions::default(), "Standard Output");
+            println!("Standard Output:");
+            print_with_errors(&plan, None);
 
             // Verbose output (shows all details)
-            print_plan(&plan, &OutputOptions::verbose(), "Verbose Output");
+            println!("Verbose Output:");
+            print_with_errors(&plan, Some(&OutputOptions::verbose()));
 
             // Custom output options
             let mut custom_options = OutputOptions::default();
-            custom_options.show_extension_uris = true;
-            custom_options.show_simple_extensions = true;
             custom_options.literal_types = Visibility::Always;
             custom_options.indent = "    ".to_string(); // 4 spaces instead of 2
-            print_plan(
-                &plan,
-                &custom_options,
-                "Custom Output (4-space indent, always show types)",
-            );
+
+            println!("Custom Output (4-space indent, always show types):");
+            print_with_errors(&plan, Some(&custom_options));
         }
         Err(e) => println!("Error parsing plan: {}", e),
     }

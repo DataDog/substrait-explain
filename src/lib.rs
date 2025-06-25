@@ -158,6 +158,7 @@
 //! 5. **Graceful errors**: Errors don't prevent output generation but are
 //!    returned for inspection
 
+pub mod docs;
 pub mod extensions;
 pub mod fixtures;
 pub mod parser;
