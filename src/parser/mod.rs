@@ -1,10 +1,9 @@
-mod common;
-mod expressions;
+pub mod common;
+pub mod expressions;
 pub mod extensions;
-mod relations;
-mod structural;
-mod types;
+pub mod relations;
+pub mod structural;
+pub mod types;
 pub use common::*;
-pub use expressions::reference;
 pub use relations::RelationParsePair;
-pub use structural::{LineParseError, PLAN_HEADER, Parser};
+pub use structural::{PLAN_HEADER, ParseError, Parser};

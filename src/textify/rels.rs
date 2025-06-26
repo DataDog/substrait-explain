@@ -10,7 +10,7 @@ use substrait::proto::{
 
 use super::expressions::Reference;
 use super::types::Name;
-use super::{Scope, Textify, TextifyError};
+use super::{PlanError, Scope, Textify};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -55,11 +55,11 @@ pub enum Value<'a> {
     List(Vec<Value<'a>>),
     Reference(i32),
     Expression(&'a Expression),
-    Missing(TextifyError),
+    Missing(PlanError),
 }
 
 impl<'a> Value<'a> {
-    pub fn expect(maybe_value: Option<Self>, f: impl FnOnce() -> TextifyError) -> Self {
+    pub fn expect(maybe_value: Option<Self>, f: impl FnOnce() -> PlanError) -> Self {
         match maybe_value {
             Some(s) => s,
             None => Value::Missing(f()),
@@ -67,8 +67,8 @@ impl<'a> Value<'a> {
     }
 }
 
-impl<'a> From<Result<Vec<Name<'a>>, TextifyError>> for Value<'a> {
-    fn from(token: Result<Vec<Name<'a>>, TextifyError>) -> Self {
+impl<'a> From<Result<Vec<Name<'a>>, PlanError>> for Value<'a> {
+    fn from(token: Result<Vec<Name<'a>>, PlanError>) -> Self {
         match token {
             Ok(value) => Value::TableName(value),
             Err(err) => Value::Missing(err),
@@ -338,10 +338,10 @@ impl<'a> Textify for TableName<'a> {
     }
 }
 
-pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], TextifyError> {
+pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], PlanError> {
     match rel {
         Some(ReadType::NamedTable(r)) => Ok(r.names.as_slice()),
-        _ => Err(TextifyError::unimplemented(
+        _ => Err(PlanError::unimplemented(
             "ReadRel",
             Some("table_name"),
             format!("Unexpected read type {rel:?}") as String,
@@ -360,7 +360,7 @@ impl<'a> From<&'a ReadRel> for Relation<'a> {
         let columns = match rel.base_schema {
             Some(ref schema) => schema_to_values(schema),
             None => {
-                let err = TextifyError::unimplemented(
+                let err = PlanError::unimplemented(
                     "ReadRel",
                     Some("base_schema"),
                     "Base schema is required",
@@ -426,7 +426,7 @@ impl<'a> From<&'a FilterRel> for Relation<'a> {
             .as_ref()
             .map(|c| Value::Expression(c.as_ref()));
         let condition = Value::expect(condition, || {
-            TextifyError::unimplemented("FilterRel", Some("condition"), "Condition is None")
+            PlanError::unimplemented("FilterRel", Some("condition"), "Condition is None")
         });
         let emit = get_emit(rel.common.as_ref());
         let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);

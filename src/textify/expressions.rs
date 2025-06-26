@@ -10,7 +10,7 @@ use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
 
-use super::{Scope, Textify, TextifyError, Visibility};
+use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
@@ -196,7 +196,7 @@ impl Textify for LiteralType {
                 let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
                     None => {
-                        let err = TextifyError::internal(
+                        let err = PlanError::internal(
                             "LiteralType",
                             Some("Timestamp"),
                             format!("No kind found for {self:?}"),
@@ -212,7 +212,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Date"),
                         "Date literal textification not implemented",
@@ -223,7 +223,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Time"),
                         "Time literal textification not implemented",
@@ -234,7 +234,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("IntervalYearToMonth"),
                         "IntervalYearToMonth literal textification not implemented",
@@ -245,7 +245,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("IntervalDayToSecond"),
                         "IntervalDayToSecond literal textification not implemented",
@@ -256,7 +256,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("IntervalCompound"),
                         "IntervalCompound literal textification not implemented",
@@ -267,7 +267,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("FixedChar"),
                         "FixedChar literal textification not implemented",
@@ -278,7 +278,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("VarChar"),
                         "VarChar literal textification not implemented",
@@ -289,7 +289,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("FixedBinary"),
                         "FixedBinary literal textification not implemented",
@@ -300,7 +300,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Decimal"),
                         "Decimal literal textification not implemented",
@@ -311,7 +311,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("PrecisionTime"),
                         "PrecisionTime literal textification not implemented",
@@ -322,7 +322,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("PrecisionTimestamp"),
                         "PrecisionTimestamp literal textification not implemented",
@@ -333,7 +333,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("PrecisionTimestampTz"),
                         "PrecisionTimestampTz literal textification not implemented",
@@ -344,7 +344,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Struct"),
                         "Struct literal textification not implemented",
@@ -355,7 +355,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Map"),
                         "Map literal textification not implemented",
@@ -366,7 +366,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("TimestampTz"),
                         "TimestampTz literal textification not implemented",
@@ -377,7 +377,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Uuid"),
                         "Uuid literal textification not implemented",
@@ -388,7 +388,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("Null"),
                         "Null literal textification not implemented",
@@ -399,7 +399,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("List"),
                         "List literal textification not implemented",
@@ -410,7 +410,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("EmptyList"),
                         "EmptyList literal textification not implemented",
@@ -421,7 +421,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("EmptyMap"),
                         "EmptyMap literal textification not implemented",
@@ -432,7 +432,7 @@ impl Textify for LiteralType {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "LiteralType",
                         Some("UserDefined"),
                         "UserDefined literal textification not implemented",
@@ -503,7 +503,7 @@ impl Textify for FieldReference {
                 return write!(
                     w,
                     "{}",
-                    TextifyError::invalid(
+                    PlanError::invalid(
                         "FieldReference",
                         Some("reference_type"),
                         "Required field missing, None found",
@@ -515,7 +515,7 @@ impl Textify for FieldReference {
                 return write!(
                     w,
                     "{}",
-                    ctx.failure(TextifyError::unimplemented(
+                    ctx.failure(PlanError::unimplemented(
                         "FieldReference",
                         Some("FieldReference"),
                         "FieldReference textification implemented only for StructField",
@@ -531,7 +531,7 @@ impl Textify for FieldReference {
             None => write!(
                 w,
                 "{}",
-                TextifyError::invalid(
+                PlanError::invalid(
                     "ReferenceSegment",
                     Some("reference_type"),
                     "Required field missing, None found",
@@ -540,7 +540,7 @@ impl Textify for FieldReference {
             _ => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "ReferenceSegment",
                     Some("reference_type"),
                     "ReferenceSegment textification implemented only for StructField",
@@ -637,7 +637,7 @@ impl Textify for RexType {
             RexType::WindowFunction(_w) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("WindowFunction"),
                     "WindowFunction textification not implemented",
@@ -646,7 +646,7 @@ impl Textify for RexType {
             RexType::IfThen(_i) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("IfThen"),
                     "IfThen textification not implemented",
@@ -655,7 +655,7 @@ impl Textify for RexType {
             RexType::SwitchExpression(_s) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("SwitchExpression"),
                     "SwitchExpression textification not implemented",
@@ -664,7 +664,7 @@ impl Textify for RexType {
             RexType::SingularOrList(_s) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("SingularOrList"),
                     "SingularOrList textification not implemented",
@@ -673,7 +673,7 @@ impl Textify for RexType {
             RexType::MultiOrList(_m) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("MultiOrList"),
                     "MultiOrList textification not implemented",
@@ -682,7 +682,7 @@ impl Textify for RexType {
             RexType::Cast(_c) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("Cast"),
                     "Cast textification not implemented",
@@ -691,7 +691,7 @@ impl Textify for RexType {
             RexType::Subquery(_s) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("Subquery"),
                     "Subquery textification not implemented",
@@ -700,7 +700,7 @@ impl Textify for RexType {
             RexType::Nested(_n) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("Nested"),
                     "Nested textification not implemented",
@@ -709,7 +709,7 @@ impl Textify for RexType {
             RexType::DynamicParameter(_d) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("DynamicParameter"),
                     "DynamicParameter textification not implemented",
@@ -718,7 +718,7 @@ impl Textify for RexType {
             RexType::Enum(_) => write!(
                 w,
                 "{}",
-                ctx.failure(TextifyError::unimplemented(
+                ctx.failure(PlanError::unimplemented(
                     "RexType",
                     Some("Enum"),
                     "Enum textification not implemented",
@@ -743,7 +743,7 @@ mod tests {
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
-    use crate::textify::foundation::Error;
+    use crate::textify::foundation::FormatError;
 
     #[test]
     fn test_literal_textify() {
@@ -793,7 +793,7 @@ mod tests {
         let (s, errq) = ctx.textify(&func);
         let errs: Vec<_> = errq.0;
         match errs[0] {
-            Error::Lookup(MissingReference::MissingAnchor(k, a)) => {
+            FormatError::Lookup(MissingReference::MissingAnchor(k, a)) => {
                 assert_eq!(k, ExtensionKind::Function);
                 assert_eq!(a, 1000);
             }

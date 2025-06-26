@@ -1,10 +1,12 @@
+//! Output a plan in text format.
+
 pub mod expressions;
-pub(crate) mod foundation;
+pub mod foundation;
 pub mod plan;
 pub mod rels;
 pub mod types;
 
 pub use foundation::{
-    ErrorQueue, OutputOptions, Scope, ScopedContext, Textify, TextifyError, TextifyErrorType,
+    ErrorQueue, FormatErrorType, OutputOptions, PlanError, Scope, ScopedContext, Textify,
     Visibility,
 };

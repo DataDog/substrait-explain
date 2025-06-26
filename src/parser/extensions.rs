@@ -51,6 +51,7 @@ impl fmt::Display for ExtensionParserState {
 /// contains the extension URIs and declarations. Note that this parser does not
 /// parse the header; otherwise, this is symmetric with the
 /// SimpleExtensions::write method.
+#[derive(Debug)]
 pub struct ExtensionParser {
     state: ExtensionParserState,
     extensions: SimpleExtensions,
@@ -289,7 +290,7 @@ Type Variations:
         .trim_start();
 
         // Parse the input using the structural parser
-        let plan = Parser::parse_plan(input).unwrap();
+        let plan = Parser::parse(input).unwrap();
 
         // Verify the plan has the expected extensions
         assert_eq!(plan.extension_uris.len(), 2);
