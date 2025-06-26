@@ -8,25 +8,24 @@ assignees: ""
 
 ## Description
 
-Brief description of the bug.
+A clear and concise description of what the bug is.
 
 ## Steps to Reproduce
 
-1.
-2.
-3.
+List the steps to reproduce the issue.
 
-## Expected vs Actual Behavior
+## Expected Behavior
 
-**Expected:**
-**Actual:**
+What did you expect to happen?
+
+## Actual Behavior
+
+What actually happened? Include any error messages.
 
 ## Environment
 
-- Rust version: `rustc --version`
-- OS:
-- substrait-explain version:
+What OS, Rust version, and substrait-explain version are you using?
 
 ## Additional Context
 
-Include any relevant Substrait plans, error messages, or stack traces.
+Anything else that might help us understand or reproduce the issue? (e.g., logs, screenshots, example plans)

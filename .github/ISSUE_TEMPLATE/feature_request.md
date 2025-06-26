@@ -6,22 +6,22 @@ labels: ["type/enhancement"]
 assignees: ""
 ---
 
-## Problem
+## Summary
 
-Brief description of the problem this feature would solve.
+A clear and concise description of the feature you're proposing.
+
+## Motivation
+
+Why is this feature needed? What problem does it solve?
 
 ## Proposed Solution
 
-Description of the feature you'd like to see.
-
-## Use Case
-
-How would this feature be used? Any examples?
+Describe the feature and how it would work.
 
 ## Alternatives Considered
 
-Any alternative solutions you've considered?
+Any other solutions you've thought about?
 
 ## Additional Context
 
-Any other context, screenshots, or examples?
+Any other context, screenshots, or examples that might be helpful?
