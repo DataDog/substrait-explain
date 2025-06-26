@@ -1,0 +1,50 @@
+name: Update Docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_docs:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache cargo dependencies / build outputs. See
+      # https://github.com/actions/cache/blob/main/examples.md#rust---cargo
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build docs
+        id: build_docs
+        run: cargo doc --features protoc --verbose --document-private-items
+
+      - name: Upload docs
+        id: upload_docs
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.upload_docs.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build_docs
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
