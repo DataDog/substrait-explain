@@ -117,4 +117,4 @@ If you have questions or need help getting started, feel free to:
 - Open an issue for discussion
 - Ask questions in the issue tracker
 - Check existing issues and pull requests for examples
-- Review the [README.md](README.md) for usage examples and documentation
+- Review the [README.md](https://github.com/DataDog/substrait-explain/blob/main/README.md) for usage examples and documentation
