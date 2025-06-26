@@ -39,6 +39,9 @@ jobs:
         id: build_docs
         run: cargo doc --features protoc --verbose --document-private-items
 
+      - name: Copy redirect file
+        run: cp index.html target/doc/
+
       - name: Upload docs
         id: upload_docs
         uses: actions/upload-pages-artifact@v3

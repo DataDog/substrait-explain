@@ -132,7 +132,7 @@ let (output, _errors) = format(&plan);
 println!("{}", output);
 ```
 
-For more detailed examples and API documentation, see the [API documentation](API.md).
+For more detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
 
 ## Installation
 
@@ -146,9 +146,9 @@ substrait = "0.57.0"  # For protobuf types
 
 ## Documentation
 
-- **[API Documentation](API.md)** - Complete API reference with examples and configuration options
-- **[Grammar Specification](GRAMMAR.md)** - Detailed specification of the text format grammar
-- **[Full Documentation](https://docs.rs/substrait-explain)** - Generated API docs on [`docs.rs`](docs.rs), including grammar and API docs.
+- **[API Documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md)** - Complete API reference with examples and configuration options
+- **[Grammar Specification](https://github.com/DataDog/substrait-explain/blob/main/GRAMMAR.md)** - Detailed specification of the text format grammar
+- **[Full Documentation](https://fantastic-disco-w6yyrrl.pages.github.io/substrait_explain/)** - Generated API docs on [Github Pages](https://fantastic-disco-w6yyrrl.pages.github.io/substrait_explain/), including grammar and API docs.
 
 ## Examples
 
@@ -162,8 +162,8 @@ cargo run --example advanced_usage --features serde
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](https://github.com/DataDog/substrait-explain/blob/main/LICENSE) file for details.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to get started.
+We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/DataDog/substrait-explain/blob/main/CONTRIBUTING.md) for details on how to get started.
