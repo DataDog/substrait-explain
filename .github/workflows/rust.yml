@@ -40,3 +40,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --features protoc --verbose
+
+      - name: Run basic_usage example
+        run: cargo run --example basic_usage --features protoc --verbose
+
+      - name: Run advanced_usage example
+        run: cargo run --example advanced_usage --features serde,protoc --verbose
