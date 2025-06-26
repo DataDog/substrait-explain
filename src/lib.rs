@@ -10,7 +10,7 @@ pub mod textify;
 pub use parser::ParseError;
 use substrait::proto::Plan;
 use textify::foundation::ErrorQueue;
-pub use textify::foundation::{FormatError as TextifyError, OutputOptions, Visibility};
+pub use textify::foundation::{FormatError, OutputOptions, Visibility};
 use textify::plan::PlanWriter;
 
 /// Parse a Substrait plan from text format.
@@ -93,7 +93,7 @@ pub fn parse(input: &str) -> Result<Plan, ParseError> {
 ///
 /// The output follows the Substrait text format specification, with relations
 /// displayed in a hierarchical structure using indentation.
-pub fn format(plan: &Plan) -> (String, Vec<TextifyError>) {
+pub fn format(plan: &Plan) -> (String, Vec<FormatError>) {
     let options = OutputOptions::default();
     format_with_options(plan, &options)
 }
@@ -133,7 +133,7 @@ pub fn format(plan: &Plan) -> (String, Vec<TextifyError>) {
 /// # Options
 ///
 /// See [`OutputOptions`] for all available configuration options.
-pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec<TextifyError>) {
+pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec<FormatError>) {
     let (writer, error_queue) = PlanWriter::<ErrorQueue>::new(options, plan);
     let output = format!("{writer}");
     let errors = error_queue.into_iter().collect();
