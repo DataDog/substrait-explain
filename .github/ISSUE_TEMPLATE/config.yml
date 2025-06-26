@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support Ticket, Bug Report, or Feature Request (High Priority)
+    url: https://help.datadoghq.com/hc/en-us/requests/new
+    about: Create an expedited Support Ticket, Bug Report, or Feature Request via the helpdesk (no login required). This will allow us to look up your account and allows you to provide additional information in private.
