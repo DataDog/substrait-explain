@@ -1,5 +1,9 @@
 name: Update Docs
 
+permissions:
+  contents: read
+  pages: write
+
 on:
   workflow_dispatch:
   push:
