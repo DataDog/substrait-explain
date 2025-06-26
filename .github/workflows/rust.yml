@@ -1,5 +1,10 @@
 name: Rust CI
 
+permissions:
+  contents: read
+  checks: write
+  statuses: write
+
 on:
   workflow_dispatch:
   push:
