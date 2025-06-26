@@ -5,6 +5,7 @@ permissions:
   pages: write
   checks: write
   statuses: write
+  id-token: write
 
 on:
   workflow_dispatch:
