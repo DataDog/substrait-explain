@@ -47,7 +47,8 @@ print_status "Converting to required CSV format..."
 cargo license --tsv | tail -n +2 | awk -F'\t' '
     $1 != "substrait-explain" {
         authors = $3
-        if (authors == "" || authors == " ") {
+        gsub(/^[ \t]+|[ \t]+$/, "", authors) # Trim leading and trailing whitespace
+        if (authors == "") {
             authors = "the " $1 " Authors"
         }
         print $1 "," $4 "," $5 ",\"" authors "\""
