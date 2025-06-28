@@ -18,14 +18,14 @@ fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) {
     };
     let (formatter, errors) = PlanWriter::<ErrorQueue>::new(&options, plan);
 
-    println!("{}", formatter);
+    println!("{formatter}");
 
     // Check for errors
     for (i, error) in errors.into_iter().enumerate() {
         if i == 0 {
             println!("Warnings during conversion:");
         }
-        println!("  - {}: {}", i, error);
+        println!("  - {i}: {error}");
     }
     println!();
 }
@@ -51,8 +51,8 @@ Root[revenue]
             // Show the plan in YAML format
             println!("Plan Structure (YAML):");
             match serde_yaml::to_string(&plan) {
-                Ok(yaml) => println!("{}", yaml),
-                Err(e) => println!("Error formatting YAML: {}", e),
+                Ok(yaml) => println!("{yaml}"),
+                Err(e) => println!("Error formatting YAML: {e}"),
             }
             println!();
 
@@ -74,6 +74,6 @@ Root[revenue]
             println!("Custom Output (4-space indent, always show types):");
             print_with_errors(&plan, Some(&custom_options));
         }
-        Err(e) => println!("Error parsing plan: {}", e),
+        Err(e) => println!("Error parsing plan: {e}"),
     }
 }

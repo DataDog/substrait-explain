@@ -35,7 +35,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt -- --check --config imports_granularity=Module,group_imports=StdExternalCrate
 
       # Also downloads dependencies etc.
       - name: Basic check
@@ -44,6 +44,9 @@ jobs:
       # Use protoc feature to build the project with a pre-built protoc binary
       - name: Lint with Clippy
         run: cargo clippy --features protoc -- -D warnings
+
+      - name: Lint with Clippy (All features)
+        run: cargo clippy --all-features -- -D warnings
 
       - name: Build
         run: cargo build --features protoc --verbose

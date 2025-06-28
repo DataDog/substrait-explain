@@ -28,12 +28,12 @@ Root[revenue]
             // Output with standard options
             let (text, errors) = format(&plan);
             println!("== Standard output ==");
-            println!("{}", text);
+            println!("{text}");
 
             if !errors.is_empty() {
                 println!("Warnings during conversion:");
                 for error in errors {
-                    println!("  - {}", error);
+                    println!("  - {error}");
                 }
             }
 
@@ -41,15 +41,15 @@ Root[revenue]
             let (verbose_text, verbose_errors) =
                 format_with_options(&plan, &OutputOptions::verbose());
             println!("\n== Verbose output ==");
-            println!("{}", verbose_text);
+            println!("{verbose_text}");
 
             if !verbose_errors.is_empty() {
                 println!("Warnings during verbose conversion:");
                 for error in verbose_errors {
-                    println!("  - {}", error);
+                    println!("  - {error}");
                 }
             }
         }
-        Err(e) => println!("Error parsing plan: {}", e),
+        Err(e) => println!("Error parsing plan: {e}"),
     }
 }

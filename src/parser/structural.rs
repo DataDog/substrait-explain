@@ -741,7 +741,7 @@ Type Variations:
         for line_str in input_block.trim().lines() {
             parser
                 .parse_line(IndentedLine::from(line_str))
-                .unwrap_or_else(|e| panic!("Failed to parse line \'{}\': {:?}", line_str, e));
+                .unwrap_or_else(|e| panic!("Failed to parse line \'{line_str}\': {e:?}"));
         }
 
         assert_eq!(*parser.extensions(), expected_extensions);
@@ -793,7 +793,7 @@ Type Variations:
         for line_str in input_block.trim().lines() {
             parser
                 .parse_line(IndentedLine::from(line_str))
-                .unwrap_or_else(|e| panic!("Failed to parse line \'{}\': {:?}", line_str, e));
+                .unwrap_or_else(|e| panic!("Failed to parse line \'{line_str}\': {e:?}"));
         }
 
         let extensions_str = parser.extensions().to_string("  ");
@@ -826,12 +826,12 @@ Project[$0, $1, 42, 84]
         let root_rel = &plan.relations[0].rel_type;
         let first_rel = match root_rel {
             Some(plan_rel::RelType::Rel(rel)) => rel,
-            _ => panic!("Expected Rel type, got {:?}", root_rel),
+            _ => panic!("Expected Rel type, got {root_rel:?}"),
         };
         // Root should be Project
         let project = match &first_rel.rel_type {
             Some(RelType::Project(p)) => p,
-            other => panic!("Expected Project at root, got {:?}", other),
+            other => panic!("Expected Project at root, got {other:?}"),
         };
 
         // Check that Project has Filter as input
@@ -849,13 +849,13 @@ Project[$0, $1, 42, 84]
                         // Check that Read has no input (it's a leaf)
                         match &read_input.rel_type {
                             Some(RelType::Read(_)) => {}
-                            other => panic!("Expected Read relation, got {:?}", other),
+                            other => panic!("Expected Read relation, got {other:?}"),
                         }
                     }
-                    other => panic!("Expected Filter relation, got {:?}", other),
+                    other => panic!("Expected Filter relation, got {other:?}"),
                 }
             }
-            other => panic!("Expected Filter relation, got {:?}", other),
+            other => panic!("Expected Filter relation, got {other:?}"),
         }
     }
 
@@ -880,7 +880,7 @@ Root[result]
         let root_rel = &plan.relations[0].rel_type;
         let rel_root = match root_rel {
             Some(plan_rel::RelType::Root(rel_root)) => rel_root,
-            other => panic!("Expected Root type, got {:?}", other),
+            other => panic!("Expected Root type, got {other:?}"),
         };
 
         // Check that the root has the correct name
@@ -894,7 +894,7 @@ Root[result]
 
         let project = match &project_input.rel_type {
             Some(RelType::Project(p)) => p,
-            other => panic!("Expected Project as root input, got {:?}", other),
+            other => panic!("Expected Project as root input, got {other:?}"),
         };
 
         // Check that Project has Read as input
@@ -905,7 +905,7 @@ Root[result]
 
         match &read_input.rel_type {
             Some(RelType::Read(_)) => {}
-            other => panic!("Expected Read relation, got {:?}", other),
+            other => panic!("Expected Read relation, got {other:?}"),
         }
     }
 
@@ -927,7 +927,7 @@ Root[]
         let root_rel = &plan.relations[0].rel_type;
         let rel_root = match root_rel {
             Some(plan_rel::RelType::Root(rel_root)) => rel_root,
-            other => panic!("Expected Root type, got {:?}", other),
+            other => panic!("Expected Root type, got {other:?}"),
         };
 
         // Check that the root has no names
@@ -980,7 +980,7 @@ Project[$0, $1, 42, 84]
                 assert_eq!(f.extension_uri_reference, 1);
                 assert_eq!(f.name, "func_a");
             }
-            other => panic!("Expected ExtensionFunction, got {:?}", other),
+            other => panic!("Expected ExtensionFunction, got {other:?}"),
         }
 
         let func2 = &plan.extensions[1];
@@ -990,7 +990,7 @@ Project[$0, $1, 42, 84]
                 assert_eq!(f.extension_uri_reference, 2);
                 assert_eq!(f.name, "func_b_special");
             }
-            other => panic!("Expected ExtensionFunction, got {:?}", other),
+            other => panic!("Expected ExtensionFunction, got {other:?}"),
         }
 
         let type1 = &plan.extensions[2];
@@ -1000,7 +1000,7 @@ Project[$0, $1, 42, 84]
                 assert_eq!(t.extension_uri_reference, 1);
                 assert_eq!(t.name, "SomeType");
             }
-            other => panic!("Expected ExtensionType, got {:?}", other),
+            other => panic!("Expected ExtensionType, got {other:?}"),
         }
 
         let var1 = &plan.extensions[3];
@@ -1010,7 +1010,7 @@ Project[$0, $1, 42, 84]
                 assert_eq!(v.extension_uri_reference, 2);
                 assert_eq!(v.name, "VarX");
             }
-            other => panic!("Expected ExtensionTypeVariation, got {:?}", other),
+            other => panic!("Expected ExtensionTypeVariation, got {other:?}"),
         }
 
         // Verify the relation tree structure
@@ -1045,16 +1045,16 @@ Project[$0, $1, 42, 84]
                                         let struct_ = schema.r#struct.as_ref().unwrap();
                                         assert_eq!(struct_.types.len(), 3);
                                     }
-                                    other => panic!("Expected Read relation, got {:?}", other),
+                                    other => panic!("Expected Read relation, got {other:?}"),
                                 }
                             }
-                            other => panic!("Expected Filter relation, got {:?}", other),
+                            other => panic!("Expected Filter relation, got {other:?}"),
                         }
                     }
-                    other => panic!("Expected Project relation, got {:?}", other),
+                    other => panic!("Expected Project relation, got {other:?}"),
                 }
             }
-            other => panic!("Expected Rel type, got {:?}", other),
+            other => panic!("Expected Rel type, got {other:?}"),
         }
     }
 }

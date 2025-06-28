@@ -573,7 +573,7 @@ mod tests {
         let rel = Relation::from(&read_rel);
 
         let (result, errors) = ctx.textify(&rel);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(
             result,
             "Read[some_db.test_table => col1:i32?, \"column 2\":string?]"
@@ -661,7 +661,7 @@ mod tests {
         let rel = Relation::from(&rel);
 
         let (result, errors) = ctx.textify(&rel);
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
 Filter[gt($0, 10:i32) => $0, $1]
   Read[test_table => col1:i32?, col2:i32?]"#

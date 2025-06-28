@@ -656,7 +656,7 @@ mod tests {
         let err = errs.first();
         let (&k, &a) = match err {
             FormatError::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
-            _ => panic!("Expected Lookup MissingAnchor: {}", err),
+            _ => panic!("Expected Lookup MissingAnchor: {err}"),
         };
 
         assert_eq!(k, ExtensionKind::TypeVariation);
@@ -688,7 +688,7 @@ mod tests {
         let err = errs.first();
         let (&k, &a) = match err {
             FormatError::Lookup(MissingReference::MissingAnchor(k, a)) => (k, a),
-            _ => panic!("Expected Lookup MissingAnchor: {}", err),
+            _ => panic!("Expected Lookup MissingAnchor: {err}"),
         };
         assert_eq!(k, ExtensionKind::Type);
         assert_eq!(a, 12589);

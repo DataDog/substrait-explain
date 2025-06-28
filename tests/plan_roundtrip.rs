@@ -17,7 +17,7 @@ fn roundtrip_plan(input: &str) {
     let plan = match Parser::parse(input) {
         Ok(plan) => plan,
         Err(e) => {
-            println!("Error parsing plan:\n{}", e);
+            println!("Error parsing plan:\n{e}");
             panic!("{}", e);
         }
     };
@@ -29,7 +29,7 @@ fn roundtrip_plan(input: &str) {
     if !errors.is_empty() {
         println!("Formatting errors:");
         for error in errors {
-            println!("  {}", error);
+            println!("  {error}");
         }
         panic!("Formatting errors occurred");
     }
@@ -51,7 +51,7 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let simple_plan = match Parser::parse(input) {
         Ok(plan) => plan,
         Err(e) => {
-            println!("Error parsing simple plan:\n{}", e);
+            println!("Error parsing simple plan:\n{e}");
             panic!("{}", e);
         }
     };
@@ -60,7 +60,7 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let verbose_plan = match Parser::parse(verbose_input) {
         Ok(plan) => plan,
         Err(e) => {
-            println!("Error parsing verbose plan:\n{}", e);
+            println!("Error parsing verbose plan:\n{e}");
             panic!("{}", e);
         }
     };
@@ -69,14 +69,14 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let verbose_options = OutputOptions::verbose();
     let (simple_verbose_writer, simple_verbose_errors) =
         PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan);
-    let simple_verbose_actual = format!("{}", simple_verbose_writer);
+    let simple_verbose_actual = format!("{simple_verbose_writer}");
     simple_verbose_errors
         .errs()
         .expect("Errors during simple -> verbose conversion");
 
     let (verbose_verbose_writer, verbose_verbose_errors) =
         PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan);
-    let verbose_verbose_actual = format!("{}", verbose_verbose_writer);
+    let verbose_verbose_actual = format!("{verbose_verbose_writer}");
     verbose_verbose_errors
         .errs()
         .expect("Errors during verbose -> verbose conversion");
@@ -93,14 +93,14 @@ fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let simple_options = OutputOptions::default();
     let (simple_simple_writer, simple_simple_errors) =
         PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan);
-    let simple_simple_actual = format!("{}", simple_simple_writer);
+    let simple_simple_actual = format!("{simple_simple_writer}");
     simple_simple_errors
         .errs()
         .expect("Errors during simple -> simple conversion");
 
     let (verbose_simple_writer, verbose_simple_errors) =
         PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan);
-    let verbose_simple_actual = format!("{}", verbose_simple_writer);
+    let verbose_simple_actual = format!("{verbose_simple_writer}");
     verbose_simple_errors
         .errs()
         .expect("Errors during verbose -> simple conversion");

@@ -387,7 +387,7 @@ mod tests {
         let emit_kind = &filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
         let emit = match emit_kind {
             EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
         assert_eq!(emit, &[0, 1, 2]);
     }
@@ -409,7 +409,7 @@ mod tests {
         let emit_kind = &project.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
         let emit = match emit_kind {
             EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
         // Output mapping should be [0, 1, 3]. References are 0-2; expression is 3.
         assert_eq!(emit, &[0, 1, 3]);
@@ -432,7 +432,7 @@ mod tests {
         let emit_kind = &project.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
         let emit = match emit_kind {
             EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {:?}", emit_kind),
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
         // Direct mapping: [input_fields..., 42, 100] (input fields first, then expressions)
         // Output mapping: [5, 0, 6, 2, 1] (to get: 42, $0, 100, $2, $1)
