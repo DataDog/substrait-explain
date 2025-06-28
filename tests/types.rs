@@ -12,7 +12,7 @@ fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {
     let t = match result {
         Ok(t) => t,
         Err(e) => {
-            println!("Error parsing {}:\n{}", input, e);
+            println!("Error parsing {input}:\n{e}");
             panic!("{}", e);
         }
     };

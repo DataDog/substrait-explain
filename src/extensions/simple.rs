@@ -477,7 +477,7 @@ mod tests {
 
     fn assert_no_errors(errs: &[InsertError]) {
         for err in errs {
-            println!("Error: {:?}", err);
+            println!("Error: {err:?}");
         }
         assert!(errs.is_empty());
     }

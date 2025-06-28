@@ -183,11 +183,11 @@ mod tests {
         let options = OutputOptions::default();
         let (writer, errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
         let mut output = String::new();
-        write!(output, "{}", writer).unwrap();
+        write!(output, "{writer}").unwrap();
 
         // Assert that there are no errors
         let errors: Vec<_> = errors.into();
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
 
         let expected = r#"
 === Extensions
@@ -203,8 +203,7 @@ Project[$0, $1, add($0, $1)]
 
         assert_eq!(
             output, expected,
-            "Output:\n---\n{}\n---\nExpected:\n---\n{}\n---",
-            output, expected
+            "Output:\n---\n{output}\n---\nExpected:\n---\n{expected}\n---"
         );
     }
 }
