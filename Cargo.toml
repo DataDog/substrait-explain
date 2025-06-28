@@ -2,6 +2,13 @@
 name = "substrait-explain"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Wendell Smith <wendell.smith@datadoghq.com>",
+    "DataDog <opensource@datadoghq.com>",
+]
+license = "Apache-2.0"
+repository = "https://github.com/DataDog/substrait-explain"
+description = "A library for explaining Substrait plans."
 
 [[example]]
 name = "advanced_usage"
