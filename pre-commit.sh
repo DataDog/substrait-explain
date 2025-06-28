@@ -56,7 +56,7 @@ fi
 SCRIPT_DIR=$(dirname "$0") # Gets the directory of this script, should be the repo root
 
 # Check formatting for the entire project
-COMMAND="cargo fmt -- --check"
+COMMAND="cargo fmt -- --check --config imports_granularity=Module,group_imports=StdExternalCrate"
 echo "\$ $COMMAND"
 $COMMAND
 RESULT=$?
