@@ -156,81 +156,68 @@ Root[result]                   // Level 0 (no indentation)
 
 ## Basic Terminals
 
+### Character Classes
+
+- **`letter`**` := [a-zA-Z]` - Alphabetic characters
+- **`digit`**` := [0-9]` - Numeric digits
+
 ### `name` and `identifier`
 
-- **`name`**: `identifier / quoted_name`
+- **`name`**` := identifier / quoted_name`
   - Used for column names, function names, etc. It can be unquoted if it's a valid identifier, or using "double quotes" if special characters are required (much like SQL)
   - Examples: `function_name`, `"quoted name"`
-- **`identifier`**: `letter (letter / digit / "_")*`
+- **`identifier`**` := letter (letter / digit / "_")*`
   - Used for columns, function names, etc. that are proper identifiers.
   - Examples: `table_name`, `my_function`, `col1`
-- **`quoted_name`**: `'"' ("\\" . / !'"' .)* '"'`
+- **`quoted_name`**` := '"' ("\\" . / !'"' .)* '"'`
   - Used for columns, function names, etc. that are not valid as identifiers, and thus need quoting.
   - Examples: `"function name"`, `"table.name"`, `"table\.name"`, `"function \"with some\nescapes\""`
 
 ### `literal`
 
-- **`integer`**: `"-"? digit+`
+A literal can come in the form of an integer, float, boolean, or string, and can have an optional additional type:
+
+`literal := (integer / float / boolean / string) (":" type)?`
+
+- **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
-- **`float`**: `"-"? digit+ "." digit+`
+  - Default to `i64` type; other integer types may be assigned
+- **`float`**` := "-"? digit+ "." digit+`
   - Examples: `3.14`, `-2.5`, `1.0`
-- **`boolean`**: `"true" / "false"`
+  - Default to `fp64` type; other float types may be assigned
+- **`boolean`**` := "true" / "false"`
   - Examples: `true`, `false`
-- **`string_literal`**: `"'" ("\\" . / !"'" .)* "'"`
+  - May only be boolean type
+- **`string`**` := "'" ("\\" . / !"'" .)* "'"`
   - Examples: `'hello'`, `'table name'`, `'C:\path\to\file'`, `'line1\nline2'`, `'quote\'s here'`
-- **Typed literals**: `string_literal ":" type`
+  - Default to `string` type; other types may also be assigned
+- **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-**TODO**: The current Pest grammar only supports `integer` and `string_literal`. The grammar needs to be extended to support `float`, `boolean`, and typed literals as described above.
+**TODO**: The current Pest grammar only supports `integer` and `string`. The grammar needs to be extended to support `float`, `boolean`, and typed literals as described above.
 
 ## Types
 
-The type syntax in this grammar generally follows the [standard Substrait type definition syntax](https://substrait.io/types/type_parsing/), with some modifications for user-defined types (UDTs) and our specific text format.
+The type syntax in this grammar follows the [standard Substrait type definition syntax](https://substrait.io/types/type_parsing/), with extensions to support anchors and URI references for user-defined types.
 
-### Standard Substrait Type Syntax
+### Type Syntax Overview
 
-The standard Substrait type syntax follows this pattern:
+All types follow this general pattern:
 
 ```text
-name?<param0,...,paramN>
+type := "u!"? name anchor? uri_anchor? nullability? parameters?
 ```
-
-_Or with PEG Syntax_: `name "?"? "<" (param ("," param)*)? ">"`
 
 Where:
 
-- **name**: Type name (case-insensitive, lowercase preferred)
-- **?**: Optional nullability indicator (defaults to non-nullable)
-- **<param0,...,paramN>**: Optional parameters (types, integers, etc.)
-
-### Modifications in This Grammar
-
-This grammar makes the following modifications to the standard syntax:
-
-**Common Components**:
-
-- **`anchor`**: `"#" integer` - Extension anchor (e.g., `#10`)
-- **`uri_anchor`**: `"@" integer` - URI anchor (e.g., `@1`)
-- **`param`**: `type / integer / name` - Type parameter (can be a type, integer, or name)
-- **`parameters`**: `"<" (param ("," param)*)? ">"` - Type parameters in angle brackets
-
-**Comparison with Standard Substrait**:
-
-1. **User-Defined Types (UDTs)**: Extended syntax to support anchors and URI references
-
-   - Standard: `"u!" name nullability? parameters?`
-   - This grammar: `"u!"? name anchor? uri_anchor? nullability? parameters?`
-   - **Same**: `u!` prefix, name, nullability, parameters
-   - **Different**: This grammar adds optional `anchor` and `uri_anchor` for extension references, and the `u!` prefix is optional
-
-2. **Struct Syntax**: Follows standard Substrait struct syntax
-
-   - Definition: `"struct" nullability? parameters`
-
-3. **Parameterized Types**: Uses the same syntax and literals as standard Substrait
-   - Standard: `FIXEDCHAR`, `VARCHAR`, `FIXEDBINARY`, `DECIMAL`, `INTERVAL_DAY`, `PRECISION_TIME`, `PRECISION_TIMESTAMP`, etc. (case-insensitive)
-   - This grammar: Same syntax and literals, but currently only implements `LIST`, `MAP`, `STRUCT` (and outputs lower-case by default)
+- **`"u!"`** - Optional prefix for user-defined types
+- **`name`** - Type name (case-insensitive, lowercase preferred)
+- **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
+- **`uri_anchor`**` := "@" integer` - URI anchor (e.g., `@1`)
+- **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
+- **`parameters`**` := "<" (param ("," param)*)? ">"` - Optional type parameters
+- **`param`**` := type / integer / name` - Type parameter (type, integer, or name)
 
 ### Simple Types
 
@@ -246,18 +233,16 @@ Simple types are the basic Substrait types with optional nullability.
 - `timestamp`, `timestamp_tz`, `date`, `time`
 - `interval_year`, `uuid`
 
-**Note**: The official grammar is case-insensitive, but lowercase is preferred here.
-
 **Nullability**:
 
 - `?` - nullable
-- `⁉` - unspecified nullability
+- `⁉` - unspecified nullability (not generally valid)
 - (nothing) - non-nullable
 
 **Examples**:
 
 ```rust
-use substrait_explain::parser::Parser;
+# use substrait_explain::parser::Parser;
 
 let plan_text = r#"
 === Plan
@@ -265,12 +250,12 @@ Root[result]
   Project[$0, $1]
     Read[data => int_field:i64, string_field:string?]
 "#;
-
-let plan = match Parser::parse(plan_text) {
-    Ok(plan) => plan,
-    Err(e) => panic!("{}", e),
-};
-assert_eq!(plan.relations.len(), 1);
+#
+# let plan = match Parser::parse(plan_text) {
+#     Ok(plan) => plan,
+#     Err(e) => panic!("{}", e),
+# };
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Compound Types
@@ -297,7 +282,15 @@ assert_eq!(plan.relations.len(), 1);
 
 ### User-Defined Types
 
+User-defined types extend the standard Substrait UDT syntax to support anchors and URI references.
+
 **Syntax**: `"u!"? name anchor? uri_anchor? nullability? parameters?`
+
+**Key differences from standard Substrait**:
+
+- The `u!` prefix is optional (can be omitted when anchors are present)
+- Adds optional `anchor` and `uri_anchor` for extension references
+- Maintains compatibility with standard Substrait UDT syntax
 
 **Examples**:
 
@@ -320,7 +313,7 @@ Functions:
 === Plan
 Root[result]
   Project[$0, $1, $2]
-    Read[data => point_field:point#8@2?<i8>, custom_field:my_type#10, prefixed_field:u!custom_type]
+    Read[data => point_field:point#8@1?<i8>, custom_field:my_type#9, prefixed_field:u!custom_type]
 "#;
 
 let plan = Parser::parse(plan_text).unwrap();
@@ -329,11 +322,20 @@ assert_eq!(plan.relations.len(), 1);
 
 ## Expressions
 
+**Syntax**: `expression := function_call / reference / literal`
+
+**Examples**
+
+```text
+add($3, 10)            // Simple function call
+add#10@2(#3, 10):int   // Function call with anchors and type
+```
+
 ### Field References
 
 Currently, only references to fields in the Relations' input are supported.
 
-**Syntax**: `"$" integer`
+**Syntax**: `reference := "$" integer`
 
 **Examples**:
 
@@ -353,15 +355,19 @@ assert_eq!(plan.relations.len(), 1);
 
 ### Function Calls
 
-**Syntax**: `name anchor? uri_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+**Syntax**: `function_call := name anchor? uri_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
 
 **Components**:
 
 - `name` - function name
 - `anchor` - optional anchor (e.g., `#10`)
 - `uri_anchor` - optional URI anchor (e.g., `@1`)
-- `argument_list` - required parentheses with comma-separated expressions
+- `expression` - required parentheses with comma-separated expressions
 - `type` - optional output type
+
+**Aggregate Measures**:
+
+- `aggregate_measure := name anchor? uri_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
 
 **Examples**:
 
@@ -380,32 +386,6 @@ Functions:
 Root[result]
   Project[add($0, $1), add#10@1($0, $1), multiply($0, $1):i64]
     Read[data => a:i64, b:i64]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
-```
-
-### Expression Grammar
-
-**Syntax**: `function_call / reference / literal`
-
-**Examples**:
-
-```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
-=== Extensions
-URIs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-Functions:
-  ## 10 @  1: multiply
-
-=== Plan
-Root[result]
-  Project[$0, 42, multiply($0, 10)]
-    Read[data => field:i64]
 "#;
 
 let plan = Parser::parse(plan_text).unwrap();
@@ -486,14 +466,14 @@ assert_eq!(plan.relations.len(), 1);
 
 ### Read Relation
 
-**Syntax**: `"Read" "[" table_name "=>" named_column_list "]"`
+**Syntax**: `"Read" "[" table_name "=>" (named_column ("," named_column)*)? "]"`
 
 **Components**:
 
-- `table_name` - name of the table to read
-- `named_column_list` - comma-separated list of named columns with types
+- `table_name := name ("." name)*` - table name, optionally qualified with schema/database
+- `named_column := name ":" type` - column name with type annotation
 
-**Examples**:
+**Example**:
 
 ```rust
 use substrait_explain::parser::Parser;
@@ -519,7 +499,7 @@ assert_eq!(plan.relations.len(), 2);
 **Components**:
 
 - `expression` - boolean expression for filtering
-- `reference_list` - comma-separated list of field references to pass through
+- `reference_list := reference ("," reference)*` - comma-separated list of field references to pass through
 
 **Example**:
 
@@ -568,9 +548,46 @@ let plan = Parser::parse(plan_text).unwrap();
 assert_eq!(plan.relations.len(), 1);
 ```
 
+### Aggregate Relation
+
+**Syntax**: `"Aggregate" "[" group_by "=>" aggregate_output "]"`
+
+**Components**:
+
+- `group_by := reference_list | "_"` - comma-separated list of field references for grouping, or `_` for global aggregation
+- `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
+
+**Aggregate Measures**:
+
+- **Field references**: `$0`, `$1` - pass through existing fields
+- **Aggregate functions**: `sum($2)`, `count($1)`, `avg($3)` - apply aggregate functions
+
+**Example**:
+
+```rust
+use substrait_explain::parser::Parser;
+
+let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  ## 10 @  1: sum
+  ## 11 @  1: count
+
+=== Plan
+Root[result]
+  Aggregate[$0 => $0, sum($1), count($2)]           // Group by field 0
+    Read[orders => category:string, amount:i64]
+"#;
+
+let plan = Parser::parse(plan_text).unwrap();
+assert_eq!(plan.relations.len(), 1);
+```
+
 ## Complete Example
 
-A complete query that reads from an orders table, multiplies quantity and price, filters for high-value orders, and outputs the revenue:
+A complete query that reads from an orders table, multiplies quantity and price, filters for high-value orders, groups by category, and outputs the total revenue and order count per category:
 
 ```rust
 use substrait_explain::parser::Parser;
@@ -579,16 +596,19 @@ let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
-  ## 10 @  1: add
-  ## 11 @  1: multiply
-  ## 12 @  1: gt
+  ## 10 @  1: multiply
+  ## 11 @  1: gt
+  ## 12 @  2: sum
+  ## 13 @  2: count
 
 === Plan
-Root[revenue]
-  Filter[gt($2, 100) => $0, $1, $2]
-    Project[$0, $1, multiply($0, $1)]
-      Read[orders => quantity:i32?, price:i64]
+Root[category_stats]
+  Aggregate[$0 => $0, sum($1), count($2)]
+    Filter[gt($1, 100) => $0, $1, $2]
+      Project[$0, multiply($1, $2), $2]
+        Read[orders => category:string, quantity:i32?, price:i64]
 "#;
 
 let plan = Parser::parse(plan_text).unwrap();

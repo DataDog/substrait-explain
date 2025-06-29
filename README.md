@@ -109,6 +109,19 @@ Root[revenue]
 
 Now you can easily see what the query does: it reads from an orders table, multiplies quantity and price, filters for orders where the result is greater than 100, and outputs the revenue.
 
+## Supported Relations
+
+The following Substrait relations are currently supported in the text format:
+
+- `Read`
+- `Project`
+- `Filter`
+- `Aggregate`
+- `Root`
+
+Support for additional relations (e.g., Join, Sort, Set, etc.) is planned for future releases.
+If you need a specific relation, please open an issue or contribute!
+
 ## Quick Start
 
 ```rust
@@ -119,12 +132,16 @@ let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
-  ## 10 @  1: add
+  ## 10 @  1: multiply
+  ## 11 @  2: sum
+  ## 12 @  2: count
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1)]
-    Read[orders => quantity:i32?, price:i64]
+  Aggregate[$0 => $0, sum($1), count($1)]
+    Project[$0, multiply($1, $2)]
+      Read[orders => category:string, quantity:i32?, price:i64]
 "#;
 
 let plan = parse(plan_text).unwrap();
