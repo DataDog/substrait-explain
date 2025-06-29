@@ -68,6 +68,104 @@ cargo doc --open
 - Add documentation for public APIs, and review them with `cargo doc --open`
 - Include tests for new functionality
 
+### Project-Specific Guidelines
+
+#### Error Handling Patterns
+
+This project uses different error handling patterns depending on the context:
+
+##### Pest Parser Context
+
+Unwraps are safe where the grammar enforces the invariants. Always assert that the right rule was used to ensure the same invariants:
+
+```rust
+// Pest parse functions should assert the rule matches
+fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    assert_eq!(pair.as_rule(), Self::rule(), "Expected rule {:?}", Self::rule());
+    // Now safe to unwrap based on grammar guarantees
+    let inner = pair.into_inner().next().unwrap();
+    // ... rest of parsing logic
+}
+```
+
+_Note: Ideally, `pest_derive` would remove the need for unwraps by providing structural types that encode the invariants, ensuring at compile-time the grammar and code remain in sync._
+
+##### Other Parsing Context (e.g., lookups)
+
+These can reasonably fail. For the parser, we error on bad input and attempt to provide good error messages:
+
+```rust
+// Handle parsing failures gracefully
+let value = input.parse::<i32>().map_err(|_| "Invalid integer")?;
+let first = chars.next().ok_or("Expected non-empty input")?;
+```
+
+_Note: When parsing with pest, use `pest::Span` and `pest::Error` types to provide clearer error messages about where in the input parsing failed. This helps users understand exactly what went wrong and where._
+
+##### Formatting Context
+
+When going from a Plan to text, our goal is to be lenient: track errors and return them, but also always provide "best-effort" output. Failures should be noted and pushed to an ErrorAccumulator, but processing should continue, with a `!{message}` block in the output:
+
+```rust
+// Use the Scope::expect pattern for graceful error handling
+write!(w, "{}", ctx.expect(relation.input.as_ref()));
+
+// Avoid protobuf field unwraps - they can legitimately be None
+// RISKY:
+let input = relation.input.as_ref().unwrap();
+let schema = read.base_schema.as_ref().unwrap();
+
+// Better: Use proper Option handling
+write!(w, "{}", ctx.expect(relation.input.as_ref()));
+```
+
+##### Test Context
+
+Unwraps and asserts are fine in tests with known-good inputs:
+
+```rust
+// Acceptable in test code
+let plan = Parser::parse(plan_text).unwrap();
+assert!(result.is_ok());
+```
+
+##### General Best Practices
+
+- Only use `unwrap`, `expect`, or equivalents when you have validated that the operation cannot fail (e.g., after assertions, in test code, or when grammar guarantees apply)
+- Use `unwrap_or` for defaults over `unwrap` when a fallback value is appropriate
+- Use `expect` with descriptive messages when unwrap is necessary but could fail
+- Return `Result` types for operations that can legitimately fail
+- Collect and continue for formatting errors, fail-fast for parsing errors
+
+#### Documentation Formatting
+
+##### Rustdoc Markdown Formatting
+
+Since the markdown files ([`API.md`](API.md), [`GRAMMAR.md`](GRAMMAR.md)) are included in Rustdoc, ensure `#` characters in code examples are escaped as `##` for proper interpretation. Examples in these files are automatically tested through Rustdoc compilation - any code in fenced blocks will be compiled and tested, ensuring documentation accuracy:
+
+```rust
+// Correct for Rustdoc (in markdown files)
+# let plan_text = r#" // Single # gets stripped, line is included for test but excluded for doc output, so only the plan gets shown
+=== Extensions
+Functions:
+  ## 10 @  1: add  // Note: ## becomes # in doc output
+# "#;
+
+// Incorrect for Rustdoc
+let plan_text = r#"
+=== Extensions
+Functions:
+  # 10 @  1: add  // This will be interpreted as a markdown header
+"#;
+```
+
+This is especially important for Substrait extension syntax which uses `#` for anchors. In Rustdoc processing of code examples in backticks:
+
+- Lines starting with `# ` have the `# ` stripped and the code is hidden in the output documentation
+- `##` gets converted to `#` before being compiled as Rust code
+
+Always verify that examples compile and run correctly.
+
 ### Pull Request Process
 
 1. Fork the repository

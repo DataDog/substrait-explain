@@ -96,21 +96,56 @@ pub fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators:
     pair
 }
 
-pub fn unescape_string(s: &str, opener: char, closer: char) -> String {
+/// Unescapes a quoted string literal, handling escape sequences.
+///
+/// # Arguments
+/// * `pair` - The pest pair containing the string to unescape (must be Rule::string_literal or Rule::quoted_name).
+///
+/// # Returns
+/// * `String` with the unescaped contents.
+///
+/// # Panics
+/// Panics if the rule is not `string_literal` or `quoted_name` (this should never happen
+/// if the pest grammar is working correctly).
+///
+pub fn unescape_string(pair: pest::iterators::Pair<Rule>) -> String {
+    let s = pair.as_str();
+
+    // Determine opener/closer based on rule type
+    let (opener, closer) = match pair.as_rule() {
+        Rule::string_literal => ('\'', '\''),
+        Rule::quoted_name => ('"', '"'),
+        _ => panic!(
+            "unescape_string called with unexpected rule: {:?}",
+            pair.as_rule()
+        ),
+    };
+
     let mut result = String::new();
     let mut chars = s.chars();
-    let first = chars.next().unwrap();
-    assert_eq!(first, opener);
+    let first = chars.next().expect("Empty string literal");
+
+    assert_eq!(
+        first, opener,
+        "Expected opening quote '{opener}', got '{first}'"
+    );
+
     // Skip the opening quote
     while let Some(c) = chars.next() {
         match c {
             c if c == closer => {
                 // Skip the closing quote, and assert that there are no more characters.
-                assert_eq!(chars.next(), None);
+                assert_eq!(
+                    chars.next(),
+                    None,
+                    "Unexpected characters after closing quote"
+                );
                 break;
             }
             '\\' => {
-                let next = chars.next().unwrap();
+                let next = chars
+                    .next()
+                    .expect("Incomplete escape sequence at end of string");
                 match next {
                     'n' => result.push('\n'),
                     't' => result.push('\t'),

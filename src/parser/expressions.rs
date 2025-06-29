@@ -138,11 +138,7 @@ impl ScopedParsePair for Literal {
         match value.as_rule() {
             Rule::integer => to_int_literal(value, typ),
             Rule::string_literal => Ok(Literal {
-                literal_type: Some(LiteralType::String(unescape_string(
-                    value.as_str(),
-                    '\'',
-                    '\'',
-                ))),
+                literal_type: Some(LiteralType::String(unescape_string(value))),
                 nullable: false,
                 type_variation_reference: 0,
             }),
@@ -261,7 +257,7 @@ impl ParsePair for Name {
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
             Rule::identifier => Name(inner.as_str().to_string()),
-            Rule::quoted_name => Name(unescape_string(inner.as_str(), '\'', '\'')),
+            Rule::quoted_name => Name(unescape_string(inner)),
             _ => unreachable!("Name unexpected rule: {:?}", inner.as_rule()),
         }
     }
