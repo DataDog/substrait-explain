@@ -99,10 +99,9 @@ impl ScopedParsePair for Parameter {
 fn parse_simple_type(pair: Pair<Rule>) -> Type {
     assert_eq!(pair.as_rule(), Rule::simple_type);
     let mut iter = iter_pairs(pair.into_inner());
-    let name = iter.pop_if(Rule::simple_type_name).unwrap().as_str();
+    let name = iter.pop(Rule::simple_type_name).as_str();
     let nullability = iter.parse_next::<Nullability>();
     iter.done();
-
     let kind = match name {
         "boolean" => Kind::Bool(proto::r#type::Boolean {
             nullability: nullability.into(),
@@ -138,7 +137,6 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
         }),
         _ => unimplemented!("{}", name),
     };
-
     Type { kind: Some(kind) }
 }
 
@@ -196,19 +194,18 @@ fn parse_user_defined_type(
     let span = pair.as_span();
     assert_eq!(pair.as_rule(), Rule::user_defined_type);
     let mut iter = iter_pairs(pair.into_inner());
-    let name = iter.pop_if(Rule::name).unwrap().as_str();
-
+    let name = iter.pop(Rule::name).as_str();
     let anchor = iter
-        .pop_if(Rule::anchor)
+        .try_pop(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
     // TODO: Handle uri_anchor; validate that it matches the anchor
     let _uri_anchor = iter
-        .pop_if(Rule::uri_anchor)
+        .try_pop(Rule::uri_anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
     let nullability = iter.parse_next::<Nullability>();
-    let parameters = match iter.pop_if(Rule::parameters) {
+    let parameters = match iter.try_pop(Rule::parameters) {
         Some(p) => parse_parameters(extensions, p)?,
         None => Vec::new(),
     };

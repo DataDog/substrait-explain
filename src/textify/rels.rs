@@ -5,7 +5,8 @@ use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::{
-    Expression, FilterRel, NamedStruct, PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, Type,
+    AggregateFunction, AggregateRel, Expression, FilterRel, NamedStruct, PlanRel, ProjectRel,
+    ReadRel, Rel, RelCommon, RelRoot, Type,
 };
 
 use super::expressions::Reference;
@@ -55,6 +56,7 @@ pub enum Value<'a> {
     List(Vec<Value<'a>>),
     Reference(i32),
     Expression(&'a Expression),
+    AggregateFunction(&'a AggregateFunction),
     Missing(PlanError),
 }
 
@@ -92,6 +94,7 @@ impl<'a> Textify for Value<'a> {
             Value::List(values) => write!(w, "[{}]", ctx.separated(values, ", ")),
             Value::Reference(i) => write!(w, "{}", Reference(*i)),
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
+            Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
         }
     }
@@ -211,120 +214,7 @@ impl<'a> Relation<'a> {
     }
 }
 
-// /// A RelRef is a tree of relations in a uniform format.
-// pub struct RelRef<'a> {
-//     pub rel_type: &'a RelType,
-//     // The number of column inputs. We don't track types here.
-//     pub inputs: usize,
-//     // The children of this relation. None means the child is missing.
-//     pub children: Vec<Option<RelRef<'a>>>,
-// }
-
-// impl<'a> RelRef<'a> {
-//     pub fn new(rel_type: &'a RelType, inputs: usize, children: Vec<Option<RelRef<'a>>>) -> Self {
-//         Self {
-//             rel_type,
-//             inputs,
-//             children,
-//         }
-//     }
-// }
-
-// #[derive(Debug, Clone, Error)]
-// #[error("Expected {expected} children, found {found}")]
-// pub struct MissingChild<'a> {
-//     // The relation that is missing a child. TODO: Add its name or path or
-//     // something to the error message.
-//     pub rel: &'a Rel,
-//     pub expected: usize,
-//     pub found: usize,
-// }
-
-// impl<'a> RelRef<'a> {
-//     pub fn assemble(rel: &'a RelType, children: Vec<Option<RelRef<'a>>>) -> Self {
-//         let children = rel.iter().map(|r| r.map(|r| RelRef::from(r))).collect();
-//         todo!()
-//     }
-// }
-
-// impl<'a> From<&'a Rel> for RelRef<'a> {
-//     fn from(rel: &'a Rel) -> Self {
-//         let mut errors = vec![];
-//         let rel = match rel.rel_type {
-//             Some(ref rt @ RelType::Read(_)) => Self {
-//                 rel_type: rt,
-//                 inputs: 0,
-//                 children: vec![],
-//             },
-//             Some(ref rt @ RelType::Filter(ref f)) => {
-//                 let (children, child_errors) = convert_children(vec![f.input.as_deref()], rel);
-//                 let inputs = children.iter().map(|c| c.inputs).sum();
-//                 errors.extend(child_errors);
-//                 Self {
-//                     rel_type: rt,
-//                     inputs,
-//                     children,
-//                 }
-//             }
-//             Some(ref rt @ RelType::Project(ref p)) => {
-//                 let (children, child_errors) = convert_children(vec![p.input.as_deref()], rel);
-//                 let inputs = children.iter().map(|c| c.inputs).sum();
-//                 errors.extend(child_errors);
-//                 Self {
-//                     rel_type: rt,
-//                     inputs,
-//                     children,
-//                 }
-//             }
-
-//             _ => todo!(),
-//         };
-
-//         (rel, errors)
-//     }
-// }
-
-// impl<'a> Textify for Rel {
-//     fn name() -> &'static str {
-//         "Rel"
-//     }
-
-//     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-//         let rel_type = match &self.rel_type {
-//             Some(RelType::Read(r)) => Relation::from(r.as_ref()),
-//             Some(RelType::Filter(r)) => Relation::from_filter(
-//                 r.as_ref(),
-//                 &Relation::from(r.input.as_ref().unwrap().as_ref()),
-//             ),
-//             Some(r) => {
-//                 return write!(
-//                     w,
-//                     "{}",
-//                     ctx.failure(TextifyError::unimplemented(
-//                         "Rel",
-//                         Some(format!("{:?}", r)),
-//                         "Reltype not yet implemented",
-//                     ))
-//                 );
-//             }
-
-//             None => {
-//                 return write!(
-//                     w,
-//                     "{}",
-//                     ctx.failure(TextifyError::invalid(
-//                         "Rel",
-//                         Some("rel_type"),
-//                         "Rel type is required",
-//                     ))
-//                 );
-//             }
-//         };
-
-//         rel_type.textify(ctx, w)
-//     }
-// }
-
+#[derive(Debug, Copy, Clone)]
 pub struct TableName<'a>(&'a [String]);
 
 impl<'a> Textify for TableName<'a> {
@@ -465,7 +355,62 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Read(r)) => Relation::from(r.as_ref()),
             Some(RelType::Filter(r)) => Relation::from(r.as_ref()),
             Some(RelType::Project(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
+        }
+    }
+}
+
+impl<'a> From<&'a AggregateRel> for Relation<'a> {
+    /// Convert an AggregateRel to a Relation for textification.
+    ///
+    /// The conversion follows this logic:
+    /// 1. Arguments: Group-by expressions (as Value::Expression)
+    /// 2. Columns: All possible outputs in order:
+    ///    - First: Group-by field references (Value::Reference)
+    ///    - Then: Aggregate function measures (Value::AggregateFunction)
+    /// 3. Emit: Uses the relation's emit mapping to select which outputs to display
+    /// 4. Children: The input relation
+    fn from(rel: &'a AggregateRel) -> Self {
+        // Arguments: group-by fields (as expressions)
+        let arguments = rel
+            .grouping_expressions
+            .iter()
+            .map(Value::Expression)
+            .collect();
+
+        // Build all possible outputs in the correct order
+        let mut all_outputs: Vec<Value> = vec![];
+
+        // First, add all input fields (group-by references)
+        // These are indexed 0..group_by_count in the output
+        let input_field_count = rel.grouping_expressions.len();
+        for i in 0..input_field_count {
+            all_outputs.push(Value::Reference(i as i32));
+        }
+
+        // Then, add all measures (aggregate functions)
+        // These are indexed after the group-by fields
+        for m in &rel.measures {
+            if let Some(agg_fn) = m.measure.as_ref() {
+                all_outputs.push(Value::AggregateFunction(agg_fn));
+            }
+        }
+
+        // Get the emit mapping to select the correct outputs
+        let emit = get_emit(rel.common.as_ref());
+
+        Relation {
+            name: "Aggregate",
+            arguments,
+            columns: all_outputs,
+            emit,
+            children: rel
+                .input
+                .as_ref()
+                .map(|c| Some(Relation::from(c.as_ref())))
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -526,8 +471,11 @@ mod tests {
     use substrait::proto::expression::{Literal, RexType, ScalarFunction};
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
+    use substrait::proto::rel_common::Emit;
     use substrait::proto::r#type::{self as ptype, Kind, Nullability, Struct};
-    use substrait::proto::{FunctionArgument, NamedStruct, ReadRel, Type};
+    use substrait::proto::{
+        Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
+    };
 
     use super::*;
     use crate::fixtures::TestContext;
@@ -667,5 +615,161 @@ Filter[gt($0, 10:i32) => $0, $1]
   Read[test_table => col1:i32?, col2:i32?]"#
             .trim_start();
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_aggregate_function_textify() {
+        let ctx = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .with_function(1, 11, "count");
+
+        // Create a simple AggregateFunction
+        let agg_fn = AggregateFunction {
+            function_reference: 10, // sum
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        crate::parser::expressions::reference(1),
+                    ))),
+                })),
+            }],
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
+        };
+
+        let value = Value::AggregateFunction(&agg_fn);
+        let (result, errors) = ctx.textify(&value);
+
+        println!("Textification result: {result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "sum($1)");
+    }
+
+    #[test]
+    fn test_aggregate_relation_textify() {
+        let ctx = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .with_function(1, 11, "count");
+
+        // Create a simple AggregateRel
+        let agg_fn1 = AggregateFunction {
+            function_reference: 10, // sum
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        crate::parser::expressions::reference(1),
+                    ))),
+                })),
+            }],
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
+        };
+
+        let agg_fn2 = AggregateFunction {
+            function_reference: 11, // count
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        crate::parser::expressions::reference(1),
+                    ))),
+                })),
+            }],
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
+        };
+
+        let aggregate_rel = AggregateRel {
+            input: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(ReadRel {
+                    common: None,
+                    base_schema: Some(NamedStruct {
+                        names: vec!["category".into(), "amount".into()],
+                        r#struct: Some(Struct {
+                            type_variation_reference: 0,
+                            types: vec![
+                                Type {
+                                    kind: Some(Kind::String(ptype::String {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                                Type {
+                                    kind: Some(Kind::Fp64(ptype::Fp64 {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                            ],
+                            nullability: Nullability::Nullable as i32,
+                        }),
+                    }),
+                    filter: None,
+                    best_effort_filter: None,
+                    projection: None,
+                    advanced_extension: None,
+                    read_type: Some(ReadType::NamedTable(NamedTable {
+                        names: vec!["orders".into()],
+                        advanced_extension: None,
+                    })),
+                }))),
+            })),
+            grouping_expressions: vec![Expression {
+                rex_type: Some(RexType::Selection(Box::new(
+                    crate::parser::expressions::reference(0),
+                ))),
+            }],
+            groupings: vec![],
+            measures: vec![
+                aggregate_rel::Measure {
+                    measure: Some(agg_fn1),
+                    filter: None,
+                },
+                aggregate_rel::Measure {
+                    measure: Some(agg_fn2),
+                    filter: None,
+                },
+            ],
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit {
+                    output_mapping: vec![1, 2], // measures only
+                })),
+                ..Default::default()
+            }),
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&aggregate_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        println!("Aggregate relation textification result:");
+        println!("{result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        // Expected: Aggregate[$0 => sum($1), count($1)]
+        assert!(result.contains("Aggregate[$0 => sum($1), count($1)]"));
     }
 }

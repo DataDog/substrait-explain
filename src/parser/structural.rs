@@ -7,7 +7,9 @@
 use std::fmt;
 
 use substrait::proto::rel::RelType;
-use substrait::proto::{FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot, plan_rel};
+use substrait::proto::{
+    AggregateRel, FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot, plan_rel,
+};
 use thiserror::Error;
 
 use crate::extensions::{SimpleExtensions, simple};
@@ -287,9 +289,7 @@ impl<'a> RelationParser<'a> {
         input_field_count: usize,
     ) -> Result<substrait::proto::Rel, ParseError> {
         assert_eq!(pair.as_rule(), Rule::relation);
-        let mut inner_pairs = pair.clone().into_inner();
-        let p = inner_pairs.next().unwrap();
-        assert!(inner_pairs.next().is_none());
+        let p = unwrap_single_pair(pair);
 
         let (e, l, p, c, ic) = (extensions, line_no, p, child_relations, input_field_count);
 
@@ -297,6 +297,7 @@ impl<'a> RelationParser<'a> {
             Rule::read_relation => self.parse_rel::<ReadRel>(e, l, p, c, ic),
             Rule::filter_relation => self.parse_rel::<FilterRel>(e, l, p, c, ic),
             Rule::project_relation => self.parse_rel::<ProjectRel>(e, l, p, c, ic),
+            Rule::aggregate_relation => self.parse_rel::<AggregateRel>(e, l, p, c, ic),
             _ => todo!(),
         }
     }

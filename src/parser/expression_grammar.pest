@@ -150,10 +150,9 @@ expression = { function_call | reference | literal }
 // `sp` is defined above as whitespace*.
 
 // A URI value can be a sequence of non-whitespace characters
-uri_unquoted = @{ (!whitespace ~ ANY)+ }
-uri_value    = _{ uri_unquoted }
+uri = @{ (!whitespace ~ ANY)+ }
 
-extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri_value }
+extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri }
 
 // -- Simple Extension Declaration (Function, Type, TypeVariation) --
 // Format: #anchor@uri_ref: name
@@ -186,6 +185,7 @@ relation = {
     read_relation
   | filter_relation
   | project_relation
+  | aggregate_relation
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -205,3 +205,20 @@ reference_list  = { (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
 project_relation      = { "Project" ~ "[" ~ project_argument_list ~ "]" }
 project_argument_list = { (project_argument ~ (sp ~ "," ~ sp ~ project_argument)*)? }
 project_argument      = { reference | expression }
+
+// Aggregate relation: groups by specified fields and applies aggregate functions
+// Format: Aggregate[group_by_fields => output_items]
+// Examples:
+// Aggregate[$0 => sum($1), count($1)]  # Group by field 0, output sum and count of field 1
+// Aggregate[$0, $1 => $0, sum($2)]     # Group by fields 0,1, output field 0 and sum of field 2
+// Aggregate[_ => sum($0), count($1)]   # No grouping (global aggregates)
+// Aggregate[ => sum($0), count($1)]    # No grouping (legacy syntax, equivalent to _)
+aggregate_relation    = { "Aggregate" ~ "[" ~ aggregate_group_by ~ sp ~ "=>" ~ sp ~ aggregate_output ~ "]" }
+aggregate_group_by    = { empty | (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
+aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
+aggregate_output_item = { reference | aggregate_measure }
+// TODO: Add support for filter, invocation, etc.
+aggregate_measure = { function_call }
+
+// Empty grouping symbol
+empty = { "_" }

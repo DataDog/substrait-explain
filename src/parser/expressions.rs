@@ -1,3 +1,4 @@
+use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
@@ -5,11 +6,12 @@ use substrait::proto::expression::{
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{I64, Kind, Nullability};
-use substrait::proto::{Expression, FunctionArgument, Type};
+use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
 
 use super::types::get_and_validate_anchor;
 use super::{
-    MessageParseError, ParsePair, Rule, ScopedParsePair, unescape_string, unwrap_single_pair,
+    MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
+    unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
@@ -126,17 +128,20 @@ impl ScopedParsePair for Literal {
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
-        let value = pairs.next().unwrap();
-        let typ = pairs.next();
+        let value = pairs.next().unwrap(); // First item is always the value
+        let typ = pairs.next(); // Second item is optional type
+        assert!(pairs.next().is_none());
         let typ = match typ {
             Some(t) => Some(Type::parse_pair(extensions, t)?),
             None => None,
         };
-        assert!(pairs.next().is_none());
-
         match value.as_rule() {
             Rule::integer => to_int_literal(value, typ),
-            // Rule::string_literal => Ok(LiteralType::String(unescape_string(inner.as_str(), '\'', '\'))),
+            Rule::string_literal => Ok(Literal {
+                literal_type: Some(LiteralType::String(unescape_string(value))),
+                nullable: false,
+                type_variation_reference: 0,
+            }),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
     }
@@ -157,50 +162,43 @@ impl ScopedParsePair for ScalarFunction {
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let span = pair.as_span();
-        let mut pairs = pair.into_inner();
-        let name = Name::parse_pair(pairs.next().unwrap());
-        let mut next = pairs.next().unwrap();
+        let mut iter = RuleIter::from(pair.into_inner());
 
-        // TODO: Function Options.
+        // Parse function name (required)
+        let name = iter.parse_next::<Name>();
 
-        let mut anchor = None;
-        if let Rule::anchor = next.as_rule() {
-            anchor = Some(unwrap_single_pair(next).as_str().parse().unwrap());
-            next = pairs.next().unwrap();
-        }
+        // Parse optional anchor (e.g., #1)
+        let anchor = iter
+            .try_pop(Rule::anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-        // TODO: Handle uri_anchor.
-        let mut _uri_anchor: Option<u32> = None;
-        if let Rule::uri_anchor = next.as_rule() {
-            _uri_anchor = Some(unwrap_single_pair(next).as_str().parse().unwrap());
-            next = pairs.next().unwrap();
-        }
-        assert_eq!(next.as_rule(), Rule::argument_list);
-        // TODO: Handle enum and type arguments.
+        // Parse optional URI anchor (e.g., @1)
+        let _uri_anchor = iter
+            .try_pop(Rule::uri_anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
+
+        // Parse argument list (required)
+        let argument_list = iter.pop(Rule::argument_list);
         let mut arguments = Vec::new();
-        for e in next.into_inner() {
+        for e in argument_list.into_inner() {
             arguments.push(FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
             });
         }
 
-        let output_type = match pairs.next() {
+        // Parse optional output type (e.g., :i64)
+        let output_type = match iter.try_pop(Rule::r#type) {
             Some(t) => Some(Type::parse_pair(extensions, t)?),
             None => None,
         };
 
-        if let Some(v) = pairs.next() {
-            panic!("Expected no more pairs, found '{}': {:?}", v.as_str(), v);
-        }
-
+        iter.done();
         let anchor =
             get_and_validate_anchor(extensions, ExtensionKind::Function, anchor, &name.0, span)?;
-
         Ok(ScalarFunction {
             function_reference: anchor,
             arguments,
-            // TODO: Function Options.
-            options: vec![],
+            options: vec![], // TODO: Function Options
             output_type,
             #[allow(deprecated)]
             args: vec![],
@@ -259,9 +257,47 @@ impl ParsePair for Name {
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
             Rule::identifier => Name(inner.as_str().to_string()),
-            Rule::quoted_name => Name(unescape_string(inner.as_str(), '\'', '\'')),
+            Rule::quoted_name => Name(unescape_string(inner)),
             _ => unreachable!("Name unexpected rule: {:?}", inner.as_rule()),
         }
+    }
+}
+
+impl ScopedParsePair for Measure {
+    fn rule() -> Rule {
+        Rule::aggregate_measure
+    }
+
+    fn message() -> &'static str {
+        "Measure"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        // Extract the inner function_call from aggregate_measure
+        let function_call_pair = unwrap_single_pair(pair);
+        assert_eq!(function_call_pair.as_rule(), Rule::function_call);
+
+        // Parse as ScalarFunction, then convert to AggregateFunction
+        let scalar = ScalarFunction::parse_pair(extensions, function_call_pair)?;
+        Ok(Measure {
+            measure: Some(AggregateFunction {
+                function_reference: scalar.function_reference,
+                arguments: scalar.arguments,
+                options: scalar.options,
+                output_type: scalar.output_type,
+                invocation: 0, // TODO: support invocation (ALL, DISTINCT, etc.)
+                phase: 0, // TODO: support phase (INITIAL_TO_RESULT, PARTIAL_TO_INTERMEDIATE, etc.)
+                sorts: vec![], // TODO: support sorts for ordered aggregates
+                #[allow(deprecated)]
+                args: scalar.args,
+            }),
+            filter: None, // TODO: support filter conditions on aggregate measures
+        })
     }
 }
 

@@ -8,7 +8,9 @@ use substrait::proto::expression::{
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
-use substrait::proto::{Expression, FunctionArgument, FunctionOption, expression as expr};
+use substrait::proto::{
+    AggregateFunction, Expression, FunctionArgument, FunctionOption, expression as expr,
+};
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::SimpleExtensions;
@@ -735,6 +737,38 @@ impl Textify for Expression {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         write!(w, "{}", ctx.expect(self.rex_type.as_ref()))
+    }
+}
+
+impl Textify for AggregateFunction {
+    fn name() -> &'static str {
+        "AggregateFunction"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // Similar to ScalarFunction textification
+        let name_and_anchor = crate::textify::types::NamedAnchor::lookup(
+            ctx,
+            crate::extensions::simple::ExtensionKind::Function,
+            self.function_reference,
+        );
+        let name_and_anchor = ctx.display(&name_and_anchor);
+
+        let args = ctx.separated(&self.arguments, ", ");
+        let options = ctx.separated(&self.options, ", ");
+        let between = if self.arguments.is_empty() || self.options.is_empty() {
+            ""
+        } else {
+            ", "
+        };
+
+        let output = crate::textify::types::OutputType(self.output_type.as_ref());
+        let output_type = ctx.optional(&output, ctx.options().fn_types);
+
+        write!(
+            w,
+            "{name_and_anchor}({args}{between}{options}){output_type}"
+        )
     }
 }
 
