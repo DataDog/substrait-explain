@@ -1,0 +1,4 @@
+# Limit ownership to those directly working in this area. Others are welcome to
+# provide PRs.
+
+* @Datadog/query-semantics @wackywendell
