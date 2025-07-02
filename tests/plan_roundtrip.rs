@@ -256,21 +256,19 @@ Root[category, region, total, count]
 }
 
 #[test]
-fn test_sort_relation_parsing() {
+fn test_sort_relation_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
   Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
     Read[table => a:i32, b:string]"#;
-    // Should parse, but may not roundtrip until textification is updated
-    let _ = Parser::parse(plan).expect("SortRel should parse");
+    roundtrip_plan(plan);
 }
 
 #[test]
-fn test_fetch_relation_parsing() {
+fn test_fetch_relation_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
   Fetch[10, 5 => $0, $1]
     Read[table => a:i32, b:string]"#;
-    // Should parse, but may not roundtrip until textification is updated
-    let _ = Parser::parse(plan).expect("FetchRel should parse");
+    roundtrip_plan(plan);
 }

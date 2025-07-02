@@ -7,6 +7,7 @@ use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
+use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
     AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, PlanRel,
     ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type,
@@ -15,6 +16,7 @@ use substrait::proto::{
 use super::expressions::Reference;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
+use crate::textify::foundation::{ErrorToken, MaybeToken};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -51,7 +53,7 @@ impl NamedRelation for Rel {
 }
 
 pub trait ValueEnum {
-    fn as_enum_str(&self) -> &str;
+    fn as_enum_str(&self) -> MaybeToken<Cow<'static, str>>;
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ pub enum Value<'a> {
     Expression(&'a Expression),
     AggregateFunction(&'a AggregateFunction),
     Missing(PlanError),
-    Enum(Cow<'a, str>),
+    Enum(MaybeToken<Cow<'a, str>>),
 }
 
 impl<'a> Value<'a> {
@@ -365,6 +367,8 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Filter(r)) => Relation::from(r.as_ref()),
             Some(RelType::Project(r)) => Relation::from(r.as_ref()),
             Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
         }
     }
@@ -478,11 +482,7 @@ impl<'a> From<&'a SortRel> for Relation<'a> {
     fn from(rel: &'a SortRel) -> Self {
         let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
         // Arguments: list of SortField, rendered as tuples by Textify
-        let arguments = if !rel.sorts.is_empty() {
-            vec![Value::List(rel.sorts.iter().map(Value::from).collect())]
-        } else {
-            vec![]
-        };
+        let arguments = rel.sorts.iter().map(Value::from).collect();
         let emit = get_emit(rel.common.as_ref());
         // Columns: references as in emit mapping
         let columns = match emit {
@@ -566,7 +566,7 @@ impl<'a> From<&'a SortField> for Value<'a> {
         };
         let direction = match &sf.sort_kind {
             Some(kind) => Value::from(kind),
-            None => Value::Enum(Cow::Borrowed("Unknown")),
+            None => Value::Enum(MaybeToken(Err(ErrorToken("SortKind")))),
         };
         Value::Tuple(vec![field, direction])
     }
@@ -574,32 +574,32 @@ impl<'a> From<&'a SortField> for Value<'a> {
 
 impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
     fn from(enum_val: &'a T) -> Self {
-        Value::Enum(Cow::Borrowed(enum_val.as_enum_str()))
+        let mt_static = enum_val.as_enum_str();
+        let mt = match mt_static {
+            MaybeToken(Ok(Cow::Borrowed(s))) => MaybeToken(Ok(Cow::Borrowed(s))),
+            MaybeToken(Ok(Cow::Owned(ref s))) => MaybeToken(Ok(Cow::Owned(s.clone()))),
+            MaybeToken(Err(e)) => MaybeToken(Err(e)),
+        };
+        Value::Enum(mt)
     }
 }
 
-impl ValueEnum for substrait::proto::sort_field::SortKind {
-    fn as_enum_str(&self) -> &str {
-        match self {
-            substrait::proto::sort_field::SortKind::Direction(d) => {
-                match substrait::proto::sort_field::SortDirection::try_from(*d) {
-                    Ok(substrait::proto::sort_field::SortDirection::AscNullsFirst) => {
-                        "AscNullsFirst"
-                    }
-                    Ok(substrait::proto::sort_field::SortDirection::AscNullsLast) => "AscNullsLast",
-                    Ok(substrait::proto::sort_field::SortDirection::DescNullsFirst) => {
-                        "DescNullsFirst"
-                    }
-                    Ok(substrait::proto::sort_field::SortDirection::DescNullsLast) => {
-                        "DescNullsLast"
-                    }
-                    Ok(substrait::proto::sort_field::SortDirection::Unspecified) => "Unspecified",
-                    Ok(substrait::proto::sort_field::SortDirection::Clustered) => "Clustered",
-                    _ => "Unknown",
-                }
-            }
-            _ => "Unknown",
-        }
+impl ValueEnum for SortKind {
+    fn as_enum_str(&self) -> MaybeToken<Cow<'static, str>> {
+        let d = match self {
+            &SortKind::Direction(d) => SortDirection::try_from(d),
+            _ => return MaybeToken::err("SortKind"),
+        };
+        let s = match d {
+            Err(_e) => return MaybeToken::err("SortKind: Unknown"),
+            Ok(SortDirection::AscNullsFirst) => "AscNullsFirst",
+            Ok(SortDirection::AscNullsLast) => "AscNullsLast",
+            Ok(SortDirection::DescNullsFirst) => "DescNullsFirst",
+            Ok(SortDirection::DescNullsLast) => "DescNullsLast",
+            Ok(SortDirection::Clustered) => "Clustered",
+            Ok(SortDirection::Unspecified) => return MaybeToken::err("SortKind: Unspecified"),
+        };
+        MaybeToken(Ok(Cow::Borrowed(s)))
     }
 }
 

@@ -392,6 +392,19 @@ impl fmt::Display for ErrorToken {
 #[derive(Debug, Copy, Clone)]
 pub struct MaybeToken<V: fmt::Display>(pub Result<V, ErrorToken>);
 
+impl<V: fmt::Display> MaybeToken<V> {
+    pub fn map<F, U: fmt::Display>(self, f: F) -> MaybeToken<U>
+    where
+        F: FnOnce(V) -> U,
+    {
+        MaybeToken(self.0.map(f))
+    }
+
+    pub fn err(message: &'static str) -> MaybeToken<V> {
+        MaybeToken(Err(ErrorToken(message)))
+    }
+}
+
 impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
