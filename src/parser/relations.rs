@@ -1,8 +1,10 @@
+use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
+use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateRel, Expression, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel, RelCommon, Type,
-    aggregate_rel, read_rel, r#type,
+    AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel,
+    RelCommon, SortField, SortRel, Type, aggregate_rel, read_rel, r#type,
 };
 
 use super::{ErrorKind, MessageParseError, Rule, ScopedParsePair, unwrap_single_pair};
@@ -135,6 +137,19 @@ pub(crate) fn expect_one_child(
     }
 }
 
+/// Parse a reference list Pair and return an EmitKind::Emit.
+fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
+    assert_eq!(pair.as_rule(), Rule::reference_list);
+    let output_mapping = pair
+        .into_inner()
+        .map(|p| {
+            let inner = crate::parser::unwrap_single_pair(p);
+            inner.as_str().parse::<i32>().unwrap()
+        })
+        .collect::<Vec<i32>>();
+    EmitKind::Emit(Emit { output_mapping })
+}
+
 impl RelationParsePair for ReadRel {
     fn rule() -> Rule {
         Rule::read_relation
@@ -234,15 +249,8 @@ impl RelationParsePair for FilterRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
         let references_pair = iter.pop(Rule::reference_list);
-        let output_mapping = references_pair
-            .into_inner()
-            .map(|p| {
-                let inner = crate::parser::unwrap_single_pair(p);
-                inner.as_str().parse::<i32>().unwrap()
-            })
-            .collect::<Vec<i32>>();
+        let emit = parse_reference_emit(references_pair);
         iter.done();
-        let emit = EmitKind::Emit(Emit { output_mapping });
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -411,6 +419,161 @@ impl RelationParsePair for AggregateRel {
             measures,
             common: Some(common),
             advanced_extension: None,
+        })
+    }
+}
+
+// Parser for SortField: (reference, sort_direction)
+pub struct ParsedSortField {
+    pub field: i32,
+    pub direction: SortDirection,
+}
+
+impl ParsePair for ParsedSortField {
+    fn rule() -> Rule {
+        Rule::sort_field
+    }
+
+    fn message() -> &'static str {
+        "SortField"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut iter = RuleIter::from(pair.into_inner());
+        let reference_pair = iter.pop(Rule::reference);
+        let inner = crate::parser::unwrap_single_pair(reference_pair);
+        let field: i32 = inner.as_str().parse().unwrap();
+        let direction_pair = iter.pop(Rule::sort_direction);
+        let direction = match direction_pair.as_str().trim_start_matches('&') {
+            "AscNullsFirst" => SortDirection::AscNullsFirst,
+            "AscNullsLast" => SortDirection::AscNullsLast,
+            "DescNullsFirst" => SortDirection::DescNullsFirst,
+            "DescNullsLast" => SortDirection::DescNullsLast,
+            other => panic!("Unknown sort direction: {other}"),
+        };
+        iter.done();
+        ParsedSortField { field, direction }
+    }
+}
+
+impl RelationParsePair for SortRel {
+    fn rule() -> Rule {
+        Rule::sort_relation
+    }
+
+    fn message() -> &'static str {
+        "SortRel"
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Sort(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let mut iter = RuleIter::from(pair.into_inner());
+        let sort_field_list_pair = iter.pop(Rule::sort_field_list);
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        let mut sorts = Vec::new();
+        for sort_field_pair in sort_field_list_pair.into_inner() {
+            assert_eq!(
+                sort_field_pair.as_rule(),
+                Rule::sort_field,
+                "Expected sort_field, got {:?}",
+                sort_field_pair.as_rule()
+            );
+            let parsed = ParsedSortField::parse_pair(sort_field_pair);
+            sorts.push(SortField {
+                expr: Some(Expression {
+                    rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
+                        crate::parser::expressions::reference(parsed.field),
+                    ))),
+                }),
+                sort_kind: Some(SortKind::Direction(parsed.direction as i32)),
+            });
+        }
+        let emit = parse_reference_emit(reference_list_pair);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+        iter.done();
+        Ok(SortRel {
+            input: Some(input),
+            sorts,
+            common: Some(common),
+            advanced_extension: None,
+        })
+    }
+}
+
+impl RelationParsePair for FetchRel {
+    fn rule() -> Rule {
+        Rule::fetch_relation
+    }
+
+    fn message() -> &'static str {
+        "FetchRel"
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Fetch(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let mut iter = RuleIter::from(pair.into_inner());
+        let count_pair = iter.pop(Rule::fetch_count);
+        let offset_pair = iter.pop(Rule::fetch_offset);
+        let reference_list_pair = iter.pop(Rule::reference_list);
+
+        // Unwrap fetch_count and fetch_offset to get the inner expression or empty
+        let count_inner = crate::parser::unwrap_single_pair(count_pair);
+        let offset_inner = crate::parser::unwrap_single_pair(offset_pair);
+
+        let count_mode = match count_inner.as_rule() {
+            Rule::empty => None,
+            _ => Some(CountMode::CountExpr(Box::new(Expression::parse_pair(
+                extensions,
+                count_inner,
+            )?))),
+        };
+        let offset_mode = match offset_inner.as_rule() {
+            Rule::empty => None,
+            _ => Some(OffsetMode::OffsetExpr(Box::new(Expression::parse_pair(
+                extensions,
+                offset_inner,
+            )?))),
+        };
+        let emit = parse_reference_emit(reference_list_pair);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+        iter.done();
+        Ok(FetchRel {
+            input: Some(input),
+            common: Some(common),
+            advanced_extension: None,
+            offset_mode,
+            count_mode,
         })
     }
 }

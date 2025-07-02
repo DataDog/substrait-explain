@@ -186,6 +186,8 @@ relation = {
   | filter_relation
   | project_relation
   | aggregate_relation
+  | sort_relation
+  | fetch_relation
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -212,7 +214,6 @@ project_argument      = { reference | expression }
 // Aggregate[$0 => sum($1), count($1)]  # Group by field 0, output sum and count of field 1
 // Aggregate[$0, $1 => $0, sum($2)]     # Group by fields 0,1, output field 0 and sum of field 2
 // Aggregate[_ => sum($0), count($1)]   # No grouping (global aggregates)
-// Aggregate[ => sum($0), count($1)]    # No grouping (legacy syntax, equivalent to _)
 aggregate_relation    = { "Aggregate" ~ "[" ~ aggregate_group_by ~ sp ~ "=>" ~ sp ~ aggregate_output ~ "]" }
 aggregate_group_by    = { empty | (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
 aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
@@ -222,3 +223,13 @@ aggregate_measure = { function_call }
 
 // Empty grouping symbol
 empty = { "_" }
+
+// SortRel: Sort[($0, &AscNullsFirst), ($2, &DescNullsLast) => ...]
+sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+sort_field_list = { (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*)? }
+sort_field      = { "(" ~ sp ~ reference ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
+sort_direction  = { "&AscNullsFirst" | "&AscNullsLast" | "&DescNullsFirst" | "&DescNullsLast" }
+
+fetch_relation = { "Fetch" ~ "[" ~ fetch_count ~ sp ~ "," ~ sp ~ fetch_offset ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+fetch_count    = { expression | empty }
+fetch_offset   = { expression | empty }

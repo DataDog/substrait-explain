@@ -11,42 +11,37 @@ The Substrait text format consists of two main sections:
 
 ## Design Principles
 
-The grammar is designed around several concrete choices that make it practical and consistent:
+The grammar is designed around several concrete choices that make it practical, consistent, and easy to use:
 
-### 1. Single-Line Relations with Consistent Pattern
+### 1. Single-Line, Structured Relations
 
-All relations follow the same structure: `Name[arguments => columns]`
+- All relations use a single-line, regular, structured argument format that maps directly to Substrait proto fields and enums.
+- The canonical form is:
+  `RelationName[arguments => columns]`
+- The `arguments` are relation-specific inputs (e.g., expressions, tuples, enums); the `columns` are the output fields or schema for that relation.
+- Arguments follow a regular pattern (tuple, input expression, etc.) or combination, and should map directly to Substrait proto fields and enums. Use tuples for compound arguments and `&`-prefixed enum variants for enums.
+- This ensures consistency, clarity, and extensibility across all relations.
 
-- **Name**: The relation type (Read, Filter, Project, etc.)
-- **Arguments**: Input expressions, field references, or function calls
-- **Arrow**: `=>` separates arguments from output columns
-- **Columns**: Output column names and types
+### 2. SQL-Like References, Literals, and Enums
 
-Every relation fits on one line with indentation showing hierarchy. This uniform pattern makes it easy to parse any relation, understand input/output structure, and add new relation types.
-
-### 2. SQL-Like Field References and Literals
-
-- Uses `$0`, `$1`, `$2` for field references (like SQL's positional references)
-- Types are shown inline with literals and column names: `42:i64`, `'hello':string`
-- Nullability is explicit: `string?` for nullable, `string` for non-nullable
+- Field references: `$0`, `$1`, etc.
+- Types: `42:i64`, `'hello':string`, `string?` for nullable.
+- Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNullsFirst`), matching the Substrait proto definition. This applies to all enum fields in relation arguments.
 
 This prevents ambiguity and makes plans self-documenting while being familiar to SQL developers.
 
 ### 3. Extension Support and Structured Syntax
 
-- Extensions section defines URIs and function mappings
-- Function calls can include anchors: `add#10@1($0, $1)`
-- Clear structural boundaries: `[]` for relations, `<>` for types, `()` for functions
-
-This maintains full Substrait compatibility while keeping the text format readable and parseable.
+- Extensions section defines URIs and function/type mappings.
+- Function calls can include anchors: `add#10@1($0, $1)`.
+- Clear structural boundaries: `[]` for relations, `<>` for types, `()` for functions.
+- Maintains full Substrait compatibility while keeping the text format readable and parseable.
 
 ### 4. Hierarchical Organization
 
-- Section headers (`===`) separate major components
-- 2-space indentation shows query plan hierarchy
-- Consistent formatting across all document elements
-
-This ensures the format is consistent, parseable, readable, extensible, and compatible with Substrait protobuf.
+- Section headers (`===`) separate major components.
+- 2-space indentation shows query plan hierarchy.
+- Consistent formatting across all document elements.
 
 The format maps directly to Substrait protobuf messages, with relations, expressions, types, and extensions corresponding to their respective protobuf structures.
 
@@ -362,35 +357,26 @@ assert_eq!(plan.relations.len(), 1);
 - `name` - function name
 - `anchor` - optional anchor (e.g., `#10`)
 - `uri_anchor` - optional URI anchor (e.g., `@1`)
-- `expression` - required parentheses with comma-separated expressions
+- `expression` - as above
 - `type` - optional output type
 
 **Aggregate Measures**:
 
+### Aggregate Measures
+
+Aggregate measures are used in the output of Aggregate relations. They can be either field references (to pass through existing fields) or aggregate function calls (to compute aggregates).
+
+**Syntax**:
+
 - `aggregate_measure := name anchor? uri_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
+- Field references: `$0`, `$1`, ...
 
 **Examples**:
 
-```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
-=== Extensions
-URIs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-Functions:
-  ## 10 @  1: add
-  ## 11 @  1: multiply
-
-=== Plan
-Root[result]
-  Project[add($0, $1), add#10@1($0, $1), multiply($0, $1):i64]
-    Read[data => a:i64, b:i64]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
-```
+- `sum($2)`
+- `count($1)`
+- `avg($3):fp64`
+- `$0` (field reference)
 
 ## Relations
 
@@ -401,40 +387,16 @@ Relations represent the operations in a query plan. Each relation is displayed o
 All relations follow this general pattern:
 
 ```text
-RelationName[arguments => columns]
+RelationName[arguments, named_arguments => columns]
 ```
 
 Where:
 
-- **RelationName**: The type of operation (Read, Filter, Project, Root, etc.)
-- **arguments**: Input expressions, field references, function calls, or other parameters (optional)
-- **=>**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
-- **columns**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
-
-**Examples of the pattern**:
-
-// TODO: This example is illustrative and not meant to be parsed by the current implementation.
-
-```text
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
-=== Extensions
-URIs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-Functions:
-  ## 10 @  1: gt
-
-=== Plan
-Root[output_names]                                   // special case: just output names, no arguments
-  Project[expr1, expr2]                                // arguments: expressions, no => separator
-    Filter[gt($0, 10) => $0, $1, $2]                   // arguments: expression, columns: field refs
-      Read[table_name => col1:type1, col2:type2]           // arguments: table, columns: named types
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
-```
+- **`RelationName`**: The type of operation (Read, Filter, Project, Root, etc.)
+- **`arguments`**: Input expressions, field references, function calls, or other parameters (optional)
+- **`named_arguments`**: Named arguments
+- **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
+- **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
 
 **Special cases**:
 
@@ -451,17 +413,17 @@ The exact structure varies by relation type, but all follow this basic pattern.
 **Example**:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Plan
 Root[c, d]           // root with output columns c and d
   Project[$0, $1]
     Read[data => a:i64, b:string]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Read Relation
@@ -476,9 +438,9 @@ assert_eq!(plan.relations.len(), 1);
 **Example**:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Plan
 Root[result]
   Project[$0, $1]
@@ -486,10 +448,10 @@ Root[result]
 Root[result2]
   Project[$0, $1]
     Read[orders => quantity:i32?, price:i64]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 2);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 2);
 ```
 
 ### Filter Relation
@@ -504,9 +466,9 @@ assert_eq!(plan.relations.len(), 2);
 **Example**:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
@@ -518,10 +480,10 @@ Root[result]
   Filter[gt($2, 100) => $0, $1, $2]
     Project[$0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Project Relation
@@ -535,17 +497,17 @@ assert_eq!(plan.relations.len(), 1);
 **Example**:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Plan
 Root[result]
   Project[$1, 42]                    // project field 1 and literal 42
     Read[data => a:i64, b:string]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Aggregate Relation
@@ -565,9 +527,9 @@ assert_eq!(plan.relations.len(), 1);
 **Example**:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
@@ -579,20 +541,46 @@ Functions:
 Root[result]
   Aggregate[$0 => $0, sum($1), count($2)]           // Group by field 0
     Read[orders => category:string, amount:i64]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
+
+**Example**:
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+# === Plan
+# Root[a, b]
+  Fetch[limit=10, offset=5 => $0, $1]
+#     Read[table => a:i32, b:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+### Sort Relation
+
+The Sort relation specifies sort fields and directions for ordering the input:
+
+Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
+
+- Each sort field is a tuple: `(reference, &SortDirection)`
+- Allowed sort directions are: `&AscNullsFirst`, `&AscNullsLast`, `&DescNullsFirst`, `&DescNullsLast`
+- The columns after `=>` specify the output field order (typically a reference list)
 
 ## Complete Example
 
 A complete query that reads from an orders table, multiplies quantity and price, filters for high-value orders, groups by category, and outputs the total revenue and order count per category:
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
@@ -609,8 +597,8 @@ Root[category_stats]
     Filter[gt($1, 100) => $0, $1, $2]
       Project[$0, multiply($1, $2), $2]
         Read[orders => category:string, quantity:i32?, price:i64]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
