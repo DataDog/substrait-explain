@@ -1,12 +1,15 @@
+use std::borrow::Cow;
+use std::convert::TryFrom;
 use std::fmt;
+use std::fmt::Debug;
 
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, FilterRel, NamedStruct, PlanRel, ProjectRel,
-    ReadRel, Rel, RelCommon, RelRoot, Type,
+    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, PlanRel,
+    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type,
 };
 
 use super::expressions::Reference;
@@ -47,6 +50,10 @@ impl NamedRelation for Rel {
     }
 }
 
+pub trait ValueEnum {
+    fn as_enum_str(&self) -> &str;
+}
+
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
     Name(Name<'a>),
@@ -58,6 +65,7 @@ pub enum Value<'a> {
     Expression(&'a Expression),
     AggregateFunction(&'a AggregateFunction),
     Missing(PlanError),
+    Enum(Cow<'a, str>),
 }
 
 impl<'a> Value<'a> {
@@ -96,6 +104,7 @@ impl<'a> Textify for Value<'a> {
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
             Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
+            Value::Enum(e) => write!(w, "&{e}"),
         }
     }
 }
@@ -465,6 +474,135 @@ impl Textify for PlanRel {
     }
 }
 
+impl<'a> From<&'a SortRel> for Relation<'a> {
+    fn from(rel: &'a SortRel) -> Self {
+        let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+        // Arguments: list of SortField, rendered as tuples by Textify
+        let arguments = if !rel.sorts.is_empty() {
+            vec![Value::List(rel.sorts.iter().map(Value::from).collect())]
+        } else {
+            vec![]
+        };
+        let emit = get_emit(rel.common.as_ref());
+        // Columns: references as in emit mapping
+        let columns = match emit {
+            Some(EmitKind::Emit(e)) => e
+                .output_mapping
+                .iter()
+                .map(|&i| Value::Reference(i))
+                .collect(),
+            _ => vec![],
+        };
+        Relation {
+            name: "Sort",
+            arguments,
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
+impl<'a> From<&'a FetchRel> for Relation<'a> {
+    fn from(rel: &'a FetchRel) -> Self {
+        let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+        // Arguments: count and offset (as expressions or _)
+        let count = match &rel.count_mode {
+            Some(substrait::proto::fetch_rel::CountMode::CountExpr(expr)) => {
+                Value::Expression(expr)
+            }
+            Some(substrait::proto::fetch_rel::CountMode::Count(_)) => Value::Name(Name("_")),
+            None => Value::Name(Name("_")),
+        };
+        let offset = match &rel.offset_mode {
+            Some(substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr)) => {
+                Value::Expression(expr)
+            }
+            Some(substrait::proto::fetch_rel::OffsetMode::Offset(_)) => Value::Name(Name("_")),
+            None => Value::Name(Name("_")),
+        };
+        let arguments = vec![count, offset];
+        let emit = get_emit(rel.common.as_ref());
+        let columns = match emit {
+            Some(EmitKind::Emit(e)) => e
+                .output_mapping
+                .iter()
+                .map(|&i| Value::Reference(i))
+                .collect(),
+            _ => vec![],
+        };
+        Relation {
+            name: "Fetch",
+            arguments,
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
+impl<'a> From<&'a SortField> for Value<'a> {
+    fn from(sf: &'a SortField) -> Self {
+        let field = match &sf.expr {
+            Some(expr) => match &expr.rex_type {
+                Some(substrait::proto::expression::RexType::Selection(fref)) => {
+                    if let Some(substrait::proto::expression::field_reference::ReferenceType::DirectReference(seg)) = &fref.reference_type {
+                        if let Some(substrait::proto::expression::reference_segment::ReferenceType::StructField(sf)) = &seg.reference_type {
+                            Value::Reference(sf.field)
+                        } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a struct field")) }
+                    } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a direct reference")) }
+                }
+                _ => Value::Missing(PlanError::unimplemented(
+                    "SortField",
+                    Some("expr"),
+                    "Not a selection",
+                )),
+            },
+            None => Value::Missing(PlanError::unimplemented(
+                "SortField",
+                Some("expr"),
+                "Missing expr",
+            )),
+        };
+        let direction = match &sf.sort_kind {
+            Some(kind) => Value::from(kind),
+            None => Value::Enum(Cow::Borrowed("Unknown")),
+        };
+        Value::Tuple(vec![field, direction])
+    }
+}
+
+impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
+    fn from(enum_val: &'a T) -> Self {
+        Value::Enum(Cow::Borrowed(enum_val.as_enum_str()))
+    }
+}
+
+impl ValueEnum for substrait::proto::sort_field::SortKind {
+    fn as_enum_str(&self) -> &str {
+        match self {
+            substrait::proto::sort_field::SortKind::Direction(d) => {
+                match substrait::proto::sort_field::SortDirection::try_from(*d) {
+                    Ok(substrait::proto::sort_field::SortDirection::AscNullsFirst) => {
+                        "AscNullsFirst"
+                    }
+                    Ok(substrait::proto::sort_field::SortDirection::AscNullsLast) => "AscNullsLast",
+                    Ok(substrait::proto::sort_field::SortDirection::DescNullsFirst) => {
+                        "DescNullsFirst"
+                    }
+                    Ok(substrait::proto::sort_field::SortDirection::DescNullsLast) => {
+                        "DescNullsLast"
+                    }
+                    Ok(substrait::proto::sort_field::SortDirection::Unspecified) => "Unspecified",
+                    Ok(substrait::proto::sort_field::SortDirection::Clustered) => "Clustered",
+                    _ => "Unknown",
+                }
+            }
+            _ => "Unknown",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use substrait::proto::expression::literal::LiteralType;
@@ -620,9 +758,9 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_function_textify() {
         let ctx = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count");
+        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 10, "sum")
+        .with_function(1, 11, "count");
 
         // Create a simple AggregateFunction
         let agg_fn = AggregateFunction {
@@ -658,9 +796,9 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_relation_textify() {
         let ctx = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count");
+        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 10, "sum")
+        .with_function(1, 11, "count");
 
         // Create a simple AggregateRel
         let agg_fn1 = AggregateFunction {
