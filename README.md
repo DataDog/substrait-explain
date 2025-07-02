@@ -165,7 +165,7 @@ substrait = "0.57.0"  # For protobuf types
 
 - **[API Documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md)** - Complete API reference with examples and configuration options
 - **[Grammar Specification](https://github.com/DataDog/substrait-explain/blob/main/GRAMMAR.md)** - Detailed specification of the text format grammar
-- **[Full Documentation](https://fantastic-disco-w6yyrrl.pages.github.io/substrait_explain/)** - Generated API docs on [Github Pages](https://fantastic-disco-w6yyrrl.pages.github.io/substrait_explain/), including grammar and API docs.
+- **[Full Documentation](https://datadoghq.dev/substrait-explain/substrait_explain/)** - Generated API docs using GitHub Pages, including grammar and API docs.
 
 ## Examples
 
