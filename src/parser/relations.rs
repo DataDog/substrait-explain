@@ -7,10 +7,11 @@ use substrait::proto::{
     RelCommon, SortField, SortRel, Type, aggregate_rel, read_rel, r#type,
 };
 
-use super::{ErrorKind, MessageParseError, Rule, ScopedParsePair, unwrap_single_pair};
+use super::{
+    ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
+};
 use crate::extensions::SimpleExtensions;
 use crate::parser::expressions::{Name, reference};
-use crate::parser::{ParsePair, RuleIter};
 
 /// A trait for parsing relations with full context needed for tree building.
 /// This includes extensions, the parsed pair, input children, and output field count.
@@ -516,6 +517,90 @@ impl RelationParsePair for SortRel {
     }
 }
 
+impl ScopedParsePair for CountMode {
+    fn rule() -> Rule {
+        Rule::fetch_value
+    }
+    fn message() -> &'static str {
+        "CountMode"
+    }
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arg_inner = RuleIter::from(pair.into_inner());
+        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
+            int_pair
+        } else {
+            arg_inner.pop(Rule::expression)
+        };
+        match value_pair.as_rule() {
+            Rule::integer => {
+                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
+                    MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Invalid integer: {e}"),
+                    )
+                })?;
+                Ok(CountMode::Count(value))
+            }
+            Rule::expression => {
+                let expr = Expression::parse_pair(extensions, value_pair)?;
+                Ok(CountMode::CountExpr(Box::new(expr)))
+            }
+            _ => Err(MessageParseError::invalid(
+                Self::message(),
+                value_pair.as_span(),
+                format!("Unexpected rule for CountMode: {:?}", value_pair.as_rule()),
+            )),
+        }
+    }
+}
+
+impl ScopedParsePair for OffsetMode {
+    fn rule() -> Rule {
+        Rule::fetch_value
+    }
+    fn message() -> &'static str {
+        "OffsetMode"
+    }
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arg_inner = RuleIter::from(pair.into_inner());
+        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
+            int_pair
+        } else {
+            arg_inner.pop(Rule::expression)
+        };
+        match value_pair.as_rule() {
+            Rule::integer => {
+                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
+                    MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Invalid integer: {e}"),
+                    )
+                })?;
+                Ok(OffsetMode::Offset(value))
+            }
+            Rule::expression => {
+                let expr = Expression::parse_pair(extensions, value_pair)?;
+                Ok(OffsetMode::OffsetExpr(Box::new(expr)))
+            }
+            _ => Err(MessageParseError::invalid(
+                Self::message(),
+                value_pair.as_span(),
+                format!("Unexpected rule for OffsetMode: {:?}", value_pair.as_rule()),
+            )),
+        }
+    }
+}
+
 impl RelationParsePair for FetchRel {
     fn rule() -> Rule {
         Rule::fetch_relation
@@ -540,28 +625,56 @@ impl RelationParsePair for FetchRel {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
-        let count_pair = iter.pop(Rule::fetch_count);
-        let offset_pair = iter.pop(Rule::fetch_offset);
+
+        let mut count_mode = None;
+        let mut offset_mode = None;
+        let args = match iter.try_pop(Rule::fetch_named_arg_list) {
+            None => {
+                // If there are no arguments, it should be empty
+                iter.pop(Rule::empty);
+                None
+            }
+            Some(fetch_args_pair) => Some(fetch_args_pair.into_inner()),
+        };
+
+        for arg_pair in args.into_iter().flatten() {
+            assert_eq!(arg_pair.as_rule(), Rule::fetch_named_arg);
+            let mut arg_inner = RuleIter::from(arg_pair.into_inner());
+            let name_pair = arg_inner.pop(Rule::fetch_arg_name);
+            let value_pair = arg_inner.pop(Rule::fetch_value);
+            arg_inner.done();
+            match name_pair.as_str() {
+                "limit" => {
+                    if count_mode.is_some() {
+                        return Err(MessageParseError::invalid(
+                            Self::message(),
+                            name_pair.as_span(),
+                            "Duplicate 'limit' argument in Fetch",
+                        ));
+                    }
+                    count_mode = Some(CountMode::parse_pair(extensions, value_pair)?);
+                }
+                "offset" => {
+                    if offset_mode.is_some() {
+                        return Err(MessageParseError::invalid(
+                            Self::message(),
+                            name_pair.as_span(),
+                            "Duplicate 'offset' argument in Fetch",
+                        ));
+                    }
+                    offset_mode = Some(OffsetMode::parse_pair(extensions, value_pair)?);
+                }
+                other => {
+                    return Err(MessageParseError::invalid(
+                        Self::message(),
+                        name_pair.as_span(),
+                        format!("Unknown argument '{other}' in Fetch"),
+                    ));
+                }
+            }
+        }
+
         let reference_list_pair = iter.pop(Rule::reference_list);
-
-        // Unwrap fetch_count and fetch_offset to get the inner expression or empty
-        let count_inner = crate::parser::unwrap_single_pair(count_pair);
-        let offset_inner = crate::parser::unwrap_single_pair(offset_pair);
-
-        let count_mode = match count_inner.as_rule() {
-            Rule::empty => None,
-            _ => Some(CountMode::CountExpr(Box::new(Expression::parse_pair(
-                extensions,
-                count_inner,
-            )?))),
-        };
-        let offset_mode = match offset_inner.as_rule() {
-            Rule::empty => None,
-            _ => Some(OffsetMode::OffsetExpr(Box::new(Expression::parse_pair(
-                extensions,
-                offset_inner,
-            )?))),
-        };
         let emit = parse_reference_emit(reference_list_pair);
         let common = RelCommon {
             emit_kind: Some(emit),

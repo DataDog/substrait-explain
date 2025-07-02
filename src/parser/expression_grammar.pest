@@ -230,6 +230,10 @@ sort_field_list = { (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*)? }
 sort_field      = { "(" ~ sp ~ reference ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
 sort_direction  = { "&AscNullsFirst" | "&AscNullsLast" | "&DescNullsFirst" | "&DescNullsLast" }
 
-fetch_relation = { "Fetch" ~ "[" ~ fetch_count ~ sp ~ "," ~ sp ~ fetch_offset ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
-fetch_count    = { expression | empty }
-fetch_offset   = { expression | empty }
+// FetchRel: Fetch[limit=..., offset=... => ...] (named arguments only, any order, or _ for empty)
+fetch_arg_name       =  { "limit" | "offset" }
+fetch_value          =  { integer | expression }
+fetch_named_arg      =  { fetch_arg_name ~ sp ~ "=" ~ sp ~ fetch_value }
+fetch_named_arg_list =  { fetch_named_arg ~ (sp ~ "," ~ sp ~ fetch_named_arg)* }
+fetch_args           = _{ fetch_named_arg_list | empty }
+fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }

@@ -360,8 +360,6 @@ assert_eq!(plan.relations.len(), 1);
 - `expression` - as above
 - `type` - optional output type
 
-**Aggregate Measures**:
-
 ### Aggregate Measures
 
 Aggregate measures are used in the output of Aggregate relations. They can be either field references (to pass through existing fields) or aggregate function calls (to compute aggregates).
