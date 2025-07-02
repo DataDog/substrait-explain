@@ -136,18 +136,13 @@ impl<'a> NamedAnchor<'a> {
     /// Lookup an anchor in the extensions, and return a NamedAnchor. Errors will be pushed to the ErrorAccumulator along the way.
     pub fn lookup<S: Scope>(ctx: &'a S, kind: ExtensionKind, anchor: u32) -> Self {
         let ext = ctx.extensions().find_by_anchor(kind, anchor);
-        let found = ext.map_err(|e| ctx.push_error(e.into())).ok();
-
-        let (name, unique) = match found {
-            Some((_, n)) => match ctx.extensions().is_name_unique(kind, anchor, n) {
+        let (name, unique) = match ext {
+            Ok((_, n)) => match ctx.extensions().is_name_unique(kind, anchor, n) {
                 // Nothing wrong; may or may not be unique.
                 Ok(unique) => (MaybeToken(Ok(n)), unique),
-                Err(e) => {
-                    ctx.push_error(e.into());
-                    (MaybeToken::err(kind.name()), false)
-                }
+                Err(e) => (MaybeToken(Err(ctx.failure(e))), false),
             },
-            None => (MaybeToken::err(kind.name()), false),
+            Err(e) => (MaybeToken(Err(ctx.failure(e))), false),
         };
         Self {
             name,
