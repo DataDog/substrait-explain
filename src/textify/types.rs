@@ -8,7 +8,7 @@ use substrait::proto::r#type::{self as ptype};
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{PlanError, Textify};
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::foundation::{ErrorToken, MaybeToken, Visibility};
+use crate::textify::foundation::{MaybeToken, Visibility};
 
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
 
@@ -144,10 +144,10 @@ impl<'a> NamedAnchor<'a> {
                 Ok(unique) => (MaybeToken(Ok(n)), unique),
                 Err(e) => {
                     ctx.push_error(e.into());
-                    (MaybeToken(Err(ErrorToken(kind.name()))), false)
+                    (MaybeToken::err(kind.name()), false)
                 }
             },
-            None => (MaybeToken(Err(ErrorToken(kind.name()))), false),
+            None => (MaybeToken::err(kind.name()), false),
         };
         Self {
             name,

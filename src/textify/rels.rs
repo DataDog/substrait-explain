@@ -3,6 +3,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Debug;
 
+use prost::UnknownEnumValue;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -17,7 +18,6 @@ use substrait::proto::{
 use super::expressions::Reference;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
-use crate::textify::foundation::{ErrorToken, MaybeToken};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -53,8 +53,13 @@ impl NamedRelation for Rel {
     }
 }
 
+/// Trait for enums that can be converted to a string representation for
+/// textification.
+///
+/// Returns Ok(str) for valid enum values, or Err([PlanError]) for invalid or
+/// unknown values.
 pub trait ValueEnum {
-    fn as_enum_str(&self) -> MaybeToken<Cow<'static, str>>;
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError>;
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +78,10 @@ pub enum Value<'a> {
     Reference(i32),
     Expression(&'a Expression),
     AggregateFunction(&'a AggregateFunction),
+    /// Represents a missing, invalid, or unspecified value.
     Missing(PlanError),
-    Enum(MaybeToken<Cow<'a, str>>),
+    /// Represents a valid enum value as a string for textification.
+    Enum(Cow<'a, str>),
     Integer(i32),
 }
 
@@ -114,7 +121,7 @@ impl<'a> Textify for Value<'a> {
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
             Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
-            Value::Enum(e) => write!(w, "&{e}"),
+            Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
         }
     }
@@ -629,7 +636,11 @@ impl<'a> From<&'a SortField> for Value<'a> {
         };
         let direction = match &sf.sort_kind {
             Some(kind) => Value::from(kind),
-            None => Value::Enum(MaybeToken(Err(ErrorToken("SortKind")))),
+            None => Value::Missing(PlanError::invalid(
+                "SortKind",
+                Some(Cow::Borrowed("sort_kind")),
+                "Missing sort_kind",
+            )),
         };
         Value::Tuple(vec![field, direction])
     }
@@ -637,32 +648,47 @@ impl<'a> From<&'a SortField> for Value<'a> {
 
 impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
     fn from(enum_val: &'a T) -> Self {
-        let mt_static = enum_val.as_enum_str();
-        let mt = match mt_static {
-            MaybeToken(Ok(Cow::Borrowed(s))) => MaybeToken(Ok(Cow::Borrowed(s))),
-            MaybeToken(Ok(Cow::Owned(ref s))) => MaybeToken(Ok(Cow::Owned(s.clone()))),
-            MaybeToken(Err(e)) => MaybeToken(Err(e)),
-        };
-        Value::Enum(mt)
+        match enum_val.as_enum_str() {
+            Ok(s) => Value::Enum(s),
+            Err(e) => Value::Missing(e),
+        }
     }
 }
 
 impl ValueEnum for SortKind {
-    fn as_enum_str(&self) -> MaybeToken<Cow<'static, str>> {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
         let d = match self {
             &SortKind::Direction(d) => SortDirection::try_from(d),
-            _ => return MaybeToken::err("SortKind"),
+            SortKind::ComparisonFunctionReference(f) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Some(Cow::Owned(format!("function reference{f}"))),
+                    "SortKind::ComparisonFunctionReference unimplemented",
+                ));
+            }
         };
         let s = match d {
-            Err(_e) => return MaybeToken::err("SortKind: Unknown"),
+            Err(UnknownEnumValue(d)) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Some(Cow::Owned(format!("unknown variant: {d:?}"))),
+                    "Unknown SortDirection",
+                ));
+            }
             Ok(SortDirection::AscNullsFirst) => "AscNullsFirst",
             Ok(SortDirection::AscNullsLast) => "AscNullsLast",
             Ok(SortDirection::DescNullsFirst) => "DescNullsFirst",
             Ok(SortDirection::DescNullsLast) => "DescNullsLast",
             Ok(SortDirection::Clustered) => "Clustered",
-            Ok(SortDirection::Unspecified) => return MaybeToken::err("SortKind: Unspecified"),
+            Ok(SortDirection::Unspecified) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Option::<Cow<str>>::None,
+                    "Unspecified SortDirection",
+                ));
+            }
         };
-        MaybeToken(Ok(Cow::Borrowed(s)))
+        Ok(Cow::Borrowed(s))
     }
 }
 
@@ -1042,5 +1068,23 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "_");
+    }
+
+    #[test]
+    fn test_named_arg_textify_error_token() {
+        let ctx = TestContext::new();
+        let named_arg = NamedArg {
+            name: "foo",
+            value: Value::Missing(PlanError::invalid(
+                "my_enum",
+                Some(Cow::Borrowed("my_enum")),
+                Cow::Borrowed("my_enum"),
+            )),
+        };
+        let (result, errors) = ctx.textify(&named_arg);
+        // Should show !{my_enum} in the output
+        assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
+        // Should also accumulate an error
+        assert!(!errors.is_empty(), "Expected error for error token");
     }
 }

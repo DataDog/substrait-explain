@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
@@ -149,6 +151,71 @@ fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
         })
         .collect::<Vec<i32>>();
     EmitKind::Emit(Emit { output_mapping })
+}
+
+/// Extracts and tracks named arguments from a relation.
+///
+/// Pass in a set of Pairs that match the given rule, then call
+/// [ParsedNamedArgs::pop] for each possible argument.
+//
+///
+/// [ParsedNamedArgs::pop] returns a tuple of the [ParsedNamedArgs] and the pair
+/// if it exists, or None if the argument is not present. The [ParsedNamedArgs]
+/// is returned so that any unused arguments are not forgotten about. Call
+/// [ParsedNamedArgs::done] to check for any unused arguments.
+pub struct ParsedNamedArgs<'a> {
+    map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
+}
+
+impl<'a> ParsedNamedArgs<'a> {
+    pub fn new(
+        pairs: pest::iterators::Pairs<'a, Rule>,
+        rule: Rule,
+    ) -> Result<Self, MessageParseError> {
+        let mut map = HashMap::new();
+        for pair in pairs {
+            assert_eq!(pair.as_rule(), rule);
+            let mut inner = pair.clone().into_inner();
+            let name_pair = inner.next().unwrap();
+            let name = name_pair.as_str();
+            if map.contains_key(name) {
+                return Err(MessageParseError::invalid(
+                    "NamedArg",
+                    name_pair.as_span(),
+                    format!("Duplicate argument: {name}"),
+                ));
+            }
+            map.insert(name, pair);
+        }
+        Ok(Self { map })
+    }
+
+    // Returns the pair if it exists and matches the rule, otherwise None.
+    // Asserts that the rule must match the rule of the pair (and therefore
+    // panics in non-release-mode if not)
+    pub fn pop(
+        mut self,
+        name: &str,
+        rule: Rule,
+    ) -> (Self, Option<pest::iterators::Pair<'a, Rule>>) {
+        let pair = self.map.remove(name).inspect(|pair| {
+            assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
+        });
+        (self, pair)
+    }
+
+    // Returns an error if there are any unused arguments.
+    pub fn done(self) -> Result<(), MessageParseError> {
+        if let Some((name, pair)) = self.map.iter().next() {
+            return Err(MessageParseError::invalid(
+                "NamedArgExtractor",
+                // No span available for all unused args; use default.
+                pair.as_span(),
+                format!("Unknown argument: {name}"),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl RelationParsePair for ReadRel {
@@ -628,49 +695,31 @@ impl RelationParsePair for FetchRel {
 
         let mut count_mode = None;
         let mut offset_mode = None;
-        let args = match iter.try_pop(Rule::fetch_named_arg_list) {
+        match iter.try_pop(Rule::fetch_named_arg_list) {
             None => {
                 // If there are no arguments, it should be empty
                 iter.pop(Rule::empty);
-                None
             }
-            Some(fetch_args_pair) => Some(fetch_args_pair.into_inner()),
-        };
-
-        for arg_pair in args.into_iter().flatten() {
-            assert_eq!(arg_pair.as_rule(), Rule::fetch_named_arg);
-            let mut arg_inner = RuleIter::from(arg_pair.into_inner());
-            let name_pair = arg_inner.pop(Rule::fetch_arg_name);
-            let value_pair = arg_inner.pop(Rule::fetch_value);
-            arg_inner.done();
-            match name_pair.as_str() {
-                "limit" => {
-                    if count_mode.is_some() {
-                        return Err(MessageParseError::invalid(
-                            Self::message(),
-                            name_pair.as_span(),
-                            "Duplicate 'limit' argument in Fetch",
-                        ));
-                    }
+            Some(fetch_args_pair) => {
+                let extractor =
+                    ParsedNamedArgs::new(fetch_args_pair.into_inner(), Rule::fetch_named_arg)?;
+                let (extractor, limit_pair) = extractor.pop("limit", Rule::fetch_named_arg);
+                if let Some(limit_pair) = limit_pair {
+                    let mut arg_inner = RuleIter::from(limit_pair.into_inner());
+                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
+                    let value_pair = arg_inner.pop(Rule::fetch_value);
+                    arg_inner.done();
                     count_mode = Some(CountMode::parse_pair(extensions, value_pair)?);
                 }
-                "offset" => {
-                    if offset_mode.is_some() {
-                        return Err(MessageParseError::invalid(
-                            Self::message(),
-                            name_pair.as_span(),
-                            "Duplicate 'offset' argument in Fetch",
-                        ));
-                    }
+                let (extractor, offset_pair) = extractor.pop("offset", Rule::fetch_named_arg);
+                if let Some(offset_pair) = offset_pair {
+                    let mut arg_inner = RuleIter::from(offset_pair.into_inner());
+                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
+                    let value_pair = arg_inner.pop(Rule::fetch_value);
+                    arg_inner.done();
                     offset_mode = Some(OffsetMode::parse_pair(extensions, value_pair)?);
                 }
-                other => {
-                    return Err(MessageParseError::invalid(
-                        Self::message(),
-                        name_pair.as_span(),
-                        format!("Unknown argument '{other}' in Fetch"),
-                    ));
-                }
+                extractor.done()?;
             }
         }
 
