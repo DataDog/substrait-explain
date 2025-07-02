@@ -1,14 +1,19 @@
+use std::collections::HashMap;
+
+use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
+use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateRel, Expression, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel, RelCommon, Type,
-    aggregate_rel, read_rel, r#type,
+    AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel,
+    RelCommon, SortField, SortRel, Type, aggregate_rel, read_rel, r#type,
 };
 
-use super::{ErrorKind, MessageParseError, Rule, ScopedParsePair, unwrap_single_pair};
+use super::{
+    ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
+};
 use crate::extensions::SimpleExtensions;
 use crate::parser::expressions::{Name, reference};
-use crate::parser::{ParsePair, RuleIter};
 
 /// A trait for parsing relations with full context needed for tree building.
 /// This includes extensions, the parsed pair, input children, and output field count.
@@ -135,6 +140,84 @@ pub(crate) fn expect_one_child(
     }
 }
 
+/// Parse a reference list Pair and return an EmitKind::Emit.
+fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
+    assert_eq!(pair.as_rule(), Rule::reference_list);
+    let output_mapping = pair
+        .into_inner()
+        .map(|p| {
+            let inner = crate::parser::unwrap_single_pair(p);
+            inner.as_str().parse::<i32>().unwrap()
+        })
+        .collect::<Vec<i32>>();
+    EmitKind::Emit(Emit { output_mapping })
+}
+
+/// Extracts and tracks named arguments from a relation.
+///
+/// Pass in a set of Pairs that match the given rule, then call
+/// [ParsedNamedArgs::pop] for each possible argument.
+//
+///
+/// [ParsedNamedArgs::pop] returns a tuple of the [ParsedNamedArgs] and the pair
+/// if it exists, or None if the argument is not present. The [ParsedNamedArgs]
+/// is returned so that any unused arguments are not forgotten about. Call
+/// [ParsedNamedArgs::done] to check for any unused arguments.
+pub struct ParsedNamedArgs<'a> {
+    map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
+}
+
+impl<'a> ParsedNamedArgs<'a> {
+    pub fn new(
+        pairs: pest::iterators::Pairs<'a, Rule>,
+        rule: Rule,
+    ) -> Result<Self, MessageParseError> {
+        let mut map = HashMap::new();
+        for pair in pairs {
+            assert_eq!(pair.as_rule(), rule);
+            let mut inner = pair.clone().into_inner();
+            let name_pair = inner.next().unwrap();
+            let name = name_pair.as_str();
+            if map.contains_key(name) {
+                return Err(MessageParseError::invalid(
+                    "NamedArg",
+                    name_pair.as_span(),
+                    format!("Duplicate argument: {name}"),
+                ));
+            }
+            map.insert(name, pair);
+        }
+        Ok(Self { map })
+    }
+
+    // Returns the pair if it exists and matches the rule, otherwise None.
+    // Asserts that the rule must match the rule of the pair (and therefore
+    // panics in non-release-mode if not)
+    pub fn pop(
+        mut self,
+        name: &str,
+        rule: Rule,
+    ) -> (Self, Option<pest::iterators::Pair<'a, Rule>>) {
+        let pair = self.map.remove(name).inspect(|pair| {
+            assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
+        });
+        (self, pair)
+    }
+
+    // Returns an error if there are any unused arguments.
+    pub fn done(self) -> Result<(), MessageParseError> {
+        if let Some((name, pair)) = self.map.iter().next() {
+            return Err(MessageParseError::invalid(
+                "NamedArgExtractor",
+                // No span available for all unused args; use default.
+                pair.as_span(),
+                format!("Unknown argument: {name}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl RelationParsePair for ReadRel {
     fn rule() -> Rule {
         Rule::read_relation
@@ -234,15 +317,8 @@ impl RelationParsePair for FilterRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
         let references_pair = iter.pop(Rule::reference_list);
-        let output_mapping = references_pair
-            .into_inner()
-            .map(|p| {
-                let inner = crate::parser::unwrap_single_pair(p);
-                inner.as_str().parse::<i32>().unwrap()
-            })
-            .collect::<Vec<i32>>();
+        let emit = parse_reference_emit(references_pair);
         iter.done();
-        let emit = EmitKind::Emit(Emit { output_mapping });
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -411,6 +487,255 @@ impl RelationParsePair for AggregateRel {
             measures,
             common: Some(common),
             advanced_extension: None,
+        })
+    }
+}
+
+// Parser for SortField: (reference, sort_direction)
+pub struct ParsedSortField {
+    pub field: i32,
+    pub direction: SortDirection,
+}
+
+impl ParsePair for ParsedSortField {
+    fn rule() -> Rule {
+        Rule::sort_field
+    }
+
+    fn message() -> &'static str {
+        "SortField"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut iter = RuleIter::from(pair.into_inner());
+        let reference_pair = iter.pop(Rule::reference);
+        let inner = crate::parser::unwrap_single_pair(reference_pair);
+        let field: i32 = inner.as_str().parse().unwrap();
+        let direction_pair = iter.pop(Rule::sort_direction);
+        let direction = match direction_pair.as_str().trim_start_matches('&') {
+            "AscNullsFirst" => SortDirection::AscNullsFirst,
+            "AscNullsLast" => SortDirection::AscNullsLast,
+            "DescNullsFirst" => SortDirection::DescNullsFirst,
+            "DescNullsLast" => SortDirection::DescNullsLast,
+            other => panic!("Unknown sort direction: {other}"),
+        };
+        iter.done();
+        ParsedSortField { field, direction }
+    }
+}
+
+impl RelationParsePair for SortRel {
+    fn rule() -> Rule {
+        Rule::sort_relation
+    }
+
+    fn message() -> &'static str {
+        "SortRel"
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Sort(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let mut iter = RuleIter::from(pair.into_inner());
+        let sort_field_list_pair = iter.pop(Rule::sort_field_list);
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        let mut sorts = Vec::new();
+        for sort_field_pair in sort_field_list_pair.into_inner() {
+            assert_eq!(
+                sort_field_pair.as_rule(),
+                Rule::sort_field,
+                "Expected sort_field, got {:?}",
+                sort_field_pair.as_rule()
+            );
+            let parsed = ParsedSortField::parse_pair(sort_field_pair);
+            sorts.push(SortField {
+                expr: Some(Expression {
+                    rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
+                        crate::parser::expressions::reference(parsed.field),
+                    ))),
+                }),
+                sort_kind: Some(SortKind::Direction(parsed.direction as i32)),
+            });
+        }
+        let emit = parse_reference_emit(reference_list_pair);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+        iter.done();
+        Ok(SortRel {
+            input: Some(input),
+            sorts,
+            common: Some(common),
+            advanced_extension: None,
+        })
+    }
+}
+
+impl ScopedParsePair for CountMode {
+    fn rule() -> Rule {
+        Rule::fetch_value
+    }
+    fn message() -> &'static str {
+        "CountMode"
+    }
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arg_inner = RuleIter::from(pair.into_inner());
+        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
+            int_pair
+        } else {
+            arg_inner.pop(Rule::expression)
+        };
+        match value_pair.as_rule() {
+            Rule::integer => {
+                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
+                    MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Invalid integer: {e}"),
+                    )
+                })?;
+                Ok(CountMode::Count(value))
+            }
+            Rule::expression => {
+                let expr = Expression::parse_pair(extensions, value_pair)?;
+                Ok(CountMode::CountExpr(Box::new(expr)))
+            }
+            _ => Err(MessageParseError::invalid(
+                Self::message(),
+                value_pair.as_span(),
+                format!("Unexpected rule for CountMode: {:?}", value_pair.as_rule()),
+            )),
+        }
+    }
+}
+
+impl ScopedParsePair for OffsetMode {
+    fn rule() -> Rule {
+        Rule::fetch_value
+    }
+    fn message() -> &'static str {
+        "OffsetMode"
+    }
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arg_inner = RuleIter::from(pair.into_inner());
+        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
+            int_pair
+        } else {
+            arg_inner.pop(Rule::expression)
+        };
+        match value_pair.as_rule() {
+            Rule::integer => {
+                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
+                    MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Invalid integer: {e}"),
+                    )
+                })?;
+                Ok(OffsetMode::Offset(value))
+            }
+            Rule::expression => {
+                let expr = Expression::parse_pair(extensions, value_pair)?;
+                Ok(OffsetMode::OffsetExpr(Box::new(expr)))
+            }
+            _ => Err(MessageParseError::invalid(
+                Self::message(),
+                value_pair.as_span(),
+                format!("Unexpected rule for OffsetMode: {:?}", value_pair.as_rule()),
+            )),
+        }
+    }
+}
+
+impl RelationParsePair for FetchRel {
+    fn rule() -> Rule {
+        Rule::fetch_relation
+    }
+
+    fn message() -> &'static str {
+        "FetchRel"
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Fetch(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        let mut count_mode = None;
+        let mut offset_mode = None;
+        match iter.try_pop(Rule::fetch_named_arg_list) {
+            None => {
+                // If there are no arguments, it should be empty
+                iter.pop(Rule::empty);
+            }
+            Some(fetch_args_pair) => {
+                let extractor =
+                    ParsedNamedArgs::new(fetch_args_pair.into_inner(), Rule::fetch_named_arg)?;
+                let (extractor, limit_pair) = extractor.pop("limit", Rule::fetch_named_arg);
+                if let Some(limit_pair) = limit_pair {
+                    let mut arg_inner = RuleIter::from(limit_pair.into_inner());
+                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
+                    let value_pair = arg_inner.pop(Rule::fetch_value);
+                    arg_inner.done();
+                    count_mode = Some(CountMode::parse_pair(extensions, value_pair)?);
+                }
+                let (extractor, offset_pair) = extractor.pop("offset", Rule::fetch_named_arg);
+                if let Some(offset_pair) = offset_pair {
+                    let mut arg_inner = RuleIter::from(offset_pair.into_inner());
+                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
+                    let value_pair = arg_inner.pop(Rule::fetch_value);
+                    arg_inner.done();
+                    offset_mode = Some(OffsetMode::parse_pair(extensions, value_pair)?);
+                }
+                extractor.done()?;
+            }
+        }
+
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        let emit = parse_reference_emit(reference_list_pair);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+        iter.done();
+        Ok(FetchRel {
+            input: Some(input),
+            common: Some(common),
+            advanced_extension: None,
+            offset_mode,
+            count_mode,
         })
     }
 }
