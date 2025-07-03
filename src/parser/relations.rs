@@ -177,6 +177,8 @@ impl<'a> ParsedNamedArgs<'a> {
             assert_eq!(pair.as_rule(), rule);
             let mut inner = pair.clone().into_inner();
             let name_pair = inner.next().unwrap();
+            let value_pair = inner.next().unwrap();
+            assert_eq!(inner.next(), None);
             let name = name_pair.as_str();
             if map.contains_key(name) {
                 return Err(MessageParseError::invalid(
@@ -185,7 +187,7 @@ impl<'a> ParsedNamedArgs<'a> {
                     format!("Duplicate argument: {name}"),
                 ));
             }
-            map.insert(name, pair);
+            map.insert(name, value_pair);
         }
         Ok(Self { map })
     }
@@ -312,17 +314,23 @@ impl RelationParsePair for FilterRel {
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
+        // Form: Filter[condition => references]
+
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
+        // condition
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
+        // references (which become the emit)
         let references_pair = iter.pop(Rule::reference_list);
-        let emit = parse_reference_emit(references_pair);
         iter.done();
+
+        let emit = parse_reference_emit(references_pair);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
+
         Ok(FilterRel {
             input: Some(input),
             condition: Some(Box::new(condition)),
@@ -491,13 +499,7 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
-// Parser for SortField: (reference, sort_direction)
-pub struct ParsedSortField {
-    pub field: i32,
-    pub direction: SortDirection,
-}
-
-impl ParsePair for ParsedSortField {
+impl ParsePair for SortField {
     fn rule() -> Rule {
         Rule::sort_field
     }
@@ -521,7 +523,15 @@ impl ParsePair for ParsedSortField {
             other => panic!("Unknown sort direction: {other}"),
         };
         iter.done();
-        ParsedSortField { field, direction }
+        SortField {
+            expr: Some(Expression {
+                rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
+                    crate::parser::expressions::reference(field),
+                ))),
+            }),
+            // TODO: Add support for SortKind::ComparisonFunctionReference
+            sort_kind: Some(SortKind::Direction(direction as i32)),
+        }
     }
 }
 
@@ -553,21 +563,8 @@ impl RelationParsePair for SortRel {
         let reference_list_pair = iter.pop(Rule::reference_list);
         let mut sorts = Vec::new();
         for sort_field_pair in sort_field_list_pair.into_inner() {
-            assert_eq!(
-                sort_field_pair.as_rule(),
-                Rule::sort_field,
-                "Expected sort_field, got {:?}",
-                sort_field_pair.as_rule()
-            );
-            let parsed = ParsedSortField::parse_pair(sort_field_pair);
-            sorts.push(SortField {
-                expr: Some(Expression {
-                    rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(parsed.field),
-                    ))),
-                }),
-                sort_kind: Some(SortKind::Direction(parsed.direction as i32)),
-            });
+            let sort_field = SortField::parse_pair(sort_field_pair);
+            sorts.push(sort_field);
         }
         let emit = parse_reference_emit(reference_list_pair);
         let common = RelCommon {
@@ -703,21 +700,13 @@ impl RelationParsePair for FetchRel {
             Some(fetch_args_pair) => {
                 let extractor =
                     ParsedNamedArgs::new(fetch_args_pair.into_inner(), Rule::fetch_named_arg)?;
-                let (extractor, limit_pair) = extractor.pop("limit", Rule::fetch_named_arg);
+                let (extractor, limit_pair) = extractor.pop("limit", Rule::fetch_value);
                 if let Some(limit_pair) = limit_pair {
-                    let mut arg_inner = RuleIter::from(limit_pair.into_inner());
-                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
-                    let value_pair = arg_inner.pop(Rule::fetch_value);
-                    arg_inner.done();
-                    count_mode = Some(CountMode::parse_pair(extensions, value_pair)?);
+                    count_mode = Some(CountMode::parse_pair(extensions, limit_pair)?);
                 }
-                let (extractor, offset_pair) = extractor.pop("offset", Rule::fetch_named_arg);
+                let (extractor, offset_pair) = extractor.pop("offset", Rule::fetch_value);
                 if let Some(offset_pair) = offset_pair {
-                    let mut arg_inner = RuleIter::from(offset_pair.into_inner());
-                    let _name_pair = arg_inner.pop(Rule::fetch_arg_name);
-                    let value_pair = arg_inner.pop(Rule::fetch_value);
-                    arg_inner.done();
-                    offset_mode = Some(OffsetMode::parse_pair(extensions, value_pair)?);
+                    offset_mode = Some(OffsetMode::parse_pair(extensions, offset_pair)?);
                 }
                 extractor.done()?;
             }
