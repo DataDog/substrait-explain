@@ -1266,6 +1266,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_join_relation_left_semi() {
+        let extensions = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel();
+        let right_rel = example_read_relation().into_rel();
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&LeftSemi, eq($0, $3) => $0, $1]"),
+            vec![Box::new(left_rel), Box::new(right_rel)],
+            6,
+        )
+        .unwrap();
+
+        // Should be a LeftSemi join
+        assert_eq!(join.r#type, join_rel::JoinType::LeftSemi as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1] (only left columns for semi join)
+        assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
     fn test_parse_join_relation_requires_two_children() {
         let extensions = SimpleExtensions::default();
 

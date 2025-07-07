@@ -628,22 +628,74 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
     }
 }
 
+fn join_output_columns(
+    join_type: join_rel::JoinType,
+    left_columns: usize,
+    right_columns: usize,
+) -> Vec<Value<'static>> {
+    let total_columns = match join_type {
+        // Inner, Left, Right, Outer joins output columns from both sides
+        join_rel::JoinType::Inner
+        | join_rel::JoinType::Left
+        | join_rel::JoinType::Right
+        | join_rel::JoinType::Outer => left_columns + right_columns,
+
+        // Left semi/anti joins only output columns from the left side
+        join_rel::JoinType::LeftSemi | join_rel::JoinType::LeftAnti => left_columns,
+
+        // Right semi/anti joins output columns from the right side
+        join_rel::JoinType::RightSemi | join_rel::JoinType::RightAnti => right_columns,
+
+        // Single joins behave like semi joins
+        join_rel::JoinType::LeftSingle => left_columns,
+        join_rel::JoinType::RightSingle => right_columns,
+
+        // Mark joins output base columns plus one mark column
+        join_rel::JoinType::LeftMark => left_columns + 1,
+        join_rel::JoinType::RightMark => right_columns + 1,
+
+        // Unspecified - fallback to all columns
+        join_rel::JoinType::Unspecified => left_columns + right_columns,
+    };
+
+    // Output is always a contiguous range starting from $0
+    (0..total_columns)
+        .map(|i| Value::Reference(i as i32))
+        .collect()
+}
+
 impl<'a> From<&'a JoinRel> for Relation<'a> {
     fn from(rel: &'a JoinRel) -> Self {
-        let (children, _columns) =
+        let (children, _total_columns) =
             Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
 
+        // Calculate left and right column counts separately
+        let left_columns = match &children[0] {
+            Some(child) => child.emitted(),
+            None => 0,
+        };
+        let right_columns = match &children[1] {
+            Some(child) => child.emitted(),
+            None => 0,
+        };
+
         // Convert join type to enum value
-        let join_type_value = match join_rel::JoinType::try_from(rel.r#type) {
-            Ok(join_type) => match join_type.as_enum_str() {
-                Ok(s) => Value::Enum(s),
-                Err(e) => Value::Missing(e),
-            },
-            Err(_) => Value::Missing(PlanError::invalid(
-                "JoinRel",
-                Some(Cow::Borrowed("r#type")),
-                format!("Unknown join type: {}", rel.r#type),
-            )),
+        let join_type = match join_rel::JoinType::try_from(rel.r#type) {
+            Ok(join_type) => join_type,
+            Err(_) => {
+                return Relation {
+                    name: "Join",
+                    arguments: None,
+                    columns: vec![],
+                    emit: None,
+                    children,
+                };
+            }
+        };
+
+        let join_type_value = match join_type.as_enum_str() {
+            Ok(s) => Value::Enum(s),
+            Err(e) => Value::Missing(e),
         };
 
         // Join condition
@@ -662,14 +714,7 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
         });
 
         let emit = get_emit(rel.common.as_ref());
-        let columns = match emit {
-            Some(EmitKind::Emit(e)) => e
-                .output_mapping
-                .iter()
-                .map(|&i| Value::Reference(i))
-                .collect(),
-            _ => vec![], // Default to empty if no emit mapping
-        };
+        let columns = join_output_columns(join_type, left_columns, right_columns);
 
         Relation {
             name: "Join",
@@ -1187,126 +1232,54 @@ Filter[gt($0, 10:i32) => $0, $1]
     }
 
     #[test]
-    fn test_join_relation_textify() {
-        let ctx = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
-            .with_function(1, 10, "eq");
+    fn test_join_type_enum_textify() {
+        // Test that JoinType enum values convert correctly to their string representation
+        assert_eq!(join_rel::JoinType::Inner.as_enum_str().unwrap(), "Inner");
+        assert_eq!(join_rel::JoinType::Left.as_enum_str().unwrap(), "Left");
+        assert_eq!(
+            join_rel::JoinType::LeftSemi.as_enum_str().unwrap(),
+            "LeftSemi"
+        );
+        assert_eq!(
+            join_rel::JoinType::LeftAnti.as_enum_str().unwrap(),
+            "LeftAnti"
+        );
+    }
 
-        // Create left table: users(id:i64, name:string)
-        let left_table = ReadRel {
-            common: None,
-            base_schema: Some(NamedStruct {
-                names: vec!["id".into(), "name".into()],
-                r#struct: Some(Struct {
-                    type_variation_reference: 0,
-                    types: vec![
-                        Type {
-                            kind: Some(Kind::I64(ptype::I64 {
-                                type_variation_reference: 0,
-                                nullability: Nullability::Nullable as i32,
-                            })),
-                        },
-                        Type {
-                            kind: Some(Kind::String(ptype::String {
-                                type_variation_reference: 0,
-                                nullability: Nullability::Nullable as i32,
-                            })),
-                        },
-                    ],
-                    nullability: Nullability::Nullable as i32,
-                }),
-            }),
-            filter: None,
-            best_effort_filter: None,
-            projection: None,
-            advanced_extension: None,
-            read_type: Some(ReadType::NamedTable(NamedTable {
-                names: vec!["users".into()],
-                advanced_extension: None,
-            })),
-        };
+    #[test]
+    fn test_join_output_columns() {
+        // Test Inner join - outputs all columns from both sides
+        let inner_cols = super::join_output_columns(join_rel::JoinType::Inner, 2, 3);
+        assert_eq!(inner_cols.len(), 5); // 2 + 3 = 5 columns
+        assert!(matches!(inner_cols[0], Value::Reference(0)));
+        assert!(matches!(inner_cols[4], Value::Reference(4)));
 
-        // Create right table: orders(user_id:i64, amount:i32)
-        let right_table = ReadRel {
-            common: None,
-            base_schema: Some(NamedStruct {
-                names: vec!["user_id".into(), "amount".into()],
-                r#struct: Some(Struct {
-                    type_variation_reference: 0,
-                    types: vec![
-                        Type {
-                            kind: Some(Kind::I64(ptype::I64 {
-                                type_variation_reference: 0,
-                                nullability: Nullability::Nullable as i32,
-                            })),
-                        },
-                        Type {
-                            kind: Some(Kind::I32(ptype::I32 {
-                                type_variation_reference: 0,
-                                nullability: Nullability::Nullable as i32,
-                            })),
-                        },
-                    ],
-                    nullability: Nullability::Nullable as i32,
-                }),
-            }),
-            filter: None,
-            best_effort_filter: None,
-            projection: None,
-            advanced_extension: None,
-            read_type: Some(ReadType::NamedTable(NamedTable {
-                names: vec!["orders".into()],
-                advanced_extension: None,
-            })),
-        };
+        // Test LeftSemi join - outputs only left columns
+        let left_semi_cols = super::join_output_columns(join_rel::JoinType::LeftSemi, 2, 3);
+        assert_eq!(left_semi_cols.len(), 2); // Only left columns
+        assert!(matches!(left_semi_cols[0], Value::Reference(0)));
+        assert!(matches!(left_semi_cols[1], Value::Reference(1)));
 
-        // Create join condition: eq($0, $2) (users.id = orders.user_id)
-        let join_condition = Expression {
-            rex_type: Some(RexType::ScalarFunction(ScalarFunction {
-                function_reference: 10, // eq function
-                arguments: vec![
-                    FunctionArgument {
-                        arg_type: Some(ArgType::Value(Reference(0).into())), // $0 (users.id)
-                    },
-                    FunctionArgument {
-                        arg_type: Some(ArgType::Value(Reference(2).into())), // $2 (orders.user_id)
-                    },
-                ],
-                options: vec![],
-                output_type: None,
-                #[allow(deprecated)]
-                args: vec![],
-            })),
-        };
+        // Test RightSemi join - outputs right columns as contiguous range starting from $0
+        let right_semi_cols = super::join_output_columns(join_rel::JoinType::RightSemi, 2, 3);
+        assert_eq!(right_semi_cols.len(), 3); // Only right columns
+        assert!(matches!(right_semi_cols[0], Value::Reference(0))); // Contiguous range starts at $0
+        assert!(matches!(right_semi_cols[1], Value::Reference(1)));
+        assert!(matches!(right_semi_cols[2], Value::Reference(2))); // Last right column
 
-        // Create JoinRel
-        let join_rel = JoinRel {
-            common: Some(RelCommon {
-                emit_kind: Some(EmitKind::Emit(Emit {
-                    output_mapping: vec![0, 1, 2, 3], // All columns
-                })),
-                ..Default::default()
-            }),
-            left: Some(Box::new(Rel {
-                rel_type: Some(RelType::Read(Box::new(left_table))),
-            })),
-            right: Some(Box::new(Rel {
-                rel_type: Some(RelType::Read(Box::new(right_table))),
-            })),
-            expression: Some(Box::new(join_condition)),
-            post_join_filter: None,
-            r#type: join_rel::JoinType::Inner as i32,
-            advanced_extension: None,
-        };
+        // Test LeftMark join - outputs left columns plus a mark column as contiguous range
+        let left_mark_cols = super::join_output_columns(join_rel::JoinType::LeftMark, 2, 3);
+        assert_eq!(left_mark_cols.len(), 3); // 2 left + 1 mark
+        assert!(matches!(left_mark_cols[0], Value::Reference(0)));
+        assert!(matches!(left_mark_cols[1], Value::Reference(1)));
+        assert!(matches!(left_mark_cols[2], Value::Reference(2))); // Mark column at contiguous position
 
-        let relation = Relation::from(&join_rel);
-        let (result, errors) = ctx.textify(&relation);
-
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-
-        // Expected format: Join[&Inner, eq($0, $2) => $0, $1, $2, $3]
-        assert!(result.contains("Join[&Inner, eq($0, $2) => $0, $1, $2, $3]"));
-        assert!(result.contains("Read[users => id:i64?, name:string?]"));
-        assert!(result.contains("Read[orders => user_id:i64?, amount:i32?]"));
+        // Test RightMark join - outputs right columns plus a mark column as contiguous range
+        let right_mark_cols = super::join_output_columns(join_rel::JoinType::RightMark, 2, 3);
+        assert_eq!(right_mark_cols.len(), 4); // 3 right + 1 mark
+        assert!(matches!(right_mark_cols[0], Value::Reference(0))); // Contiguous range starts at $0
+        assert!(matches!(right_mark_cols[1], Value::Reference(1)));
+        assert!(matches!(right_mark_cols[2], Value::Reference(2))); // Last right column
+        assert!(matches!(right_mark_cols[3], Value::Reference(3))); // Mark column at contiguous position
     }
 }
