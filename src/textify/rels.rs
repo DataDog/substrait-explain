@@ -669,6 +669,9 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
         let (children, _total_columns) =
             Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
 
+        // Join relations must have exactly 2 children (left and right)
+        assert_eq!(children.len(), 2, "JoinRel should have exactly 2 children");
+
         // Calculate left and right column counts separately
         let left_columns = match &children[0] {
             Some(child) => child.emitted(),
@@ -679,23 +682,25 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
             None => 0,
         };
 
-        // Convert join type to enum value
-        let join_type = match join_rel::JoinType::try_from(rel.r#type) {
-            Ok(join_type) => join_type,
-            Err(_) => {
-                return Relation {
-                    name: "Join",
-                    arguments: None,
-                    columns: vec![],
-                    emit: None,
-                    children,
+        // Convert join type from protobuf i32 to enum value
+        // JoinType is stored as i32 in protobuf, convert to typed enum for processing
+        let (join_type, join_type_value) = match join_rel::JoinType::try_from(rel.r#type) {
+            Ok(join_type) => {
+                let join_type_value = match join_type.as_enum_str() {
+                    Ok(s) => Value::Enum(s),
+                    Err(e) => Value::Missing(e),
                 };
+                (join_type, join_type_value)
             }
-        };
-
-        let join_type_value = match join_type.as_enum_str() {
-            Ok(s) => Value::Enum(s),
-            Err(e) => Value::Missing(e),
+            Err(_) => {
+                // Use Unspecified for the join_type but create an error for the join_type_value
+                let join_type_error = Value::Missing(PlanError::invalid(
+                    "JoinRel",
+                    Some("type"),
+                    format!("Unknown join type: {}", rel.r#type),
+                ));
+                (join_rel::JoinType::Unspecified, join_type_error)
+            }
         };
 
         // Join condition
@@ -707,6 +712,9 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
             PlanError::unimplemented("JoinRel", Some("expression"), "Join condition is None")
         });
 
+        // TODO: Add support for post_join_filter when grammar is extended
+        // Currently post_join_filter is not supported in the text format
+        // grammar
         let positional = vec![join_type_value, condition];
         let arguments = Some(Arguments {
             positional,
@@ -1184,6 +1192,41 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "limit=10, offset=5");
+    }
+
+    #[test]
+    fn test_join_relation_unknown_type() {
+        let ctx = TestContext::new();
+
+        // Create a join with an unknown/invalid type
+        let join_rel = JoinRel {
+            left: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::default())),
+            })),
+            right: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::default())),
+            })),
+            expression: Some(Box::new(Expression::default())),
+            r#type: 999, // Invalid join type
+            common: None,
+            post_join_filter: None,
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&join_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        // Should contain error for unknown join type but still show condition and columns
+        assert!(!errors.is_empty(), "Expected errors for unknown join type");
+        assert!(
+            result.contains("!{JoinRel}"),
+            "Expected error token for unknown join type"
+        );
+        assert!(
+            result.contains("Join["),
+            "Expected Join relation to be formatted"
+        );
+        println!("Unknown join type result: {result}");
     }
 
     #[test]
