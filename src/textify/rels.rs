@@ -189,7 +189,17 @@ impl<'a> Textify for Emitted<'a> {
                 write!(w, ", ")?;
             }
 
-            write!(w, "{}", ctx.expect(self.values.get(index as usize)))?;
+            match self.values.get(index as usize) {
+                Some(value) => write!(w, "{}", ctx.display(value))?,
+                None => write!(w, "{}", ctx.failure(PlanError::invalid(
+                    "Emitted",
+                    Some("output_mapping"),
+                    format!(
+                        "Output mapping index {} is out of bounds for values collection of size {}",
+                        index, self.values.len()
+                    )
+                )))?,
+            }
         }
 
         Ok(())
@@ -227,11 +237,17 @@ pub struct Relation<'a> {
     ///
     /// - `None` means this relation does not take arguments, and the argument
     ///   section is omitted entirely.
-    /// - `Some(args)` with both vectors empty means the relation takes arguments, but none are provided; this will print as `_ => ...`.
-    /// - `Some(args)` with non-empty vectors will print as usual, with positional arguments first, then named arguments, separated by commas.
+    /// - `Some(args)` with both vectors empty means the relation takes
+    ///   arguments, but none are provided; this will print as `_ => ...`.
+    /// - `Some(args)` with non-empty vectors will print as usual, with
+    ///   positional arguments first, then named arguments, separated by commas.
     pub arguments: Option<Arguments<'a>>,
+    /// The columns emitted by this relation, pre-emit - the 'direct' column
+    /// output.
     pub columns: Vec<Value<'a>>,
+    /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
 
