@@ -11,8 +11,8 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, PlanRel,
-    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type,
+    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct,
+    PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
 };
 
 use super::expressions::Reference;
@@ -425,6 +425,7 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
             Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
             Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Join(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
         }
     }
@@ -611,6 +612,59 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
     }
 }
 
+impl<'a> From<&'a JoinRel> for Relation<'a> {
+    fn from(rel: &'a JoinRel) -> Self {
+        let (children, _columns) =
+            Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
+
+        // Convert join type to enum value
+        let join_type_value = match join_rel::JoinType::try_from(rel.r#type) {
+            Ok(join_type) => match join_type.as_enum_str() {
+                Ok(s) => Value::Enum(s),
+                Err(e) => Value::Missing(e),
+            },
+            Err(_) => Value::Missing(PlanError::invalid(
+                "JoinRel",
+                Some(Cow::Borrowed("r#type")),
+                format!("Unknown join type: {}", rel.r#type),
+            )),
+        };
+
+        // Join condition
+        let condition = rel
+            .expression
+            .as_ref()
+            .map(|c| Value::Expression(c.as_ref()));
+        let condition = Value::expect(condition, || {
+            PlanError::unimplemented("JoinRel", Some("expression"), "Join condition is None")
+        });
+
+        let positional = vec![join_type_value, condition];
+        let arguments = Some(Arguments {
+            positional,
+            named: vec![],
+        });
+
+        let emit = get_emit(rel.common.as_ref());
+        let columns = match emit {
+            Some(EmitKind::Emit(e)) => e
+                .output_mapping
+                .iter()
+                .map(|&i| Value::Reference(i))
+                .collect(),
+            _ => vec![], // Default to empty if no emit mapping
+        };
+
+        Relation {
+            name: "Join",
+            arguments,
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
 impl<'a> From<&'a SortField> for Value<'a> {
     fn from(sf: &'a SortField) -> Self {
         let field = match &sf.expr {
@@ -687,6 +741,33 @@ impl ValueEnum for SortKind {
                     "Unspecified SortDirection",
                 ));
             }
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl ValueEnum for join_rel::JoinType {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let s = match self {
+            join_rel::JoinType::Unspecified => {
+                return Err(PlanError::invalid(
+                    "JoinType",
+                    Option::<Cow<str>>::None,
+                    "Unspecified JoinType",
+                ));
+            }
+            join_rel::JoinType::Inner => "Inner",
+            join_rel::JoinType::Outer => "Outer",
+            join_rel::JoinType::Left => "Left",
+            join_rel::JoinType::Right => "Right",
+            join_rel::JoinType::LeftSemi => "LeftSemi",
+            join_rel::JoinType::RightSemi => "RightSemi",
+            join_rel::JoinType::LeftAnti => "LeftAnti",
+            join_rel::JoinType::RightAnti => "RightAnti",
+            join_rel::JoinType::LeftSingle => "LeftSingle",
+            join_rel::JoinType::RightSingle => "RightSingle",
+            join_rel::JoinType::LeftMark => "LeftMark",
+            join_rel::JoinType::RightMark => "RightMark",
         };
         Ok(Cow::Borrowed(s))
     }
@@ -1087,5 +1168,129 @@ Filter[gt($0, 10:i32) => $0, $1]
         assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
         // Should also accumulate an error
         assert!(!errors.is_empty(), "Expected error for error token");
+    }
+
+    #[test]
+    fn test_join_relation_textify() {
+        let ctx = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq");
+
+        // Create left table: users(id:i64, name:string)
+        let left_table = ReadRel {
+            common: None,
+            base_schema: Some(NamedStruct {
+                names: vec!["id".into(), "name".into()],
+                r#struct: Some(Struct {
+                    type_variation_reference: 0,
+                    types: vec![
+                        Type {
+                            kind: Some(Kind::I64(ptype::I64 {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                        Type {
+                            kind: Some(Kind::String(ptype::String {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                    ],
+                    nullability: Nullability::Nullable as i32,
+                }),
+            }),
+            filter: None,
+            best_effort_filter: None,
+            projection: None,
+            advanced_extension: None,
+            read_type: Some(ReadType::NamedTable(NamedTable {
+                names: vec!["users".into()],
+                advanced_extension: None,
+            })),
+        };
+
+        // Create right table: orders(user_id:i64, amount:i32)
+        let right_table = ReadRel {
+            common: None,
+            base_schema: Some(NamedStruct {
+                names: vec!["user_id".into(), "amount".into()],
+                r#struct: Some(Struct {
+                    type_variation_reference: 0,
+                    types: vec![
+                        Type {
+                            kind: Some(Kind::I64(ptype::I64 {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                        Type {
+                            kind: Some(Kind::I32(ptype::I32 {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                    ],
+                    nullability: Nullability::Nullable as i32,
+                }),
+            }),
+            filter: None,
+            best_effort_filter: None,
+            projection: None,
+            advanced_extension: None,
+            read_type: Some(ReadType::NamedTable(NamedTable {
+                names: vec!["orders".into()],
+                advanced_extension: None,
+            })),
+        };
+
+        // Create join condition: eq($0, $2) (users.id = orders.user_id)
+        let join_condition = Expression {
+            rex_type: Some(RexType::ScalarFunction(ScalarFunction {
+                function_reference: 10, // eq function
+                arguments: vec![
+                    FunctionArgument {
+                        arg_type: Some(ArgType::Value(Reference(0).into())), // $0 (users.id)
+                    },
+                    FunctionArgument {
+                        arg_type: Some(ArgType::Value(Reference(2).into())), // $2 (orders.user_id)
+                    },
+                ],
+                options: vec![],
+                output_type: None,
+                #[allow(deprecated)]
+                args: vec![],
+            })),
+        };
+
+        // Create JoinRel
+        let join_rel = JoinRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit {
+                    output_mapping: vec![0, 1, 2, 3], // All columns
+                })),
+                ..Default::default()
+            }),
+            left: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(left_table))),
+            })),
+            right: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(right_table))),
+            })),
+            expression: Some(Box::new(join_condition)),
+            post_join_filter: None,
+            r#type: join_rel::JoinType::Inner as i32,
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&join_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+
+        // Expected format: Join[&Inner, eq($0, $2) => $0, $1, $2, $3]
+        assert!(result.contains("Join[&Inner, eq($0, $2) => $0, $1, $2, $3]"));
+        assert!(result.contains("Read[users => id:i64?, name:string?]"));
+        assert!(result.contains("Read[orders => user_id:i64?, amount:i32?]"));
     }
 }

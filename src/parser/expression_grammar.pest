@@ -188,6 +188,7 @@ relation = {
   | aggregate_relation
   | sort_relation
   | fetch_relation
+  | join_relation
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -237,3 +238,7 @@ fetch_named_arg      =  { fetch_arg_name ~ sp ~ "=" ~ sp ~ fetch_value }
 fetch_named_arg_list =  { fetch_named_arg ~ (sp ~ "," ~ sp ~ fetch_named_arg)* }
 fetch_args           = _{ fetch_named_arg_list | empty }
 fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+
+// JoinRel: Join[&Inner, eq($0, $2) => $0, $1, $2, $3]
+join_type = { "&Inner" | "&Left" | "&Right" | "&Outer" | "&LeftSemi" | "&RightSemi" | "&LeftAnti" | "&RightAnti" | "&LeftSingle" | "&RightSingle" | "&LeftMark" | "&RightMark" }
+join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
