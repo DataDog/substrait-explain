@@ -8,7 +8,11 @@ authors = [
 ]
 license = "Apache-2.0"
 repository = "https://github.com/DataDog/substrait-explain"
-description = "A library for explaining Substrait plans."
+description = "Explain Substrait plans as human-readable text."
+homepage = "https://datadoghq.dev/substrait-explain/"
+readme = "README.md"
+keywords = ["substrait", "explain", "plan", "query", "database"]
+categories = ["data-structures", "database-implementations", "database"]
 
 [[example]]
 name = "advanced_usage"
