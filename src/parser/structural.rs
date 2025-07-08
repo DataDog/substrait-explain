@@ -8,7 +8,8 @@ use std::fmt;
 
 use substrait::proto::rel::RelType;
 use substrait::proto::{
-    AggregateRel, FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot, plan_rel,
+    AggregateRel, FetchRel, FilterRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot, SortRel,
+    plan_rel,
 };
 use thiserror::Error;
 
@@ -298,6 +299,8 @@ impl<'a> RelationParser<'a> {
             Rule::filter_relation => self.parse_rel::<FilterRel>(e, l, p, c, ic),
             Rule::project_relation => self.parse_rel::<ProjectRel>(e, l, p, c, ic),
             Rule::aggregate_relation => self.parse_rel::<AggregateRel>(e, l, p, c, ic),
+            Rule::sort_relation => self.parse_rel::<SortRel>(e, l, p, c, ic),
+            Rule::fetch_relation => self.parse_rel::<FetchRel>(e, l, p, c, ic),
             _ => todo!(),
         }
     }

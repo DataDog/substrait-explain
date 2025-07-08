@@ -86,7 +86,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::parser::expressions::reference;
+    use crate::parser::expressions::FieldIndex;
     use crate::textify::ErrorQueue;
 
     /// Test a fairly basic plan with an extension, read, and project.
@@ -147,12 +147,16 @@ mod tests {
             arguments: vec![
                 FunctionArgument {
                     arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(reference(0)))),
+                        rex_type: Some(RexType::Selection(Box::new(
+                            FieldIndex(0).to_field_reference(),
+                        ))),
                     })),
                 },
                 FunctionArgument {
                     arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(reference(1)))),
+                        rex_type: Some(RexType::Selection(Box::new(
+                            FieldIndex(1).to_field_reference(),
+                        ))),
                     })),
                 },
             ],

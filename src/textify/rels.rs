@@ -1,12 +1,18 @@
+use std::borrow::Cow;
+use std::convert::TryFrom;
 use std::fmt;
+use std::fmt::Debug;
 
+use prost::UnknownEnumValue;
+use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
+use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, FilterRel, NamedStruct, PlanRel, ProjectRel,
-    ReadRel, Rel, RelCommon, RelRoot, Type,
+    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, PlanRel,
+    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type,
 };
 
 use super::expressions::Reference;
@@ -47,6 +53,21 @@ impl NamedRelation for Rel {
     }
 }
 
+/// Trait for enums that can be converted to a string representation for
+/// textification.
+///
+/// Returns Ok(str) for valid enum values, or Err([PlanError]) for invalid or
+/// unknown values.
+pub trait ValueEnum {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedArg<'a> {
+    pub name: &'a str,
+    pub value: Value<'a>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
     Name(Name<'a>),
@@ -57,7 +78,11 @@ pub enum Value<'a> {
     Reference(i32),
     Expression(&'a Expression),
     AggregateFunction(&'a AggregateFunction),
+    /// Represents a missing, invalid, or unspecified value.
     Missing(PlanError),
+    /// Represents a valid enum value as a string for textification.
+    Enum(Cow<'a, str>),
+    Integer(i32),
 }
 
 impl<'a> Value<'a> {
@@ -96,6 +121,8 @@ impl<'a> Textify for Value<'a> {
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
             Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
+            Value::Enum(res) => write!(w, "&{res}"),
+            Value::Integer(i) => write!(w, "{i}"),
         }
     }
 }
@@ -169,12 +196,42 @@ impl<'a> Textify for Emitted<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Arguments<'a> {
+    /// Positional arguments (e.g., a filter condition, group-bys, etc.))
+    pub positional: Vec<Value<'a>>,
+    /// Named arguments (e.g., limit=10, offset=5)
+    pub named: Vec<NamedArg<'a>>,
+}
+
+impl<'a> Textify for Arguments<'a> {
+    fn name() -> &'static str {
+        "Arguments"
+    }
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if self.positional.is_empty() && self.named.is_empty() {
+            return write!(w, "_");
+        }
+
+        write!(w, "{}", ctx.separated(self.positional.iter(), ", "))?;
+        if !self.positional.is_empty() && !self.named.is_empty() {
+            write!(w, ", ")?;
+        }
+        write!(w, "{}", ctx.separated(self.named.iter(), ", "))
+    }
+}
+
 pub struct Relation<'a> {
     pub name: &'a str,
-    pub arguments: Vec<Value<'a>>,
+    /// Arguments to the relation, if any.
+    ///
+    /// - `None` means this relation does not take arguments, and the argument
+    ///   section is omitted entirely.
+    /// - `Some(args)` with both vectors empty means the relation takes arguments, but none are provided; this will print as `_ => ...`.
+    /// - `Some(args)` with non-empty vectors will print as usual, with positional arguments first, then named arguments, separated by commas.
+    pub arguments: Option<Arguments<'a>>,
     pub columns: Vec<Value<'a>>,
     pub emit: Option<&'a EmitKind>,
-    // The children of this relation - its inputs.
     pub children: Vec<Option<Relation<'a>>>,
 }
 
@@ -184,16 +241,18 @@ impl Textify for Relation<'_> {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let args = ctx.separated(self.arguments.iter(), ", ");
         let cols = Emitted::new(&self.columns, self.emit);
-
         let indent = ctx.indent();
         let name = self.name;
         let cols = ctx.display(&cols);
-        if self.arguments.is_empty() {
-            write!(w, "{indent}{name}[{cols}]")?;
-        } else {
-            write!(w, "{indent}{name}[{args} => {cols}]")?;
+        match &self.arguments {
+            None => {
+                write!(w, "{indent}{name}[{cols}]")?;
+            }
+            Some(args) => {
+                let args = ctx.display(args);
+                write!(w, "{indent}{name}[{args} => {cols}]")?;
+            }
         }
         let child_scope = ctx.push_indent();
         for child in self.children.iter().flatten() {
@@ -242,7 +301,7 @@ pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], PlanError> {
 impl<'a> From<&'a ReadRel> for Relation<'a> {
     fn from(rel: &'a ReadRel) -> Self {
         let name = get_table_name(rel.read_type.as_ref());
-        let named: Value = match name {
+        let table_name: Value = match name {
             Ok(n) => Value::TableName(n.iter().map(|n| Name(n)).collect()),
             Err(e) => Value::Missing(e),
         };
@@ -262,7 +321,10 @@ impl<'a> From<&'a ReadRel> for Relation<'a> {
 
         Relation {
             name: "Read",
-            arguments: vec![named],
+            arguments: Some(Arguments {
+                positional: vec![table_name],
+                named: vec![],
+            }),
             columns,
             emit,
             children: vec![],
@@ -318,13 +380,18 @@ impl<'a> From<&'a FilterRel> for Relation<'a> {
         let condition = Value::expect(condition, || {
             PlanError::unimplemented("FilterRel", Some("condition"), "Condition is None")
         });
+        let positional = vec![condition];
+        let arguments = Some(Arguments {
+            positional,
+            named: vec![],
+        });
         let emit = get_emit(rel.common.as_ref());
         let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);
         let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
 
         Relation {
             name: "Filter",
-            arguments: vec![condition],
+            arguments,
             columns,
             emit,
             children,
@@ -341,7 +408,7 @@ impl<'a> From<&'a ProjectRel> for Relation<'a> {
 
         Relation {
             name: "Project",
-            arguments: vec![],
+            arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
             children,
@@ -356,6 +423,8 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Filter(r)) => Relation::from(r.as_ref()),
             Some(RelType::Project(r)) => Relation::from(r.as_ref()),
             Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
         }
     }
@@ -373,17 +442,18 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// 4. Children: The input relation
     fn from(rel: &'a AggregateRel) -> Self {
         // Arguments: group-by fields (as expressions)
-        let arguments = rel
+        let positional = rel
             .grouping_expressions
             .iter()
             .map(Value::Expression)
-            .collect();
+            .collect::<Vec<_>>();
 
-        // Build all possible outputs in the correct order
+        let arguments = Some(Arguments {
+            positional,
+            named: vec![],
+        });
+        // The columns are the direct outputs of this relation (before emit)
         let mut all_outputs: Vec<Value> = vec![];
-
-        // First, add all input fields (group-by references)
-        // These are indexed 0..group_by_count in the output
         let input_field_count = rel.grouping_expressions.len();
         for i in 0..input_field_count {
             all_outputs.push(Value::Reference(i as i32));
@@ -396,10 +466,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                 all_outputs.push(Value::AggregateFunction(agg_fn));
             }
         }
-
-        // Get the emit mapping to select the correct outputs
         let emit = get_emit(rel.common.as_ref());
-
         Relation {
             name: "Aggregate",
             arguments,
@@ -465,6 +532,176 @@ impl Textify for PlanRel {
     }
 }
 
+impl<'a> From<&'a SortRel> for Relation<'a> {
+    fn from(rel: &'a SortRel) -> Self {
+        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+        let positional = rel.sorts.iter().map(Value::from).collect::<Vec<_>>();
+        let arguments = Some(Arguments {
+            positional,
+            named: vec![],
+        });
+        // The columns are the direct outputs of this relation (before emit)
+        let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
+        let emit = get_emit(rel.common.as_ref());
+        Relation {
+            name: "Sort",
+            arguments,
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
+impl<'a> From<&'a FetchRel> for Relation<'a> {
+    fn from(rel: &'a FetchRel) -> Self {
+        let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+        let mut named_args = Vec::new();
+        match &rel.count_mode {
+            Some(CountMode::CountExpr(expr)) => {
+                named_args.push(NamedArg {
+                    name: "limit",
+                    value: Value::Expression(expr),
+                });
+            }
+            Some(CountMode::Count(val)) => {
+                named_args.push(NamedArg {
+                    name: "limit",
+                    value: Value::Integer(*val as i32),
+                });
+            }
+            None => {}
+        }
+        if let Some(offset) = &rel.offset_mode {
+            match offset {
+                substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr) => {
+                    named_args.push(NamedArg {
+                        name: "offset",
+                        value: Value::Expression(expr),
+                    });
+                }
+                substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
+                    named_args.push(NamedArg {
+                        name: "offset",
+                        value: Value::Integer(*val as i32),
+                    });
+                }
+            }
+        }
+
+        let emit = get_emit(rel.common.as_ref());
+        let columns = match emit {
+            Some(EmitKind::Emit(e)) => e
+                .output_mapping
+                .iter()
+                .map(|&i| Value::Reference(i))
+                .collect(),
+            _ => vec![],
+        };
+        Relation {
+            name: "Fetch",
+            arguments: Some(Arguments {
+                positional: vec![],
+                named: named_args,
+            }),
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
+impl<'a> From<&'a SortField> for Value<'a> {
+    fn from(sf: &'a SortField) -> Self {
+        let field = match &sf.expr {
+            Some(expr) => match &expr.rex_type {
+                Some(substrait::proto::expression::RexType::Selection(fref)) => {
+                    if let Some(substrait::proto::expression::field_reference::ReferenceType::DirectReference(seg)) = &fref.reference_type {
+                        if let Some(substrait::proto::expression::reference_segment::ReferenceType::StructField(sf)) = &seg.reference_type {
+                            Value::Reference(sf.field)
+                        } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a struct field")) }
+                    } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a direct reference")) }
+                }
+                _ => Value::Missing(PlanError::unimplemented(
+                    "SortField",
+                    Some("expr"),
+                    "Not a selection",
+                )),
+            },
+            None => Value::Missing(PlanError::unimplemented(
+                "SortField",
+                Some("expr"),
+                "Missing expr",
+            )),
+        };
+        let direction = match &sf.sort_kind {
+            Some(kind) => Value::from(kind),
+            None => Value::Missing(PlanError::invalid(
+                "SortKind",
+                Some(Cow::Borrowed("sort_kind")),
+                "Missing sort_kind",
+            )),
+        };
+        Value::Tuple(vec![field, direction])
+    }
+}
+
+impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
+    fn from(enum_val: &'a T) -> Self {
+        match enum_val.as_enum_str() {
+            Ok(s) => Value::Enum(s),
+            Err(e) => Value::Missing(e),
+        }
+    }
+}
+
+impl ValueEnum for SortKind {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let d = match self {
+            &SortKind::Direction(d) => SortDirection::try_from(d),
+            SortKind::ComparisonFunctionReference(f) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Some(Cow::Owned(format!("function reference{f}"))),
+                    "SortKind::ComparisonFunctionReference unimplemented",
+                ));
+            }
+        };
+        let s = match d {
+            Err(UnknownEnumValue(d)) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Some(Cow::Owned(format!("unknown variant: {d:?}"))),
+                    "Unknown SortDirection",
+                ));
+            }
+            Ok(SortDirection::AscNullsFirst) => "AscNullsFirst",
+            Ok(SortDirection::AscNullsLast) => "AscNullsLast",
+            Ok(SortDirection::DescNullsFirst) => "DescNullsFirst",
+            Ok(SortDirection::DescNullsLast) => "DescNullsLast",
+            Ok(SortDirection::Clustered) => "Clustered",
+            Ok(SortDirection::Unspecified) => {
+                return Err(PlanError::invalid(
+                    "SortKind",
+                    Option::<Cow<str>>::None,
+                    "Unspecified SortDirection",
+                ));
+            }
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl<'a> Textify for NamedArg<'a> {
+    fn name() -> &'static str {
+        "NamedArg"
+    }
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}=", self.name)?;
+        self.value.textify(ctx, w)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use substrait::proto::expression::literal::LiteralType;
@@ -479,6 +716,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
+    use crate::parser::expressions::FieldIndex;
 
     #[test]
     fn test_read_rel() {
@@ -620,9 +858,9 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_function_textify() {
         let ctx = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count");
+        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 10, "sum")
+        .with_function(1, 11, "count");
 
         // Create a simple AggregateFunction
         let agg_fn = AggregateFunction {
@@ -630,7 +868,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -658,9 +896,9 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_relation_textify() {
         let ctx = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count");
+        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 10, "sum")
+        .with_function(1, 11, "count");
 
         // Create a simple AggregateRel
         let agg_fn1 = AggregateFunction {
@@ -668,7 +906,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -686,7 +924,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -736,7 +974,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             })),
             grouping_expressions: vec![Expression {
                 rex_type: Some(RexType::Selection(Box::new(
-                    crate::parser::expressions::reference(0),
+                    FieldIndex(0).to_field_reference(),
                 ))),
             }],
             groupings: vec![],
@@ -771,5 +1009,83 @@ Filter[gt($0, 10:i32) => $0, $1]
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         // Expected: Aggregate[$0 => sum($1), count($1)]
         assert!(result.contains("Aggregate[$0 => sum($1), count($1)]"));
+    }
+
+    #[test]
+    fn test_arguments_textify_positional_only() {
+        let ctx = TestContext::new();
+        let args = Arguments {
+            positional: vec![Value::Integer(42), Value::Integer(7)],
+            named: vec![],
+        };
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "42, 7");
+    }
+
+    #[test]
+    fn test_arguments_textify_named_only() {
+        let ctx = TestContext::new();
+        let args = Arguments {
+            positional: vec![],
+            named: vec![
+                NamedArg {
+                    name: "limit",
+                    value: Value::Integer(10),
+                },
+                NamedArg {
+                    name: "offset",
+                    value: Value::Integer(5),
+                },
+            ],
+        };
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "limit=10, offset=5");
+    }
+
+    #[test]
+    fn test_arguments_textify_both() {
+        let ctx = TestContext::new();
+        let args = Arguments {
+            positional: vec![Value::Integer(1)],
+            named: vec![NamedArg {
+                name: "foo",
+                value: Value::Integer(2),
+            }],
+        };
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "1, foo=2");
+    }
+
+    #[test]
+    fn test_arguments_textify_empty() {
+        let ctx = TestContext::new();
+        let args = Arguments {
+            positional: vec![],
+            named: vec![],
+        };
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "_");
+    }
+
+    #[test]
+    fn test_named_arg_textify_error_token() {
+        let ctx = TestContext::new();
+        let named_arg = NamedArg {
+            name: "foo",
+            value: Value::Missing(PlanError::invalid(
+                "my_enum",
+                Some(Cow::Borrowed("my_enum")),
+                Cow::Borrowed("my_enum"),
+            )),
+        };
+        let (result, errors) = ctx.textify(&named_arg);
+        // Should show !{my_enum} in the output
+        assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
+        // Should also accumulate an error
+        assert!(!errors.is_empty(), "Expected error for error token");
     }
 }
