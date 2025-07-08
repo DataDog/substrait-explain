@@ -669,8 +669,12 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
         let (children, _total_columns) =
             Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
 
-        // Join relations must have exactly 2 children (left and right)
-        assert_eq!(children.len(), 2, "JoinRel should have exactly 2 children");
+        // convert_children should preserve input vector length
+        assert_eq!(
+            children.len(),
+            2,
+            "convert_children should return same number of elements as input"
+        );
 
         // Calculate left and right column counts separately
         let left_columns = match &children[0] {

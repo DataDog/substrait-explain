@@ -39,10 +39,13 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
    - This will run `cargo fmt` and `cargo clippy -- -D warnings` automatically on each commit
 5. **Useful development commands**:
    ```bash
+   just fmt                      # Format code
+   just check                    # Run linting and checks
+   just fix                      # Format code, auto-fix clippy errors
    cargo test                    # Run all tests
-   cargo test -- --nocapture    # Run tests with output
+   cargo test -- --nocapture     # Run tests with output
    cargo run --example basic_usage
-   cargo doc --open             # View documentation
+   cargo doc --open              # View documentation
    ```
 
 ### Code Style
@@ -54,6 +57,15 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 - Include tests for new functionality
 
 ### Project-Specific Guidelines
+
+#### Substrait-Specific Development
+
+This project implements Substrait protobuf plan parsing and formatting. See the [official Substrait documentation](https://substrait.io/) for the complete specification, including output mapping rules per relation type.
+
+##### Project-specific text format patterns
+
+- **Enum textification**: All Substrait enums use `&` prefix in text format (e.g., `&Inner`, `&AscNullsFirst`)
+- **Unknown enum handling**: For invalid/unknown enum values, use `Value::Missing(PlanError)` and fallback to reasonable default enum value (usually `UNSPECIFIED`) for processing
 
 #### Error Handling Patterns
 
@@ -92,17 +104,21 @@ _Note: When parsing with pest, use `pest::Span` and `pest::Error` types to provi
 When going from a Plan to text, our goal is to be lenient: track errors and return them, but also always provide "best-effort" output. Failures should be noted and pushed to an ErrorAccumulator, but processing should continue, with a `!{message}` block in the output:
 
 ```rust
-// Use the Scope::expect pattern for graceful error handling
+// Use Scope::expect for graceful error handling in textification
 write!(w, "{}", ctx.expect(relation.input.as_ref()));
 
 // Avoid protobuf field unwraps - they can legitimately be None
-// RISKY:
-let input = relation.input.as_ref().unwrap();
-let schema = read.base_schema.as_ref().unwrap();
+let input = relation.input.as_ref().unwrap(); // RISKY
 
-// Better: Use proper Option handling
+// Better: Use Scope::expect or Scope::failure
 write!(w, "{}", ctx.expect(relation.input.as_ref()));
 ```
+
+**Error accumulation patterns:**
+
+- Use `ctx.expect(option)` to handle missing values with error accumulation
+- Use `ctx.failure(error)` to record errors while continuing processing
+- Return `PlanError` directly only for unrecoverable parsing failures
 
 ##### Test Context
 
@@ -127,6 +143,7 @@ assert!(result.is_ok());
 `RuleIter` enforces complete consumption via its `Drop` implementation. This can cause assertion failures if validation functions return early before calling `iter.done()`.
 
 **Current workaround:** Extract all data first, then validate:
+
 ```rust
 // Extract data without validation
 let (limit_pair, offset_pair) = /* extract pairs */;
@@ -136,7 +153,7 @@ iter.done(); // Call before any early returns
 let count_mode = limit_pair.map(|pair| CountMode::parse_pair(extensions, pair)).transpose()?;
 ```
 
-*Note: The RuleIter interface could be improved to handle this pattern more naturally.*
+_Note: The RuleIter interface could be improved to handle this pattern more naturally._
 
 #### Documentation Formatting
 
@@ -159,6 +176,12 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 - Use PEG format with `rule_name := definition` syntax
 - Run `cargo test --doc` to verify all code examples compile
 - Ensure all referenced identifiers are properly defined somewhere in the grammar
+
+#### Testing Guidelines
+
+**Roundtrip testing**: The most effective validation is parse→format→parse comparison. Parse text to protobuf, format back to text, and verify the output matches the input. See `tests/plan_roundtrip.rs` for examples.
+
+**TODO**: Add comprehensive edge case testing for invalid enum values, unknown relation types, malformed input, and boundary conditions to ensure graceful error handling.
 
 ### Pull Request Process
 
