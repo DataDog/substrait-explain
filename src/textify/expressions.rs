@@ -505,11 +505,11 @@ impl Textify for FieldReference {
                 return write!(
                     w,
                     "{}",
-                    PlanError::invalid(
+                    ctx.failure(PlanError::invalid(
                         "FieldReference",
                         Some("reference_type"),
-                        "Required field missing, None found",
-                    )
+                        "Required field reference_type is missing",
+                    ))
                 );
             }
             Some(ReferenceType::DirectReference(r)) => r,
@@ -533,11 +533,11 @@ impl Textify for FieldReference {
             None => write!(
                 w,
                 "{}",
-                PlanError::invalid(
+                ctx.failure(PlanError::invalid(
                     "ReferenceSegment",
                     Some("reference_type"),
-                    "Required field missing, None found",
-                )
+                    "Required field reference_type is missing",
+                ))
             ),
             _ => write!(
                 w,

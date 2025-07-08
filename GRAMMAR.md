@@ -625,9 +625,23 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 - Sort directions follow the general `enum` syntax and specify null handling
 - The columns after `=>` specify the output field order (typically a reference list)
 
-## Complete Example
+### Join Relation
 
-A complete query that reads from an orders table, multiplies quantity and price, filters for high-value orders, groups by category, and outputs the total revenue and order count per category:
+**Syntax**: `"Join" "[" join_type "," expression "=>" reference_list "]"`
+
+**Components**:
+
+- `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
+- `expression` - Join condition (boolean expression relating left and right inputs)  
+- `reference_list` - Comma-separated list of field references for output columns
+
+**Field Reference Mapping**:
+
+For joins, field references map to the combined schema of left and right inputs:
+- `$0`, `$1`, ... refer to left input fields
+- `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
+
+**Example**:
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -635,20 +649,48 @@ A complete query that reads from an orders table, multiplies quantity and price,
 # let plan_text = r#"
 === Extensions
 URIs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
-  ## 10 @  1: multiply
-  ## 11 @  1: gt
-  ## 12 @  2: sum
-  ## 13 @  2: count
+  ## 10 @  1: eq
 
 === Plan
-Root[category_stats]
-  Aggregate[$0 => $0, sum($1), count($2)]
-    Filter[gt($1, 100) => $0, $1, $2]
-      Project[$0, multiply($1, $2), $2]
-        Read[orders => category:string, quantity:i32?, price:i64]
+Root[user_orders]
+  Join[&Inner, eq($0, $2) => $0, $1, $3]
+    Read[users => id:i64, name:string]        // Fields $0, $1
+    Read[orders => user_id:i64, amount:i32]   // Fields $2, $3
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+## Complete Example
+
+A complete query that joins users and orders tables, calculates total order value, filters for high-value orders, and groups by user to show total revenue per customer:
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  3: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  ## 10 @  1: eq
+  ## 11 @  1: gt
+  ## 12 @  2: multiply
+  ## 13 @  3: sum
+
+=== Plan
+Root[customer_revenue]
+  Aggregate[$0, $1 => $0, $1, sum($3)]
+    Filter[gt($3, 100) => $0, $1, $2, $3]
+      Project[$0, $1, $2, multiply($4, $5)]
+        Join[&Inner, eq($0, $3) => $0, $1, $2, $3, $4, $5]
+          Read[users => id:i64, name:string, region:string]
+          Read[orders => user_id:i64, quantity:i32, price:i64]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();

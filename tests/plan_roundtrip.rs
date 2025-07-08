@@ -327,3 +327,56 @@ Root[a, b]
     Read[table => a:i32, b:string]"#;
     roundtrip_plan(plan_empty);
 }
+
+#[test]
+fn test_join_relation_roundtrip() {
+    let plan = r#"=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+
+=== Plan
+Root[id, name, amount]
+  Join[&Inner, eq($0, $2) => $0, $1, $3]
+    Read[users => id:i64, name:string]
+    Read[orders => user_id:i64, amount:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_join_relation_semi_types_roundtrip() {
+    // Test LeftSemi join - should output only left columns
+    let plan_semi = r#"=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+
+=== Plan
+Root[a, b]
+  Join[&LeftSemi, eq($0, $2) => $0, $1]
+    Read[left_table => a:i32, b:string]
+    Read[right_table => c:i32, d:string]"#;
+    roundtrip_plan(plan_semi);
+}
+
+#[test]
+fn test_join_relation_right_mark_roundtrip() {
+    // Test RightMark join - should output right columns plus mark column
+    // Left: 2 columns, Right: 3 columns, RightMark outputs 4 total: $0, $1, $2, $3
+    // We output just the last right column ($2) and the mark ($3)
+    let plan_right_mark = r#"=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+
+=== Plan
+Root[d, mark]
+  Join[&RightMark, eq($0, $2) => $2, $3]
+    Read[left_table => a:i32, b:string]
+    Read[right_table => c:i32, d:string, e:boolean]"#;
+    roundtrip_plan(plan_right_mark);
+}

@@ -5,8 +5,8 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, ProjectRel, ReadRel, Rel,
-    RelCommon, SortField, SortRel, Type, aggregate_rel, read_rel, r#type,
+    AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel, ReadRel, Rel,
+    RelCommon, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, r#type,
 };
 
 use super::{
@@ -746,6 +746,105 @@ impl RelationParsePair for FetchRel {
     }
 }
 
+impl ParsePair for join_rel::JoinType {
+    fn rule() -> Rule {
+        Rule::join_type
+    }
+
+    fn message() -> &'static str {
+        "JoinType"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let join_type_str = pair.as_str().trim_start_matches('&');
+        match join_type_str {
+            "Inner" => join_rel::JoinType::Inner,
+            "Left" => join_rel::JoinType::Left,
+            "Right" => join_rel::JoinType::Right,
+            "Outer" => join_rel::JoinType::Outer,
+            "LeftSemi" => join_rel::JoinType::LeftSemi,
+            "RightSemi" => join_rel::JoinType::RightSemi,
+            "LeftAnti" => join_rel::JoinType::LeftAnti,
+            "RightAnti" => join_rel::JoinType::RightAnti,
+            "LeftSingle" => join_rel::JoinType::LeftSingle,
+            "RightSingle" => join_rel::JoinType::RightSingle,
+            "LeftMark" => join_rel::JoinType::LeftMark,
+            "RightMark" => join_rel::JoinType::RightMark,
+            _ => panic!("Unknown join type: {join_type_str} (this should be caught by grammar)"),
+        }
+    }
+}
+
+impl RelationParsePair for JoinRel {
+    fn rule() -> Rule {
+        Rule::join_relation
+    }
+
+    fn message() -> &'static str {
+        "JoinRel"
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Join(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        // Join requires exactly 2 input children
+        if input_children.len() != 2 {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "JoinRel should have exactly 2 input children, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        let mut children_iter = input_children.into_iter();
+        let left = children_iter.next().unwrap();
+        let right = children_iter.next().unwrap();
+
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Parse join type
+        let join_type = iter.parse_next::<join_rel::JoinType>();
+
+        // Parse join condition expression
+        let condition = iter.parse_next_scoped::<Expression>(extensions)?;
+
+        // Parse output references (which become the emit)
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        iter.done();
+
+        let emit = parse_reference_emit(reference_list_pair);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+
+        Ok(JoinRel {
+            common: Some(common),
+            left: Some(left),
+            right: Some(right),
+            expression: Some(Box::new(condition)),
+            post_join_filter: None, // Not supported in grammar yet
+            r#type: join_type as i32,
+            advanced_extension: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pest::Parser;
@@ -1094,6 +1193,142 @@ mod tests {
             // Grammar doesn't support negative values in fetch context
             println!("Grammar prevents negative offset values at parse time");
         }
+    }
+
+    #[test]
+    fn test_parse_join_relation() {
+        let extensions = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel();
+        let right_rel = example_read_relation().into_rel();
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&Inner, eq($0, $3) => $0, $1, $3, $4]",
+            ),
+            vec![Box::new(left_rel), Box::new(right_rel)],
+            6, // left (3) + right (3) = 6 total input fields
+        )
+        .unwrap();
+
+        // Should be an Inner join
+        assert_eq!(join.r#type, join_rel::JoinType::Inner as i32);
+
+        // Should have left and right relations
+        assert!(join.left.is_some());
+        assert!(join.right.is_some());
+
+        // Should have a join condition
+        assert!(join.expression.is_some());
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1, 3, 4] (selected columns)
+        assert_eq!(emit, &[0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_left_outer() {
+        let extensions = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel();
+        let right_rel = example_read_relation().into_rel();
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&Left, eq($0, $3) => $0, $1, $2]"),
+            vec![Box::new(left_rel), Box::new(right_rel)],
+            6,
+        )
+        .unwrap();
+
+        // Should be a Left join
+        assert_eq!(join.r#type, join_rel::JoinType::Left as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1, 2]
+        assert_eq!(emit, &[0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_left_semi() {
+        let extensions = TestContext::new()
+            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel();
+        let right_rel = example_read_relation().into_rel();
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&LeftSemi, eq($0, $3) => $0, $1]"),
+            vec![Box::new(left_rel), Box::new(right_rel)],
+            6,
+        )
+        .unwrap();
+
+        // Should be a LeftSemi join
+        assert_eq!(join.r#type, join_rel::JoinType::LeftSemi as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1] (only left columns for semi join)
+        assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_requires_two_children() {
+        let extensions = SimpleExtensions::default();
+
+        // Test with 0 children
+        let result = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            vec![],
+            0,
+        );
+        assert!(result.is_err());
+
+        // Test with 1 child
+        let result = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            vec![Box::new(example_read_relation().into_rel())],
+            3,
+        );
+        assert!(result.is_err());
+
+        // Test with 3 children
+        let result = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            vec![
+                Box::new(example_read_relation().into_rel()),
+                Box::new(example_read_relation().into_rel()),
+                Box::new(example_read_relation().into_rel()),
+            ],
+            9,
+        );
+        assert!(result.is_err());
     }
 
     fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {

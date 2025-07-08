@@ -11,8 +11,8 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, NamedStruct, PlanRel,
-    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type,
+    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct,
+    PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
 };
 
 use super::expressions::Reference;
@@ -189,7 +189,17 @@ impl<'a> Textify for Emitted<'a> {
                 write!(w, ", ")?;
             }
 
-            write!(w, "{}", ctx.expect(self.values.get(index as usize)))?;
+            match self.values.get(index as usize) {
+                Some(value) => write!(w, "{}", ctx.display(value))?,
+                None => write!(w, "{}", ctx.failure(PlanError::invalid(
+                    "Emitted",
+                    Some("output_mapping"),
+                    format!(
+                        "Output mapping index {} is out of bounds for values collection of size {}",
+                        index, self.values.len()
+                    )
+                )))?,
+            }
         }
 
         Ok(())
@@ -227,11 +237,17 @@ pub struct Relation<'a> {
     ///
     /// - `None` means this relation does not take arguments, and the argument
     ///   section is omitted entirely.
-    /// - `Some(args)` with both vectors empty means the relation takes arguments, but none are provided; this will print as `_ => ...`.
-    /// - `Some(args)` with non-empty vectors will print as usual, with positional arguments first, then named arguments, separated by commas.
+    /// - `Some(args)` with both vectors empty means the relation takes
+    ///   arguments, but none are provided; this will print as `_ => ...`.
+    /// - `Some(args)` with non-empty vectors will print as usual, with
+    ///   positional arguments first, then named arguments, separated by commas.
     pub arguments: Option<Arguments<'a>>,
+    /// The columns emitted by this relation, pre-emit - the 'direct' column
+    /// output.
     pub columns: Vec<Value<'a>>,
+    /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
 
@@ -425,6 +441,7 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
             Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
             Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
+            Some(RelType::Join(r)) => Relation::from(r.as_ref()),
             _ => todo!(),
         }
     }
@@ -611,6 +628,116 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
     }
 }
 
+fn join_output_columns(
+    join_type: join_rel::JoinType,
+    left_columns: usize,
+    right_columns: usize,
+) -> Vec<Value<'static>> {
+    let total_columns = match join_type {
+        // Inner, Left, Right, Outer joins output columns from both sides
+        join_rel::JoinType::Inner
+        | join_rel::JoinType::Left
+        | join_rel::JoinType::Right
+        | join_rel::JoinType::Outer => left_columns + right_columns,
+
+        // Left semi/anti joins only output columns from the left side
+        join_rel::JoinType::LeftSemi | join_rel::JoinType::LeftAnti => left_columns,
+
+        // Right semi/anti joins output columns from the right side
+        join_rel::JoinType::RightSemi | join_rel::JoinType::RightAnti => right_columns,
+
+        // Single joins behave like semi joins
+        join_rel::JoinType::LeftSingle => left_columns,
+        join_rel::JoinType::RightSingle => right_columns,
+
+        // Mark joins output base columns plus one mark column
+        join_rel::JoinType::LeftMark => left_columns + 1,
+        join_rel::JoinType::RightMark => right_columns + 1,
+
+        // Unspecified - fallback to all columns
+        join_rel::JoinType::Unspecified => left_columns + right_columns,
+    };
+
+    // Output is always a contiguous range starting from $0
+    (0..total_columns)
+        .map(|i| Value::Reference(i as i32))
+        .collect()
+}
+
+impl<'a> From<&'a JoinRel> for Relation<'a> {
+    fn from(rel: &'a JoinRel) -> Self {
+        let (children, _total_columns) =
+            Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
+
+        // convert_children should preserve input vector length
+        assert_eq!(
+            children.len(),
+            2,
+            "convert_children should return same number of elements as input"
+        );
+
+        // Calculate left and right column counts separately
+        let left_columns = match &children[0] {
+            Some(child) => child.emitted(),
+            None => 0,
+        };
+        let right_columns = match &children[1] {
+            Some(child) => child.emitted(),
+            None => 0,
+        };
+
+        // Convert join type from protobuf i32 to enum value
+        // JoinType is stored as i32 in protobuf, convert to typed enum for processing
+        let (join_type, join_type_value) = match join_rel::JoinType::try_from(rel.r#type) {
+            Ok(join_type) => {
+                let join_type_value = match join_type.as_enum_str() {
+                    Ok(s) => Value::Enum(s),
+                    Err(e) => Value::Missing(e),
+                };
+                (join_type, join_type_value)
+            }
+            Err(_) => {
+                // Use Unspecified for the join_type but create an error for the join_type_value
+                let join_type_error = Value::Missing(PlanError::invalid(
+                    "JoinRel",
+                    Some("type"),
+                    format!("Unknown join type: {}", rel.r#type),
+                ));
+                (join_rel::JoinType::Unspecified, join_type_error)
+            }
+        };
+
+        // Join condition
+        let condition = rel
+            .expression
+            .as_ref()
+            .map(|c| Value::Expression(c.as_ref()));
+        let condition = Value::expect(condition, || {
+            PlanError::unimplemented("JoinRel", Some("expression"), "Join condition is None")
+        });
+
+        // TODO: Add support for post_join_filter when grammar is extended
+        // Currently post_join_filter is not supported in the text format
+        // grammar
+        let positional = vec![join_type_value, condition];
+        let arguments = Some(Arguments {
+            positional,
+            named: vec![],
+        });
+
+        let emit = get_emit(rel.common.as_ref());
+        let columns = join_output_columns(join_type, left_columns, right_columns);
+
+        Relation {
+            name: "Join",
+            arguments,
+            columns,
+            emit,
+            children,
+        }
+    }
+}
+
 impl<'a> From<&'a SortField> for Value<'a> {
     fn from(sf: &'a SortField) -> Self {
         let field = match &sf.expr {
@@ -687,6 +814,33 @@ impl ValueEnum for SortKind {
                     "Unspecified SortDirection",
                 ));
             }
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl ValueEnum for join_rel::JoinType {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let s = match self {
+            join_rel::JoinType::Unspecified => {
+                return Err(PlanError::invalid(
+                    "JoinType",
+                    Option::<Cow<str>>::None,
+                    "Unspecified JoinType",
+                ));
+            }
+            join_rel::JoinType::Inner => "Inner",
+            join_rel::JoinType::Outer => "Outer",
+            join_rel::JoinType::Left => "Left",
+            join_rel::JoinType::Right => "Right",
+            join_rel::JoinType::LeftSemi => "LeftSemi",
+            join_rel::JoinType::RightSemi => "RightSemi",
+            join_rel::JoinType::LeftAnti => "LeftAnti",
+            join_rel::JoinType::RightAnti => "RightAnti",
+            join_rel::JoinType::LeftSingle => "LeftSingle",
+            join_rel::JoinType::RightSingle => "RightSingle",
+            join_rel::JoinType::LeftMark => "LeftMark",
+            join_rel::JoinType::RightMark => "RightMark",
         };
         Ok(Cow::Borrowed(s))
     }
@@ -1045,6 +1199,41 @@ Filter[gt($0, 10:i32) => $0, $1]
     }
 
     #[test]
+    fn test_join_relation_unknown_type() {
+        let ctx = TestContext::new();
+
+        // Create a join with an unknown/invalid type
+        let join_rel = JoinRel {
+            left: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::default())),
+            })),
+            right: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::default())),
+            })),
+            expression: Some(Box::new(Expression::default())),
+            r#type: 999, // Invalid join type
+            common: None,
+            post_join_filter: None,
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&join_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        // Should contain error for unknown join type but still show condition and columns
+        assert!(!errors.is_empty(), "Expected errors for unknown join type");
+        assert!(
+            result.contains("!{JoinRel}"),
+            "Expected error token for unknown join type"
+        );
+        assert!(
+            result.contains("Join["),
+            "Expected Join relation to be formatted"
+        );
+        println!("Unknown join type result: {result}");
+    }
+
+    #[test]
     fn test_arguments_textify_both() {
         let ctx = TestContext::new();
         let args = Arguments {
@@ -1087,5 +1276,57 @@ Filter[gt($0, 10:i32) => $0, $1]
         assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
         // Should also accumulate an error
         assert!(!errors.is_empty(), "Expected error for error token");
+    }
+
+    #[test]
+    fn test_join_type_enum_textify() {
+        // Test that JoinType enum values convert correctly to their string representation
+        assert_eq!(join_rel::JoinType::Inner.as_enum_str().unwrap(), "Inner");
+        assert_eq!(join_rel::JoinType::Left.as_enum_str().unwrap(), "Left");
+        assert_eq!(
+            join_rel::JoinType::LeftSemi.as_enum_str().unwrap(),
+            "LeftSemi"
+        );
+        assert_eq!(
+            join_rel::JoinType::LeftAnti.as_enum_str().unwrap(),
+            "LeftAnti"
+        );
+    }
+
+    #[test]
+    fn test_join_output_columns() {
+        // Test Inner join - outputs all columns from both sides
+        let inner_cols = super::join_output_columns(join_rel::JoinType::Inner, 2, 3);
+        assert_eq!(inner_cols.len(), 5); // 2 + 3 = 5 columns
+        assert!(matches!(inner_cols[0], Value::Reference(0)));
+        assert!(matches!(inner_cols[4], Value::Reference(4)));
+
+        // Test LeftSemi join - outputs only left columns
+        let left_semi_cols = super::join_output_columns(join_rel::JoinType::LeftSemi, 2, 3);
+        assert_eq!(left_semi_cols.len(), 2); // Only left columns
+        assert!(matches!(left_semi_cols[0], Value::Reference(0)));
+        assert!(matches!(left_semi_cols[1], Value::Reference(1)));
+
+        // Test RightSemi join - outputs right columns as contiguous range starting from $0
+        let right_semi_cols = super::join_output_columns(join_rel::JoinType::RightSemi, 2, 3);
+        assert_eq!(right_semi_cols.len(), 3); // Only right columns
+        assert!(matches!(right_semi_cols[0], Value::Reference(0))); // Contiguous range starts at $0
+        assert!(matches!(right_semi_cols[1], Value::Reference(1)));
+        assert!(matches!(right_semi_cols[2], Value::Reference(2))); // Last right column
+
+        // Test LeftMark join - outputs left columns plus a mark column as contiguous range
+        let left_mark_cols = super::join_output_columns(join_rel::JoinType::LeftMark, 2, 3);
+        assert_eq!(left_mark_cols.len(), 3); // 2 left + 1 mark
+        assert!(matches!(left_mark_cols[0], Value::Reference(0)));
+        assert!(matches!(left_mark_cols[1], Value::Reference(1)));
+        assert!(matches!(left_mark_cols[2], Value::Reference(2))); // Mark column at contiguous position
+
+        // Test RightMark join - outputs right columns plus a mark column as contiguous range
+        let right_mark_cols = super::join_output_columns(join_rel::JoinType::RightMark, 2, 3);
+        assert_eq!(right_mark_cols.len(), 4); // 3 right + 1 mark
+        assert!(matches!(right_mark_cols[0], Value::Reference(0))); // Contiguous range starts at $0
+        assert!(matches!(right_mark_cols[1], Value::Reference(1)));
+        assert!(matches!(right_mark_cols[2], Value::Reference(2))); // Last right column
+        assert!(matches!(right_mark_cols[3], Value::Reference(3))); // Mark column at contiguous position
     }
 }

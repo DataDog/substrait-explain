@@ -460,7 +460,7 @@ pub trait Scope: Sized {
                     T::name(),
                     // TODO: Make this an optional input
                     NONSPECIFIC,
-                    "Required field missing, None found",
+                    "Required field expected, None found",
                 );
                 let err_token = self.failure(err);
                 MaybeToken(Err(err_token))
