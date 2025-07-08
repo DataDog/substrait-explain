@@ -37,28 +37,13 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 3. **Verify setup**: Run `cargo test` to ensure everything works
 4. **Install pre-commit hooks**: Run `bash pre-commit.sh install` to automatically format and lint your code
    - This will run `cargo fmt` and `cargo clippy -- -D warnings` automatically on each commit
-
-### Testing your changes
-
-This project uses standard Rust testing practices:
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests with output
-cargo test -- --nocapture
-
-# Run specific test file
-cargo test --test types
-
-# Run examples
-cargo run --example basic_usage
-cargo run --example advanced_usage --features serde
-
-# View documentation
-cargo doc --open
-```
+5. **Useful development commands**:
+   ```bash
+   cargo test                    # Run all tests
+   cargo test -- --nocapture    # Run tests with output
+   cargo run --example basic_usage
+   cargo doc --open             # View documentation
+   ```
 
 ### Code Style
 
@@ -137,45 +122,43 @@ assert!(result.is_ok());
 - Return `Result` types for operations that can legitimately fail
 - Collect and continue for formatting errors, fail-fast for parsing errors
 
+#### RuleIter Consumption Patterns
+
+`RuleIter` enforces complete consumption via its `Drop` implementation. This can cause assertion failures if validation functions return early before calling `iter.done()`.
+
+**Current workaround:** Extract all data first, then validate:
+```rust
+// Extract data without validation
+let (limit_pair, offset_pair) = /* extract pairs */;
+iter.done(); // Call before any early returns
+
+// Then validate using functional patterns
+let count_mode = limit_pair.map(|pair| CountMode::parse_pair(extensions, pair)).transpose()?;
+```
+
+*Note: The RuleIter interface could be improved to handle this pattern more naturally.*
+
 #### Documentation Formatting
 
 ##### Rustdoc Markdown Formatting
 
-Since the markdown files ([`API.md`](API.md), [`GRAMMAR.md`](GRAMMAR.md)) are included in Rustdoc, ensure `#` characters in code examples are escaped as `##` for proper interpretation. Examples in these files are automatically tested through Rustdoc compilation - any code in fenced blocks will be compiled and tested, ensuring documentation accuracy:
+Since markdown files are included in Rustdoc, use `##` for actual `#` characters in code examples (especially important for Substrait extension syntax). Lines starting with `# ` are hidden in documentation but included for compilation. Run `cargo test --doc` to verify examples compile correctly.
 
 ```rust
-// Correct for Rustdoc (in markdown files)
-# let plan_text = r#" // Single # gets stripped, line is included for test but excluded for doc output, so only the plan gets shown
-=== Extensions
-Functions:
-  ## 10 @  1: add  // Note: ## becomes # in doc output
-# "#;
+// Correct: ## becomes # in Substrait syntax
+## 10 @  1: add
 
-// Incorrect for Rustdoc
-let plan_text = r#"
-=== Extensions
-Functions:
-  # 10 @  1: add  // This will be interpreted as a markdown header
-"#;
+// Incorrect: # becomes a markdown header
+# 10 @  1: add
 ```
-
-This is especially important for Substrait extension syntax which uses `#` for anchors. In Rustdoc processing of code examples in backticks:
-
-- Lines starting with `# ` have the `# ` stripped and the code is hidden in the output documentation
-- `##` gets converted to `#` before being compiled as Rust code
-
-Always verify that examples compile and run correctly.
 
 ##### Grammar Documentation Best Practices
 
 When working with [`GRAMMAR.md`](GRAMMAR.md):
 
-- **PEG Format**: All grammar rules should be defined in PEG (Parsing Expression Grammar) format using the `rule_name := definition` syntax
-- **Consistency**: Use consistent markdown heading levels - convert bolded single-line items like `**Syntax**:` to proper markdown headings like `#### Syntax`
-- **Organization**: Keep related concepts together - all common, basic expressions (enums, literals, identifiers, etc.) belong in Basic Terminals, while relation-specific rules belong with their respective relations
-- **Cross-references**: Use markdown links to reference other sections rather than duplicating content
-- **Testing**: Run `cargo test --doc` to verify all code examples in the grammar documentation compile and work correctly
-- **Completeness**: Ensure all referenced identifiers are properly defined somewhere in the grammar
+- Use PEG format with `rule_name := definition` syntax
+- Run `cargo test --doc` to verify all code examples compile
+- Ensure all referenced identifiers are properly defined somewhere in the grammar
 
 ### Pull Request Process
 
