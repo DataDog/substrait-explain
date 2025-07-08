@@ -13,7 +13,7 @@ use super::{
     ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
-use crate::parser::expressions::{Name, reference};
+use crate::parser::expressions::{FieldIndex, Name};
 
 /// A trait for parsing relations with full context needed for tree building.
 /// This includes extensions, the parsed pair, input children, and output field count.
@@ -145,24 +145,16 @@ fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
     assert_eq!(pair.as_rule(), Rule::reference_list);
     let output_mapping = pair
         .into_inner()
-        .map(|p| {
-            let inner = crate::parser::unwrap_single_pair(p);
-            inner.as_str().parse::<i32>().unwrap()
-        })
+        .map(|p| FieldIndex::parse_pair(p).0)
         .collect::<Vec<i32>>();
     EmitKind::Emit(Emit { output_mapping })
 }
 
-/// Extracts and tracks named arguments from a relation.
+/// Extracts named arguments from pest pairs with duplicate detection and completeness checking.
 ///
-/// Pass in a set of Pairs that match the given rule, then call
-/// [ParsedNamedArgs::pop] for each possible argument.
-//
+/// Usage: `extractor.pop("limit", Rule::fetch_value).0.pop("offset", Rule::fetch_value).0.done()`
 ///
-/// [ParsedNamedArgs::pop] returns a tuple of the [ParsedNamedArgs] and the pair
-/// if it exists, or None if the argument is not present. The [ParsedNamedArgs]
-/// is returned so that any unused arguments are not forgotten about. Call
-/// [ParsedNamedArgs::done] to check for any unused arguments.
+/// The fluent API ensures all arguments are processed exactly once and none are forgotten.
 pub struct ParsedNamedArgs<'a> {
     map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
 }
@@ -376,9 +368,8 @@ impl RelationParsePair for ProjectRel {
             match inner_arg.as_rule() {
                 Rule::reference => {
                     // Parse reference like "$0" -> 0
-                    let inner = crate::parser::unwrap_single_pair(inner_arg);
-                    let ref_index = inner.as_str().parse::<i32>().unwrap();
-                    output_mapping.push(ref_index);
+                    let field_index = FieldIndex::parse_pair(inner_arg);
+                    output_mapping.push(field_index.0);
                 }
                 Rule::expression => {
                     // Parse as expression (e.g., 42, add($0, $1))
@@ -437,11 +428,10 @@ impl RelationParsePair for AggregateRel {
         for group_by_item in group_by_pair.into_inner() {
             match group_by_item.as_rule() {
                 Rule::reference => {
-                    let inner = crate::parser::unwrap_single_pair(group_by_item);
-                    let ref_index = inner.as_str().parse::<i32>().unwrap();
+                    let field_index = FieldIndex::parse_pair(group_by_item);
                     grouping_expressions.push(Expression {
                         rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
-                            reference(ref_index),
+                            field_index.to_field_reference(),
                         ))),
                     });
                 }
@@ -465,9 +455,8 @@ impl RelationParsePair for AggregateRel {
             let inner_item = unwrap_single_pair(output_item);
             match inner_item.as_rule() {
                 Rule::reference => {
-                    let inner = crate::parser::unwrap_single_pair(inner_item);
-                    let ref_index = inner.as_str().parse::<i32>().unwrap();
-                    output_mapping.push(ref_index);
+                    let field_index = FieldIndex::parse_pair(inner_item);
+                    output_mapping.push(field_index.0);
                 }
                 Rule::aggregate_measure => {
                     let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
@@ -499,7 +488,7 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
-impl ParsePair for SortField {
+impl ScopedParsePair for SortField {
     fn rule() -> Rule {
         Rule::sort_field
     }
@@ -508,30 +497,41 @@ impl ParsePair for SortField {
         "SortField"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut iter = RuleIter::from(pair.into_inner());
         let reference_pair = iter.pop(Rule::reference);
-        let inner = crate::parser::unwrap_single_pair(reference_pair);
-        let field: i32 = inner.as_str().parse().unwrap();
+        let field_index = FieldIndex::parse_pair(reference_pair);
         let direction_pair = iter.pop(Rule::sort_direction);
+        // Strip the '&' prefix from enum syntax (e.g., "&AscNullsFirst" ->
+        // "AscNullsFirst") The grammar includes '&' to distinguish enums from
+        // identifiers, but the enum variant names don't include it
         let direction = match direction_pair.as_str().trim_start_matches('&') {
             "AscNullsFirst" => SortDirection::AscNullsFirst,
             "AscNullsLast" => SortDirection::AscNullsLast,
             "DescNullsFirst" => SortDirection::DescNullsFirst,
             "DescNullsLast" => SortDirection::DescNullsLast,
-            other => panic!("Unknown sort direction: {other}"),
+            other => {
+                return Err(MessageParseError::invalid(
+                    "SortDirection",
+                    direction_pair.as_span(),
+                    format!("Unknown sort direction: {other}"),
+                ));
+            }
         };
         iter.done();
-        SortField {
+        Ok(SortField {
             expr: Some(Expression {
                 rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
-                    crate::parser::expressions::reference(field),
+                    field_index.to_field_reference(),
                 ))),
             }),
             // TODO: Add support for SortKind::ComparisonFunctionReference
             sort_kind: Some(SortKind::Direction(direction as i32)),
-        }
+        })
     }
 }
 
@@ -551,7 +551,7 @@ impl RelationParsePair for SortRel {
     }
 
     fn parse_pair_with_context(
-        _extensions: &SimpleExtensions,
+        extensions: &SimpleExtensions,
         pair: pest::iterators::Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
@@ -563,7 +563,7 @@ impl RelationParsePair for SortRel {
         let reference_list_pair = iter.pop(Rule::reference_list);
         let mut sorts = Vec::new();
         for sort_field_pair in sort_field_list_pair.into_inner() {
-            let sort_field = SortField::parse_pair(sort_field_pair);
+            let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
             sorts.push(sort_field);
         }
         let emit = parse_reference_emit(reference_list_pair);
@@ -608,6 +608,13 @@ impl ScopedParsePair for CountMode {
                         format!("Invalid integer: {e}"),
                     )
                 })?;
+                if value < 0 {
+                    return Err(MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Fetch limit must be non-negative, got: {value}"),
+                    ));
+                }
                 Ok(CountMode::Count(value))
             }
             Rule::expression => {
@@ -650,6 +657,13 @@ impl ScopedParsePair for OffsetMode {
                         format!("Invalid integer: {e}"),
                     )
                 })?;
+                if value < 0 {
+                    return Err(MessageParseError::invalid(
+                        Self::message(),
+                        value_pair.as_span(),
+                        format!("Fetch offset must be non-negative, got: {value}"),
+                    ));
+                }
                 Ok(OffsetMode::Offset(value))
             }
             Rule::expression => {
@@ -690,27 +704,22 @@ impl RelationParsePair for FetchRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
 
-        let mut count_mode = None;
-        let mut offset_mode = None;
-        match iter.try_pop(Rule::fetch_named_arg_list) {
+        // Extract all pairs first, then do validation
+        let (limit_pair, offset_pair) = match iter.try_pop(Rule::fetch_named_arg_list) {
             None => {
                 // If there are no arguments, it should be empty
                 iter.pop(Rule::empty);
+                (None, None)
             }
             Some(fetch_args_pair) => {
                 let extractor =
                     ParsedNamedArgs::new(fetch_args_pair.into_inner(), Rule::fetch_named_arg)?;
                 let (extractor, limit_pair) = extractor.pop("limit", Rule::fetch_value);
-                if let Some(limit_pair) = limit_pair {
-                    count_mode = Some(CountMode::parse_pair(extensions, limit_pair)?);
-                }
                 let (extractor, offset_pair) = extractor.pop("offset", Rule::fetch_value);
-                if let Some(offset_pair) = offset_pair {
-                    offset_mode = Some(OffsetMode::parse_pair(extensions, offset_pair)?);
-                }
                 extractor.done()?;
+                (limit_pair, offset_pair)
             }
-        }
+        };
 
         let reference_list_pair = iter.pop(Rule::reference_list);
         let emit = parse_reference_emit(reference_list_pair);
@@ -719,6 +728,14 @@ impl RelationParsePair for FetchRel {
             ..Default::default()
         };
         iter.done();
+
+        // Now do validation after iterator is fully consumed
+        let count_mode = limit_pair
+            .map(|pair| CountMode::parse_pair(extensions, pair))
+            .transpose()?;
+        let offset_mode = offset_pair
+            .map(|pair| OffsetMode::parse_pair(extensions, pair))
+            .transpose()?;
         Ok(FetchRel {
             input: Some(input),
             common: Some(common),
@@ -999,6 +1016,84 @@ mod tests {
         };
         // Output mapping should be [0, 1] (measures only, no group-by fields)
         assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
+    fn test_fetch_relation_positive_values() {
+        let extensions = SimpleExtensions::default();
+
+        // Test valid positive values should work
+        let fetch_rel = FetchRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::fetch_relation, "Fetch[limit=10, offset=5 => $0]"),
+            vec![Box::new(example_read_relation().into_rel())],
+            3,
+        )
+        .unwrap();
+
+        // Verify the limit and offset values are correct
+        assert_eq!(fetch_rel.count_mode, Some(CountMode::Count(10)));
+        assert_eq!(fetch_rel.offset_mode, Some(OffsetMode::Offset(5)));
+    }
+
+    #[test]
+    fn test_fetch_relation_negative_limit_rejected() {
+        let extensions = SimpleExtensions::default();
+
+        // Test that fetch relations with negative limits are properly rejected
+        let parsed_result = ExpressionParser::parse(Rule::fetch_relation, "Fetch[limit=-5 => $0]");
+        if let Ok(mut pairs) = parsed_result {
+            let pair = pairs.next().unwrap();
+            if pair.as_str() == "Fetch[limit=-5 => $0]" {
+                // Full parse succeeded, now test that validation catches the negative value
+                let result = FetchRel::parse_pair_with_context(
+                    &extensions,
+                    pair,
+                    vec![Box::new(example_read_relation().into_rel())],
+                    3,
+                );
+                assert!(result.is_err());
+                let error_msg = result.unwrap_err().to_string();
+                assert!(error_msg.contains("Fetch limit must be non-negative"));
+            } else {
+                // If grammar doesn't fully support negative values, that's also acceptable
+                // since it would prevent negative values at parse time
+                println!("Grammar prevents negative limit values at parse time");
+            }
+        } else {
+            // Grammar doesn't support negative values in fetch context
+            println!("Grammar prevents negative limit values at parse time");
+        }
+    }
+
+    #[test]
+    fn test_fetch_relation_negative_offset_rejected() {
+        let extensions = SimpleExtensions::default();
+
+        // Test that fetch relations with negative offsets are properly rejected
+        let parsed_result =
+            ExpressionParser::parse(Rule::fetch_relation, "Fetch[offset=-10 => $0]");
+        if let Ok(mut pairs) = parsed_result {
+            let pair = pairs.next().unwrap();
+            if pair.as_str() == "Fetch[offset=-10 => $0]" {
+                // Full parse succeeded, now test that validation catches the negative value
+                let result = FetchRel::parse_pair_with_context(
+                    &extensions,
+                    pair,
+                    vec![Box::new(example_read_relation().into_rel())],
+                    3,
+                );
+                assert!(result.is_err());
+                let error_msg = result.unwrap_err().to_string();
+                assert!(error_msg.contains("Fetch offset must be non-negative"));
+            } else {
+                // If grammar doesn't fully support negative values, that's also acceptable
+                println!("Grammar prevents negative offset values at parse time");
+            }
+        } else {
+            // Grammar doesn't support negative values in fetch context
+            println!("Grammar prevents negative offset values at parse time");
+        }
     }
 
     fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {

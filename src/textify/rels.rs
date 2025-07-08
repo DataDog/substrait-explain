@@ -716,6 +716,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
+    use crate::parser::expressions::FieldIndex;
 
     #[test]
     fn test_read_rel() {
@@ -867,7 +868,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -905,7 +906,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -923,7 +924,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
-                        crate::parser::expressions::reference(1),
+                        FieldIndex(1).to_field_reference(),
                     ))),
                 })),
             }],
@@ -973,7 +974,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             })),
             grouping_expressions: vec![Expression {
                 rex_type: Some(RexType::Selection(Box::new(
-                    crate::parser::expressions::reference(0),
+                    FieldIndex(0).to_field_reference(),
                 ))),
             }],
             groupings: vec![],

@@ -17,20 +17,43 @@ use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::parser::ErrorKind;
 
-/// Create a reference to a particular field.
-pub fn reference(index: i32) -> FieldReference {
-    // XXX: Why is it so many layers to make a struct field reference? This is
-    // surprisingly complex
-    FieldReference {
-        reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
-            reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
-                reference_segment::StructField {
-                    field: index,
-                    child: None,
-                },
-            ))),
-        })),
-        root_type: None,
+/// A field index (e.g., parsed from "$0" -> 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldIndex(pub i32);
+
+impl FieldIndex {
+    /// Convert this field index to a FieldReference for use in expressions.
+    pub fn to_field_reference(self) -> FieldReference {
+        // XXX: Why is it so many layers to make a struct field reference? This is
+        // surprisingly complex
+        FieldReference {
+            reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
+                reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
+                    reference_segment::StructField {
+                        field: self.0,
+                        child: None,
+                    },
+                ))),
+            })),
+            root_type: None,
+        }
+    }
+}
+
+impl ParsePair for FieldIndex {
+    fn rule() -> Rule {
+        Rule::reference
+    }
+
+    fn message() -> &'static str {
+        "FieldIndex"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let inner = unwrap_single_pair(pair);
+        let index: i32 = inner.as_str().parse().unwrap();
+        FieldIndex(index)
     }
 }
 
@@ -45,11 +68,9 @@ impl ParsePair for FieldReference {
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
-        let inner = unwrap_single_pair(pair);
-        let index: i32 = inner.as_str().parse().unwrap();
 
         // TODO: Other types of references.
-        reference(index)
+        FieldIndex::parse_pair(pair).to_field_reference()
     }
 }
 
@@ -334,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_parse_field_reference() {
-        assert_parses_to("$1", reference(1));
+        assert_parses_to("$1", FieldIndex(1).to_field_reference());
     }
 
     #[test]
