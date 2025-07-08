@@ -166,6 +166,17 @@ This is especially important for Substrait extension syntax which uses `#` for a
 
 Always verify that examples compile and run correctly.
 
+##### Grammar Documentation Best Practices
+
+When working with [`GRAMMAR.md`](GRAMMAR.md):
+
+- **PEG Format**: All grammar rules should be defined in PEG (Parsing Expression Grammar) format using the `rule_name := definition` syntax
+- **Consistency**: Use consistent markdown heading levels - convert bolded single-line items like `**Syntax**:` to proper markdown headings like `#### Syntax`
+- **Organization**: Keep related concepts together - all common, basic expressions (enums, literals, identifiers, etc.) belong in Basic Terminals, while relation-specific rules belong with their respective relations
+- **Cross-references**: Use markdown links to reference other sections rather than duplicating content
+- **Testing**: Run `cargo test --doc` to verify all code examples in the grammar documentation compile and work correctly
+- **Completeness**: Ensure all referenced identifiers are properly defined somewhere in the grammar
+
 ### Pull Request Process
 
 1. Fork the repository

@@ -11,22 +11,25 @@ The Substrait text format consists of two main sections:
 
 ## Design Principles
 
-The grammar is designed around several concrete choices that make it practical, consistent, and easy to use:
+The grammar is designed around several concrete choices that make it practical and consistent:
 
 ### 1. Single-Line, Structured Relations
 
-- All relations use a single-line, regular, structured argument format that maps directly to Substrait proto fields and enums.
-- The canonical form is:
-  `RelationName[arguments => columns]`
-- The `arguments` are relation-specific inputs (e.g., expressions, tuples, enums); the `columns` are the output fields or schema for that relation.
-- Arguments follow a regular pattern (tuple, input expression, etc.) or combination, and should map directly to Substrait proto fields and enums. Use tuples for compound arguments and `&`-prefixed enum variants for enums.
-- This ensures consistency, clarity, and extensibility across all relations.
+All relations follow the same structure: `Name[arguments => columns]`
+
+- **Name**: The relation type (Read, Filter, Project, etc.)
+- **Arguments**: Relation-specific: input expressions, field references, or function calls
+  - Arguments follow a regular pattern (tuple, input expression, etc.) or combination, and should map directly to Substrait proto fields. Uses tuples for compound arguments, with literals, expressions, and enums for values.
+- **Arrow**: `=>` separates arguments from output columns
+- **Columns**: Output column names and types
+
+Every relation fits on one line with indentation showing hierarchy. This uniform pattern makes it easy to parse any relation, understand input/output structure, and add new relation types.
 
 ### 2. SQL-Like References, Literals, and Enums
 
 - Field references: `$0`, `$1`, etc.
-- Types: `42:i64`, `'hello':string`, `string?` for nullable.
-- Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNullsFirst`), matching the Substrait proto definition. This applies to all enum fields in relation arguments.
+- Types are shown inline with literals and column names: `42:i64`, `'hello':string`
+- Nullability is explicit: `string?` for nullable, `string` for non-nullable
 
 This prevents ambiguity and makes plans self-documenting while being familiar to SQL developers.
 
@@ -123,7 +126,7 @@ Relations use indentation to show the query plan hierarchy:
 - **Child relations**: Indented with 2 spaces per level
 - **Each relation**: On its own line with format `Name[arguments => columns]`
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -167,6 +170,18 @@ Root[result]                   // Level 0 (no indentation)
 - **`quoted_name`**` := '"' ("\\" . / !'"' .)* '"'`
   - Used for columns, function names, etc. that are not valid as identifiers, and thus need quoting.
   - Examples: `"function name"`, `"table.name"`, `"table\.name"`, `"function \"with some\nescapes\""`
+
+### `enum`
+
+Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNullsFirst`), matching the Substrait proto definition. This applies to all enum fields in relation arguments.
+
+#### Syntax
+
+`enum := "&" identifier`
+
+#### Examples
+
+- `&AscNullsFirst`, `&AscNullsLast`, `&DescNullsFirst`, `&DescNullsLast` - sort directions
 
 ### `literal`
 
@@ -218,9 +233,13 @@ Where:
 
 Simple types are the basic Substrait types with optional nullability.
 
-**Syntax**: `simple_type_name nullability?`
+#### Syntax
 
-**Simple Type Names** (from [official Substrait grammar](https://raw.githubusercontent.com/substrait-io/substrait/refs/heads/main/grammar/SubstraitType.g4)):
+`simple_type_name nullability?`
+
+#### Simple Type Names
+
+From [official Substrait grammar](https://raw.githubusercontent.com/substrait-io/substrait/refs/heads/main/grammar/SubstraitType.g4), `simple_type_name` can be any of these literal strings:
 
 - `boolean`, `i8`, `i16`, `i32`, `i64`
 - `fp32`, `fp64`
@@ -228,13 +247,13 @@ Simple types are the basic Substrait types with optional nullability.
 - `timestamp`, `timestamp_tz`, `date`, `time`
 - `interval_year`, `uuid`
 
-**Nullability**:
+#### Nullability
 
 - `?` - nullable
 - `⁉` - unspecified nullability (not generally valid)
 - (nothing) - non-nullable
 
-**Examples**:
+##### Examples:
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -257,7 +276,7 @@ Root[result]
 
 Compound types follow the same syntax as standard Substrait parameterized types.
 
-**Examples**:
+#### Examples
 
 // TODO: This example uses `map` type, which is not yet implemented in the parser.
 
@@ -279,22 +298,22 @@ assert_eq!(plan.relations.len(), 1);
 
 User-defined types extend the standard Substrait UDT syntax to support anchors and URI references.
 
-**Syntax**: `"u!"? name anchor? uri_anchor? nullability? parameters?`
+#### Syntax
 
-**Key differences from standard Substrait**:
+`"u!"? name anchor? uri_anchor? nullability? parameters?`
+
+#### Key differences from standard Substrait
 
 - The `u!` prefix is optional (can be omitted when anchors are present)
 - Adds optional `anchor` and `uri_anchor` for extension references
 - Maintains compatibility with standard Substrait UDT syntax
 
-**Examples**:
+#### Examples
 
-// TODO: This example uses user-defined types with anchors, which are not yet fully supported by the parser.
-
-```text
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://example.com/types
@@ -308,18 +327,20 @@ Functions:
 === Plan
 Root[result]
   Project[$0, $1, $2]
-    Read[data => point_field:point#8@1?<i8>, custom_field:my_type#9, prefixed_field:u!custom_type]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+    Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ## Expressions
 
-**Syntax**: `expression := function_call / reference / literal`
+#### Syntax
 
-**Examples**
+`expression := function_call / reference / literal`
+
+### Examples
 
 ```text
 add($3, 10)            // Simple function call
@@ -330,9 +351,11 @@ add#10@2(#3, 10):int   // Function call with anchors and type
 
 Currently, only references to fields in the Relations' input are supported.
 
-**Syntax**: `reference := "$" integer`
+#### Syntax
 
-**Examples**:
+`reference := "$" integer`
+
+#### Examples
 
 ```rust
 use substrait_explain::parser::Parser;
@@ -350,9 +373,11 @@ assert_eq!(plan.relations.len(), 1);
 
 ### Function Calls
 
-**Syntax**: `function_call := name anchor? uri_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+#### Syntax
 
-**Components**:
+`function_call := name anchor? uri_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+
+#### Components
 
 - `name` - function name
 - `anchor` - optional anchor (e.g., `#10`)
@@ -364,17 +389,17 @@ assert_eq!(plan.relations.len(), 1);
 
 Aggregate measures are used in the output of Aggregate relations. They can be either field references (to pass through existing fields) or aggregate function calls (to compute aggregates).
 
-**Syntax**:
+#### Syntax
 
 - `aggregate_measure := name anchor? uri_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
 - Field references: `$0`, `$1`, ...
 
-**Examples**:
+#### Examples
 
 - `sum($2)`
 - `count($1)`
 - `avg($3):fp64`
-- `$0` (field reference)
+- `$0` (field reference to grouping field)
 
 ## Relations
 
@@ -384,19 +409,28 @@ Relations represent the operations in a query plan. Each relation is displayed o
 
 All relations follow this general pattern:
 
+#### Syntax
+
 ```text
-RelationName[arguments, named_arguments => columns]
+relation := name "[" (arguments ("," named_arguments)? ("=>" columns)?)? "]"
+columns := name ("," name)* / reference_list
 ```
 
 Where:
 
-- **`RelationName`**: The type of operation (Read, Filter, Project, Root, etc.)
+- **`name`**: The type of operation (Read, Filter, Project, Root, etc.)
 - **`arguments`**: Input expressions, field references, function calls, or other parameters (optional)
-- **`named_arguments`**: Named arguments
+- **`named_arguments`**: Named arguments (optional)
 - **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
 - **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
 
-**Special cases**:
+#### Example
+
+```text
+RelationName[arguments, named_arguments => columns]
+```
+
+#### Special cases
 
 - **Root relation**: Only specifies output column names, no arguments or `=>` separator
 - **Project relation**: Only specifies expressions, no `=>` separator or output columns
@@ -404,11 +438,32 @@ Where:
 
 The exact structure varies by relation type, but all follow this basic pattern.
 
+### Arguments
+
+Arguments in relations can be literals, expressions, enums, or tuples thereof.
+
+#### Syntax
+
+```text
+argument := literal / expression / enum / tuple
+tuple := "(" argument ("," argument)* ")"
+arguments := argument ("," argument)*
+named_arguments := name "=" argument ("," name "=" argument)*
+```
+
+#### Examples
+
+- Simple arguments: `$0`, `42`, `'hello'`, `&AscNullsFirst`
+- Tuple arguments: `($0, &AscNullsFirst)`, `(limit=10, offset=5)`
+- Named arguments: `limit=10`, `offset=5`
+
 ### Root Relation
 
-**Syntax**: `"Root" "[" (name ("," name)*)? "]"`
+#### Syntax
 
-**Example**:
+`"Root" "[" (name ("," name)*)? "]"`
+
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -426,14 +481,16 @@ Root[c, d]           // root with output columns c and d
 
 ### Read Relation
 
-**Syntax**: `"Read" "[" table_name "=>" (named_column ("," named_column)*)? "]"`
+#### Syntax
 
-**Components**:
+`"Read" "[" table_name "=>" (named_column ("," named_column)*)? "]"`
+
+#### Components
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -454,14 +511,16 @@ Root[result2]
 
 ### Filter Relation
 
-**Syntax**: `"Filter" "[" expression "=>" reference_list "]"`
+#### Syntax
 
-**Components**:
+`"Filter" "[" expression "=>" reference_list "]"`
+
+#### Components
 
 - `expression` - boolean expression for filtering
 - `reference_list := reference ("," reference)*` - comma-separated list of field references to pass through
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -486,13 +545,15 @@ Root[result]
 
 ### Project Relation
 
-**Syntax**: `"Project" "[" (expression ("," expression)*)? "]"`
+#### Syntax
 
-**Components**:
+`"Project" "[" (expression ("," expression)*)? "]"`
+
+#### Components
 
 - `expression` - field reference, function call, or literal (see Expressions section)
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -510,19 +571,17 @@ Root[result]
 
 ### Aggregate Relation
 
-**Syntax**: `"Aggregate" "[" group_by "=>" aggregate_output "]"`
+#### Syntax
 
-**Components**:
+`"Aggregate" "[" group_by "=>" aggregate_output "]"`
+
+#### Components
 
 - `group_by := reference_list | "_"` - comma-separated list of field references for grouping, or `_` for global aggregation
 - `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
+- `aggregate_measure` - field references or aggregate function calls. See [Aggregate Measures section](#aggregate-measures)
 
-**Aggregate Measures**:
-
-- **Field references**: `$0`, `$1` - pass through existing fields
-- **Aggregate functions**: `sum($2)`, `count($1)`, `avg($3)` - apply aggregate functions
-
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::parser::Parser;
@@ -545,30 +604,25 @@ Root[result]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
-**Example**:
-
-```rust
-# use substrait_explain::parser::Parser;
-#
-# let plan_text = r#"
-# === Plan
-# Root[a, b]
-  Fetch[limit=10, offset=5 => $0, $1]
-#     Read[table => a:i32, b:string]
-# "#;
-#
-# let plan = Parser::parse(plan_text).unwrap();
-# assert_eq!(plan.relations.len(), 1);
-```
-
 ### Sort Relation
 
 The Sort relation specifies sort fields and directions for ordering the input:
 
 Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
 
-- Each sort field is a tuple: `(reference, &SortDirection)`
-- Allowed sort directions are: `&AscNullsFirst`, `&AscNullsLast`, `&DescNullsFirst`, `&DescNullsLast`
+#### Syntax
+
+```text
+sort_relation := "Sort" "[" sort_fields "=>" reference_list "]"
+sort_fields := sort_field ("," sort_field)*
+sort_field := "(" reference "," sort_direction ")"
+sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&DescNullsLast"
+```
+
+#### Components
+
+- Each sort field is a tuple: `(reference, sort_direction)`
+- Sort directions follow the general `enum` syntax and specify null handling
 - The columns after `=>` specify the output field order (typically a reference list)
 
 ## Complete Example
