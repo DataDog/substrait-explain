@@ -54,6 +54,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         for (i, relation) in self.relations.iter().enumerate() {
             if i > 0 {
                 writeln!(w)?;
+                writeln!(w)?;
             }
             relation.textify(&scope, w)?;
         }
