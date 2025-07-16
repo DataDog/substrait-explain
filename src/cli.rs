@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prost::Message;
 
@@ -16,7 +17,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(self) -> Result<()> {
         match &self.command {
             Commands::Convert {
                 input,
@@ -47,11 +48,7 @@ impl Cli {
     }
 
     /// Run CLI with provided readers and writers for testing
-    pub fn run_with_io<R: Read, W: Write>(
-        &self,
-        reader: R,
-        writer: W,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run_with_io<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<()> {
         match &self.command {
             Commands::Convert {
                 from,
@@ -98,7 +95,7 @@ impl Cli {
         to: &Format,
         options: &OutputOptions,
         verbose: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         // Read input based on format
         let plan = from.read_plan(reader)?;
 
@@ -117,17 +114,11 @@ impl Cli {
         reader: R,
         writer: W,
         verbose: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         let input_text = read_text_input(reader)?;
 
         // Parse text to protobuf
-        let plan = match parse(&input_text) {
-            Ok(plan) => plan,
-            Err(e) => {
-                eprintln!("Parse error: {e}");
-                std::process::exit(1);
-            }
-        };
+        let plan = parse(&input_text)?;
 
         // Format back to text
         let (output_text, errors) = format(&plan);
@@ -218,10 +209,7 @@ impl std::str::FromStr for Format {
 }
 
 impl Format {
-    pub fn read_plan<R: Read>(
-        &self,
-        reader: R,
-    ) -> Result<substrait::proto::Plan, Box<dyn std::error::Error>> {
+    pub fn read_plan<R: Read>(&self, reader: R) -> Result<substrait::proto::Plan> {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
@@ -262,7 +250,7 @@ impl Format {
         plan: &substrait::proto::Plan,
         options: &OutputOptions,
         verbose: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         match self {
             Format::Text => {
                 let (text, errors) = format_with_options(plan, options);
@@ -308,39 +296,33 @@ impl Format {
 }
 
 /// Read text input from reader
-fn read_text_input<R: Read>(mut reader: R) -> Result<String, Box<dyn std::error::Error>> {
+fn read_text_input<R: Read>(mut reader: R) -> Result<String> {
     let mut buffer = String::new();
     reader.read_to_string(&mut buffer)?;
     Ok(buffer)
 }
 
 /// Read binary input from reader
-fn read_binary_input<R: Read>(mut reader: R) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn read_binary_input<R: Read>(mut reader: R) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     reader.read_to_end(&mut buffer)?;
     Ok(buffer)
 }
 
 /// Write text output to writer
-fn write_text_output<W: Write>(
-    mut writer: W,
-    content: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_text_output<W: Write>(mut writer: W, content: &str) -> Result<()> {
     writer.write_all(content.as_bytes())?;
     Ok(())
 }
 
 /// Write binary output to writer
-fn write_binary_output<W: Write>(
-    mut writer: W,
-    content: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_binary_output<W: Write>(mut writer: W, content: &[u8]) -> Result<()> {
     writer.write_all(content)?;
     Ok(())
 }
 
 /// Helper function to get reader from file path (or stdin if "-")
-fn get_reader(path: &str) -> Result<Box<dyn Read>, Box<dyn std::error::Error>> {
+fn get_reader(path: &str) -> Result<Box<dyn Read>> {
     if path == "-" {
         Ok(Box::new(io::stdin()))
     } else {
@@ -349,7 +331,7 @@ fn get_reader(path: &str) -> Result<Box<dyn Read>, Box<dyn std::error::Error>> {
 }
 
 /// Helper function to get writer from file path (or stdout if "-")
-fn get_writer(path: &str) -> Result<Box<dyn Write>, Box<dyn std::error::Error>> {
+fn get_writer(path: &str) -> Result<Box<dyn Write>> {
     if path == "-" {
         Ok(Box::new(io::stdout()))
     } else {
