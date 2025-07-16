@@ -1,0 +1,4 @@
+=== Plan
+Root[result]
+  Project[$0, $1]
+    Read[data => a:i64, b:string]
