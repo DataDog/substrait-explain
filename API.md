@@ -150,3 +150,111 @@ let custom = OutputOptions {
     ..OutputOptions::default()
 };
 ```
+
+## Command Line Interface
+
+The library includes a command line interface for converting between different Substrait plan formats and validating plans. The CLI is available behind the `cli` feature flag.
+
+### Installation
+
+Install the CLI with:
+
+```bash
+cargo install substrait-explain --features cli
+```
+
+Or build from source:
+
+```bash
+cargo build --release --features cli
+```
+
+### Commands
+
+#### Convert Command
+
+The `convert` command transforms plans between different formats:
+
+```bash
+# Convert text format to JSON
+substrait-explain convert -f text -t json -i plan.substrait -o plan.json
+
+# Convert JSON back to text
+substrait-explain convert -f json -t text -i plan.json -o plan.substrait
+
+# Convert to binary protobuf format
+substrait-explain convert -f text -t protobuf -i plan.substrait -o plan.pb
+
+# Use stdin/stdout (default)
+cat plan.substrait | substrait-explain convert -f text -t json > plan.json
+```
+
+**Supported formats:**
+
+- `text` - Human-readable Substrait text format
+- `json` - JSON serialized protobuf
+- `yaml` - YAML serialized protobuf
+- `protobuf`/`proto`/`pb` - Binary protobuf format
+
+**Options:**
+
+- `-f, --from <FORMAT>` - Input format (default: text)
+- `-t, --to <FORMAT>` - Output format (default: text)
+- `-i, --input <FILE>` - Input file (default: stdin)
+- `-o, --output <FILE>` - Output file (default: stdout)
+- `--show-literal-types` - Show type annotations on literals
+- `--show-expression-types` - Show type annotations on expressions
+- `--verbose` - Show detailed progress information
+
+#### Validate Command
+
+The `validate` command performs a roundtrip test on text format plans:
+
+```bash
+# Validate a plan file
+substrait-explain validate -i plan.substrait
+
+# Validate from stdin
+cat plan.substrait | substrait-explain validate
+
+# Validate with verbose output
+substrait-explain validate -i plan.substrait --verbose
+```
+
+**Options:**
+
+- `-i, --input <FILE>` - Input file (default: stdin)
+- `-o, --output <FILE>` - Output file (default: stdout)
+- `--verbose` - Show detailed progress information
+
+### Examples
+
+```bash
+# Validate the example plans
+substrait-explain validate -i example-plans/basic.substrait
+substrait-explain validate -i example-plans/simple.substrait
+
+# Convert with verbose output and type information
+substrait-explain convert -f text -t json --show-literal-types --show-expression-types --verbose -i example-plans/basic.substrait
+
+# Roundtrip test: text → protobuf → text
+substrait-explain convert -f text -t protobuf -i plan.substrait -o plan.pb
+substrait-explain convert -f protobuf -t text -i plan.pb -o plan_roundtrip.substrait
+diff plan.substrait plan_roundtrip.substrait
+```
+
+### Feature Requirements
+
+To use the CLI, you must build/install with the `cli` feature:
+
+```toml
+[dependencies]
+substrait-explain = { version = "0.1.0", features = ["cli"] }
+```
+
+For JSON/YAML support, also enable the `serde` feature:
+
+```toml
+[dependencies]
+substrait-explain = { version = "0.1.0", features = ["cli", "serde"] }
+```
