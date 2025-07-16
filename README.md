@@ -126,24 +126,23 @@ If you need a specific relation, please open an issue or contribute!
 
 ## Quick Start
 
+### Library Usage
+
 ```rust
 use substrait_explain::{parse, format};
 
-// Parse a plan from text format
 let plan_text = r#"
 === Extensions
 URIs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
   ## 10 @  1: multiply
-  ## 11 @  2: sum
-  ## 12 @  2: count
+
 === Plan
-Root[result]
-  Aggregate[$0 => $0, sum($1), count($1)]
-    Project[$0, multiply($1, $2)]
-      Read[orders => category:string, quantity:i32?, price:i64]
+Root[revenue]
+  Filter[gt($2, 100) => $0, $1]
+    Project[$0, $1, multiply($0, $1)]
+      Read[orders => quantity:i32?, price:fp64?]
 "#;
 
 let plan = parse(plan_text).unwrap();
@@ -151,7 +150,32 @@ let (output, _errors) = format(&plan);
 println!("{}", output);
 ```
 
-For more detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
+### CLI Usage
+
+```bash
+# Install and validate a plan
+cargo install substrait-explain --features cli
+substrait-explain validate -i example-plans/basic.substrait
+```
+
+For detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
+
+## Command Line Interface
+
+The CLI provides `convert` and `validate` commands for working with Substrait plans:
+
+```bash
+# Install CLI
+cargo install substrait-explain --features cli
+
+# Convert between formats (text, json, yaml, protobuf)
+substrait-explain convert -f text -t json -i plan.substrait -o plan.json
+
+# Validate plans
+substrait-explain validate -i example-plans/basic.substrait
+```
+
+For detailed CLI documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md#command-line-interface).
 
 ## Installation
 
