@@ -225,6 +225,7 @@ fn test_multiple_relations_roundtrip() {
 Root[name, num, id]
   Project[$0, $1, $2]
     Read[t1 => name:string?, num:fp64, id:i64]
+
 Root[name, num, id]
   Filter[$0 => $0, $1, $2]
     Read[schema.table => name:string?, num:fp64?, id:i64]"#;
