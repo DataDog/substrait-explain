@@ -54,6 +54,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         for (i, relation) in self.relations.iter().enumerate() {
             if i > 0 {
                 writeln!(w)?;
+                writeln!(w)?;
             }
             relation.textify(&scope, w)?;
         }
@@ -68,6 +69,7 @@ impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
             writeln!(f)?;
         }
         self.write_relations(f)?;
+        writeln!(f)?;
         Ok(())
     }
 }
@@ -202,8 +204,9 @@ Functions:
 
 === Plan
 Project[$0, $1, add($0, $1)]
-  Read[table1 => col1:i32?, col2:i32?]"#
-            .trim_start();
+  Read[table1 => col1:i32?, col2:i32?]
+"#
+        .trim_start();
 
         assert_eq!(
             output, expected,
