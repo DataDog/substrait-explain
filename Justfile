@@ -15,13 +15,19 @@ fmt:
 
 # Run the tests.
 test:
-    cargo test
+    cargo test --all-features
 
 # Run clippy to check for linting errors.
 check:
-    cargo clippy
+    cargo clippy --all-features
 
 # Generate the LICENSE-3rdparty.csv file from the Cargo.lock file, for tracking
 # licenses of third-parties.
 licenses:
     bash generate_licenses.sh
+
+# Run the CLI with the given arguments. Usage: just run [args...]
+# Example: just run convert --help
+# Example: just run convert --from text --to json < input.txt
+run *args:
+    cargo run --features cli -- {{args}}

@@ -6,6 +6,9 @@ pub mod grammar;
 pub mod parser;
 pub mod textify;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+
 // Re-export commonly used types for easier access
 pub use parser::ParseError;
 use substrait::proto::Plan;
