@@ -261,8 +261,8 @@ From [official Substrait grammar](https://raw.githubusercontent.com/substrait-io
 let plan_text = r#"
 === Plan
 Root[result]
-  Project[$0, $1]
-    Read[data => int_field:i64, string_field:string?]
+  Project[$0, $1, $2, $3]
+    Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
 # let plan = match Parser::parse(plan_text) {

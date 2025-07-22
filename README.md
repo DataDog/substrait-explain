@@ -117,9 +117,11 @@ The following Substrait relations are currently supported in the text format:
 - `Project`
 - `Filter`
 - `Aggregate`
+- `Join`
+- `Sort`
 - `Root`
 
-Support for additional relations (e.g., Join, Sort, Set, etc.) is planned for future releases.
+Support for additional relations (e.g., Set, Fetch, Window, etc.) is planned for future releases.
 If you need a specific relation, please open an issue or contribute!
 
 ## Quick Start
