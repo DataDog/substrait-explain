@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use prost::Message;
 
@@ -28,8 +28,10 @@ impl Cli {
                 show_expression_types,
                 verbose,
             } => {
-                let reader = get_reader(input)?;
-                let writer = get_writer(output)?;
+                let reader = get_reader(input)
+                    .with_context(|| format!("Failed to open input file: {input}"))?;
+                let writer = get_writer(output)
+                    .with_context(|| format!("Failed to create output file: {output}"))?;
                 let options =
                     self.create_output_options(*show_literal_types, *show_expression_types);
                 self.run_convert_with_io(reader, writer, from, to, &options, *verbose)
@@ -40,8 +42,10 @@ impl Cli {
                 output,
                 verbose,
             } => {
-                let reader = get_reader(input)?;
-                let writer = get_writer(output)?;
+                let reader = get_reader(input)
+                    .with_context(|| format!("Failed to open input file: {input}"))?;
+                let writer = get_writer(output)
+                    .with_context(|| format!("Failed to create output file: {output}"))?;
                 self.run_validate_with_io(reader, writer, *verbose)
             }
         }
@@ -97,10 +101,21 @@ impl Cli {
         verbose: bool,
     ) -> Result<()> {
         // Read input based on format
-        let plan = from.read_plan(reader)?;
+        let plan = from.read_plan(reader).with_context(|| {
+            format!(
+                "Failed to parse input as {} format",
+                format!("{from:?}").to_lowercase()
+            )
+        })?;
 
         // Write output based on format
-        to.write_plan(writer, &plan, options, verbose)?;
+        to.write_plan(writer, &plan, options, verbose)
+            .with_context(|| {
+                format!(
+                    "Failed to write output as {} format",
+                    format!("{to:?}").to_lowercase()
+                )
+            })?;
 
         if verbose {
             eprintln!("Successfully converted from {from:?} to {to:?}");
@@ -118,7 +133,8 @@ impl Cli {
         let input_text = read_text_input(reader)?;
 
         // Parse text to protobuf
-        let plan = parse(&input_text)?;
+        let plan =
+            parse(&input_text).with_context(|| "Failed to parse input as Substrait text format")?;
 
         // Format back to text
         let (output_text, errors) = format(&plan);
@@ -203,7 +219,9 @@ impl std::str::FromStr for Format {
             "json" => Ok(Format::Json),
             "yaml" => Ok(Format::Yaml),
             "protobuf" | "proto" | "pb" => Ok(Format::Protobuf),
-            _ => Err(format!("Invalid format: {s}")),
+            _ => Err(format!(
+                "Invalid format: '{s}'. Supported formats: text, json, yaml, protobuf/proto/pb"
+            )),
         }
     }
 }
@@ -223,7 +241,7 @@ impl Format {
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    Err("JSON input requires the 'serde' feature".into())
+                    Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
                 }
             }
             Format::Yaml => {
@@ -234,7 +252,7 @@ impl Format {
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    Err("YAML input requires the 'serde' feature".into())
+                    Err("YAML support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
                 }
             }
             Format::Protobuf => {
@@ -272,7 +290,7 @@ impl Format {
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    return Err("JSON output requires the 'serde' feature".into());
+                    return Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into());
                 }
             }
             Format::Yaml => {
@@ -283,7 +301,7 @@ impl Format {
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    return Err("YAML output requires the 'serde' feature".into());
+                    return Err("YAML support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into());
                 }
             }
             Format::Protobuf => {

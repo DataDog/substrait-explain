@@ -152,16 +152,6 @@ println!("{}", output);
 
 ### CLI Usage
 
-```bash
-# Install and validate a plan
-cargo install substrait-explain --features cli
-substrait-explain validate -i example-plans/basic.substrait
-```
-
-For detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
-
-## Command Line Interface
-
 The CLI provides `convert` and `validate` commands for working with Substrait plans:
 
 ```bash
@@ -175,7 +165,7 @@ substrait-explain convert -f text -t json -i plan.substrait -o plan.json
 substrait-explain validate -i example-plans/basic.substrait
 ```
 
-For detailed CLI documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md#command-line-interface).
+For detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
 
 ## Installation
 
