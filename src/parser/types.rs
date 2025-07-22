@@ -135,7 +135,35 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
-        _ => unimplemented!("{}", name),
+        "binary" => Kind::Binary(proto::r#type::Binary {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "timestamp" => Kind::Timestamp(proto::r#type::Timestamp {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "timestamp_tz" => Kind::TimestampTz(proto::r#type::TimestampTz {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "date" => Kind::Date(proto::r#type::Date {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "time" => Kind::Time(proto::r#type::Time {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "interval_year" => Kind::IntervalYear(proto::r#type::IntervalYear {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        "uuid" => Kind::Uuid(proto::r#type::Uuid {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        _ => unreachable!("Type {} exists in parser but not implemented in code", name),
     };
     Type { kind: Some(kind) }
 }

@@ -83,6 +83,22 @@ fn test_types() {
     assert_roundtrip::<Type>(&ctx, "i32");
     assert_roundtrip::<Type>(&ctx, "i32?");
 
+    // Test new simple types added in issue #20
+    assert_roundtrip::<Type>(&ctx, "binary");
+    assert_roundtrip::<Type>(&ctx, "binary?");
+    assert_roundtrip::<Type>(&ctx, "timestamp");
+    assert_roundtrip::<Type>(&ctx, "timestamp?");
+    assert_roundtrip::<Type>(&ctx, "timestamp_tz");
+    assert_roundtrip::<Type>(&ctx, "timestamp_tz?");
+    assert_roundtrip::<Type>(&ctx, "date");
+    assert_roundtrip::<Type>(&ctx, "date?");
+    assert_roundtrip::<Type>(&ctx, "time");
+    assert_roundtrip::<Type>(&ctx, "time?");
+    assert_roundtrip::<Type>(&ctx, "interval_year");
+    assert_roundtrip::<Type>(&ctx, "interval_year?");
+    assert_roundtrip::<Type>(&ctx, "uuid");
+    assert_roundtrip::<Type>(&ctx, "uuid?");
+
     assert_roundtrip::<Type>(&ctx, "MyType#12");
     assert_roundtrip::<Type>(&ctx, "MyType#12?");
     assert_roundtrip::<Type>(&ctx, "MyType#12<i32>");
