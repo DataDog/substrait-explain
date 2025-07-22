@@ -1,72 +1,43 @@
+=== Extensions
+URIs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+  @  3: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  2: eq
+  # 11 @  1: abs
+  # 12 @  3: sum
+  # 13 @  3: count
+  # 14 @  1: coalesce
+
+=== Plan
 Root[c, d]
-  Filter[*] condition=eq:int64_int64($0, 0)
-    Project[$1, abs:fp64($0)]
-      Read[a::fp64?, b::i64] table=schema.table
+  Filter[eq($0, 0) => $0, $1]
+    Project[$1, abs($0)]
+      Read[schema.table => a:fp64?, b:i64]
 
 Root[c, d, e]
-  Aggregate[$0, sum:fp64($1), count:fp64($1)] grouping=($0, abs:int64($2))
-    Read[name::string?, num::fp64?, id::i64] table=schema.table
-
+  Aggregate[$0 => $0, sum($1), count($1)]
+    Read[schema.table => name:string?, num:fp64?, id:i64]
 
 Root[name, num]
-  Project[$1, coalesce:any1_any1($1, $2)]
-    Read[name::string?, num::fp64?, other_num::fp64?, id::i64] table=schema.table
-
+  Project[$1, coalesce($1, $2)]
+    Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]
 
 Root[name, parent, sum, count]
-  Join[$0, $3, $1, $2] type=inner, condition=eq:string_string($0, $4)
-    Aggregate[$0, sum:fp64($1), count:fp64($1)] grouping=($0, abs:int64($2))
-      Read[name::string?, num::fp64?, id::i64] table=schema.table
-    Read[parent::string?, name::string?] table=schema.table2
-
-
-Root[name, some_value]
-  Fetch[*] count=100, offset=0
-    Sort[*] sorting=($1, $0), directions=(DESC_NULLS_FIRST, DESC_NULLS_LAST)
-      ExtensionLeaf[name:string?, some_value:fp64?] typeUrl=someExampleURL
-
-
-Root[parent, summed, counted, name]
-  Project[$3, $1, $2, $0]
-    Join[$0, $3, $1, $2] type=left, condition=eq:string_string($0, $4)
-      Aggregate[$0, sum:fp64($1), count:fp64($1)] grouping=($0, abs:int64($2))
-        Read[name::string?, num::fp64, id::i64] table=myschema.mytable
-      Read[parent::string?, name::string?] table=myschema.othertable
-
+  Join[&Inner, eq($0, $4) => $0, $3, $1, $2]
+    Aggregate[$0 => $0, sum($1), count($1)]
+      Read[schema.table => name:string?, num:fp64?, id:i64]
+    Read[schema.table2 => parent:string?, name:string?]
 
 Root[name, num, id]
-  SetOperation[*] opType=UNION_ALL
-    Read[name::string?, num::fp64, id::i64] table=t1
-    Read[name::string, num::fp64?, id::i64] table=t2
+  Sort[($1, &DescNullsFirst), ($0, &DescNullsLast) => $0, $1, $2]
+    Read[schema.table => name:string?, num:fp64?, id:i64]
 
+Root[result]
+  Project[$0, $1, $2]
+    Filter[eq($2, 100) => $0, $1, $2]
+      Read[orders => customer:string, amount:fp64, order_id:i64]
 
-Root[name, num, id]
-  Filter[*] condition=in($0, 'a', 'b', 'c')
-    Read[name::string?, num::fp64?, id::i64] table=schema.table
-
-
-Root[name, num, id]
-  Fetch[*] count=100, offset=0
-    Sort[*] sorting=($1, $0), directions=(DESC_NULLS_FIRST, DESC_NULLS_LAST)
-      Read[name::string?, num::fp64?, id::i64] table=schema.table
-
-
-Root[name, num, id]
-  Fetch[*] count=100, offset=200
-    Read[name::string?, num::fp64?, id::i64] table=schema.table
-
-
-Root[ts, precision_ts]
-  Read[ts::timestamp?, precision_ts::precision_timestamp?<3>] table=schema.table
-
-
-Root[timestamp, "__handle", value, tag1, tag2]
-  Read[timestamp::precision_timestamp<0>, "__handle"::string, value::fp64?, tag1::string?, tag2::string?] extension=SimpleMetricsRead, org_id=1, metric_name=my_metric, start_time=1706627045s, end_time=1706713445s, table=metrics
-
-
-Root[timestamp, value, service]
-  Aggregate[$0, sum:fp64($1), $3] grouping=($0, $3)
-    Aggregate[$0, avg:fp64($1), $3, $4] grouping=($0, $3, $4)
-      Project[date_bin:interval_day<P1>,precision_timestamp<P2>,precision_timestamp<P2>(interval('60 seconds'), $0, 2010-01-01 00:00:00), $2, $3, $4]
-        Filter[*] condition=eq:any1_any1($5, 'prod')
-          Read[timestamp::precision_timestamp<0>, "__handle"::string, value::fp64?, host::string?, service::string?, env::string?] extension=SimpleMetricsRead, org_id=1, metric_name=my_metric, start_time=1706627045s, end_time=1706713445s, table=metrics
+Root[name, count]
+  Read[users => name:string?, count:i32]
