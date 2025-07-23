@@ -5,7 +5,7 @@ use substrait::proto::expression::{
     FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
-use substrait::proto::r#type::{I64, Kind, Nullability};
+use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
 use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
 
 use super::types::get_and_validate_anchor;
@@ -134,6 +134,66 @@ fn to_int_literal(
     })
 }
 
+fn to_float_literal(
+    value: pest::iterators::Pair<Rule>,
+    typ: Option<Type>,
+) -> Result<Literal, MessageParseError> {
+    assert_eq!(value.as_rule(), Rule::float);
+    let parsed_value: f64 = value.as_str().parse().unwrap();
+
+    const DEFAULT_KIND: Kind = Kind::Fp64(Fp64 {
+        type_variation_reference: 0,
+        nullability: Nullability::Required as i32,
+    });
+
+    // If no type is provided, we assume fp64, Nullability::Required.
+    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+
+    let (lit, nullability, tvar) = match &kind {
+        Kind::Fp32(f) => (
+            LiteralType::Fp32(parsed_value as f32),
+            f.nullability,
+            f.type_variation_reference,
+        ),
+        Kind::Fp64(f) => (
+            LiteralType::Fp64(parsed_value),
+            f.nullability,
+            f.type_variation_reference,
+        ),
+        k => {
+            let pest_error = pest::error::Error::new_from_span(
+                pest::error::ErrorVariant::CustomError {
+                    message: format!("Invalid type for float literal: {k:?}"),
+                },
+                value.as_span(),
+            );
+            let error = MessageParseError {
+                message: "float_literal_type",
+                kind: ErrorKind::InvalidValue,
+                error: Box::new(pest_error),
+            };
+            return Err(error);
+        }
+    };
+
+    Ok(Literal {
+        literal_type: Some(lit),
+        nullable: nullability != Nullability::Required as i32,
+        type_variation_reference: tvar,
+    })
+}
+
+fn to_boolean_literal(value: pest::iterators::Pair<Rule>) -> Result<Literal, MessageParseError> {
+    assert_eq!(value.as_rule(), Rule::boolean);
+    let parsed_value: bool = value.as_str().parse().unwrap();
+
+    Ok(Literal {
+        literal_type: Some(LiteralType::Boolean(parsed_value)),
+        nullable: false,
+        type_variation_reference: 0,
+    })
+}
+
 impl ScopedParsePair for Literal {
     fn rule() -> Rule {
         Rule::literal
@@ -158,6 +218,8 @@ impl ScopedParsePair for Literal {
         };
         match value.as_rule() {
             Rule::integer => to_int_literal(value, typ),
+            Rule::float => to_float_literal(value, typ),
+            Rule::boolean => to_boolean_literal(value),
             Rule::string_literal => Ok(Literal {
                 literal_type: Some(LiteralType::String(unescape_string(value))),
                 nullable: false,
@@ -367,6 +429,67 @@ mod tests {
             type_variation_reference: 0,
         };
         assert_parses_with(&extensions, "1", expected);
+    }
+
+    #[test]
+    fn test_parse_float_literal() {
+        // First test that the grammar can parse floats
+        let pairs = ExpressionParser::parse(Rule::float, "3.82").unwrap();
+        let parsed_text = pairs.as_str();
+        assert_eq!(parsed_text, "3.82");
+
+        let extensions = SimpleExtensions::default();
+        let expected = Literal {
+            literal_type: Some(LiteralType::Fp64(3.82)),
+            nullable: false,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "3.82", expected);
+    }
+
+    #[test]
+    fn test_parse_negative_float_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected = Literal {
+            literal_type: Some(LiteralType::Fp64(-2.5)),
+            nullable: false,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "-2.5", expected);
+    }
+
+    #[test]
+    fn test_parse_boolean_true_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected = Literal {
+            literal_type: Some(LiteralType::Boolean(true)),
+            nullable: false,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "true", expected);
+    }
+
+    #[test]
+    fn test_parse_boolean_false_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected = Literal {
+            literal_type: Some(LiteralType::Boolean(false)),
+            nullable: false,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "false", expected);
+    }
+
+    #[test]
+    fn test_parse_float_literal_with_fp32_type() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "3.82:fp32");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::Fp32(val)) => assert!((val - 3.82).abs() < f32::EPSILON),
+            _ => panic!("Expected Fp32 literal type"),
+        }
     }
 
     // #[test]

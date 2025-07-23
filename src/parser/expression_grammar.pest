@@ -35,7 +35,7 @@ name = { identifier | quoted_name }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal = { (integer | float | boolean | string_literal) ~ (":" ~ sp ~ type)? }
+literal = { (float | integer | boolean | string_literal) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }

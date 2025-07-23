@@ -187,7 +187,7 @@ Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNull
 
 A literal can come in the form of an integer, float, boolean, or string, and can have an optional additional type:
 
-`literal := (integer / float / boolean / string) (":" type)?`
+`literal := (float / integer / boolean / string) (":" type)?`
 
 - **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
@@ -205,7 +205,7 @@ A literal can come in the form of an integer, float, boolean, or string, and can
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-**TODO**: The current Pest grammar only supports `integer` and `string`. The grammar needs to be extended to support `float`, `boolean`, and typed literals as described above.
+All literal types (`integer`, `float`, `boolean`, and `string`) are now supported in the current implementation. Support for typed literals (string literals with non-primitive type annotations like `'2023-01-01':date`) remains to be implemented.
 
 ## Types
 

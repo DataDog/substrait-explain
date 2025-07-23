@@ -192,7 +192,7 @@ impl Textify for LiteralType {
                     Visibility::Never => write!(w, "{f}")?,
                 }
             }
-            LiteralType::String(s) => write!(w, "\"{}\"", s.escape_debug())?,
+            LiteralType::String(s) => write!(w, "'{}'", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
             LiteralType::Timestamp(t) => {
                 let k = match self.kind(ctx.extensions()) {
