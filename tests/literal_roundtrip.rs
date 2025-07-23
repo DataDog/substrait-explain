@@ -1,40 +1,8 @@
 //! Test roundtrip functionality for literal parsing and formatting
 
-use substrait_explain::format;
-use substrait_explain::parser::Parser;
+mod common;
 
-/// Roundtrip a plan with literals and verify that the output matches the input
-fn roundtrip_plan(input: &str) {
-    // Parse the plan
-    let plan = match Parser::parse(input) {
-        Ok(plan) => plan,
-        Err(e) => {
-            println!("Error parsing plan:\n{e}");
-            panic!("{}", e);
-        }
-    };
-
-    // Format the plan back to text
-    let (actual, errors) = format(&plan);
-
-    // Check for formatting errors
-    if !errors.is_empty() {
-        println!("Formatting errors:");
-        for error in errors {
-            println!("  {error}");
-        }
-        panic!("Formatting errors occurred");
-    }
-
-    // Compare the output with the input
-    assert_eq!(
-        actual.trim(),
-        input.trim(),
-        "Expected:\n---\n{}\n---\nActual:\n---\n{}\n---",
-        input.trim(),
-        actual.trim()
-    );
-}
+use common::roundtrip_plan;
 
 #[test]
 fn test_float_literal_roundtrip() {
