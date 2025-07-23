@@ -60,25 +60,13 @@ Root[result]
 
 #[test]
 fn test_mixed_literal_roundtrip() {
-    // Note: Input uses single quotes but output uses double quotes due to textifier behavior
-    let input = r#"
+    let plan = r#"
 === Plan
 Root[result]
   Project[42, 3.14, true, 'hello']
     Read[data => a:i64]
 "#;
-    let expected = r#"
-=== Plan
-Root[result]
-  Project[42, 3.14, true, "hello"]
-    Read[data => a:i64]
-"#;
-
-    // Parse the plan
-    let plan = Parser::parse(input).unwrap();
-    let (actual, errors) = format(&plan);
-    assert!(errors.is_empty());
-    assert_eq!(actual.trim(), expected.trim());
+    roundtrip_plan(plan);
 }
 
 #[test]
