@@ -1,3 +1,4 @@
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
@@ -194,6 +195,166 @@ fn to_boolean_literal(value: pest::iterators::Pair<Rule>) -> Result<Literal, Mes
     })
 }
 
+fn to_string_literal(
+    value: pest::iterators::Pair<Rule>,
+    typ: Option<Type>,
+) -> Result<Literal, MessageParseError> {
+    assert_eq!(value.as_rule(), Rule::string_literal);
+    let string_value = unescape_string(value.clone());
+
+    // If no type is provided, default to string
+    let Some(typ) = typ else {
+        return Ok(Literal {
+            literal_type: Some(LiteralType::String(string_value)),
+            nullable: false,
+            type_variation_reference: 0,
+        });
+    };
+
+    let Some(kind) = typ.kind else {
+        return Ok(Literal {
+            literal_type: Some(LiteralType::String(string_value)),
+            nullable: false,
+            type_variation_reference: 0,
+        });
+    };
+
+    match &kind {
+        Kind::Date(d) => {
+            // Parse date in ISO 8601 format: YYYY-MM-DD
+            let date_days = parse_date_to_days(&string_value, value.as_span())?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::Date(date_days)),
+                nullable: d.nullability != Nullability::Required as i32,
+                type_variation_reference: d.type_variation_reference,
+            })
+        }
+        Kind::Time(t) => {
+            // Parse time in ISO 8601 format: HH:MM:SS[.fff]
+            let time_microseconds = parse_time_to_microseconds(&string_value, value.as_span())?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::Time(time_microseconds)),
+                nullable: t.nullability != Nullability::Required as i32,
+                type_variation_reference: t.type_variation_reference,
+            })
+        }
+        Kind::Timestamp(ts) => {
+            // Parse timestamp in ISO 8601 format: YYYY-MM-DDTHH:MM:SS[.fff] or YYYY-MM-DD HH:MM:SS[.fff]
+            let timestamp_microseconds =
+                parse_timestamp_to_microseconds(&string_value, value.as_span())?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::Timestamp(timestamp_microseconds)),
+                nullable: ts.nullability != Nullability::Required as i32,
+                type_variation_reference: ts.type_variation_reference,
+            })
+        }
+        _ => {
+            // For other types, treat as string
+            Ok(Literal {
+                literal_type: Some(LiteralType::String(string_value)),
+                nullable: false,
+                type_variation_reference: 0,
+            })
+        }
+    }
+}
+
+/// Parse a date string using chrono to days since Unix epoch
+fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessageParseError> {
+    // Try multiple date formats for flexibility
+    let formats = ["%Y-%m-%d", "%Y/%m/%d"];
+
+    for format in &formats {
+        if let Ok(date) = NaiveDate::parse_from_str(date_str, format) {
+            // Calculate days since Unix epoch (1970-01-01)
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let days = date.signed_duration_since(epoch).num_days();
+            return Ok(days as i32);
+        }
+    }
+
+    Err(MessageParseError {
+        message: "date_parse_format",
+        kind: ErrorKind::InvalidValue,
+        error: Box::new(pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: format!(
+                    "Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY/MM/DD"
+                ),
+            },
+            span,
+        )),
+    })
+}
+
+/// Parse a time string using chrono to microseconds since midnight
+fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, MessageParseError> {
+    // Try multiple time formats for flexibility
+    let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
+
+    for format in &formats {
+        if let Ok(time) = NaiveTime::parse_from_str(time_str, format) {
+            // Convert to microseconds since midnight
+            let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+            let duration = time.signed_duration_since(midnight);
+            return Ok(duration.num_microseconds().unwrap_or(0));
+        }
+    }
+
+    Err(MessageParseError {
+        message: "time_parse_format",
+        kind: ErrorKind::InvalidValue,
+        error: Box::new(pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: format!(
+                    "Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"
+                ),
+            },
+            span,
+        )),
+    })
+}
+
+/// Parse a timestamp string using chrono to microseconds since Unix epoch
+fn parse_timestamp_to_microseconds(
+    timestamp_str: &str,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    // Try multiple timestamp formats for flexibility
+    let formats = [
+        "%Y-%m-%dT%H:%M:%S%.f", // ISO 8601 with T and fractional seconds
+        "%Y-%m-%dT%H:%M:%S",    // ISO 8601 with T
+        "%Y-%m-%d %H:%M:%S%.f", // Space separator with fractional seconds
+        "%Y-%m-%d %H:%M:%S",    // Space separator
+        "%Y/%m/%dT%H:%M:%S%.f", // Alternative date format with T
+        "%Y/%m/%dT%H:%M:%S",    // Alternative date format with T
+        "%Y/%m/%d %H:%M:%S%.f", // Alternative date format with space
+        "%Y/%m/%d %H:%M:%S",    // Alternative date format with space
+    ];
+
+    for format in &formats {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(timestamp_str, format) {
+            // Calculate microseconds since Unix epoch (1970-01-01 00:00:00)
+            let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
+            let duration = datetime.signed_duration_since(epoch);
+            return Ok(duration.num_microseconds().unwrap_or(0));
+        }
+    }
+
+    Err(MessageParseError {
+        message: "timestamp_parse_format",
+        kind: ErrorKind::InvalidValue,
+        error: Box::new(pest::error::Error::new_from_span(
+            pest::error::ErrorVariant::CustomError {
+                message: format!(
+                    "Invalid timestamp format: '{timestamp_str}'. Expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS"
+                ),
+            },
+            span,
+        )),
+    })
+}
+
 impl ScopedParsePair for Literal {
     fn rule() -> Rule {
         Rule::literal
@@ -220,11 +381,7 @@ impl ScopedParsePair for Literal {
             Rule::integer => to_int_literal(value, typ),
             Rule::float => to_float_literal(value, typ),
             Rule::boolean => to_boolean_literal(value),
-            Rule::string_literal => Ok(Literal {
-                literal_type: Some(LiteralType::String(unescape_string(value))),
-                nullable: false,
-                type_variation_reference: 0,
-            }),
+            Rule::string_literal => to_string_literal(value, typ),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
     }
@@ -489,6 +646,81 @@ mod tests {
         match result.literal_type {
             Some(LiteralType::Fp32(val)) => assert!((val - 3.82).abs() < f32::EPSILON),
             _ => panic!("Expected Fp32 literal type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_date_literal() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'2023-12-25':date");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::Date(days)) => {
+                // 2023-12-25 should be a positive number of days since 1970-01-01
+                assert!(
+                    days > 0,
+                    "Expected positive days since epoch, got: {}",
+                    days
+                );
+            }
+            _ => panic!("Expected Date literal type, got: {:?}", result.literal_type),
+        }
+    }
+
+    #[test]
+    fn test_parse_time_literal() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'14:30:45':time");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::Time(microseconds)) => {
+                // 14:30:45 = (14*3600 + 30*60 + 45) * 1_000_000 microseconds
+                let expected = (14 * 3600 + 30 * 60 + 45) * 1_000_000;
+                assert_eq!(microseconds, expected);
+            }
+            _ => panic!("Expected Time literal type, got: {:?}", result.literal_type),
+        }
+    }
+
+    #[test]
+    fn test_parse_timestamp_literal_with_t() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':timestamp");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::Timestamp(microseconds)) => {
+                assert!(
+                    microseconds > 0,
+                    "Expected positive microseconds since epoch"
+                );
+            }
+            _ => panic!(
+                "Expected Timestamp literal type, got: {:?}",
+                result.literal_type
+            ),
+        }
+    }
+
+    #[test]
+    fn test_parse_timestamp_literal_with_space() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'2023-01-01 12:00:00':timestamp");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::Timestamp(microseconds)) => {
+                assert!(
+                    microseconds > 0,
+                    "Expected positive microseconds since epoch"
+                );
+            }
+            _ => panic!(
+                "Expected Timestamp literal type, got: {:?}",
+                result.literal_type
+            ),
         }
     }
 

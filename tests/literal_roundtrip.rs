@@ -47,3 +47,36 @@ Root[result]
 "#;
     roundtrip_plan(plan);
 }
+
+#[test]
+fn test_date_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['2023-12-25':date]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_time_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['14:30:45':time]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_timestamp_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['2023-01-01T12:00:00':timestamp]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
