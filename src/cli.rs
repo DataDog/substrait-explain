@@ -34,7 +34,16 @@ impl Cli {
                     .with_context(|| format!("Failed to create output file: {output}"))?;
                 let options =
                     self.create_output_options(*show_literal_types, *show_expression_types);
-                self.run_convert_with_io(reader, writer, from, to, &options, *verbose)
+                let from_format = self.resolve_input_format(from, input)?;
+                let to_format = self.resolve_output_format(to, output)?;
+                self.run_convert_with_io(
+                    reader,
+                    writer,
+                    &from_format,
+                    &to_format,
+                    &options,
+                    *verbose,
+                )
             }
 
             Commands::Validate {
@@ -55,6 +64,8 @@ impl Cli {
     pub fn run_with_io<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<()> {
         match &self.command {
             Commands::Convert {
+                input,
+                output,
                 from,
                 to,
                 show_literal_types,
@@ -64,7 +75,16 @@ impl Cli {
             } => {
                 let options =
                     self.create_output_options(*show_literal_types, *show_expression_types);
-                self.run_convert_with_io(reader, writer, from, to, &options, *verbose)
+                let from_format = self.resolve_input_format(from, input)?;
+                let to_format = self.resolve_output_format(to, output)?;
+                self.run_convert_with_io(
+                    reader,
+                    writer,
+                    &from_format,
+                    &to_format,
+                    &options,
+                    *verbose,
+                )
             }
 
             Commands::Validate { verbose, .. } => {
@@ -89,6 +109,32 @@ impl Cli {
         }
 
         options
+    }
+
+    fn resolve_input_format(&self, format: &Option<Format>, input_path: &str) -> Result<Format> {
+        match format {
+            Some(fmt) => Ok(fmt.clone()),
+            None => Format::from_extension(input_path).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not auto-detect input format from file extension. \
+                     Please specify format explicitly with -f/--from. \
+                     Supported formats: text, json, yaml, protobuf/proto/pb"
+                )
+            }),
+        }
+    }
+
+    fn resolve_output_format(&self, format: &Option<Format>, output_path: &str) -> Result<Format> {
+        match format {
+            Some(fmt) => Ok(fmt.clone()),
+            None => Format::from_extension(output_path).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not auto-detect output format from file extension. \
+                     Please specify format explicitly with -t/--to. \
+                     Supported formats: text, json, yaml, protobuf/proto/pb"
+                )
+            }),
+        }
     }
 
     fn run_convert_with_io<R: Read, W: Write>(
@@ -160,6 +206,14 @@ impl Cli {
 pub enum Commands {
     /// Convert between different Substrait plan formats
     ///
+    /// Format auto-detection:
+    ///   If -f/--from or -t/--to are not specified, formats will be auto-detected
+    ///   from file extensions:
+    ///     .substrait, .txt    -> text format
+    ///     .json               -> json format  
+    ///     .yaml, .yml         -> yaml format
+    ///     .pb, .proto, .protobuf -> protobuf format
+    ///
     /// Plan formats:
     ///   text     - Human-readable Substrait text format
     ///   json     - JSON serialized protobuf
@@ -172,12 +226,12 @@ pub enum Commands {
         /// Output file (use - for stdout)
         #[arg(short, long, default_value = "-")]
         output: String,
-        /// Input format: text, json, yaml, protobuf/proto/pb
-        #[arg(short = 'f', long, default_value = "text")]
-        from: Format,
-        /// Output format: text, json, yaml, protobuf/proto/pb
-        #[arg(short = 't', long, default_value = "text")]
-        to: Format,
+        /// Input format: text, json, yaml, protobuf/proto/pb (auto-detected from file extension if not specified)
+        #[arg(short = 'f', long)]
+        from: Option<Format>,
+        /// Output format: text, json, yaml, protobuf/proto/pb (auto-detected from file extension if not specified)
+        #[arg(short = 't', long)]
+        to: Option<Format>,
         /// Show literal types (text output only)
         #[arg(long)]
         show_literal_types: bool,
@@ -202,7 +256,7 @@ pub enum Commands {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Format {
     Text,
     Json,
@@ -227,6 +281,26 @@ impl std::str::FromStr for Format {
 }
 
 impl Format {
+    /// Detect format from file extension
+    pub fn from_extension(path: &str) -> Option<Format> {
+        if path == "-" {
+            return None; // stdin/stdout - no extension
+        }
+
+        let extension = std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
+
+        match extension.as_deref() {
+            Some("substrait") | Some("txt") => Some(Format::Text),
+            Some("json") => Some(Format::Json),
+            Some("yaml") | Some("yml") => Some(Format::Yaml),
+            Some("pb") | Some("proto") | Some("protobuf") => Some(Format::Protobuf),
+            _ => None,
+        }
+    }
+
     pub fn read_plan<R: Read>(&self, reader: R) -> Result<substrait::proto::Plan> {
         match self {
             Format::Text => {
@@ -389,10 +463,10 @@ Root[result]
 
         let cli = Cli {
             command: Commands::Convert {
-                input: String::new(),  // Not used in run_with_io
-                output: String::new(), // Not used in run_with_io
-                from: Format::Text,
-                to: Format::Text,
+                input: "input.substrait".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Text),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -415,10 +489,10 @@ Root[result]
 
         let cli = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Text,
-                to: Format::Json,
+                input: "input.substrait".to_string(),
+                output: "output.json".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Json),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -442,10 +516,10 @@ Root[result]
 
         let cli_to_json = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Text,
-                to: Format::Json,
+                input: "input.substrait".to_string(),
+                output: "output.json".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Json),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -460,10 +534,10 @@ Root[result]
 
         let cli_to_text = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Json,
-                to: Format::Text,
+                input: "input.json".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Json),
+                to: Some(Format::Text),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -486,10 +560,10 @@ Root[result]
 
         let cli = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Text,
-                to: Format::Protobuf,
+                input: "input.substrait".to_string(),
+                output: "output.pb".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Protobuf),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -557,12 +631,145 @@ Root[result]
 
         let cli = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Text,
-                to: Format::Text,
+                input: "input.substrait".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Text),
                 show_literal_types: true,
                 show_expression_types: true,
+                verbose: false,
+            },
+        };
+
+        cli.run_with_io(input, &mut output).unwrap();
+
+        let output_content = String::from_utf8(output).unwrap();
+        assert!(output_content.contains("=== Plan"));
+        assert!(output_content.contains("Root[result]"));
+    }
+
+    #[test]
+    fn test_auto_detect_from_extension() {
+        // Test auto-detection of text format
+        assert_eq!(Format::from_extension("plan.substrait"), Some(Format::Text));
+        assert_eq!(Format::from_extension("plan.txt"), Some(Format::Text));
+
+        // Test auto-detection of JSON format
+        assert_eq!(Format::from_extension("plan.json"), Some(Format::Json));
+
+        // Test auto-detection of YAML format
+        assert_eq!(Format::from_extension("plan.yaml"), Some(Format::Yaml));
+        assert_eq!(Format::from_extension("plan.yml"), Some(Format::Yaml));
+
+        // Test auto-detection of protobuf format
+        assert_eq!(Format::from_extension("plan.pb"), Some(Format::Protobuf));
+        assert_eq!(Format::from_extension("plan.proto"), Some(Format::Protobuf));
+        assert_eq!(
+            Format::from_extension("plan.protobuf"),
+            Some(Format::Protobuf)
+        );
+
+        // Test unknown extensions
+        assert_eq!(Format::from_extension("plan.unknown"), None);
+        assert_eq!(Format::from_extension("plan"), None);
+
+        // Test stdin/stdout
+        assert_eq!(Format::from_extension("-"), None);
+    }
+
+    #[test]
+    fn test_convert_with_auto_detection() {
+        let input = Cursor::new(BASIC_PLAN);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.substrait".to_string(),
+                output: "output.json".to_string(),
+                from: None, // Auto-detect from extension
+                to: None,   // Auto-detect from extension
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        cli.run_with_io(input, &mut output).unwrap();
+
+        let output_content = String::from_utf8(output).unwrap();
+        assert!(output_content.contains("\"relations\""));
+        assert!(output_content.contains("\"root\""));
+        assert!(output_content.contains("\"project\""));
+        assert!(output_content.contains("\"read\""));
+    }
+
+    #[test]
+    fn test_auto_detection_error_unknown_input_extension() {
+        let input = Cursor::new(BASIC_PLAN);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.unknown".to_string(),
+                output: "output.json".to_string(),
+                from: None, // Should fail auto-detection
+                to: None,
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        let result = cli.run_with_io(input, &mut output);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Could not auto-detect input format")
+        );
+    }
+
+    #[test]
+    fn test_auto_detection_error_unknown_output_extension() {
+        let input = Cursor::new(BASIC_PLAN);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.substrait".to_string(),
+                output: "output.unknown".to_string(),
+                from: None,
+                to: None, // Should fail auto-detection
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        let result = cli.run_with_io(input, &mut output);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Could not auto-detect output format")
+        );
+    }
+
+    #[test]
+    fn test_explicit_format_overrides_auto_detection() {
+        let input = Cursor::new(BASIC_PLAN);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.json".to_string(), // Would auto-detect as JSON
+                output: "output.pb".to_string(), // Would auto-detect as Protobuf
+                from: Some(Format::Text),        // Explicit override
+                to: Some(Format::Text),          // Explicit override
+                show_literal_types: false,
+                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -582,10 +789,10 @@ Root[result]
 
         let cli_to_protobuf = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Text,
-                to: Format::Protobuf,
+                input: "input.substrait".to_string(),
+                output: "output.pb".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Protobuf),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
@@ -602,10 +809,10 @@ Root[result]
 
         let cli_to_text = Cli {
             command: Commands::Convert {
-                input: String::new(),
-                output: String::new(),
-                from: Format::Protobuf,
-                to: Format::Text,
+                input: "input.pb".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Protobuf),
+                to: Some(Format::Text),
                 show_literal_types: false,
                 show_expression_types: false,
                 verbose: false,
