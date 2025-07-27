@@ -294,7 +294,9 @@ Type Variations:
         .trim_start();
 
         // Parse the input using the structural parser
-        let plan = Parser::parse(input).unwrap();
+        let result = Parser::parse(input).unwrap();
+        assert!(!result.has_warnings());
+        let plan = result.plan;
 
         // Verify the plan has the expected extensions
         assert_eq!(plan.extension_urns.len(), 2);

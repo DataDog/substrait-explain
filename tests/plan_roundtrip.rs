@@ -8,6 +8,8 @@
 mod common;
 
 use common::{roundtrip_plan, roundtrip_plan_with_verbose};
+use substrait::proto::plan_rel::RelType as PlanRelType;
+use substrait::proto::rel::RelType;
 use substrait_explain::format;
 use substrait_explain::parser::Parser;
 
@@ -18,8 +20,8 @@ fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
     let plan2 = Parser::parse(equivalent).expect("equivalent parse failed");
 
     // Format both
-    let (text1, errors1) = format(&plan1);
-    let (text2, errors2) = format(&plan2);
+    let (text1, errors1) = format(&plan1.plan);
+    let (text2, errors2) = format(&plan2.plan);
     assert!(
         errors1.is_empty(),
         "Formatting errors for canonical: {errors1:?}"
@@ -277,4 +279,255 @@ Root[d, mark]
     Read[left_table => a:i32, b:string]
     Read[right_table => c:i32, d:string, e:boolean]"#;
     roundtrip_plan(plan_right_mark);
+}
+
+#[test]
+fn test_extension_leaf_relation_basic_parsing() {
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    // Test that extension relations can be parsed without errors
+    // Full roundtrip isn't working yet due to placeholder implementations
+    let plan_text = r#"=== Plan
+Root[col1, col2]
+  ExtensionLeaf:ParquetScan[path='data/*.parquet', schema='auto' => col1:i32, col2:string]"#;
+
+    // Use Ignore mode to allow unregistered extensions
+    let config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
+    };
+    let parser = Parser::with_config(config);
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Extension relation should parse successfully");
+    assert_eq!(plan.plan.relations.len(), 1);
+
+    // Verify the relation was parsed as an extension relation
+    if let Some(root_rel) = plan.plan.relations.first() {
+        if let Some(PlanRelType::Root(root)) = &root_rel.rel_type {
+            if let Some(input) = &root.input {
+                if let Some(RelType::ExtensionLeaf(_)) = &input.rel_type {
+                    // Success - parsed as ExtensionLeaf
+                } else {
+                    panic!("Expected ExtensionLeaf relation, got: {:?}", input.rel_type);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_extension_single_relation_basic_parsing() {
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    let plan_text = r#"=== Plan
+Root[normalized_a, normalized_b]
+  ExtensionSingle:VectorNormalize[method='l2', dimensions=128 => $0, $1]
+    Read[vectors => a:fp32, b:fp32]"#;
+
+    // Use Ignore mode to allow unregistered extensions
+    let config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
+    };
+    let parser = Parser::with_config(config);
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Extension single relation should parse successfully");
+    assert_eq!(plan.plan.relations.len(), 1);
+}
+
+#[test]
+fn test_extension_multi_relation_basic_parsing() {
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    let plan_text = r#"=== Plan
+Root[matched_left, matched_right, score]
+  ExtensionMulti:FuzzyJoin[algorithm='lsh', threshold=0.8 => $0, $2, $4]
+    Read[left_table => id:i64, text:string]
+    Read[right_table => id:i64, text:string, score:fp64]"#;
+
+    // Use Ignore mode to allow unregistered extensions
+    let config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
+    };
+    let parser = Parser::with_config(config);
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Extension multi relation should parse successfully");
+    assert_eq!(plan.plan.relations.len(), 1);
+}
+
+#[test]
+fn test_line_numbers_in_warnings() {
+    use substrait_explain::parser::Parser;
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    let plan_text = r#"=== Plan
+Root[result]
+  ExtensionLeaf:UnknownExtension[path='test.parquet' => col1:i32, col2:string]"#;
+
+    let config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Warn,
+    };
+
+    let parser = Parser::with_config(config);
+    let result = parser.parse_plan(plan_text).unwrap();
+
+    // Should have warnings about the unregistered extension
+    assert!(
+        !result.warnings.is_empty(),
+        "Expected warnings for unregistered extension"
+    );
+
+    // Verify that line numbers are preserved (should not be 0)
+    for warning in &result.warnings {
+        println!("Warning: {} at line {}", warning, warning.location.line);
+        assert_ne!(warning.location.line, 0, "Line number should not be 0");
+        assert_eq!(
+            warning.location.line, 3,
+            "Extension relation should be on line 3"
+        );
+    }
+}
+
+#[test]
+fn test_extension_modes_error_warn_ignore() {
+    use substrait_explain::parser::Parser;
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    let plan_text = r#"=== Plan
+Root[result]
+  ExtensionLeaf:UnknownExtension[path='test.parquet' => col1:i32, col2:string]"#;
+
+    // Test Error mode - should fail parsing
+    let error_config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Error,
+    };
+    let error_parser = Parser::with_config(error_config);
+    let error_result = error_parser.parse_plan(plan_text);
+    assert!(
+        error_result.is_err(),
+        "Error mode should fail for unregistered extension"
+    );
+
+    // Test Warn mode - should succeed with warnings
+    let warn_config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Warn,
+    };
+    let warn_parser = Parser::with_config(warn_config);
+    let warn_result = warn_parser.parse_plan(plan_text).unwrap();
+    assert!(
+        !warn_result.warnings.is_empty(),
+        "Warn mode should produce warnings"
+    );
+    assert_eq!(
+        warn_result.plan.relations.len(),
+        1,
+        "Plan should still be parsed in warn mode"
+    );
+
+    // Test Ignore mode - should succeed without warnings
+    let ignore_config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
+    };
+    let ignore_parser = Parser::with_config(ignore_config);
+    let ignore_result = ignore_parser.parse_plan(plan_text).unwrap();
+    assert!(
+        ignore_result.warnings.is_empty(),
+        "Ignore mode should not produce warnings"
+    );
+    assert_eq!(
+        ignore_result.plan.relations.len(),
+        1,
+        "Plan should be parsed in ignore mode"
+    );
+
+    println!("✅ All three extension modes (Error/Warn/Ignore) work correctly");
+}
+
+#[test]
+fn test_warning_edge_case_multiple_extensions() {
+    use substrait_explain::parser::Parser;
+    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+
+    let plan_text = r#"=== Plan
+Root[result1]
+  ExtensionLeaf:UnknownA[path='file1.parquet' => col1:i32]
+
+Root[result2]
+  ExtensionLeaf:UnknownB[path='file2.parquet' => col2:string]"#;
+
+    let config = ParserConfig {
+        unregistered_extension_mode: UnregisteredExtensionMode::Warn,
+    };
+
+    let parser = Parser::with_config(config);
+    let result = parser.parse_plan(plan_text).unwrap();
+
+    // Should have multiple warnings, one for each unregistered extension
+    assert_eq!(
+        result.warnings.len(),
+        2,
+        "Expected exactly 2 warnings for 2 unregistered extensions"
+    );
+
+    // Verify warnings have different line numbers
+    let line_numbers: Vec<i64> = result.warnings.iter().map(|w| w.location.line).collect();
+    assert_eq!(
+        line_numbers,
+        vec![3, 6],
+        "Warnings should be on lines 3 and 6"
+    );
+
+    // Verify both extension names are reported
+    let warnings_text = result
+        .warnings
+        .iter()
+        .map(|w| format!("{w}"))
+        .collect::<Vec<_>>();
+    assert!(
+        warnings_text.iter().any(|w| w.contains("UnknownA")),
+        "Should warn about UnknownA extension"
+    );
+    assert!(
+        warnings_text.iter().any(|w| w.contains("UnknownB")),
+        "Should warn about UnknownB extension"
+    );
+
+    println!(
+        "✅ Warning edge case test passed: multiple extensions generate separate warnings with correct line numbers"
+    );
+}
+
+#[test]
+fn test_malformed_input_error_handling() {
+    use substrait_explain::parser::Parser;
+
+    // Test malformed input: unclosed bracket in extension relation
+    let malformed_plan = r#"=== Plan
+Root[result]
+  ExtensionLeaf:TestExtension[path='test.parquet', missing_close => col1:i32"#;
+
+    let result = Parser::parse(malformed_plan);
+
+    // Should fail with a clear error
+    assert!(
+        result.is_err(),
+        "Malformed input should result in parse error"
+    );
+
+    let error = result.unwrap_err();
+    let error_msg = format!("{error}");
+
+    // Verify error contains useful information
+    assert!(error_msg.len() > 10, "Error message should be descriptive");
+
+    // Error should reference the problematic line (line 3 where the unclosed bracket is)
+    assert!(
+        error_msg.contains("3") || error_msg.contains("line"),
+        "Error should reference line information: {error_msg}"
+    );
+
+    println!(
+        "✅ Malformed input error test passed: parsing fails gracefully with descriptive error message"
+    );
 }

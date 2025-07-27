@@ -47,10 +47,19 @@ Root[revenue]
 "#;
 
     match Parser::parse(plan_text) {
-        Ok(plan) => {
+        Ok(result) => {
+            // Show parse warnings if any
+            if !result.warnings.is_empty() {
+                println!("Parse warnings:");
+                for warning in &result.warnings {
+                    println!("  - {warning}");
+                }
+                println!();
+            }
+
             // Show the plan in YAML format
             println!("Plan Structure (YAML):");
-            match serde_yaml::to_string(&plan) {
+            match serde_yaml::to_string(&result.plan) {
                 Ok(yaml) => println!("{yaml}"),
                 Err(e) => println!("Error formatting YAML: {e}"),
             }
@@ -58,11 +67,11 @@ Root[revenue]
 
             // Standard output (concise)
             println!("Standard Output:");
-            print_with_errors(&plan, None);
+            print_with_errors(&result.plan, None);
 
             // Verbose output (shows all details)
             println!("Verbose Output:");
-            print_with_errors(&plan, Some(&OutputOptions::verbose()));
+            print_with_errors(&result.plan, Some(&OutputOptions::verbose()));
 
             // Custom output options
             let custom_options = OutputOptions {
@@ -72,7 +81,7 @@ Root[revenue]
             };
 
             println!("Custom Output (4-space indent, always show types):");
-            print_with_errors(&plan, Some(&custom_options));
+            print_with_errors(&result.plan, Some(&custom_options));
         }
         Err(e) => println!("Error parsing plan: {e}"),
     }

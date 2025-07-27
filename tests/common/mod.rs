@@ -18,7 +18,7 @@ pub fn roundtrip_plan(input: &str) {
     };
 
     // Format the plan back to text using the simplified interface
-    let (actual, errors) = format(&plan);
+    let (actual, errors) = format(&plan.plan);
 
     // Check for formatting errors
     if !errors.is_empty() {
@@ -63,14 +63,14 @@ pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     // Test verbose output from both plans
     let verbose_options = OutputOptions::verbose();
     let (simple_verbose_writer, simple_verbose_errors) =
-        PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan);
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan.plan);
     let simple_verbose_actual = format!("{simple_verbose_writer}");
     simple_verbose_errors
         .errs()
         .expect("Errors during simple -> verbose conversion");
 
     let (verbose_verbose_writer, verbose_verbose_errors) =
-        PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan);
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan.plan);
     let verbose_verbose_actual = format!("{verbose_verbose_writer}");
     verbose_verbose_errors
         .errs()
@@ -87,14 +87,14 @@ pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     // Test simple output from both plans
     let simple_options = OutputOptions::default();
     let (simple_simple_writer, simple_simple_errors) =
-        PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan);
+        PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan.plan);
     let simple_simple_actual = format!("{simple_simple_writer}");
     simple_simple_errors
         .errs()
         .expect("Errors during simple -> simple conversion");
 
     let (verbose_simple_writer, verbose_simple_errors) =
-        PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan);
+        PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan.plan);
     let verbose_simple_actual = format!("{verbose_simple_writer}");
     verbose_simple_errors
         .errs()

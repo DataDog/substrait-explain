@@ -14,8 +14,17 @@ use substrait::proto::{
 use super::{
     ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
 };
-use crate::extensions::SimpleExtensions;
+use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::parser::expressions::{FieldIndex, Name};
+
+/// Parsing context for relations that includes extensions, registry, and optional warning collection
+pub struct RelationParsingContext<'a> {
+    pub extensions: &'a SimpleExtensions,
+    pub registry: &'a ExtensionRegistry,
+    pub config: Option<&'a crate::parser::warnings::ParserConfig>,
+    pub warnings: Option<&'a mut Vec<crate::parser::warnings::ParseWarning>>,
+    pub line_no: i64,
+}
 
 /// A trait for parsing relations with full context needed for tree building.
 /// This includes extensions, the parsed pair, input children, and output field count.
@@ -37,6 +46,21 @@ pub trait RelationParsePair: Sized {
         input_children: Vec<Box<Rel>>,
         input_field_count: usize,
     ) -> Result<Self, MessageParseError>;
+
+    /// Parse a relation with extended context including extension registry and optional warning collection.
+    /// Default implementation falls back to the standard method.
+    fn parse_pair_with_extended_context(
+        context: &mut RelationParsingContext,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        // Default implementation for backward compatibility
+        // Note: Line number information from context is not passed to the legacy method
+        // as it doesn't support line numbers. For relations that need line numbers,
+        // they should override this method directly.
+        Self::parse_pair_with_context(context.extensions, pair, input_children, input_field_count)
+    }
 
     fn into_rel(self) -> Rel;
 }
@@ -854,6 +878,630 @@ impl RelationParsePair for JoinRel {
             r#type: join_type as i32,
             advanced_extension: None,
         })
+    }
+}
+
+// Extension relation implementations need to be added manually since they're not in standard imports
+use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+
+/// Create a placeholder detail for unregistered extensions
+#[cfg(feature = "serde")]
+fn create_placeholder_detail() -> Option<pbjson_types::Any> {
+    let empty_any = pbjson_types::Any {
+        type_url: "type.googleapis.com/google.protobuf.Empty".to_string(),
+        value: Default::default(),
+    };
+    Some(empty_any)
+}
+
+/// Build ExtensionArgs from parsed Pest pairs using RuleIter approach
+fn build_extension_args_from_pairs(
+    extension_arguments: Option<pest::iterators::Pair<Rule>>,
+    extension_named_arguments: Option<pest::iterators::Pair<Rule>>,
+    extension_columns: Option<pest::iterators::Pair<Rule>>,
+) -> Result<crate::extensions::registry::ExtensionArgs, MessageParseError> {
+    use crate::extensions::registry::ExtensionArgs;
+
+    let mut args = ExtensionArgs::new();
+
+    // Parse positional arguments if present
+    if let Some(extension_arguments_pair) = extension_arguments {
+        for arg_pair in extension_arguments_pair.into_inner() {
+            if arg_pair.as_rule() == Rule::extension_argument {
+                let value = parse_extension_value_from_pair(arg_pair)?;
+                args.add_positional_arg(value);
+            }
+        }
+    }
+
+    // Parse named arguments if present
+    if let Some(extension_named_arguments_pair) = extension_named_arguments {
+        for named_arg_pair in extension_named_arguments_pair.into_inner() {
+            if named_arg_pair.as_rule() == Rule::extension_named_argument {
+                let (name, value) = parse_extension_named_arg_from_pair(named_arg_pair)?;
+                args.add_named_arg(name, value);
+            }
+        }
+    }
+
+    // Parse output columns if present
+    if let Some(extension_columns_pair) = extension_columns {
+        for column_pair in extension_columns_pair.into_inner() {
+            if column_pair.as_rule() == Rule::extension_column {
+                let column = parse_extension_column_from_pair(column_pair)?;
+                args.add_output_column(column);
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+/// Parse an extension value from a Pest pair (simplified version of conversion.rs logic)
+fn parse_extension_value_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<crate::extensions::registry::ExtensionValue, MessageParseError> {
+    use crate::extensions::registry::ExtensionValue;
+
+    assert_eq!(pair.as_rule(), Rule::extension_argument);
+
+    // Store span before consuming the pair
+    let pair_span = pair.as_span();
+
+    // Get the inner pair (reference, literal, or expression)
+    let inner_pair = pair.into_inner().next().ok_or_else(|| {
+        MessageParseError::invalid(
+            "extension_argument",
+            pair_span,
+            "Empty extension argument".to_string(),
+        )
+    })?;
+
+    match inner_pair.as_rule() {
+        Rule::reference => {
+            // Parse reference like $0, $1, etc.
+            let ref_str = inner_pair.as_str();
+            if let Some(index_str) = ref_str.strip_prefix('$') {
+                let index = index_str.parse::<i32>().map_err(|_| {
+                    MessageParseError::invalid(
+                        "reference",
+                        inner_pair.as_span(),
+                        format!("Invalid reference: {ref_str}"),
+                    )
+                })?;
+                Ok(ExtensionValue::Reference(index))
+            } else {
+                Err(MessageParseError::invalid(
+                    "reference",
+                    inner_pair.as_span(),
+                    format!("Invalid reference format: {ref_str}"),
+                ))
+            }
+        }
+        Rule::literal => {
+            // Parse literal values
+            parse_literal_value_from_pair(inner_pair)
+        }
+        Rule::expression => {
+            // For now, store expressions as strings
+            Ok(ExtensionValue::Expression(inner_pair.as_str().to_string()))
+        }
+        _ => Err(MessageParseError::invalid(
+            "extension_argument",
+            inner_pair.as_span(),
+            format!(
+                "Unsupported extension argument type: {:?}",
+                inner_pair.as_rule()
+            ),
+        )),
+    }
+}
+
+/// Parse a literal value from a Pest pair
+fn parse_literal_value_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<crate::extensions::registry::ExtensionValue, MessageParseError> {
+    use crate::extensions::registry::ExtensionValue;
+
+    assert_eq!(pair.as_rule(), Rule::literal);
+
+    // Store span before consuming the pair
+    let pair_span = pair.as_span();
+
+    // Get the inner pair (the actual literal type)
+    let inner_pair = pair.into_inner().next().ok_or_else(|| {
+        MessageParseError::invalid("literal", pair_span, "Empty literal".to_string())
+    })?;
+
+    match inner_pair.as_rule() {
+        Rule::string_literal => {
+            // Remove the surrounding quotes and handle escape sequences
+            let str_with_quotes = inner_pair.as_str();
+            if str_with_quotes.len() >= 2 {
+                let unquoted = &str_with_quotes[1..str_with_quotes.len() - 1]; // Remove quotes
+                Ok(ExtensionValue::String(unquoted.to_string()))
+            } else {
+                Err(MessageParseError::invalid(
+                    "string_literal",
+                    inner_pair.as_span(),
+                    "Invalid string literal".to_string(),
+                ))
+            }
+        }
+        Rule::integer => {
+            let int_str = inner_pair.as_str();
+            let value = int_str.parse::<i64>().map_err(|_| {
+                MessageParseError::invalid(
+                    "integer",
+                    inner_pair.as_span(),
+                    format!("Invalid integer: {int_str}"),
+                )
+            })?;
+            Ok(ExtensionValue::Integer(value))
+        }
+        Rule::float => {
+            let float_str = inner_pair.as_str();
+            let value = float_str.parse::<f64>().map_err(|_| {
+                MessageParseError::invalid(
+                    "float",
+                    inner_pair.as_span(),
+                    format!("Invalid float: {float_str}"),
+                )
+            })?;
+            Ok(ExtensionValue::Float(value))
+        }
+        Rule::boolean => {
+            let bool_str = inner_pair.as_str();
+            let value = bool_str.parse::<bool>().map_err(|_| {
+                MessageParseError::invalid(
+                    "boolean",
+                    inner_pair.as_span(),
+                    format!("Invalid boolean: {bool_str}"),
+                )
+            })?;
+            Ok(ExtensionValue::Boolean(value))
+        }
+        _ => Err(MessageParseError::invalid(
+            "literal",
+            inner_pair.as_span(),
+            format!("Unsupported literal type: {:?}", inner_pair.as_rule()),
+        )),
+    }
+}
+
+/// Parse a named argument (name=value pair) from a Pest pair
+fn parse_extension_named_arg_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(String, crate::extensions::registry::ExtensionValue), MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::extension_named_argument);
+
+    // Store span before consuming the pair
+    let pair_span = pair.as_span();
+    let mut iter = pair.into_inner();
+
+    // Get the name
+    let name_pair = iter.next().ok_or_else(|| {
+        MessageParseError::invalid(
+            "extension_named_argument",
+            pair_span,
+            "Missing argument name".to_string(),
+        )
+    })?;
+    let name = match name_pair.as_rule() {
+        Rule::name => name_pair.as_str().to_string(),
+        _ => {
+            return Err(MessageParseError::invalid(
+                "name",
+                name_pair.as_span(),
+                "Invalid argument name format".to_string(),
+            ));
+        }
+    };
+
+    // Get the value
+    let value_pair = iter.next().ok_or_else(|| {
+        MessageParseError::invalid(
+            "extension_named_argument",
+            pair_span,
+            "Missing argument value".to_string(),
+        )
+    })?;
+    let value = parse_extension_value_from_pair(value_pair)?;
+
+    Ok((name, value))
+}
+
+/// Parse an extension column from a Pest pair
+fn parse_extension_column_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<crate::extensions::registry::ExtensionColumn, MessageParseError> {
+    use crate::extensions::registry::ExtensionColumn;
+
+    assert_eq!(pair.as_rule(), Rule::extension_column);
+
+    // Store span before consuming the pair
+    let pair_span = pair.as_span();
+
+    // Get the inner pair (named_column, reference, or expression)
+    let inner_pair = pair.into_inner().next().ok_or_else(|| {
+        MessageParseError::invalid(
+            "extension_column",
+            pair_span,
+            "Empty extension column".to_string(),
+        )
+    })?;
+
+    match inner_pair.as_rule() {
+        Rule::named_column => {
+            // Parse "name:type" format
+            let inner_pair_span = inner_pair.as_span();
+            let mut iter = inner_pair.into_inner();
+            let name_pair = iter.next().ok_or_else(|| {
+                MessageParseError::invalid(
+                    "named_column",
+                    inner_pair_span,
+                    "Missing column name".to_string(),
+                )
+            })?;
+            let type_pair = iter.next().ok_or_else(|| {
+                MessageParseError::invalid(
+                    "named_column",
+                    inner_pair_span,
+                    "Missing column type".to_string(),
+                )
+            })?;
+
+            let name = name_pair.as_str().to_string();
+            let type_spec = type_pair.as_str().to_string();
+
+            Ok(ExtensionColumn::Named { name, type_spec })
+        }
+        Rule::reference => {
+            // Parse reference like $0, $1, etc.
+            let ref_str = inner_pair.as_str();
+            if let Some(index_str) = ref_str.strip_prefix('$') {
+                let index = index_str.parse::<i32>().map_err(|_| {
+                    MessageParseError::invalid(
+                        "reference",
+                        inner_pair.as_span(),
+                        format!("Invalid reference: {ref_str}"),
+                    )
+                })?;
+                Ok(ExtensionColumn::Reference(index))
+            } else {
+                Err(MessageParseError::invalid(
+                    "reference",
+                    inner_pair.as_span(),
+                    format!("Invalid reference format: {ref_str}"),
+                ))
+            }
+        }
+        Rule::expression => {
+            // For now, store expressions as strings
+            Ok(ExtensionColumn::Expression(inner_pair.as_str().to_string()))
+        }
+        _ => Err(MessageParseError::invalid(
+            "extension_column",
+            inner_pair.as_span(),
+            format!(
+                "Unsupported extension column type: {:?}",
+                inner_pair.as_rule()
+            ),
+        )),
+    }
+}
+
+/// Create a placeholder detail for unregistered extensions
+#[cfg(not(feature = "serde"))]
+fn create_placeholder_detail() -> Option<prost_types::Any> {
+    let empty_any = prost_types::Any {
+        type_url: "type.googleapis.com/google.protobuf.Empty".to_string(),
+        value: Default::default(),
+    };
+    Some(empty_any)
+}
+
+impl RelationParsePair for ExtensionLeafRel {
+    fn rule() -> Rule {
+        Rule::extension_relation
+    }
+
+    fn message() -> &'static str {
+        "ExtensionLeafRel"
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        // Use placeholder context for backward compatibility
+        let registry = ExtensionRegistry::new();
+        // Extract line number from the Pest pair's line_col information
+        let line_no = pair.line_col().0 as i64;
+        let mut context = RelationParsingContext {
+            extensions: _extensions,
+            registry: &registry,
+            config: None,
+            warnings: None,
+            line_no,
+        };
+        Self::parse_pair_with_extended_context(
+            &mut context,
+            pair,
+            input_children,
+            _input_field_count,
+        )
+    }
+
+    fn parse_pair_with_extended_context(
+        context: &mut RelationParsingContext,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        // ExtensionLeaf should have no input children
+        if !input_children.is_empty() {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "ExtensionLeafRel should have no input children, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        // No longer need to save the original pair since we're not double-parsing
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Parse extension name (ExtensionType:CustomName)
+        let extension_name_pair = iter.pop(Rule::extension_name);
+        let extension_name_str = extension_name_pair.as_str();
+
+        // Extract the custom extension name (after the colon)
+        let custom_extension_name = if let Some(colon_pos) = extension_name_str.find(':') {
+            &extension_name_str[colon_pos + 1..]
+        } else {
+            extension_name_str
+        };
+
+        // Parse and USE the extension arguments instead of throwing them away
+        let extension_arguments = iter.try_pop(Rule::extension_arguments);
+        let extension_named_arguments = iter.try_pop(Rule::extension_named_arguments);
+        let extension_columns = iter.try_pop(Rule::extension_columns);
+
+        // Convert the parsed Pest pairs to ExtensionArgs
+        let extension_args = build_extension_args_from_pairs(
+            extension_arguments,
+            extension_named_arguments,
+            extension_columns,
+        )?;
+
+        // Validate field references in extension arguments if warnings collection is enabled
+        if let Some(warnings) = &mut context.warnings {
+            crate::extensions::conversion::validate_extension_field_references(
+                &extension_args,
+                _input_field_count,
+                custom_extension_name,
+                context.line_no,
+                warnings,
+            );
+        }
+
+        // Handle unregistered extension based on configuration
+        let detail = if context.registry.has_extension(custom_extension_name) {
+            // Use the registry to convert parsed args to detail
+            match context
+                .registry
+                .parse_extension(custom_extension_name, extension_args)
+            {
+                Ok(extension_any) => {
+                    // Convert our Any to the feature-dependent Any type for the protobuf
+                    #[cfg(feature = "serde")]
+                    let protobuf_any: pbjson_types::Any = extension_any.into();
+                    #[cfg(not(feature = "serde"))]
+                    let protobuf_any: prost_types::Any = extension_any.into();
+                    Some(protobuf_any)
+                }
+                Err(_) => {
+                    // Fall back to placeholder if registry parsing fails
+                    create_placeholder_detail()
+                }
+            }
+        } else {
+            // Extension not registered - handle based on configuration
+            if let Some(config) = context.config {
+                use crate::parser::warnings::{
+                    ExtensionRelationType, ParseWarning, UnregisteredExtensionMode,
+                };
+
+                match config.unregistered_extension_mode {
+                    UnregisteredExtensionMode::Error => {
+                        return Err(MessageParseError::invalid(
+                            Self::message(),
+                            extension_name_pair.as_span(),
+                            format!("Unregistered extension: {custom_extension_name}"),
+                        ));
+                    }
+                    UnregisteredExtensionMode::Warn => {
+                        // Create a warning and continue with placeholder
+                        if let Some(ref mut warnings) = context.warnings {
+                            let warning = ParseWarning::unregistered_extension(
+                                custom_extension_name.to_string(),
+                                ExtensionRelationType::Leaf,
+                                context.line_no,
+                                "parsing ExtensionLeafRel".to_string(),
+                            );
+                            warnings.push(warning);
+                        }
+                        create_placeholder_detail()
+                    }
+                    UnregisteredExtensionMode::Ignore => {
+                        // Silently use placeholder
+                        create_placeholder_detail()
+                    }
+                }
+            } else {
+                // No config provided, use default behavior (placeholder)
+                create_placeholder_detail()
+            }
+        };
+
+        // Grammar elements have already been consumed above
+
+        iter.done();
+
+        Ok(ExtensionLeafRel {
+            common: None, // Would need to construct with proper emit mapping
+            detail,
+        })
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::ExtensionLeaf(self)),
+        }
+    }
+}
+
+impl RelationParsePair for ExtensionSingleRel {
+    fn rule() -> Rule {
+        Rule::extension_relation
+    }
+
+    fn message() -> &'static str {
+        "ExtensionSingleRel"
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        // ExtensionSingle should have exactly 1 input child
+        if input_children.len() != 1 {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "ExtensionSingleRel should have exactly 1 input child, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Parse extension name (ExtensionType:CustomName)
+        let extension_name_pair = iter.pop(Rule::extension_name);
+        let extension_name_str = extension_name_pair.as_str();
+
+        // Extract the custom extension name (after the colon)
+        let _custom_extension_name = if let Some(colon_pos) = extension_name_str.find(':') {
+            &extension_name_str[colon_pos + 1..]
+        } else {
+            extension_name_str
+        };
+
+        // For now, leave detail as None until we implement proper Any handling
+        let detail = None;
+
+        // Skip the remaining arguments for now
+        let _extension_arguments = iter.try_pop(Rule::extension_arguments);
+        let _extension_named_arguments = iter.try_pop(Rule::extension_named_arguments);
+        let _extension_columns = iter.try_pop(Rule::extension_columns);
+
+        iter.done();
+
+        let mut children_iter = input_children.into_iter();
+        let input = children_iter.next().unwrap();
+
+        Ok(ExtensionSingleRel {
+            common: None, // Would need to construct with proper emit mapping
+            input: Some(input),
+            detail,
+        })
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::ExtensionSingle(Box::new(self))),
+        }
+    }
+}
+
+impl RelationParsePair for ExtensionMultiRel {
+    fn rule() -> Rule {
+        Rule::extension_relation
+    }
+
+    fn message() -> &'static str {
+        "ExtensionMultiRel"
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        // ExtensionMulti should have 2 or more input children
+        if input_children.len() < 2 {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "ExtensionMultiRel should have 2 or more input children, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Parse extension name (ExtensionType:CustomName)
+        let extension_name_pair = iter.pop(Rule::extension_name);
+        let extension_name_str = extension_name_pair.as_str();
+
+        // Extract the custom extension name (after the colon)
+        let _custom_extension_name = if let Some(colon_pos) = extension_name_str.find(':') {
+            &extension_name_str[colon_pos + 1..]
+        } else {
+            extension_name_str
+        };
+
+        // For now, leave detail as None until we implement proper Any handling
+        let detail = None;
+
+        // Skip the remaining arguments for now
+        let _extension_arguments = iter.try_pop(Rule::extension_arguments);
+        let _extension_named_arguments = iter.try_pop(Rule::extension_named_arguments);
+        let _extension_columns = iter.try_pop(Rule::extension_columns);
+
+        iter.done();
+
+        let inputs: Vec<Rel> = input_children.into_iter().map(|boxed| *boxed).collect();
+
+        Ok(ExtensionMultiRel {
+            common: None, // Would need to construct with proper emit mapping
+            inputs,
+            detail,
+        })
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::ExtensionMulti(self)),
+        }
     }
 }
 

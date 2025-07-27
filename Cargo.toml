@@ -1,6 +1,6 @@
 [package]
 name = "substrait-explain"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2024"
 authors = [
     "Wendell Smith <wendell.smith@datadoghq.com>",
@@ -28,7 +28,7 @@ required-features = ["serde"]
 # Use a pre-built protoc binary instead of building from source. Useful for CI.
 protoc = ["substrait/protoc"]
 # Used in examples, otherwise not helpful
-serde = ["substrait/serde"]
+serde = ["substrait/serde", "dep:pbjson-types"]
 # CLI functionality with additional dependencies
 cli = ["dep:clap", "dep:serde_json", "dep:serde_yaml", "dep:anyhow", "serde"]
 
@@ -36,9 +36,11 @@ cli = ["dep:clap", "dep:serde_json", "dep:serde_yaml", "dep:anyhow", "serde"]
 anyhow = { version = "1.0", optional = true }
 chrono = "0.4.41"
 clap = { version = "4.5", features = ["derive"], optional = true }
+pbjson-types = { version = "0.8.0", optional = true }
 pest = "2.8.0"
 pest_derive = "2.8.0"
 prost = "0.14"
+prost-types = "0.14"
 serde_json = { version = "1.0", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 substrait = "0.62.2"

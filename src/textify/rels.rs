@@ -442,6 +442,9 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
             Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
             Some(RelType::Join(r)) => Relation::from(r.as_ref()),
+            Some(RelType::ExtensionLeaf(r)) => Relation::from(r),
+            Some(RelType::ExtensionSingle(r)) => Relation::from(r.as_ref()),
+            Some(RelType::ExtensionMulti(r)) => Relation::from(r),
             _ => todo!(),
         }
     }
@@ -855,6 +858,76 @@ impl<'a> Textify for NamedArg<'a> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         write!(w, "{}=", self.name)?;
         self.value.textify(ctx, w)
+    }
+}
+
+// Extension relation implementations - these are custom/user-defined relations
+use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+
+impl<'a> From<&'a ExtensionLeafRel> for Relation<'a> {
+    fn from(rel: &'a ExtensionLeafRel) -> Self {
+        // For extension relations, we create a simple placeholder representation
+        // The actual detail parsing would need to be implemented based on the
+        // specific extension format
+
+        // For now, use a static name - in full implementation this would be extracted from detail
+        let extension_name = "ExtensionLeaf:CustomExtension";
+
+        Relation {
+            name: extension_name,
+            arguments: Some(Arguments {
+                positional: vec![],
+                named: vec![],
+            }),
+            columns: vec![], // TODO: Parse from extension detail
+            emit: get_emit(rel.common.as_ref()),
+            children: vec![],
+        }
+    }
+}
+
+impl<'a> From<&'a ExtensionSingleRel> for Relation<'a> {
+    fn from(rel: &'a ExtensionSingleRel) -> Self {
+        // For now, use a static name - in full implementation this would be extracted from detail
+        let extension_name = "ExtensionSingle:CustomExtension";
+
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+
+        Relation {
+            name: extension_name,
+            arguments: Some(Arguments {
+                positional: vec![],
+                named: vec![],
+            }),
+            columns: (0..input_columns)
+                .map(|i| Value::Reference(i as i32))
+                .collect(),
+            emit: get_emit(rel.common.as_ref()),
+            children,
+        }
+    }
+}
+
+impl<'a> From<&'a ExtensionMultiRel> for Relation<'a> {
+    fn from(rel: &'a ExtensionMultiRel) -> Self {
+        // For now, use a static name - in full implementation this would be extracted from detail
+        let extension_name = "ExtensionMulti:CustomExtension";
+
+        let input_refs: Vec<Option<&Rel>> = rel.inputs.iter().map(Some).collect();
+        let (children, input_columns) = Relation::convert_children(input_refs);
+
+        Relation {
+            name: extension_name,
+            arguments: Some(Arguments {
+                positional: vec![],
+                named: vec![],
+            }),
+            columns: (0..input_columns)
+                .map(|i| Value::Reference(i as i32))
+                .collect(),
+            emit: get_emit(rel.common.as_ref()),
+            children,
+        }
     }
 }
 

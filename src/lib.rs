@@ -60,7 +60,7 @@ use textify::plan::PlanWriter;
 /// }
 /// ```
 pub fn parse(input: &str) -> Result<Plan, ParseError> {
-    parser::structural::Parser::parse(input)
+    parser::structural::Parser::parse(input).map(|result| result.plan)
 }
 
 /// Format a Substrait plan as human-readable text.
