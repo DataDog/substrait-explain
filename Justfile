@@ -1,6 +1,6 @@
 # Run clippy and fmt to check for linting errors and fix them.
 fix: fmt
-    cargo clippy --all-features --fix --allow-dirty --allow-staged
+    cargo clippy --examples --tests --all-features --fix --allow-dirty --allow-staged
 
 # Run rustfmt to format the code. We use the --config flag to get a couple
 # of extra features around imports handling. These features are unstable, so
@@ -19,7 +19,7 @@ test:
 
 # Run clippy to check for linting errors.
 check:
-    cargo clippy --all-features
+    cargo clippy --examples --tests --all-features
 
 # Generate the LICENSE-3rdparty.csv file from the Cargo.lock file, for tracking
 # licenses of third-parties.
