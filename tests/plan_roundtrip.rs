@@ -5,11 +5,9 @@
 //! rare, and more likely a reflection of the author's misunderstanding of the
 //! Substrait plan format.
 
-mod common;
-
-use common::{roundtrip_plan, roundtrip_plan_with_verbose};
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::rel::RelType;
+use substrait_explain::fixtures::{roundtrip_plan, roundtrip_plan_with_verbose};
 use substrait_explain::format;
 use substrait_explain::parser::Parser;
 
