@@ -14,12 +14,12 @@ use substrait_explain::parser::Parser;
 /// Assert that both canonical and equivalent plans parse and pretty-print to the canonical form.
 fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
     // Parse both
-    let plan1 = Parser::parse(canonical).expect("canonical parse failed");
-    let plan2 = Parser::parse(equivalent).expect("equivalent parse failed");
+    let (plan1, _warnings1) = Parser::parse(canonical).expect("canonical parse failed");
+    let (plan2, _warnings2) = Parser::parse(equivalent).expect("equivalent parse failed");
 
     // Format both
-    let (text1, errors1) = format(&plan1.plan);
-    let (text2, errors2) = format(&plan2.plan);
+    let (text1, errors1) = format(&plan1);
+    let (text2, errors2) = format(&plan2);
     assert!(
         errors1.is_empty(),
         "Formatting errors for canonical: {errors1:?}"
@@ -281,7 +281,7 @@ Root[d, mark]
 
 #[test]
 fn test_extension_leaf_relation_basic_parsing() {
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{ParserConfig, UnregisteredExtensionMode};
 
     // Test that extension relations can be parsed without errors
     // Full roundtrip isn't working yet due to placeholder implementations
@@ -294,13 +294,13 @@ Root[col1, col2]
         unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
     };
     let parser = Parser::with_config(config);
-    let plan = parser
+    let (plan, _warnings) = parser
         .parse_plan(plan_text)
         .expect("Extension relation should parse successfully");
-    assert_eq!(plan.plan.relations.len(), 1);
+    assert_eq!(plan.relations.len(), 1);
 
     // Verify the relation was parsed as an extension relation
-    if let Some(root_rel) = plan.plan.relations.first() {
+    if let Some(root_rel) = plan.relations.first() {
         if let Some(PlanRelType::Root(root)) = &root_rel.rel_type {
             if let Some(input) = &root.input {
                 if let Some(RelType::ExtensionLeaf(_)) = &input.rel_type {
@@ -315,7 +315,7 @@ Root[col1, col2]
 
 #[test]
 fn test_extension_single_relation_basic_parsing() {
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{ParserConfig, UnregisteredExtensionMode};
 
     let plan_text = r#"=== Plan
 Root[normalized_a, normalized_b]
@@ -327,15 +327,15 @@ Root[normalized_a, normalized_b]
         unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
     };
     let parser = Parser::with_config(config);
-    let plan = parser
+    let (plan, _warnings) = parser
         .parse_plan(plan_text)
         .expect("Extension single relation should parse successfully");
-    assert_eq!(plan.plan.relations.len(), 1);
+    assert_eq!(plan.relations.len(), 1);
 }
 
 #[test]
 fn test_extension_multi_relation_basic_parsing() {
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{ParserConfig, UnregisteredExtensionMode};
 
     let plan_text = r#"=== Plan
 Root[matched_left, matched_right, score]
@@ -348,16 +348,15 @@ Root[matched_left, matched_right, score]
         unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
     };
     let parser = Parser::with_config(config);
-    let plan = parser
+    let (plan, _warnings) = parser
         .parse_plan(plan_text)
         .expect("Extension multi relation should parse successfully");
-    assert_eq!(plan.plan.relations.len(), 1);
+    assert_eq!(plan.relations.len(), 1);
 }
 
 #[test]
 fn test_line_numbers_in_warnings() {
-    use substrait_explain::parser::Parser;
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{Parser, ParserConfig, UnregisteredExtensionMode};
 
     let plan_text = r#"=== Plan
 Root[result]
@@ -368,29 +367,33 @@ Root[result]
     };
 
     let parser = Parser::with_config(config);
-    let result = parser.parse_plan(plan_text).unwrap();
+    let (_plan, warnings) = parser.parse_plan(plan_text).unwrap();
 
     // Should have warnings about the unregistered extension
     assert!(
-        !result.warnings.is_empty(),
+        !warnings.is_empty(),
         "Expected warnings for unregistered extension"
     );
 
     // Verify that line numbers are preserved (should not be 0)
-    for warning in &result.warnings {
-        println!("Warning: {} at line {}", warning, warning.location.line);
-        assert_ne!(warning.location.line, 0, "Line number should not be 0");
-        assert_eq!(
-            warning.location.line, 3,
-            "Extension relation should be on line 3"
-        );
+    for warning in &warnings {
+        match warning {
+            substrait_explain::parser::ParseWarning::UnregisteredExtension {
+                context,
+                name,
+                kind,
+            } => {
+                println!("Warning: Unregistered {kind} extension '{name}' at {context}");
+                assert_ne!(context.line_no, 0, "Line number should not be 0");
+                assert_eq!(context.line_no, 3, "Extension relation should be on line 3");
+            }
+        }
     }
 }
 
 #[test]
 fn test_extension_modes_error_warn_ignore() {
-    use substrait_explain::parser::Parser;
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{Parser, ParserConfig, UnregisteredExtensionMode};
 
     let plan_text = r#"=== Plan
 Root[result]
@@ -412,13 +415,13 @@ Root[result]
         unregistered_extension_mode: UnregisteredExtensionMode::Warn,
     };
     let warn_parser = Parser::with_config(warn_config);
-    let warn_result = warn_parser.parse_plan(plan_text).unwrap();
+    let (warn_plan, warn_warnings) = warn_parser.parse_plan(plan_text).unwrap();
     assert!(
-        !warn_result.warnings.is_empty(),
+        !warn_warnings.is_empty(),
         "Warn mode should produce warnings"
     );
     assert_eq!(
-        warn_result.plan.relations.len(),
+        warn_plan.relations.len(),
         1,
         "Plan should still be parsed in warn mode"
     );
@@ -428,13 +431,13 @@ Root[result]
         unregistered_extension_mode: UnregisteredExtensionMode::Ignore,
     };
     let ignore_parser = Parser::with_config(ignore_config);
-    let ignore_result = ignore_parser.parse_plan(plan_text).unwrap();
+    let (ignore_plan, ignore_warnings) = ignore_parser.parse_plan(plan_text).unwrap();
     assert!(
-        ignore_result.warnings.is_empty(),
+        ignore_warnings.is_empty(),
         "Ignore mode should not produce warnings"
     );
     assert_eq!(
-        ignore_result.plan.relations.len(),
+        ignore_plan.relations.len(),
         1,
         "Plan should be parsed in ignore mode"
     );
@@ -444,8 +447,7 @@ Root[result]
 
 #[test]
 fn test_warning_edge_case_multiple_extensions() {
-    use substrait_explain::parser::Parser;
-    use substrait_explain::parser::warnings::{ParserConfig, UnregisteredExtensionMode};
+    use substrait_explain::parser::{Parser, ParserConfig, UnregisteredExtensionMode};
 
     let plan_text = r#"=== Plan
 Root[result1]
@@ -459,17 +461,24 @@ Root[result2]
     };
 
     let parser = Parser::with_config(config);
-    let result = parser.parse_plan(plan_text).unwrap();
+    let (_plan, warnings) = parser.parse_plan(plan_text).unwrap();
 
     // Should have multiple warnings, one for each unregistered extension
     assert_eq!(
-        result.warnings.len(),
+        warnings.len(),
         2,
         "Expected exactly 2 warnings for 2 unregistered extensions"
     );
 
     // Verify warnings have different line numbers
-    let line_numbers: Vec<i64> = result.warnings.iter().map(|w| w.location.line).collect();
+    let line_numbers: Vec<i64> = warnings
+        .iter()
+        .map(|w| match w {
+            substrait_explain::parser::ParseWarning::UnregisteredExtension { context, .. } => {
+                context.line_no
+            }
+        })
+        .collect();
     assert_eq!(
         line_numbers,
         vec![3, 6],
@@ -477,11 +486,7 @@ Root[result2]
     );
 
     // Verify both extension names are reported
-    let warnings_text = result
-        .warnings
-        .iter()
-        .map(|w| format!("{w}"))
-        .collect::<Vec<_>>();
+    let warnings_text = warnings.iter().map(|w| format!("{w}")).collect::<Vec<_>>();
     assert!(
         warnings_text.iter().any(|w| w.contains("UnknownA")),
         "Should warn about UnknownA extension"

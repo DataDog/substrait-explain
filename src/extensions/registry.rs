@@ -15,56 +15,81 @@
 //! # Architecture
 //!
 //! The system is built around several key traits:
-//! - `ExtensionHandler`: Core trait for handling extension parsing and textification
-//! - `ExtensionRegistry`: Registry for looking up extension handlers
-//! - `ExtensionDetail`: Representation of extension-specific data
+//! - `AnyConvertible`: For converting types to/from protobuf Any messages
+//! - `Explainable`: For converting types to/from ExtensionArgs
+//! - `ExtensionRegistry`: Registry for managing extension types
 //!
 //! # Example Usage
 //!
 //! ```rust
-//! use substrait_explain::extensions::registry::{ExtensionRegistry, ExtensionHandler};
-//! use substrait_explain::extensions::registry::{ExtensionArgs, ExtensionDetail};
+//! use substrait_explain::extensions::{ExtensionRegistry, AnyConvertible, Explainable};
+//! use substrait_explain::extensions::{ExtensionArgs, ExtensionError, ExtensionValue, Any};
 //!
-//! // Define a custom extension handler
-//! struct ParquetScanHandler;
+//! // Define a custom extension type
+//! struct ParquetScanConfig {
+//!     path: String,
+//! }
 //!
-//! impl ExtensionHandler for ParquetScanHandler {
-//!     fn extension_name(&self) -> &str {
-//!         "ParquetScan"
+//! // Implement AnyConvertible for protobuf serialization
+//! impl AnyConvertible for ParquetScanConfig {
+//!     fn to_any(&self) -> Result<Any, ExtensionError> {
+//!         // For this example, we'll create a simple Any with the path
+//!         Ok(Any::new(
+//!             Self::type_url(),
+//!             self.path.as_bytes().to_vec()
+//!         ))
 //!     }
 //!
-//!     fn parse_detail(&self, args: ExtensionArgs) -> Result<ExtensionDetail, ExtensionError> {
-//!         // Parse arguments into custom detail structure
-//!         let path = args.get_named_arg("path")?;
-//!         let schema = args.get_named_arg("schema")?;
-//!
-//!         // Create detail with custom protobuf message
-//!         ExtensionDetail::from_message("my.extension.ParquetScan", &custom_message)
+//!     fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+//!         // Deserialize from Any
+//!         let path = String::from_utf8(any.value.clone())
+//!             .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {}", e)))?;
+//!         Ok(ParquetScanConfig { path })
 //!     }
 //!
-//!     fn textify_detail(&self, detail: &ExtensionDetail) -> Result<ExtensionArgs, ExtensionError> {
-//!         // Convert detail back to arguments for text output
-//!         let custom_message: CustomMessage = detail.as_message()?;
-//!
-//!         ExtensionArgs::builder()
-//!             .named_arg("path", custom_message.path)
-//!             .named_arg("schema", custom_message.schema)
-//!             .build()
+//!     fn type_url() -> String {
+//!         "type.googleapis.com/example.ParquetScanConfig".to_string()
 //!     }
 //! }
 //!
-//! // Register the handler
+//! // Implement Explainable for text format conversion
+//! impl Explainable for ParquetScanConfig {
+//!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+//!         let path = match args.get_named_arg("path") {
+//!             Some(ExtensionValue::String(s)) => s.clone(),
+//!             Some(_) => return Err(ExtensionError::InvalidArgument("path must be a string".to_string())),
+//!             None => return Err(ExtensionError::MissingArgument("path".to_string())),
+//!         };
+//!         Ok(ParquetScanConfig { path })
+//!     }
+//!
+//!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+//!         use substrait_explain::extensions::ExtensionRelationType;
+//!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
+//!         args.add_named_arg(
+//!             "path".to_string(),
+//!             substrait_explain::extensions::ExtensionValue::String(self.path.clone())
+//!         );
+//!         Ok(args)
+//!     }
+//! }
+//!
+//! // Register the extension type
 //! let mut registry = ExtensionRegistry::new();
-//! registry.register("ParquetScan", Box::new(ParquetScanHandler));
+//! registry.register::<ParquetScanConfig>("ParquetScan");
 //! ```
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use thiserror::Error;
 
+use crate::extensions::any::{Any, AnyRef};
+use crate::extensions::args::ExtensionArgs;
+
 /// Error types for extension registry operations
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ExtensionError {
     #[error("Extension '{0}' not found in registry")]
     ExtensionNotFound(String),
@@ -88,171 +113,123 @@ pub enum ExtensionError {
     TypeMismatch { expected: String, actual: String },
 }
 
-/// Represents the arguments and output columns for an extension relation
-#[derive(Debug, Clone)]
-pub struct ExtensionArgs {
-    /// Positional arguments (expressions, literals, references)
-    pub positional: Vec<ExtensionValue>,
-    /// Named arguments (key=value pairs)
-    pub named: HashMap<String, ExtensionValue>,
-    /// Output columns (can be named columns, references, or expressions)
-    pub output_columns: Vec<ExtensionColumn>,
-}
+// All extension data structures have been moved to extensions/args.rs
+// Parsing implementations have been moved to parser/extensions.rs
 
-/// Represents a value in extension arguments
-#[derive(Debug, Clone)]
-pub enum ExtensionValue {
-    /// String literal value
-    String(String),
-    /// Integer literal value
-    Integer(i64),
-    /// Float literal value
-    Float(f64),
-    /// Boolean literal value
-    Boolean(bool),
-    /// Field reference ($0, $1, etc.)
-    Reference(i32),
-    /// Function call expression
-    Expression(String), // For now, store as string - could be more structured later
-}
+/// Trait for types that can be converted to/from protobuf Any messages
+pub trait AnyConvertible: Sized {
+    /// Convert this type to a protobuf Any message
+    fn to_any(&self) -> Result<Any, ExtensionError>;
 
-/// Represents an output column specification
-#[derive(Debug, Clone)]
-pub enum ExtensionColumn {
-    /// Named column with type (name:type)
-    Named { name: String, type_spec: String },
-    /// Field reference ($0, $1, etc.)
-    Reference(i32),
-    /// Expression (function call, literal, etc.)
-    Expression(String),
-}
+    /// Convert from a protobuf Any message to this type
+    fn from_any(any: &Any) -> Result<Self, ExtensionError>;
 
-impl ExtensionArgs {
-    /// Create a new empty ExtensionArgs
-    pub fn new() -> Self {
-        Self {
-            positional: Vec::new(),
-            named: HashMap::new(),
-            output_columns: Vec::new(),
-        }
-    }
-
-    /// Get a named argument value
-    pub fn get_named_arg(&self, name: &str) -> Result<&ExtensionValue, ExtensionError> {
-        self.named
-            .get(name)
-            .ok_or_else(|| ExtensionError::MissingArgument(name.to_string()))
-    }
-
-    /// Get a named argument as a string
-    pub fn get_string_arg(&self, name: &str) -> Result<&str, ExtensionError> {
-        match self.get_named_arg(name)? {
-            ExtensionValue::String(s) => Ok(s),
-            other => Err(ExtensionError::TypeMismatch {
-                expected: "string".to_string(),
-                actual: format!("{other:?}"),
-            }),
-        }
-    }
-
-    /// Get a named argument as an integer
-    pub fn get_integer_arg(&self, name: &str) -> Result<i64, ExtensionError> {
-        match self.get_named_arg(name)? {
-            ExtensionValue::Integer(i) => Ok(*i),
-            other => Err(ExtensionError::TypeMismatch {
-                expected: "integer".to_string(),
-                actual: format!("{other:?}"),
-            }),
-        }
-    }
-
-    /// Add a named argument
-    pub fn add_named_arg(&mut self, name: String, value: ExtensionValue) {
-        self.named.insert(name, value);
-    }
-
-    /// Add a positional argument
-    pub fn add_positional_arg(&mut self, value: ExtensionValue) {
-        self.positional.push(value);
-    }
-
-    /// Add an output column
-    pub fn add_output_column(&mut self, column: ExtensionColumn) {
-        self.output_columns.push(column);
+    /// Get the protobuf type URL for this type.
+    /// For prost::Message types, this is provided automatically.
+    /// For custom types, override this method.
+    fn type_url() -> String {
+        panic!("type_url() must be implemented for non-prost types")
     }
 }
 
-impl Default for ExtensionArgs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Core trait for handling extension parsing and textification
-pub trait ExtensionHandler: Send + Sync {
-    /// The name of the extension (e.g., "ParquetScan", "VectorNormalize")
-    fn extension_name(&self) -> &str;
-
-    /// Parse extension arguments into a protobuf Any message
-    ///
-    /// This method converts the parsed arguments, named arguments, and output columns
-    /// from the text format into a protobuf `Any` message for the detail field.
-    fn parse_detail(
-        &self,
-        args: ExtensionArgs,
-    ) -> Result<crate::extensions::any::Any, ExtensionError>;
-
-    /// Convert protobuf Any message back to arguments for textification
-    ///
-    /// This method converts the protobuf detail field back into arguments that can
-    /// be formatted as text output.
-    fn textify_detail(
-        &self,
-        detail: &crate::extensions::any::Any,
-    ) -> Result<ExtensionArgs, ExtensionError>;
-}
-
-/// Enhanced extension handler trait for working with typed protobuf messages
-pub trait TypedExtensionHandler<T>: ExtensionHandler
+// Blanket implementation for all prost::Message types
+impl<T> AnyConvertible for T
 where
     T: prost::Message + prost::Name + Default,
 {
-    /// Parse extension arguments into a typed protobuf message
-    fn parse_typed_message(&self, args: ExtensionArgs) -> Result<T, ExtensionError>;
-
-    /// Convert a typed protobuf message back to arguments for textification
-    fn textify_typed_message(&self, message: &T) -> Result<ExtensionArgs, ExtensionError>;
-
-    /// Default implementation of parse_detail using typed message parsing
-    fn parse_detail_typed(
-        &self,
-        args: ExtensionArgs,
-    ) -> Result<crate::extensions::any::Any, ExtensionError> {
-        let message = self.parse_typed_message(args)?;
-        crate::extensions::any::Any::encode(&message)
+    fn to_any(&self) -> Result<Any, ExtensionError> {
+        Any::encode(self)
     }
 
-    /// Default implementation of textify_detail using typed message parsing
-    fn textify_detail_typed(
-        &self,
-        detail: &crate::extensions::any::Any,
-    ) -> Result<ExtensionArgs, ExtensionError> {
-        let message: T = detail.decode()?;
-        self.textify_typed_message(&message)
+    fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+        any.decode()
+    }
+
+    fn type_url() -> String {
+        T::type_url()
+    }
+}
+
+/// Trait for types that can be converted to/from ExtensionArgs
+pub trait Explainable: Sized {
+    /// Parse extension arguments into this type
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
+
+    /// Convert this type to extension arguments
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
+
+    /// Optionally specify the preferred order for named arguments in textification.
+    ///Arguments not in the list appear last, alphabetically.
+    /// Arguments that exist in the list but are not present in the args
+    /// will not be included in the textified output. Return an empty list to always output alphabetically.
+    fn argument_order() -> Vec<String> {
+        Vec::new() // Default: alphabetical order
+    }
+}
+
+/// Internal trait that converts between ExtensionArgs and protobuf Any messages.
+///
+/// This trait exists because we need to store handlers for different extension types
+/// in a single HashMap. Since Rust doesn't allow trait objects with multiple traits
+/// (like `Box<dyn AnyConvertible + Explainable>`), we need a single trait that
+/// combines both operations.
+///
+/// The ExtensionConverter acts as a bridge between:
+/// - The text format representation (ExtensionArgs) used by the parser/formatter
+/// - The protobuf Any messages stored in Substrait extension relations
+///
+/// This design allows the registry to work with any type while maintaining type safety
+/// through the AnyConvertible and Explainable traits that users implement.
+trait ExtensionConverter: Send + Sync {
+    fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError>;
+
+    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError>;
+
+    /// Get the preferred argument order for this extension type
+    fn argument_order(&self) -> Vec<String>;
+}
+
+/// Type adapter that implements ExtensionConverter for any type T that implements
+/// both AnyConvertible and Explainable.
+///
+/// This struct exists to solve Rust's "trait object problem": we can't store
+/// `Box<dyn AnyConvertible + Explainable>` because that's two traits, not one.
+/// Instead, we store `Box<dyn ExtensionConverter>` and use this adapter to bridge
+/// from the two user-facing traits to our single internal trait.
+///
+/// The adapter pattern allows us to:
+/// 1. Keep a clean API where users only implement AnyConvertible and Explainable
+/// 2. Store different types in the same HashMap through type erasure
+/// 3. Maintain type safety - the concrete type T is known at registration time
+/// 4. Avoid any runtime type checking or unsafe code
+///
+/// The PhantomData is necessary because we don't actually store a T, but we need
+/// the type information to call T's static methods (from_args, from_any).
+struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
+
+impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
+    fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
+        // Convert: ExtensionArgs -> T -> Any
+        T::from_args(args)?.to_any()
+    }
+
+    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
+        // Convert: AnyRef -> Any -> T -> ExtensionArgs
+        // Create an owned Any from the AnyRef to work with existing T::from_any
+        let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
+        T::from_any(&owned_any)?.to_args()
+    }
+
+    fn argument_order(&self) -> Vec<String> {
+        T::argument_order()
     }
 }
 
 /// Registry for extension handlers
+#[derive(Default, Clone)]
 pub struct ExtensionRegistry {
-    handlers: HashMap<String, Box<dyn ExtensionHandler>>,
-}
-
-impl Clone for ExtensionRegistry {
-    fn clone(&self) -> Self {
-        // For now, create a new empty registry when cloning
-        // In the future, we may want to implement proper cloning of handlers
-        Self::new()
-    }
+    handlers: HashMap<String, Arc<dyn ExtensionConverter>>,
+    type_urls: HashMap<String, String>, // type_url -> extension_name
 }
 
 impl ExtensionRegistry {
@@ -260,41 +237,60 @@ impl ExtensionRegistry {
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
+            type_urls: HashMap::new(),
         }
     }
 
-    /// Register an extension handler
-    pub fn register(&mut self, name: impl Into<String>, handler: Box<dyn ExtensionHandler>) {
+    /// Register an extension type that implements both AnyConvertible and Explainable
+    pub fn register<T>(&mut self, name: impl Into<String>)
+    where
+        T: AnyConvertible + Explainable + Send + Sync + 'static,
+    {
         let name = name.into();
-        self.handlers.insert(name, handler);
-    }
+        let type_url = T::type_url();
 
-    /// Get an extension handler by name
-    pub fn get_handler(&self, name: &str) -> Result<&dyn ExtensionHandler, ExtensionError> {
-        self.handlers
-            .get(name)
-            .map(|h| h.as_ref())
-            .ok_or_else(|| ExtensionError::ExtensionNotFound(name.to_string()))
+        self.handlers.insert(
+            name.clone(),
+            Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData)),
+        );
+        self.type_urls.insert(type_url, name);
     }
 
     /// Parse extension arguments into a protobuf Any message
     pub fn parse_extension(
         &self,
         extension_name: &str,
-        args: ExtensionArgs,
-    ) -> Result<crate::extensions::any::Any, ExtensionError> {
-        let handler = self.get_handler(extension_name)?;
+        args: &ExtensionArgs,
+    ) -> Result<Any, ExtensionError> {
+        let handler = self
+            .handlers
+            .get(extension_name)
+            .ok_or_else(|| ExtensionError::ExtensionNotFound(extension_name.to_string()))?;
         handler.parse_detail(args)
     }
 
-    /// Convert protobuf Any message back to arguments for textification
-    pub fn textify_extension(
-        &self,
-        extension_name: &str,
-        detail: &crate::extensions::any::Any,
-    ) -> Result<ExtensionArgs, ExtensionError> {
-        let handler = self.get_handler(extension_name)?;
-        handler.textify_detail(detail)
+    /// Decode extension detail to extension name and ExtensionArgs
+    /// This is the primary method for textification - given an AnyRef with extension detail,
+    /// decode it to the extension name and appropriate ExtensionArgs for display
+    pub fn decode(&self, detail: AnyRef<'_>) -> Result<(String, ExtensionArgs), ExtensionError> {
+        // Find extension name by type URL
+        let extension_name = self
+            .type_urls
+            .get(detail.type_url)
+            .ok_or_else(|| ExtensionError::ExtensionNotFound(detail.type_url.to_string()))?;
+
+        // Get handler and textify the detail
+        let handler = self
+            .handlers
+            .get(extension_name)
+            .ok_or_else(|| ExtensionError::ExtensionNotFound(extension_name.clone()))?;
+
+        let mut args = handler.textify_detail(detail)?;
+
+        // Populate argument order from the extension handler
+        args.argument_order = handler.argument_order();
+
+        Ok((extension_name.clone(), args))
     }
 
     /// Get all registered extension names
@@ -305,12 +301,6 @@ impl ExtensionRegistry {
     /// Check if an extension is registered
     pub fn has_extension(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
-    }
-}
-
-impl Default for ExtensionRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -325,33 +315,83 @@ impl fmt::Debug for ExtensionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::{ExtensionColumn, ExtensionRelationType, ExtensionValue};
 
-    // Mock extension handler for testing
-    struct TestExtensionHandler;
+    // Mock type for testing
+    struct TestExtension {
+        path: String,
+        batch_size: i64,
+    }
 
-    impl ExtensionHandler for TestExtensionHandler {
-        fn extension_name(&self) -> &str {
-            "TestExtension"
+    // Manual implementation of AnyConvertible for testing (without prost)
+    impl AnyConvertible for TestExtension {
+        fn to_any(&self) -> Result<Any, ExtensionError> {
+            // Simple test implementation - create Any with JSON-like bytes
+            let json_str = format!(
+                r#"{{"path":"{}","batch_size":{}}}"#,
+                self.path, self.batch_size
+            );
+            Ok(Any::new(Self::type_url(), json_str.into_bytes()))
         }
 
-        fn parse_detail(
-            &self,
-            args: ExtensionArgs,
-        ) -> Result<crate::extensions::any::Any, ExtensionError> {
-            // Simple test implementation - create Any with raw bytes
-            let json_str = format!("{args:?}");
-            Ok(crate::extensions::any::Any::new(
-                "test.TestExtension".to_string(),
-                json_str.into_bytes(),
-            ))
+        fn type_url() -> String {
+            "test.TestExtension".to_string()
         }
 
-        fn textify_detail(
-            &self,
-            _detail: &crate::extensions::any::Any,
-        ) -> Result<ExtensionArgs, ExtensionError> {
-            // Simple test implementation - return empty args
-            Ok(ExtensionArgs::new())
+        fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+            // Simple test implementation - parse from JSON-like bytes
+            let json_str = String::from_utf8(any.value.clone())
+                .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {e}")))?;
+
+            // Simple manual parsing for test
+            if json_str.contains("path") && json_str.contains("batch_size") {
+                Ok(TestExtension {
+                    path: "test.parquet".to_string(),
+                    batch_size: 1024,
+                })
+            } else {
+                Err(ExtensionError::ParseError("Missing fields".to_string()))
+            }
+        }
+    }
+
+    impl Explainable for TestExtension {
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let path = match args.get_named_arg("path") {
+                Some(ExtensionValue::String(s)) => s.clone(),
+                Some(_) => {
+                    return Err(ExtensionError::InvalidArgument(
+                        "path must be a string".to_string(),
+                    ));
+                }
+                None => return Err(ExtensionError::MissingArgument("path".to_string())),
+            };
+
+            let batch_size = match args.get_named_arg("batch_size") {
+                Some(ExtensionValue::Integer(i)) => *i,
+                Some(_) => {
+                    return Err(ExtensionError::InvalidArgument(
+                        "batch_size must be an integer".to_string(),
+                    ));
+                }
+                None => return Err(ExtensionError::MissingArgument("batch_size".to_string())),
+            };
+
+            Ok(TestExtension { path, batch_size })
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args =
+                ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+            args.add_named_arg(
+                "path".to_string(),
+                ExtensionValue::String(self.path.clone()),
+            );
+            args.add_named_arg(
+                "batch_size".to_string(),
+                ExtensionValue::Integer(self.batch_size),
+            );
+            Ok(args)
         }
     }
 
@@ -363,21 +403,36 @@ mod tests {
         assert_eq!(registry.extension_names().len(), 0);
         assert!(!registry.has_extension("TestExtension"));
 
-        // Register handler
-        registry.register("TestExtension", Box::new(TestExtensionHandler));
+        // Register extension type
+        registry.register::<TestExtension>("TestExtension");
 
         // Now has extension
         assert_eq!(registry.extension_names().len(), 1);
         assert!(registry.has_extension("TestExtension"));
 
-        // Can get handler
-        let handler = registry.get_handler("TestExtension").unwrap();
-        assert_eq!(handler.extension_name(), "TestExtension");
+        // Test parse and textify
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+        args.add_named_arg(
+            "path".to_string(),
+            ExtensionValue::String("data.parquet".to_string()),
+        );
+        args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(2048));
+
+        let any = registry.parse_extension("TestExtension", &args).unwrap();
+        assert_eq!(any.type_url, "test.TestExtension");
+
+        let any_ref = any.as_ref();
+        let result = registry.decode(any_ref).unwrap();
+        assert_eq!(result.0, "TestExtension");
+        match result.1.get_named_arg("path") {
+            Some(ExtensionValue::String(s)) => assert_eq!(s, "test.parquet"), // Due to our simple test impl
+            _ => panic!("Expected String for path"),
+        }
     }
 
     #[test]
     fn test_extension_args() {
-        let mut args = ExtensionArgs::new();
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
 
         // Add named args
         args.add_named_arg(
@@ -396,8 +451,15 @@ mod tests {
         });
 
         // Test retrieval
-        assert_eq!(args.get_string_arg("path").unwrap(), "data/*.parquet");
-        assert_eq!(args.get_integer_arg("batch_size").unwrap(), 1024);
+        match args.get_named_arg("path") {
+            Some(ExtensionValue::String(s)) => assert_eq!(s, "data/*.parquet"),
+            _ => panic!("Expected String for path"),
+        }
+
+        match args.get_named_arg("batch_size") {
+            Some(ExtensionValue::Integer(i)) => assert_eq!(*i, 1024),
+            _ => panic!("Expected Integer for batch_size"),
+        }
         assert_eq!(args.positional.len(), 1);
         assert_eq!(args.output_columns.len(), 1);
     }
@@ -407,18 +469,22 @@ mod tests {
         let registry = ExtensionRegistry::new();
 
         // Extension not found
-        let result = registry.get_handler("NonExistent");
+        let args = ExtensionArgs::new(ExtensionRelationType::Leaf, "NonExistent".to_string());
+        let result = registry.parse_extension("NonExistent", &args);
         assert!(matches!(result, Err(ExtensionError::ExtensionNotFound(_))));
 
         // Missing argument
-        let args = ExtensionArgs::new();
+        let args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
         let result = args.get_named_arg("missing");
-        assert!(matches!(result, Err(ExtensionError::MissingArgument(_))));
+        assert!(result.is_none());
 
-        // Type mismatch
-        let mut args = ExtensionArgs::new();
+        // Type check example
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
         args.add_named_arg("test".to_string(), ExtensionValue::Integer(42));
-        let result = args.get_string_arg("test");
-        assert!(matches!(result, Err(ExtensionError::TypeMismatch { .. })));
+        let result = args.get_named_arg("test");
+        match result {
+            Some(ExtensionValue::Integer(42)) => {} // Expected
+            _ => panic!("Expected Integer(42), got {result:?}"),
+        }
     }
 }

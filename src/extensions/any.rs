@@ -2,20 +2,29 @@ use prost::{Message, Name};
 
 use crate::extensions::registry::ExtensionError;
 
-/// Our own Any type that abstracts over feature-dependent implementations
+/// A wrapper around the protobuf Any type. Converts to or from
+/// `prost_types::Any` or `pbjson_types::Any`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Any {
     pub type_url: String,
     pub value: Vec<u8>,
 }
 
-impl Any {
-    /// Create a new Any with the given type URL and value bytes
-    pub fn new(type_url: String, value: Vec<u8>) -> Self {
+/// A reference to an Any type. Can be created from references to
+/// `prost_types::Any`, `pbjson_types::Any`, or our own `Any` type.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct AnyRef<'a> {
+    pub type_url: &'a str,
+    pub value: &'a [u8],
+}
+
+impl<'a> AnyRef<'a> {
+    /// Create a new AnyRef with the given type URL and value bytes
+    pub fn new(type_url: &'a str, value: &'a [u8]) -> Self {
         Self { type_url, value }
     }
 
-    /// Decode this Any as a specific protobuf message type
+    /// Decode this AnyRef as a specific protobuf message type
     pub fn decode<M>(&self) -> Result<M, ExtensionError>
     where
         M: prost::Message + Name + Default,
@@ -28,10 +37,58 @@ impl Any {
             )));
         }
 
-        let message = M::decode(&self.value[..])
+        let message = M::decode(self.value)
             .map_err(|e| ExtensionError::ParseError(format!("Failed to decode message: {e}")))?;
 
         Ok(message)
+    }
+}
+
+impl<'a> From<&'a Any> for AnyRef<'a> {
+    fn from(any: &'a Any) -> Self {
+        Self {
+            type_url: &any.type_url,
+            value: &any.value,
+        }
+    }
+}
+
+impl<'a> From<&'a prost_types::Any> for AnyRef<'a> {
+    fn from(any: &'a prost_types::Any) -> Self {
+        Self {
+            type_url: &any.type_url,
+            value: &any.value,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'a> From<&'a pbjson_types::Any> for AnyRef<'a> {
+    fn from(any: &'a pbjson_types::Any) -> Self {
+        Self {
+            type_url: &any.type_url,
+            value: &any.value,
+        }
+    }
+}
+
+impl Any {
+    /// Create a new Any with the given type URL and value bytes
+    pub fn new(type_url: String, value: Vec<u8>) -> Self {
+        Self { type_url, value }
+    }
+
+    pub fn as_ref(&self) -> AnyRef<'_> {
+        AnyRef::from(self)
+    }
+
+    /// Decode this Any as a specific protobuf message type
+    /// This is a convenience method that delegates to AnyRef::decode
+    pub fn decode<M>(&self) -> Result<M, ExtensionError>
+    where
+        M: prost::Message + Name + Default,
+    {
+        self.as_ref().decode()
     }
 
     /// Encode a protobuf message into an Any

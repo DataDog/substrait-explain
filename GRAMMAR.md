@@ -80,10 +80,7 @@ Root[result]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -145,10 +142,7 @@ Root[result]                   // Level 0 (no indentation)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -265,10 +259,7 @@ Root[result]
     Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -290,7 +281,7 @@ Root[result]
     Read[data => list_field:list<i64>, map_field:map<string, i64>, struct_field:struct<i64, string?>]
 "#;
 
-let plan = Parser::parse(plan_text).unwrap();
+let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -330,7 +321,7 @@ Root[result]
     Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -502,7 +493,7 @@ Root[c, d]           // root with output columns c and d
     Read[data => a:i64, b:string]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -532,7 +523,7 @@ Root[result2]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
 ```
 
@@ -566,7 +557,7 @@ Root[result]
       Read[data => a:i64, b:string, c:i32]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -592,7 +583,7 @@ Root[result]
     Read[data => a:i64, b:string]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -627,7 +618,7 @@ Root[result]
     Read[orders => category:string, amount:i64]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -659,12 +650,13 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 **Components**:
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
-- `expression` - Join condition (boolean expression relating left and right inputs)  
+- `expression` - Join condition (boolean expression relating left and right inputs)
 - `reference_list` - Comma-separated list of field references for output columns
 
 **Field Reference Mapping**:
 
 For joins, field references map to the combined schema of left and right inputs:
+
 - `$0`, `$1`, ... refer to left input fields
 - `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
 
@@ -687,7 +679,7 @@ Root[user_orders]
     Read[orders => user_id:i64, amount:i32]   // Fields $2, $3
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -720,6 +712,6 @@ Root[customer_revenue]
           Read[orders => user_id:i64, quantity:i32, price:i64]
 # "#;
 #
-# let plan = Parser::parse(plan_text).unwrap();
+# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```

@@ -24,18 +24,18 @@ Root[revenue]
 "#;
 
     match Parser::parse(plan_text) {
-        Ok(result) => {
+        Ok((plan, warnings)) => {
             // Show parse warnings if any
-            if !result.warnings.is_empty() {
+            if !warnings.is_empty() {
                 println!("Parse warnings:");
-                for warning in &result.warnings {
+                for warning in &warnings {
                     println!("  - {warning}");
                 }
                 println!();
             }
 
             // Output with standard options
-            let (text, errors) = format(&result.plan);
+            let (text, errors) = format(&plan);
             println!("== Standard output ==");
             println!("{text}");
 
@@ -48,7 +48,7 @@ Root[revenue]
 
             // Output with verbose options
             let (verbose_text, verbose_errors) =
-                format_with_options(&result.plan, &OutputOptions::verbose());
+                format_with_options(&plan, &OutputOptions::verbose());
             println!("\n== Verbose output ==");
             println!("{verbose_text}");
 

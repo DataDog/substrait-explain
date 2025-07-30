@@ -60,7 +60,14 @@ use textify::plan::PlanWriter;
 /// }
 /// ```
 pub fn parse(input: &str) -> Result<Plan, ParseError> {
-    parser::structural::Parser::parse(input).map(|result| result.plan)
+    match parser::Parser::parse(input) {
+        Ok(parse_result) => {
+            // Extract the plan from the tuple result, ignoring warnings
+            let (plan, _warnings) = parse_result;
+            Ok(plan)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Format a Substrait plan as human-readable text.
@@ -137,7 +144,31 @@ pub fn format(plan: &Plan) -> (String, Vec<FormatError>) {
 ///
 /// See [`OutputOptions`] for all available configuration options.
 pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec<FormatError>) {
-    let (writer, error_queue) = PlanWriter::<ErrorQueue>::new(options, plan);
+    let default_registry = extensions::ExtensionRegistry::default();
+    format_with_registry(plan, options, &default_registry)
+}
+
+/// Format a Substrait plan with custom options and an extension registry.
+///
+/// This function allows you to provide a custom extension registry for handling
+/// ExtensionLeaf, ExtensionSingle, and ExtensionMulti relations.
+///
+/// # Example
+/// ```rust,ignore
+/// use substrait_explain::{parse, format_with_registry, OutputOptions, ExtensionRegistry};
+///
+/// let mut registry = ExtensionRegistry::new();
+/// // Register custom extensions...
+///
+/// let plan = parse("...").unwrap();
+/// let (text, errors) = format_with_registry(&plan, &OutputOptions::default(), Some(&registry));
+/// ```
+pub fn format_with_registry(
+    plan: &Plan,
+    options: &OutputOptions,
+    registry: &extensions::ExtensionRegistry,
+) -> (String, Vec<FormatError>) {
+    let (writer, error_queue) = PlanWriter::<ErrorQueue>::new(options, plan, registry);
     let output = format!("{writer}");
     let errors = error_queue.into_iter().collect();
     (output, errors)

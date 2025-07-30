@@ -53,6 +53,26 @@ impl NamedRelation for Rel {
     }
 }
 
+impl Textify for Rel {
+    fn name() -> &'static str {
+        "Rel"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // Handle extension relations directly to use registry-aware implementations
+        match &self.rel_type {
+            Some(substrait::proto::rel::RelType::ExtensionLeaf(ext)) => ext.textify(ctx, w),
+            Some(substrait::proto::rel::RelType::ExtensionSingle(ext)) => ext.textify(ctx, w),
+            Some(substrait::proto::rel::RelType::ExtensionMulti(ext)) => ext.textify(ctx, w),
+            _ => {
+                // For non-extension relations, use the old Relation conversion
+                let relation = Relation::from(self);
+                relation.textify(ctx, w)
+            }
+        }
+    }
+}
+
 /// Trait for enums that can be converted to a string representation for
 /// textification.
 ///
@@ -289,6 +309,82 @@ impl<'a> Relation<'a> {
     }
 }
 
+#[cfg(test)]
+mod registry_tests {
+    use prost::{Message, Name};
+
+    use crate::extensions::{
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        ExtensionValue,
+    };
+
+    /// Test extension type for registry integration tests
+    #[derive(Clone, PartialEq, Message)]
+    struct TestConfig {
+        #[prost(string, tag = "1")]
+        path: String,
+        #[prost(int64, tag = "2")]
+        batch_size: i64,
+    }
+
+    impl Name for TestConfig {
+        const NAME: &'static str = "TestConfig";
+        const PACKAGE: &'static str = "test";
+
+        fn full_name() -> String {
+            "test.TestConfig".to_string()
+        }
+
+        fn type_url() -> String {
+            "type.googleapis.com/test.TestConfig".to_string()
+        }
+    }
+
+    impl Explainable for TestConfig {
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let path = match args.get_named_arg("path") {
+                Some(ExtensionValue::String(s)) => s.clone(),
+                Some(_) => {
+                    return Err(ExtensionError::InvalidArgument(
+                        "path must be a string".to_string(),
+                    ));
+                }
+                None => return Err(ExtensionError::MissingArgument("path".to_string())),
+            };
+
+            let batch_size = match args.get_named_arg("batch_size") {
+                Some(ExtensionValue::Integer(i)) => *i,
+                Some(_) => {
+                    return Err(ExtensionError::InvalidArgument(
+                        "batch_size must be an integer".to_string(),
+                    ));
+                }
+                None => 1024, // Default value
+            };
+
+            Ok(TestConfig { path, batch_size })
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args =
+                ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
+            args.add_named_arg(
+                "path".to_string(),
+                ExtensionValue::String(self.path.clone()),
+            );
+            args.add_named_arg(
+                "batch_size".to_string(),
+                ExtensionValue::Integer(self.batch_size),
+            );
+            args.add_output_column(ExtensionColumn::Named {
+                name: "data".to_string(),
+                type_spec: "string".to_string(),
+            });
+            Ok(args)
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct TableName<'a>(&'a [String]);
 
@@ -442,9 +538,15 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
             Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
             Some(RelType::Join(r)) => Relation::from(r.as_ref()),
-            Some(RelType::ExtensionLeaf(r)) => Relation::from(r),
-            Some(RelType::ExtensionSingle(r)) => Relation::from(r.as_ref()),
-            Some(RelType::ExtensionMulti(r)) => Relation::from(r),
+            Some(RelType::ExtensionLeaf(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
+            Some(RelType::ExtensionSingle(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
+            Some(RelType::ExtensionMulti(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
             _ => todo!(),
         }
     }
@@ -518,7 +620,6 @@ impl Textify for RelRoot {
         )?;
         let child_scope = ctx.push_indent();
         for child in self.input.iter() {
-            let child = Relation::from(child);
             writeln!(w)?;
             child.textify(&child_scope, w)?;
         }
@@ -534,7 +635,7 @@ impl Textify for PlanRelType {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            PlanRelType::Rel(rel) => Relation::from(rel).textify(ctx, w),
+            PlanRelType::Rel(rel) => rel.textify(ctx, w),
             PlanRelType::Root(root) => root.textify(ctx, w),
         }
     }
@@ -858,76 +959,6 @@ impl<'a> Textify for NamedArg<'a> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         write!(w, "{}=", self.name)?;
         self.value.textify(ctx, w)
-    }
-}
-
-// Extension relation implementations - these are custom/user-defined relations
-use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
-
-impl<'a> From<&'a ExtensionLeafRel> for Relation<'a> {
-    fn from(rel: &'a ExtensionLeafRel) -> Self {
-        // For extension relations, we create a simple placeholder representation
-        // The actual detail parsing would need to be implemented based on the
-        // specific extension format
-
-        // For now, use a static name - in full implementation this would be extracted from detail
-        let extension_name = "ExtensionLeaf:CustomExtension";
-
-        Relation {
-            name: extension_name,
-            arguments: Some(Arguments {
-                positional: vec![],
-                named: vec![],
-            }),
-            columns: vec![], // TODO: Parse from extension detail
-            emit: get_emit(rel.common.as_ref()),
-            children: vec![],
-        }
-    }
-}
-
-impl<'a> From<&'a ExtensionSingleRel> for Relation<'a> {
-    fn from(rel: &'a ExtensionSingleRel) -> Self {
-        // For now, use a static name - in full implementation this would be extracted from detail
-        let extension_name = "ExtensionSingle:CustomExtension";
-
-        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()]);
-
-        Relation {
-            name: extension_name,
-            arguments: Some(Arguments {
-                positional: vec![],
-                named: vec![],
-            }),
-            columns: (0..input_columns)
-                .map(|i| Value::Reference(i as i32))
-                .collect(),
-            emit: get_emit(rel.common.as_ref()),
-            children,
-        }
-    }
-}
-
-impl<'a> From<&'a ExtensionMultiRel> for Relation<'a> {
-    fn from(rel: &'a ExtensionMultiRel) -> Self {
-        // For now, use a static name - in full implementation this would be extracted from detail
-        let extension_name = "ExtensionMulti:CustomExtension";
-
-        let input_refs: Vec<Option<&Rel>> = rel.inputs.iter().map(Some).collect();
-        let (children, input_columns) = Relation::convert_children(input_refs);
-
-        Relation {
-            name: extension_name,
-            arguments: Some(Arguments {
-                positional: vec![],
-                named: vec![],
-            }),
-            columns: (0..input_columns)
-                .map(|i| Value::Reference(i as i32))
-                .collect(),
-            emit: get_emit(rel.common.as_ref()),
-            children,
-        }
     }
 }
 

@@ -5,7 +5,10 @@ use thiserror::Error;
 
 use super::{ParsePair, Rule, RuleIter, unwrap_single_pair};
 use crate::extensions::simple::{self, ExtensionKind};
-use crate::extensions::{InsertError, SimpleExtensions};
+use crate::extensions::{
+    ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
+    SimpleExtensions,
+};
 use crate::parser::structural::IndentedLine;
 
 #[derive(Debug, Clone, Error)]
@@ -294,22 +297,288 @@ Type Variations:
         .trim_start();
 
         // Parse the input using the structural parser
-        let result = Parser::parse(input).unwrap();
-        assert!(!result.has_warnings());
-        let plan = result.plan;
+        let (plan, warnings) = Parser::parse(input).unwrap();
 
         // Verify the plan has the expected extensions
         assert_eq!(plan.extension_urns.len(), 2);
         assert_eq!(plan.extensions.len(), 4);
+        assert!(warnings.is_empty());
 
         // Convert the plan extensions back to SimpleExtensions
-        let (extensions, _errors) =
+        let (extensions, errors) =
             SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
 
+        assert!(errors.is_empty());
         // Convert back to string
         let output = extensions.to_string("  ");
 
         // The output should match the input
         assert_eq!(output, input);
+    }
+}
+
+// Extension relation parsing implementations
+// These were moved from extensions/registry.rs to maintain clean architecture
+
+use crate::extensions::any::Any;
+use crate::parser::MessageParseError;
+use crate::parser::expressions::{FieldIndex, Name};
+use crate::parser::relations::RelationParsingContext;
+
+impl ParsePair for ExtensionValue {
+    fn rule() -> Rule {
+        Rule::extension_argument
+    }
+
+    fn message() -> &'static str {
+        "ExtensionValue"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let inner = unwrap_single_pair(pair); // Extract the actual content
+
+        match inner.as_rule() {
+            Rule::reference => {
+                // Reuse the existing FieldIndex parser, then extract the i32
+                let field_index = FieldIndex::parse_pair(inner);
+                ExtensionValue::Reference(field_index.0)
+            }
+            Rule::literal => {
+                // Literal can contain integer, float, boolean, or string_literal
+                let mut literal_inner = inner.into_inner();
+                let value_pair = literal_inner.next().unwrap();
+                match value_pair.as_rule() {
+                    Rule::string_literal => {
+                        let string_content = value_pair.as_str();
+                        // Remove quotes and unescape
+                        let unquoted = &string_content[1..string_content.len() - 1];
+                        // TODO: Implement proper unescaping
+                        ExtensionValue::String(unquoted.to_string())
+                    }
+                    Rule::integer => {
+                        let int_val = value_pair.as_str().parse::<i64>().unwrap();
+                        ExtensionValue::Integer(int_val)
+                    }
+                    Rule::float => {
+                        let float_val = value_pair.as_str().parse::<f64>().unwrap();
+                        ExtensionValue::Float(float_val)
+                    }
+                    Rule::boolean => {
+                        let bool_val = value_pair.as_str() == "true";
+                        ExtensionValue::Boolean(bool_val)
+                    }
+                    _ => panic!("Unexpected literal value type: {:?}", value_pair.as_rule()),
+                }
+            }
+            Rule::string_literal => {
+                // Direct string literal (not wrapped in literal rule)
+                let string_content = inner.as_str();
+                // Remove quotes and unescape
+                let unquoted = &string_content[1..string_content.len() - 1];
+                // TODO: Implement proper unescaping
+                ExtensionValue::String(unquoted.to_string())
+            }
+            Rule::integer => {
+                // Direct integer (not wrapped in literal rule)
+                let int_val = inner.as_str().parse::<i64>().unwrap();
+                ExtensionValue::Integer(int_val)
+            }
+            Rule::float => {
+                // Direct float (not wrapped in literal rule)
+                let float_val = inner.as_str().parse::<f64>().unwrap();
+                ExtensionValue::Float(float_val)
+            }
+            Rule::boolean => {
+                // Direct boolean (not wrapped in literal rule)
+                let bool_val = inner.as_str() == "true";
+                ExtensionValue::Boolean(bool_val)
+            }
+            Rule::expression => {
+                // TODO: Handle expressions properly when ExtensionValue::Expression is implemented
+                // For now, convert to string representation
+                ExtensionValue::String(inner.as_str().to_string())
+            }
+            _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
+        }
+    }
+}
+
+impl ParsePair for ExtensionColumn {
+    fn rule() -> Rule {
+        Rule::extension_column
+    }
+
+    fn message() -> &'static str {
+        "ExtensionColumn"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let inner = unwrap_single_pair(pair); // Extract the actual content
+
+        match inner.as_rule() {
+            Rule::named_column => {
+                let mut iter = inner.into_inner();
+                let name_pair = iter.next().unwrap(); // Grammar guarantees name exists
+                let type_pair = iter.next().unwrap(); // Grammar guarantees type exists
+
+                let name = Name::parse_pair(name_pair).0.to_string(); // Reuse existing Name parser
+                let type_spec = type_pair.as_str().to_string(); // Types are complex, store as string for now
+
+                ExtensionColumn::Named { name, type_spec }
+            }
+            Rule::reference => {
+                // Reuse the existing FieldIndex parser, then extract the i32
+                let field_index = FieldIndex::parse_pair(inner);
+                ExtensionColumn::Reference(field_index.0)
+            }
+            Rule::expression => {
+                // TODO: Handle expressions properly when ExtensionColumn::Expression is implemented
+                unimplemented!("Expression handling in ExtensionColumn not yet implemented")
+            }
+            _ => panic!("Unexpected extension column type: {:?}", inner.as_rule()),
+        }
+    }
+}
+
+impl ParsePair for ExtensionArgs {
+    fn rule() -> Rule {
+        Rule::extension_relation
+    }
+
+    fn message() -> &'static str {
+        "ExtensionArgs"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let mut iter = pair.into_inner();
+
+        // Parse extension name to determine relation type and custom name
+        let extension_name_pair = iter.next().unwrap(); // Grammar guarantees extension_name exists
+        let full_extension_name = extension_name_pair.as_str();
+
+        // Extract the relation type and custom name from the extension name
+        // (e.g., "ExtensionLeaf:ParquetScan" -> "ExtensionLeaf" and "ParquetScan")
+        let (relation_type_str, custom_name) = if full_extension_name.contains(':') {
+            let parts: Vec<&str> = full_extension_name.splitn(2, ':').collect();
+            (parts[0], parts[1].to_string())
+        } else {
+            (full_extension_name, "UnknownExtension".to_string())
+        };
+
+        let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
+        let mut args = ExtensionArgs::new(relation_type, custom_name);
+
+        // Parse optional arguments and columns
+        for inner_pair in iter {
+            match inner_pair.as_rule() {
+                Rule::extension_arguments => {
+                    // Parse positional arguments
+                    for arg_pair in inner_pair.into_inner() {
+                        if arg_pair.as_rule() == Rule::extension_argument {
+                            let value = ExtensionValue::parse_pair(arg_pair);
+                            args.add_positional_arg(value);
+                        }
+                    }
+                }
+                Rule::extension_named_arguments => {
+                    // Parse named arguments
+                    for arg_pair in inner_pair.into_inner() {
+                        if arg_pair.as_rule() == Rule::extension_named_argument {
+                            let mut arg_iter = arg_pair.into_inner();
+                            let name_pair = arg_iter.next().unwrap();
+                            let value_pair = arg_iter.next().unwrap();
+
+                            let name = Name::parse_pair(name_pair).0.to_string();
+                            let value = ExtensionValue::parse_pair(value_pair);
+                            args.add_named_arg(name, value);
+                        }
+                    }
+                }
+                Rule::extension_columns => {
+                    // Parse output columns
+                    for col_pair in inner_pair.into_inner() {
+                        if col_pair.as_rule() == Rule::extension_column {
+                            let column = ExtensionColumn::parse_pair(col_pair);
+                            args.add_output_column(column);
+                        }
+                    }
+                }
+                r => panic!("Unexpected rule in ExtensionArgs: {:?}", r),
+            }
+        }
+
+        args
+    }
+}
+
+impl ExtensionRelationType {
+    /// Create appropriate relation structure from extension detail and children.
+    /// This method handles the structural logic for creating different extension relation types.
+    pub fn create_rel(
+        self,
+        detail: Option<Any>,
+        children: Vec<Box<substrait::proto::Rel>>,
+    ) -> Result<substrait::proto::Rel, String> {
+        use substrait::proto::rel::RelType;
+        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+
+        // Validate child count matches relation type
+        self.validate_child_count(children.len())?;
+
+        let rel_type = match self {
+            ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
+                common: None,
+                detail: detail.map(Into::into),
+            }),
+            ExtensionRelationType::Single => {
+                let input = children.into_iter().next().map(|child| *child);
+                RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
+                    common: None,
+                    detail: detail.map(Into::into),
+                    input: input.map(Box::new),
+                }))
+            }
+            ExtensionRelationType::Multi => {
+                let inputs = children.into_iter().map(|child| *child).collect();
+                RelType::ExtensionMulti(ExtensionMultiRel {
+                    common: None,
+                    detail: detail.map(Into::into),
+                    inputs,
+                })
+            }
+        };
+
+        Ok(substrait::proto::Rel {
+            rel_type: Some(rel_type),
+        })
+    }
+}
+
+impl ExtensionArgs {
+    /// Convert ExtensionArgs to Rel - coordinates the entire process (Option A)
+    /// This method coordinates between registry resolution and structural relation creation.
+    pub fn to_rel(
+        self,
+        children: Vec<Box<substrait::proto::Rel>>,
+        context: &mut RelationParsingContext,
+    ) -> Result<substrait::proto::Rel, MessageParseError> {
+        let detail = context.resolve_extension_detail(&self)?;
+
+        // CLEANUP: Fix the pest span here - this is a placeholder that should get real span
+        self.relation_type
+            .create_rel(detail, children)
+            .map_err(|e| {
+                MessageParseError::invalid(
+                    "extension_relation",
+                    pest::Span::new("", 0, 0).unwrap(),
+                    e,
+                )
+            })
     }
 }

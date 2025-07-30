@@ -482,7 +482,10 @@ impl ScopedParsePair for Expression {
                     extensions, inner,
                 )?))),
             }),
-            _ => unimplemented!("Expression unexpected rule: {:?}", inner.as_rule()),
+            _ => unreachable!(
+                "Grammar guarantees expression can only be literal, function_call, reference, or if_then, got: {:?}",
+                inner.as_rule()
+            ),
         }
     }
 }

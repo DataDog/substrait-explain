@@ -1,6 +1,7 @@
 //! Output a plan in text format.
 
 pub mod expressions;
+pub mod extensions;
 pub mod foundation;
 pub mod plan;
 pub mod rels;
