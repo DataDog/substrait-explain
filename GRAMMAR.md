@@ -80,7 +80,7 @@ Root[result]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -142,7 +142,7 @@ Root[result]                   // Level 0 (no indentation)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -259,7 +259,7 @@ Root[result]
     Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -281,7 +281,7 @@ Root[result]
     Read[data => list_field:list<i64>, map_field:map<string, i64>, struct_field:struct<i64, string?>]
 "#;
 
-let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+let plan = Parser::parse(plan_text).unwrap();
 assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -321,7 +321,7 @@ Root[result]
     Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -493,7 +493,7 @@ Root[c, d]           // root with output columns c and d
     Read[data => a:i64, b:string]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -523,7 +523,7 @@ Root[result2]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
 ```
 
@@ -557,7 +557,7 @@ Root[result]
       Read[data => a:i64, b:string, c:i32]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -583,7 +583,7 @@ Root[result]
     Read[data => a:i64, b:string]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -618,7 +618,7 @@ Root[result]
     Read[orders => category:string, amount:i64]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -679,7 +679,7 @@ Root[user_orders]
     Read[orders => user_id:i64, amount:i32]   // Fields $2, $3
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -712,6 +712,6 @@ Root[customer_revenue]
           Read[orders => user_id:i64, quantity:i32, price:i64]
 # "#;
 #
-# let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```

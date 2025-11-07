@@ -24,16 +24,7 @@ Root[revenue]
 "#;
 
     match Parser::parse(plan_text) {
-        Ok((plan, warnings)) => {
-            // Show parse warnings if any
-            if !warnings.is_empty() {
-                println!("Parse warnings:");
-                for warning in &warnings {
-                    println!("  - {warning}");
-                }
-                println!();
-            }
-
+        Ok(plan) => {
             // Output with standard options
             let (text, errors) = format(&plan);
             println!("== Standard output ==");

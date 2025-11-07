@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use crate::extensions::ExtensionRelationType;
     use crate::parser::common::ParsePair;
-    use crate::parser::{ExpressionParser, ParseWarning, Parser, Rule, UnregisteredExtensionMode};
+    use crate::parser::{ExpressionParser, ParseError, Parser, Rule};
 
     #[test]
     fn test_parse_extension_value_reference() {
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn test_integration_extension_with_warning_collection() {
+    fn test_integration_extension_missing_registry_errors() {
         // Test a complete plan with extension that has unregistered extension
         let plan_text = r#"
 === Extensions
@@ -139,24 +139,14 @@ Root[result]
   ExtensionLeaf:TestExtension[$5, test_arg='hello' => col1:i32]
 "#;
 
-        let result = Parser::new()
-            .with_unregistered_extension_mode(UnregisteredExtensionMode::Warn)
-            .parse_plan(plan_text);
+        let result = Parser::parse(plan_text);
 
-        // Only checking for unregistered extension warnings
         match result {
-            Ok((_plan, warnings)) => {
-                // Expect warnings for unregistered extension
-                let unregistered_warnings: Vec<&ParseWarning> = warnings
-                    .iter()
-                    .filter(|w| matches!(w, ParseWarning::UnregisteredExtension { .. }))
-                    .collect();
-                assert!(
-                    !unregistered_warnings.is_empty(),
-                    "Expected unregistered extension warning"
-                );
+            Err(ParseError::UnregisteredExtension { name, .. }) => {
+                assert_eq!(name, "TestExtension");
             }
-            Err(e) => panic!("Expected warnings, got error: {e}"),
+            Err(e) => panic!("Expected UnregisteredExtension error, got {e}"),
+            Ok(_) => panic!("Expected parsing to fail without a registry"),
         }
     }
 }

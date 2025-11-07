@@ -59,31 +59,5 @@ pub enum ParseError {
     Relation(ParseContext, #[source] MessageParseError),
 }
 
-/// Non-fatal warnings during parsing
-#[derive(Debug, Clone, Error)]
-pub enum ParseWarning {
-    #[error("Unregistered {kind} extension '{name}' at {context}")]
-    UnregisteredExtension {
-        context: ParseContext,
-        name: String, // name of extension
-        kind: String, // kind of extension, e.g. ExtensionLeaf
-    },
-}
-
-/// Configuration for parser behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UnregisteredExtensionMode {
-    #[default]
-    Error, // Fail immediately
-    Warn,   // Collect warning and continue
-    Ignore, // Silently continue
-}
-
-/// Parser configuration
-#[derive(Debug, Clone, Default)]
-pub struct ParserConfig {
-    pub unregistered_extension_mode: UnregisteredExtensionMode,
-}
-
 /// Result type for the public Parser API
-pub type ParseResult = Result<(substrait::proto::Plan, Vec<ParseWarning>), ParseError>;
+pub type ParseResult = Result<substrait::proto::Plan, ParseError>;

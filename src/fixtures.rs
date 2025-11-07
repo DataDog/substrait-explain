@@ -102,19 +102,10 @@ impl TestContext {
 /// being parsed to a Substrait plan and then back to text.
 pub fn roundtrip_plan(input: &str) {
     // Parse the plan using the simplified interface
-    let plan = match Parser::parse(input) {
-        Ok((plan, warnings)) => {
-            if let Some(w) = warnings.first() {
-                println!("Parse warning: {w}");
-                panic!("Parse warnings encountered");
-            }
-            plan
-        }
-        Err(e) => {
-            println!("Error parsing plan:\n{e}");
-            panic!("{}", e);
-        }
-    };
+    let plan = Parser::parse(input).unwrap_or_else(|e| {
+        println!("Error parsing plan:\n{e}");
+        panic!("{e}");
+    });
 
     // Format the plan back to text using the simplified interface
     let (actual, errors) = format(&plan);
@@ -144,38 +135,16 @@ pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     let default_registry = ExtensionRegistry::new();
 
     // Parse the simple plan
-    let simple_plan = match Parser::parse(input) {
-        Ok((plan, warnings)) => {
-            if !warnings.is_empty() {
-                println!("Simple plan parse warnings:");
-                for warning in &warnings {
-                    println!("  {warning}");
-                }
-            }
-            plan
-        }
-        Err(e) => {
-            println!("Error parsing simple plan:\n{e}");
-            panic!("{}", e);
-        }
-    };
+    let simple_plan = Parser::parse(input).unwrap_or_else(|e| {
+        println!("Error parsing simple plan:\n{e}");
+        panic!("{e}");
+    });
 
     // Parse the verbose plan
-    let verbose_plan = match Parser::parse(verbose_input) {
-        Ok((plan, warnings)) => {
-            if !warnings.is_empty() {
-                println!("Verbose plan parse warnings:");
-                for warning in &warnings {
-                    println!("  {warning}");
-                }
-            }
-            plan
-        }
-        Err(e) => {
-            println!("Error parsing verbose plan:\n{e}");
-            panic!("{}", e);
-        }
-    };
+    let verbose_plan = Parser::parse(verbose_input).unwrap_or_else(|e| {
+        println!("Error parsing verbose plan:\n{e}");
+        panic!("{e}");
+    });
 
     // Test verbose output from both plans
     let verbose_options = OutputOptions::verbose();

@@ -110,15 +110,44 @@ impl ExtensionRelationType {
                 }
             }
             ExtensionRelationType::Multi => {
-                if child_count >= 2 {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "ExtensionMulti should have 2 or more input children, got {child_count}"
-                    ))
-                }
+                // ExtensionMulti relations accept zero or more children.
+                Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExtensionRelationType;
+
+    #[test]
+    fn extension_multi_allows_zero_children() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(0).is_ok());
+    }
+
+    #[test]
+    fn extension_multi_allows_single_child() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(1).is_ok());
+    }
+
+    #[test]
+    fn extension_multi_allows_multiple_children() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(3).is_ok());
+    }
+
+    #[test]
+    fn extension_single_rejects_wrong_child_counts() {
+        assert!(
+            ExtensionRelationType::Single
+                .validate_child_count(0)
+                .is_err()
+        );
+        assert!(
+            ExtensionRelationType::Single
+                .validate_child_count(2)
+                .is_err()
+        );
     }
 }
 

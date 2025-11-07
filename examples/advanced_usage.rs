@@ -49,16 +49,7 @@ Root[revenue]
 "#;
 
     match Parser::parse(plan_text) {
-        Ok((plan, warnings)) => {
-            // Show parse warnings if any
-            if !warnings.is_empty() {
-                println!("Parse warnings:");
-                for warning in &warnings {
-                    println!("  - {warning}");
-                }
-                println!();
-            }
-
+        Ok(plan) => {
             // Show the plan in YAML format
             println!("Plan Structure (YAML):");
             match serde_yaml::to_string(&plan) {

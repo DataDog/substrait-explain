@@ -7,8 +7,6 @@ pub mod structural;
 pub mod types;
 
 pub use common::*;
-pub use errors::{
-    ParseContext, ParseError, ParseResult, ParseWarning, ParserConfig, UnregisteredExtensionMode,
-};
+pub use errors::{ParseContext, ParseError, ParseResult};
 pub use relations::RelationParsePair;
 pub use structural::{PLAN_HEADER, Parser};

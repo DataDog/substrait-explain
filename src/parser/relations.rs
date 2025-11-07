@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use pest::Span;
 use pest::iterators::Pair;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
@@ -16,59 +17,43 @@ use super::{
     ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
 };
 use crate::extensions::any::Any;
+use crate::extensions::registry::ExtensionError;
 use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
-use crate::parser::errors::{ParseContext, ParseWarning, ParserConfig, UnregisteredExtensionMode};
+use crate::parser::errors::{ParseContext, ParseError};
 use crate::parser::expressions::{FieldIndex, Name};
 
 /// Parsing context for relations that includes extensions, registry, and optional warning collection
 pub struct RelationParsingContext<'a> {
     pub extensions: &'a SimpleExtensions,
     pub registry: &'a ExtensionRegistry,
-    pub config: &'a ParserConfig,
-    pub warnings: &'a mut Vec<ParseWarning>,
     pub line_no: i64,
+    pub line: &'a str,
 }
 
 impl<'a> RelationParsingContext<'a> {
-    /// Resolve extension detail using registry
-    /// This method handles the registry logic for looking up extensions and generating warnings/errors.
+    /// Resolve extension detail using registry. Any failure is treated as a hard parse error.
     pub fn resolve_extension_detail(
-        &mut self,
+        &self,
         extension_args: &ExtensionArgs,
-    ) -> Result<Option<Any>, MessageParseError> {
-        // Try to look up extension in registry
-        match self
+    ) -> Result<Option<Any>, ParseError> {
+        let detail = self
             .registry
-            .parse_extension(&extension_args.extension_name, extension_args)
-        {
+            .parse_extension(&extension_args.extension_name, extension_args);
+
+        match detail {
             Ok(any) => Ok(Some(any)),
-            Err(err) => {
-                // Handle unregistered extension based on config
-                match self.config.unregistered_extension_mode {
-                    UnregisteredExtensionMode::Error => Err(MessageParseError::invalid(
-                        "extension",
-                        pest::Span::new("", 0, 0).unwrap(),
-                        format!(
-                            "Extension '{}' not found in registry: {}",
-                            extension_args.extension_name, err
-                        ),
-                    )),
-                    UnregisteredExtensionMode::Warn => {
-                        self.warnings.push(ParseWarning::UnregisteredExtension {
-                            context: ParseContext::new(
-                                self.line_no,
-                                "extension relation".to_string(),
-                            ),
-                            name: extension_args.extension_name.clone(),
-                            kind: format!("{:?}", extension_args.relation_type),
-                        });
-                        Ok(None) // Use None placeholder instead of google.protobuf.Empty
-                    }
-                    UnregisteredExtensionMode::Ignore => {
-                        Ok(None) // Use None placeholder
-                    }
-                }
-            }
+            Err(ExtensionError::ExtensionNotFound(_)) => Err(ParseError::UnregisteredExtension {
+                name: extension_args.extension_name.clone(),
+                context: ParseContext::new(self.line_no, self.line.to_string()),
+            }),
+            Err(err) => Err(ParseError::Plan(
+                ParseContext::new(self.line_no, self.line.to_string()),
+                MessageParseError::invalid(
+                    "extension_relation",
+                    Span::new("", 0, 0).unwrap(),
+                    err.to_string(),
+                ),
+            )),
         }
     }
 }
@@ -1401,7 +1386,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
+    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();

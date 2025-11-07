@@ -102,7 +102,9 @@ pub enum Value<'a> {
     Missing(PlanError),
     /// Represents a valid enum value as a string for textification.
     Enum(Cow<'a, str>),
-    Integer(i32),
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
 }
 
 impl<'a> Value<'a> {
@@ -143,6 +145,8 @@ impl<'a> Textify for Value<'a> {
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
             Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
+            Value::Float(f) => write!(w, "{f}"),
+            Value::Boolean(b) => write!(w, "{b}"),
         }
     }
 }
@@ -305,82 +309,6 @@ impl<'a> Relation<'a> {
             Some(EmitKind::Emit(e)) => e.output_mapping.len(),
             Some(EmitKind::Direct(_)) => self.columns.len(),
             None => self.columns.len(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod registry_tests {
-    use prost::{Message, Name};
-
-    use crate::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
-        ExtensionValue,
-    };
-
-    /// Test extension type for registry integration tests
-    #[derive(Clone, PartialEq, Message)]
-    struct TestConfig {
-        #[prost(string, tag = "1")]
-        path: String,
-        #[prost(int64, tag = "2")]
-        batch_size: i64,
-    }
-
-    impl Name for TestConfig {
-        const NAME: &'static str = "TestConfig";
-        const PACKAGE: &'static str = "test";
-
-        fn full_name() -> String {
-            "test.TestConfig".to_string()
-        }
-
-        fn type_url() -> String {
-            "type.googleapis.com/test.TestConfig".to_string()
-        }
-    }
-
-    impl Explainable for TestConfig {
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let path = match args.get_named_arg("path") {
-                Some(ExtensionValue::String(s)) => s.clone(),
-                Some(_) => {
-                    return Err(ExtensionError::InvalidArgument(
-                        "path must be a string".to_string(),
-                    ));
-                }
-                None => return Err(ExtensionError::MissingArgument("path".to_string())),
-            };
-
-            let batch_size = match args.get_named_arg("batch_size") {
-                Some(ExtensionValue::Integer(i)) => *i,
-                Some(_) => {
-                    return Err(ExtensionError::InvalidArgument(
-                        "batch_size must be an integer".to_string(),
-                    ));
-                }
-                None => 1024, // Default value
-            };
-
-            Ok(TestConfig { path, batch_size })
-        }
-
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args =
-                ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
-            args.add_named_arg(
-                "path".to_string(),
-                ExtensionValue::String(self.path.clone()),
-            );
-            args.add_named_arg(
-                "batch_size".to_string(),
-                ExtensionValue::Integer(self.batch_size),
-            );
-            args.add_output_column(ExtensionColumn::Named {
-                name: "data".to_string(),
-                type_spec: "string".to_string(),
-            });
-            Ok(args)
         }
     }
 }
@@ -689,7 +617,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
             Some(CountMode::Count(val)) => {
                 named_args.push(NamedArg {
                     name: "limit",
-                    value: Value::Integer(*val as i32),
+                    value: Value::Integer(*val),
                 });
             }
             None => {}
@@ -706,7 +634,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
                 substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
                         name: "offset",
-                        value: Value::Integer(*val as i32),
+                        value: Value::Integer(*val),
                     });
                 }
             }

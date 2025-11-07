@@ -6,7 +6,7 @@ use substrait_explain::extensions::{
     ExtensionRelationType, ExtensionValue,
 };
 use substrait_explain::format_with_registry;
-use substrait_explain::parser::{Parser, ParserConfig, UnregisteredExtensionMode};
+use substrait_explain::parser::Parser;
 
 /// Custom protobuf message for our test extension.
 #[derive(Clone, PartialEq, Message)]
@@ -124,8 +124,7 @@ Root[result]
 
     // Parse with registry
     let parser = Parser::new().with_extension_registry(registry.clone());
-    let (plan, warnings) = parser.parse_plan(plan_text).expect("Failed to parse plan");
-    assert!(warnings.is_empty(), "Unexpected warnings: {warnings:?}");
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
 
     // Format back to text with registry
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
@@ -149,29 +148,7 @@ Root[result]
     let result = parser.parse_plan(plan_text);
     assert!(result.is_err());
 
-    // Parse with warning mode - should succeed with warnings
-    let config = ParserConfig {
-        unregistered_extension_mode: UnregisteredExtensionMode::Warn,
-    };
-    let parser = Parser::with_config(config);
-    let (plan, warnings) = parser.parse_plan(plan_text).expect("Failed to parse plan");
-    assert!(!warnings.is_empty());
-    assert!(format!("{:?}", warnings[0]).contains("UnknownExtension"));
-
-    // Format without registry - should produce error placeholder
-    let empty_registry = ExtensionRegistry::default();
-    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &empty_registry);
-
-    // Should have formatting errors for unregistered extension
-    assert!(!errors.is_empty());
-    assert!(
-        errors[0]
-            .to_string()
-            .contains("Extension detail is missing")
-    );
-
-    // Should fall back to generic ExtensionLeaf formatting with error placeholder
-    assert!(formatted.contains("ExtensionLeaf[!{extension}]"));
+    // Debugging-oriented parsing without a registry remains unsupported.
 }
 
 #[test]
@@ -240,9 +217,132 @@ Root[result]
 
     // Parse with registry
     let parser = Parser::new().with_extension_registry(registry.clone());
-    let (plan, warnings) = parser.parse_plan(plan_text).expect("Failed to parse plan");
-    assert!(warnings.is_empty());
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
 
     // Verify both extensions were parsed
     assert_eq!(plan.relations.len(), 1);
+}
+
+/// Test-only protobuf payload used to verify literal argument round-tripping for
+/// extensions. Holds a representative mixture of scalar literal types that the
+/// text format should preserve without truncation or allocation leaks.
+#[derive(Clone, PartialEq, Message)]
+pub struct LiteralConfig {
+    #[prost(string, tag = "1")]
+    pub path: String,
+    #[prost(int64, tag = "2")]
+    pub big: i64,
+    #[prost(double, tag = "3")]
+    pub ratio: f64,
+    #[prost(bool, tag = "4")]
+    pub enabled: bool,
+}
+
+impl Name for LiteralConfig {
+    const NAME: &'static str = "LiteralConfig";
+    const PACKAGE: &'static str = "test";
+
+    fn full_name() -> String {
+        "test.LiteralConfig".to_string()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/test.LiteralConfig".to_string()
+    }
+}
+
+impl Explainable for LiteralConfig {
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let path = match args.get_named_arg("path") {
+            Some(ExtensionValue::String(s)) => s.clone(),
+            Some(_) => {
+                return Err(ExtensionError::InvalidArgument(
+                    "path must be a string".to_string(),
+                ));
+            }
+            None => return Err(ExtensionError::MissingArgument("path".to_string())),
+        };
+
+        let big = match args.get_named_arg("big") {
+            Some(ExtensionValue::Integer(i)) => *i,
+            Some(_) => {
+                return Err(ExtensionError::InvalidArgument(
+                    "big must be an integer".to_string(),
+                ));
+            }
+            None => return Err(ExtensionError::MissingArgument("big".to_string())),
+        };
+
+        let ratio = match args.get_named_arg("ratio") {
+            Some(ExtensionValue::Float(f)) => *f,
+            Some(ExtensionValue::Integer(i)) => *i as f64,
+            Some(_) => {
+                return Err(ExtensionError::InvalidArgument(
+                    "ratio must be a float".to_string(),
+                ));
+            }
+            None => return Err(ExtensionError::MissingArgument("ratio".to_string())),
+        };
+
+        let enabled = match args.get_named_arg("enabled") {
+            Some(ExtensionValue::Boolean(b)) => *b,
+            Some(_) => {
+                return Err(ExtensionError::InvalidArgument(
+                    "enabled must be a boolean".to_string(),
+                ));
+            }
+            None => return Err(ExtensionError::MissingArgument("enabled".to_string())),
+        };
+
+        Ok(LiteralConfig {
+            path,
+            big,
+            ratio,
+            enabled,
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "LiteralTest".to_string());
+        args.add_named_arg(
+            "path".to_string(),
+            ExtensionValue::String(self.path.clone()),
+        );
+        args.add_named_arg("big".to_string(), ExtensionValue::Integer(self.big));
+        args.add_named_arg("ratio".to_string(), ExtensionValue::Float(self.ratio));
+        args.add_named_arg("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
+        args.add_output_column(ExtensionColumn::Named {
+            name: "value".to_string(),
+            type_spec: "string".to_string(),
+        });
+        Ok(args)
+    }
+
+    fn argument_order() -> Vec<String> {
+        vec![
+            "path".to_string(),
+            "big".to_string(),
+            "ratio".to_string(),
+            "enabled".to_string(),
+        ]
+    }
+}
+
+#[test]
+fn test_extension_literal_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register::<LiteralConfig>("LiteralTest");
+
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:LiteralTest[path='data/source', big=1099511627776, ratio=3.25, enabled=false => value:string]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
 }

@@ -14,9 +14,7 @@ use substrait::proto::{
 
 use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, ParsePair};
-use crate::parser::errors::{
-    ParseContext, ParseError, ParseResult, ParseWarning, ParserConfig, UnregisteredExtensionMode,
-};
+use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
 use crate::parser::extensions::{ExtensionParseError, ExtensionParser};
 use crate::parser::relations::RelationParsingContext;
@@ -247,14 +245,16 @@ impl<'a> RelationParser<'a> {
         self.tree.add_line(depth, node)
     }
 
-    /// Parse a relation.
-    #[allow(clippy::vec_box, clippy::too_many_arguments)]
+    /// Parse a relation from a Pest pair of rule 'relation' into a Substrait
+    /// Rel.
+    //
+    // Clippy says a Vec<Box<…>> is unnecessary, as the Vec is already on the
+    // heap, but this is what the protobuf requires so we allow it here
+    #[allow(clippy::vec_box)]
     fn parse_relation(
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        config: &ParserConfig,
-        warnings: &mut Vec<ParseWarning>,
         line_no: i64,
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
@@ -263,11 +263,9 @@ impl<'a> RelationParser<'a> {
         assert_eq!(pair.as_rule(), Rule::relation);
         let p = unwrap_single_pair(pair);
 
-        let (e, r, c, w, l, p_inner, cr, ic) = (
+        let (e, r, l, p_inner, cr, ic) = (
             extensions,
             registry,
-            config,
-            warnings,
             line_no,
             p,
             child_relations,
@@ -275,27 +273,25 @@ impl<'a> RelationParser<'a> {
         );
 
         match p_inner.as_rule() {
-            Rule::read_relation => self.parse_rel::<ReadRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::filter_relation => self.parse_rel::<FilterRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::project_relation => self.parse_rel::<ProjectRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::aggregate_relation => self.parse_rel::<AggregateRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::sort_relation => self.parse_rel::<SortRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::fetch_relation => self.parse_rel::<FetchRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::join_relation => self.parse_rel::<JoinRel>(e, c, w, l, p_inner, cr, ic),
-            Rule::extension_relation => {
-                self.parse_extension_relation(e, r, c, w, l, p_inner, cr, ic)
-            }
+            Rule::read_relation => self.parse_rel::<ReadRel>(e, l, p_inner, cr, ic),
+            Rule::filter_relation => self.parse_rel::<FilterRel>(e, l, p_inner, cr, ic),
+            Rule::project_relation => self.parse_rel::<ProjectRel>(e, l, p_inner, cr, ic),
+            Rule::aggregate_relation => self.parse_rel::<AggregateRel>(e, l, p_inner, cr, ic),
+            Rule::sort_relation => self.parse_rel::<SortRel>(e, l, p_inner, cr, ic),
+            Rule::fetch_relation => self.parse_rel::<FetchRel>(e, l, p_inner, cr, ic),
+            Rule::join_relation => self.parse_rel::<JoinRel>(e, l, p_inner, cr, ic),
+            Rule::extension_relation => self.parse_extension_relation(e, r, l, p_inner, cr),
             _ => todo!(),
         }
     }
 
-    /// Parse a specific relation type
-    #[allow(clippy::vec_box, clippy::too_many_arguments)]
+    /// Parse a specific relation type.
+    // Box is needed because Rel is a large enum and we need to pass ownership
+    // through the RelationParsePair trait, which requires Box<Rel>.
+    #[allow(clippy::vec_box)]
     fn parse_rel<T: RelationParsePair>(
         &self,
         extensions: &SimpleExtensions,
-        _config: &ParserConfig,
-        _warnings: &mut [ParseWarning],
         line_no: i64,
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
@@ -305,8 +301,6 @@ impl<'a> RelationParser<'a> {
 
         let line = pair.as_str();
 
-        // For now, use the standard parsing path but pass through warning context
-        // This allows relations to potentially use warnings in the future
         let rel_type =
             T::parse_pair_with_context(extensions, pair, child_relations, input_field_count);
 
@@ -319,18 +313,18 @@ impl<'a> RelationParser<'a> {
         }
     }
 
-    /// Parse extension relations
-    #[allow(clippy::vec_box, clippy::too_many_arguments)]
+    /// Parse extension relations.
+    /// Extension relations need the full parsing context for registry lookups and warning handling.
+    // Box is needed because Rel is a large enum and we need to pass ownership
+    // through the RelationParsePair trait, which requires Box<Rel>.
+    #[allow(clippy::vec_box)]
     fn parse_extension_relation(
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        config: &ParserConfig,
-        warnings: &mut Vec<ParseWarning>,
         line_no: i64,
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
-        _input_field_count: usize,
     ) -> Result<substrait::proto::Rel, ParseError> {
         assert_eq!(pair.as_rule(), Rule::extension_relation);
 
@@ -341,9 +335,10 @@ impl<'a> RelationParser<'a> {
         let extension_args = ExtensionArgs::parse_pair(pair);
 
         // Validate child count matches relation type
+        let child_count = child_relations.len();
         extension_args
             .relation_type
-            .validate_child_count(child_relations.len())
+            .validate_child_count(child_count)
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
@@ -351,19 +346,28 @@ impl<'a> RelationParser<'a> {
                 )
             })?;
 
-        // Handle registry resolution with warning/error handling
-        let mut context = RelationParsingContext {
+        let context = RelationParsingContext {
             extensions,
             registry,
-            config,
-            warnings,
             line_no,
+            line,
         };
 
-        // Convert ExtensionArgs to Rel using Option A pattern
+        let detail = context.resolve_extension_detail(&extension_args)?;
+
         extension_args
-            .to_rel(child_relations, &mut context)
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))
+            .relation_type
+            .create_rel(detail, child_relations)
+            .map_err(|e| {
+                ParseError::Plan(
+                    ParseContext::new(line_no, line.to_string()),
+                    MessageParseError::invalid(
+                        "extension_relation",
+                        pest::Span::new("", 0, 0).unwrap(),
+                        e,
+                    ),
+                )
+            })
     }
 
     /// Convert a LineNode into a Substrait Rel.
@@ -371,18 +375,13 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        config: &ParserConfig,
-        warnings: &mut Vec<ParseWarning>,
         node: LineNode,
     ) -> Result<substrait::proto::Rel, ParseError> {
         // Parse children first to get their output schemas
         let child_relations = node
             .children
             .into_iter()
-            .map(|c| {
-                self.build_rel(extensions, registry, config, warnings, c)
-                    .map(Box::new)
-            })
+            .map(|c| self.build_rel(extensions, registry, c).map(Box::new))
             .collect::<Result<Vec<Box<Rel>>, ParseError>>()?;
 
         // Get the input field count from all the children
@@ -396,8 +395,6 @@ impl<'a> RelationParser<'a> {
         self.parse_relation(
             extensions,
             registry,
-            config,
-            warnings,
             node.line_no,
             node.pair,
             child_relations,
@@ -410,13 +407,11 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        config: &ParserConfig,
-        warnings: &mut Vec<ParseWarning>,
         mut node: LineNode,
     ) -> Result<PlanRel, ParseError> {
         // Plain relations are allowed as root relations, they just don't have names.
         if node.pair.as_rule() == Rule::relation {
-            let rel = self.build_rel(extensions, registry, config, warnings, node)?;
+            let rel = self.build_rel(extensions, registry, node)?;
             return Ok(PlanRel {
                 rel_type: Some(plan_rel::RelType::Rel(rel)),
             });
@@ -440,13 +435,7 @@ impl<'a> RelationParser<'a> {
             .collect();
 
         let child = match node.children.len() {
-            1 => self.build_rel(
-                extensions,
-                registry,
-                config,
-                warnings,
-                node.children.pop().unwrap(),
-            )?,
+            1 => self.build_rel(extensions, registry, node.children.pop().unwrap())?,
             n => {
                 return Err(ParseError::Plan(
                     context,
@@ -474,13 +463,11 @@ impl<'a> RelationParser<'a> {
         mut self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        config: &ParserConfig,
-        warnings: &mut Vec<ParseWarning>,
     ) -> Result<Vec<PlanRel>, ParseError> {
         let nodes = self.tree.finish();
         nodes
             .into_iter()
-            .map(|n| self.build_plan_rel(extensions, registry, config, warnings, n))
+            .map(|n| self.build_plan_rel(extensions, registry, n))
             .collect::<Result<Vec<PlanRel>, ParseError>>()
     }
 }
@@ -601,8 +588,6 @@ pub struct Parser<'a> {
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
-    config: ParserConfig,
-    warnings: Vec<ParseWarning>,
 }
 impl<'a> Default for Parser<'a> {
     fn default() -> Self {
@@ -613,8 +598,7 @@ impl<'a> Default for Parser<'a> {
 impl<'a> Parser<'a> {
     /// Parse a Substrait plan from text format.
     ///
-    /// This is the main entry point for parsing. Returns both the parsed plan
-    /// and any warnings encountered during parsing.
+    /// This is the main entry point for parsing.
     ///
     /// The input should be in the Substrait text format, which consists of:
     /// - An optional extensions section starting with "=== Extensions"
@@ -633,64 +617,31 @@ impl<'a> Parser<'a> {
     ///   Read[table => col:i32]
     /// "#;
     ///
-    /// let (plan, _warnings) = Parser::parse(plan_text).unwrap();
+    /// let plan = Parser::parse(plan_text).unwrap();
     /// assert_eq!(plan.relations.len(), 1);
-    /// ```
-    ///
-    /// With custom configuration:
-    /// ```rust
-    /// use substrait_explain::parser::{Parser, UnregisteredExtensionMode};
-    /// use substrait_explain::extensions::ExtensionRegistry;
-    ///
-    /// let registry = ExtensionRegistry::new();
-    /// let plan_text = r#"
-    /// === Plan
-    /// Root[result]
-    ///   Read[table => col:i32]
-    /// "#;
-    ///
-    /// let (plan, warnings) = Parser::new()
-    ///     .with_unregistered_extension_mode(UnregisteredExtensionMode::Warn)
-    ///     .with_extension_registry(registry)
-    ///     .parse_plan(plan_text)?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns a [`ParseError`] if the input cannot be parsed or if unregistered
-    /// extensions are encountered and the parser is configured to error on them.
+    /// Returns a [`ParseError`] if the input cannot be parsed.
     pub fn parse(input: &str) -> ParseResult {
         Self::new().parse_plan(input)
     }
 
     /// Create a new parser with default configuration.
     pub fn new() -> Self {
-        Self::with_config(ParserConfig::default())
-    }
-
-    /// Create a new parser with the specified configuration.
-    pub fn with_config(config: ParserConfig) -> Self {
         Self {
             line_no: 1,
             state: State::Initial,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
-            config,
-            warnings: Vec::new(),
         }
     }
 
     /// Configure the parser to use the specified extension registry.
     pub fn with_extension_registry(mut self, registry: ExtensionRegistry) -> Self {
         self.extension_registry = registry;
-        self
-    }
-
-    /// Configure how the parser should handle unregistered extensions.
-    pub fn with_unregistered_extension_mode(mut self, mode: UnregisteredExtensionMode) -> Self {
-        self.config.unregistered_extension_mode = mode;
         self
     }
 
@@ -706,83 +657,8 @@ impl<'a> Parser<'a> {
             self.line_no += 1;
         }
 
-        let (plan, warnings) = self.build_plan()?;
-        Ok((plan, warnings))
-    }
-
-    /// Helper to add warnings during parsing
-    fn warn(&mut self, warning: ParseWarning) {
-        self.warnings.push(warning);
-    }
-
-    /// Check extension and possibly warn
-    fn check_extension(&mut self, name: &str, context: &str) -> Result<bool, ParseError> {
-        if self.extension_registry.has_extension(name) {
-            return Ok(true);
-        }
-
-        match self.config.unregistered_extension_mode {
-            UnregisteredExtensionMode::Error => Err(ParseError::UnregisteredExtension {
-                name: name.to_string(),
-                context: ParseContext::new(self.line_no, context.to_string()),
-            }),
-            UnregisteredExtensionMode::Warn => {
-                // Extract the extension kind from context (e.g., "ExtensionLeaf relation" -> "ExtensionLeaf")
-                let kind = context
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("Extension")
-                    .to_string();
-                self.warn(ParseWarning::UnregisteredExtension {
-                    context: ParseContext::new(self.line_no, context.to_string()),
-                    name: name.to_string(),
-                    kind,
-                });
-                Ok(true) // Continue with placeholder
-            }
-            UnregisteredExtensionMode::Ignore => Ok(true),
-        }
-    }
-
-    /// Extract custom extension name from a parsed extension relation pair
-    fn extract_extension_name(
-        &self,
-        pair: &pest::iterators::Pair<Rule>,
-    ) -> Result<String, ParseError> {
-        assert_eq!(pair.as_rule(), Rule::extension_relation);
-
-        // Find the extension_name pair
-        let extension_name_pair = pair
-            .clone()
-            .into_inner()
-            .find(|p| p.as_rule() == Rule::extension_name)
-            .ok_or_else(|| {
-                ParseError::Plan(
-                    ParseContext::new(self.line_no, pair.as_str().to_string()),
-                    MessageParseError::invalid(
-                        "extension_relation",
-                        pair.as_span(),
-                        "Missing extension name",
-                    ),
-                )
-            })?;
-
-        // The extension_name contains extension_type:custom_name
-        // We need to extract the custom_name part after the colon
-        let mut inner = extension_name_pair.into_inner();
-        let _extension_type = inner.next(); // Skip extension type
-        let custom_name_pair = inner.next().ok_or_else(|| {
-            ParseError::Plan(
-                ParseContext::new(self.line_no, pair.as_str().to_string()),
-                MessageParseError::invalid(
-                    "extension_name",
-                    pair.as_span(),
-                    "Missing custom extension name after colon",
-                ),
-            )
-        })?;
-
-        Ok(custom_name_pair.as_str().to_string())
+        let plan = self.build_plan()?;
+        Ok(plan)
     }
 
     /// Parse a single line of input.
@@ -808,25 +684,6 @@ impl<'a> Parser<'a> {
                 } else {
                     LineNode::parse(line_str, line_no)?
                 };
-
-                // Check if it's an extension relation and validate it
-                if let Ok(relation_pair) = node
-                    .pair
-                    .clone()
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::relation)
-                    .ok_or(())
-                    && let Ok(inner_pair) = relation_pair.clone().into_inner().next().ok_or(())
-                    && inner_pair.as_rule() == Rule::extension_relation
-                {
-                    // Extract the extension name and check if it's registered
-                    if let Ok(extension_name) = self.extract_extension_name(&inner_pair) {
-                        let relation_type =
-                            inner_pair.as_str().split(':').next().unwrap_or("extension");
-                        let context = format!("{relation_type} relation");
-                        self.check_extension(&extension_name, &context)?;
-                    }
-                }
 
                 self.relation_parser.tree.add_line(depth, node)
             }
@@ -882,30 +739,26 @@ impl<'a> Parser<'a> {
     }
 
     /// Build the plan from the parser state with warning collection.
-    fn build_plan(self) -> Result<(Plan, Vec<ParseWarning>), ParseError> {
+    fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
             relation_parser,
             extension_parser,
             extension_registry,
-            config,
-            mut warnings,
             ..
         } = self;
 
         let extensions = extension_parser.extensions();
 
         // Parse the tree into relations
-        let root_relations =
-            relation_parser.build(extensions, &extension_registry, &config, &mut warnings)?;
+        let root_relations = relation_parser.build(extensions, &extension_registry)?;
 
         // Build the final plan
-        let plan = Plan {
+        Ok(Plan {
             extension_urns: extensions.to_extension_urns(),
             extensions: extensions.to_extension_declarations(),
             relations: root_relations,
             ..Default::default()
-        };
-        Ok((plan, warnings))
+        })
     }
 }
 
@@ -1036,7 +889,7 @@ Project[$0, $1, 42, 84]
         }
 
         // Complete the current tree to convert it to relations
-        let (plan, _warnings) = parser.build_plan().unwrap();
+        let plan = parser.build_plan().unwrap();
 
         let root_rel = &plan.relations[0].rel_type;
         let first_rel = match root_rel {
@@ -1087,7 +940,7 @@ Root[result]
             parser.parse_line(line).unwrap();
         }
 
-        let (plan, _warnings) = parser.build_plan().unwrap();
+        let plan = parser.build_plan().unwrap();
 
         // Check that we have exactly one relation
         assert_eq!(plan.relations.len(), 1);
@@ -1137,7 +990,7 @@ Root[]
             parser.parse_line(line).unwrap();
         }
 
-        let (plan, _warnings) = parser.build_plan().unwrap();
+        let plan = parser.build_plan().unwrap();
 
         let root_rel = &plan.relations[0].rel_type;
         let rel_root = match root_rel {
@@ -1171,8 +1024,7 @@ Project[$0, $1, 42, 84]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;
 
-        let (plan, warnings) = Parser::parse(input).unwrap();
-        assert!(warnings.is_empty());
+        let plan = Parser::parse(input).unwrap();
 
         // Verify the plan structure
         assert_eq!(plan.extension_urns.len(), 2);

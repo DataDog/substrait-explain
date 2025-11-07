@@ -241,89 +241,11 @@ impl FromStr for SimpleExtensionDeclaration {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Parser;
-
-    #[test]
-    fn test_parse_urn_extension_declaration() {
-        let line = "@1: /my/urn1";
-        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
-        assert_eq!(urn.anchor, 1);
-        assert_eq!(urn.urn, "/my/urn1");
-    }
-
-    #[test]
-    fn test_parse_simple_extension_declaration() {
-        // Assumes a format like "@anchor: urn_anchor:name"
-        let line = "#5@2: my_function_name";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
-        assert_eq!(decl.anchor, 5);
-        assert_eq!(decl.urn_anchor, 2);
-        assert_eq!(decl.name, "my_function_name");
-
-        // Test with a different name format, e.g. with underscores and numbers
-        let line2 = "#10  @200: another_ext_123";
-        let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
-        assert_eq!(decl.anchor, 10);
-        assert_eq!(decl.urn_anchor, 200);
-        assert_eq!(decl.name, "another_ext_123");
-    }
-
-    #[test]
-    fn test_parse_urn_extension_declaration_str() {
-        let line = "@1: /my/urn1";
-        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
-        assert_eq!(urn.anchor, 1);
-        assert_eq!(urn.urn, "/my/urn1");
-    }
-
-    #[test]
-    fn test_extensions_round_trip_plan() {
-        let input = r#"
-=== Extensions
-URNs:
-  @  1: /urn/common
-  @  2: /urn/specific_funcs
-Functions:
-  # 10 @  1: func_a
-  # 11 @  2: func_b_special
-Types:
-  # 20 @  1: SomeType
-Type Variations:
-  # 30 @  2: VarX
-"#
-        .trim_start();
-
-        // Parse the input using the structural parser
-        let (plan, warnings) = Parser::parse(input).unwrap();
-
-        // Verify the plan has the expected extensions
-        assert_eq!(plan.extension_urns.len(), 2);
-        assert_eq!(plan.extensions.len(), 4);
-        assert!(warnings.is_empty());
-
-        // Convert the plan extensions back to SimpleExtensions
-        let (extensions, errors) =
-            SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
-
-        assert!(errors.is_empty());
-        // Convert back to string
-        let output = extensions.to_string("  ");
-
-        // The output should match the input
-        assert_eq!(output, input);
-    }
-}
-
 // Extension relation parsing implementations
 // These were moved from extensions/registry.rs to maintain clean architecture
 
 use crate::extensions::any::Any;
-use crate::parser::MessageParseError;
 use crate::parser::expressions::{FieldIndex, Name};
-use crate::parser::relations::RelationParsingContext;
 
 impl ParsePair for ExtensionValue {
     fn rule() -> Rule {
@@ -560,25 +482,77 @@ impl ExtensionRelationType {
     }
 }
 
-impl ExtensionArgs {
-    /// Convert ExtensionArgs to Rel - coordinates the entire process (Option A)
-    /// This method coordinates between registry resolution and structural relation creation.
-    pub fn to_rel(
-        self,
-        children: Vec<Box<substrait::proto::Rel>>,
-        context: &mut RelationParsingContext,
-    ) -> Result<substrait::proto::Rel, MessageParseError> {
-        let detail = context.resolve_extension_detail(&self)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
 
-        // CLEANUP: Fix the pest span here - this is a placeholder that should get real span
-        self.relation_type
-            .create_rel(detail, children)
-            .map_err(|e| {
-                MessageParseError::invalid(
-                    "extension_relation",
-                    pest::Span::new("", 0, 0).unwrap(),
-                    e,
-                )
-            })
+    #[test]
+    fn test_parse_urn_extension_declaration() {
+        let line = "@1: /my/urn1";
+        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
+        assert_eq!(urn.anchor, 1);
+        assert_eq!(urn.urn, "/my/urn1");
+    }
+
+    #[test]
+    fn test_parse_simple_extension_declaration() {
+        // Assumes a format like "@anchor: urn_anchor:name"
+        let line = "#5@2: my_function_name";
+        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        assert_eq!(decl.anchor, 5);
+        assert_eq!(decl.urn_anchor, 2);
+        assert_eq!(decl.name, "my_function_name");
+
+        // Test with a different name format, e.g. with underscores and numbers
+        let line2 = "#10  @200: another_ext_123";
+        let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
+        assert_eq!(decl.anchor, 10);
+        assert_eq!(decl.urn_anchor, 200);
+        assert_eq!(decl.name, "another_ext_123");
+    }
+
+    #[test]
+    fn test_parse_urn_extension_declaration_str() {
+        let line = "@1: /my/urn1";
+        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
+        assert_eq!(urn.anchor, 1);
+        assert_eq!(urn.urn, "/my/urn1");
+    }
+
+    #[test]
+    fn test_extensions_round_trip_plan() {
+        let input = r#"
+=== Extensions
+URNs:
+  @  1: /urn/common
+  @  2: /urn/specific_funcs
+Functions:
+  # 10 @  1: func_a
+  # 11 @  2: func_b_special
+Types:
+  # 20 @  1: SomeType
+Type Variations:
+  # 30 @  2: VarX
+"#
+        .trim_start();
+
+        // Parse the input using the structural parser
+        let plan = Parser::parse(input).unwrap();
+
+        // Verify the plan has the expected extensions
+        assert_eq!(plan.extension_urns.len(), 2);
+        assert_eq!(plan.extensions.len(), 4);
+
+        // Convert the plan extensions back to SimpleExtensions
+        let (extensions, errors) =
+            SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
+
+        assert!(errors.is_empty());
+        // Convert back to string
+        let output = extensions.to_string("  ");
+
+        // The output should match the input
+        assert_eq!(output, input);
     }
 }

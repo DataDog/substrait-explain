@@ -68,17 +68,9 @@ impl<'a> From<&'a ExtensionValue> for Value<'a> {
                 // For string values, we create a Name
                 Value::Name(Name(s.as_str()))
             }
-            ExtensionValue::Integer(i) => Value::Integer(*i as i32),
-            ExtensionValue::Float(_f) => {
-                // Float is not directly supported in Value enum
-                // Convert to string representation for now
-                Value::Name(Name(Box::leak(format!("{_f}").into_boxed_str())))
-            }
-            ExtensionValue::Boolean(b) => {
-                // Boolean is not directly supported in Value enum
-                // Convert to string representation
-                Value::Name(Name(Box::leak(b.to_string().into_boxed_str())))
-            }
+            ExtensionValue::Integer(i) => Value::Integer(*i),
+            ExtensionValue::Float(f) => Value::Float(*f),
+            ExtensionValue::Boolean(b) => Value::Boolean(*b),
             ExtensionValue::Reference(r) => Value::Reference(*r),
             // TODO: Expression variant not yet implemented
         }

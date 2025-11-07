@@ -60,14 +60,7 @@ use textify::plan::PlanWriter;
 /// }
 /// ```
 pub fn parse(input: &str) -> Result<Plan, ParseError> {
-    match parser::Parser::parse(input) {
-        Ok(parse_result) => {
-            // Extract the plan from the tuple result, ignoring warnings
-            let (plan, _warnings) = parse_result;
-            Ok(plan)
-        }
-        Err(e) => Err(e),
-    }
+    parser::Parser::parse(input)
 }
 
 /// Format a Substrait plan as human-readable text.
