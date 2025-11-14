@@ -1,5 +1,6 @@
 use std::fmt::{self};
 
+use chrono::{DateTime, NaiveDate};
 use expr::RexType;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
@@ -59,6 +60,54 @@ pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fm
 pub fn timestamp_to_string(t: i64) -> String {
     let ts = chrono::DateTime::from_timestamp_nanos(t);
     ts.to_rfc3339()
+}
+
+/// Convert days since Unix epoch to date string
+fn days_to_date_string(days: i32) -> String {
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let date = epoch + chrono::Duration::days(days as i64);
+    date.format("%Y-%m-%d").to_string()
+}
+
+/// Convert microseconds since midnight to time string
+fn microseconds_to_time_string(microseconds: i64) -> String {
+    let total_seconds = microseconds / 1_000_000;
+    let remaining_microseconds = microseconds % 1_000_000;
+
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if remaining_microseconds == 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        // Convert microseconds to fractional seconds
+        let fractional = remaining_microseconds as f64 / 1_000_000.0;
+        format!("{hours:02}:{minutes:02}:{seconds:02}{fractional:.6}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
+/// Convert microseconds since Unix epoch to timestamp string
+fn microseconds_to_timestamp_string(microseconds: i64) -> String {
+    let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
+    let duration = chrono::Duration::microseconds(microseconds);
+    let datetime = epoch + duration;
+
+    // Format with fractional seconds, then clean up trailing zeros
+    let formatted = datetime.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+
+    // If there are fractional seconds, trim trailing zeros and dot if needed
+    if formatted.contains('.') {
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    } else {
+        formatted
+    }
 }
 
 trait Kinded {
@@ -194,7 +243,7 @@ impl Textify for LiteralType {
             }
             LiteralType::String(s) => write!(w, "'{}'", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
-            LiteralType::Timestamp(t) => {
+            LiteralType::Timestamp(microseconds) => {
                 let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
                     None => {
@@ -207,30 +256,40 @@ impl Textify for LiteralType {
                         return Ok(());
                     }
                 };
-                let s = timestamp_to_string(*t);
+                let s = microseconds_to_timestamp_string(*microseconds);
                 textify_literal_from_string(&s, k, ctx, w)?
             }
-            LiteralType::Date(_) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Date"),
-                        "Date literal textification not implemented",
-                    ))
-                );
+            LiteralType::Date(days) => {
+                let k = match self.kind(ctx.extensions()) {
+                    Some(k) => k,
+                    None => {
+                        let err = PlanError::internal(
+                            "LiteralType",
+                            Some("Date"),
+                            format!("No kind found for {self:?}"),
+                        );
+                        write!(w, "{}", ctx.failure(err))?;
+                        return Ok(());
+                    }
+                };
+                let s = days_to_date_string(*days);
+                textify_literal_from_string(&s, k, ctx, w)?
             }
-            LiteralType::Time(_) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Time"),
-                        "Time literal textification not implemented",
-                    ))
-                );
+            LiteralType::Time(microseconds) => {
+                let k = match self.kind(ctx.extensions()) {
+                    Some(k) => k,
+                    None => {
+                        let err = PlanError::internal(
+                            "LiteralType",
+                            Some("Time"),
+                            format!("No kind found for {self:?}"),
+                        );
+                        write!(w, "{}", ctx.failure(err))?;
+                        return Ok(());
+                    }
+                };
+                let s = microseconds_to_time_string(*microseconds);
+                textify_literal_from_string(&s, k, ctx, w)?
             }
             LiteralType::IntervalYearToMonth(_i) => {
                 return write!(
