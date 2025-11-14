@@ -35,6 +35,10 @@ impl Name for TestScanConfig {
 
 // Implement Explainable for text format conversion
 impl Explainable for TestScanConfig {
+    fn name() -> &'static str {
+        "TestScan"
+    }
+
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let path = match args.get_named_arg("path") {
             Some(ExtensionValue::String(s)) => s.clone(),
@@ -113,7 +117,7 @@ impl Explainable for TestScanConfig {
 fn test_extension_leaf_roundtrip() {
     // Create and populate extension registry
     let mut registry = ExtensionRegistry::new();
-    registry.register::<TestScanConfig>("TestScan");
+    registry.register::<TestScanConfig>();
 
     // Test plan with custom extension
     let plan_text = r#"
@@ -155,7 +159,7 @@ Root[result]
 fn test_multiple_extensions_in_plan() {
     // Create registry with multiple extension types
     let mut registry = ExtensionRegistry::new();
-    registry.register::<TestScanConfig>("TestScan");
+    registry.register::<TestScanConfig>();
 
     // Also register a second type for variety
     #[derive(Clone, PartialEq, Message)]
@@ -178,6 +182,10 @@ fn test_multiple_extensions_in_plan() {
     }
 
     impl Explainable for FilterConfig {
+        fn name() -> &'static str {
+            "TestFilter"
+        }
+
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let expression = match args.get_named_arg("expr") {
                 Some(ExtensionValue::String(s)) => s.clone(),
@@ -205,7 +213,7 @@ fn test_multiple_extensions_in_plan() {
         }
     }
 
-    registry.register::<FilterConfig>("TestFilter");
+    registry.register::<FilterConfig>();
 
     // Plan with multiple extension types
     let plan_text = r#"
@@ -252,6 +260,10 @@ impl Name for LiteralConfig {
 }
 
 impl Explainable for LiteralConfig {
+    fn name() -> &'static str {
+        "LiteralTest"
+    }
+
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let path = match args.get_named_arg("path") {
             Some(ExtensionValue::String(s)) => s.clone(),
@@ -331,7 +343,7 @@ impl Explainable for LiteralConfig {
 #[test]
 fn test_extension_literal_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<LiteralConfig>("LiteralTest");
+    registry.register::<LiteralConfig>();
 
     let plan_text = r#"
 === Plan

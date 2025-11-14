@@ -24,6 +24,12 @@ name = "advanced_usage"
 path = "examples/advanced_usage.rs"
 required-features = ["serde"]
 
+
+[[example]]
+name = "extensions"
+path = "examples/extensions.rs"
+required-features = ["cli"]
+
 [features]
 # Use a pre-built protoc binary instead of building from source. Useful for CI.
 protoc = ["substrait/protoc"]

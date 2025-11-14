@@ -8,11 +8,12 @@ use std::borrow::Cow;
 use substrait::proto::Plan;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::parser::Parser;
+use substrait_explain::textify::foundation::ErrorList;
 use substrait_explain::textify::plan::PlanWriter;
 use substrait_explain::textify::{ErrorQueue, OutputOptions, Visibility};
 
 /// Helper function to format a plan with given options and print the result with error handling
-fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) {
+fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) -> Result<(), ErrorList> {
     let options = match options {
         Some(options) => Cow::Borrowed(options),
         None => Cow::Owned(OutputOptions::default()),
@@ -22,17 +23,10 @@ fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) {
 
     println!("{formatter}");
 
-    // Check for errors
-    for (i, error) in errors.into_iter().enumerate() {
-        if i == 0 {
-            println!("Warnings during conversion:");
-        }
-        println!("  - {i}: {error}");
-    }
-    println!();
+    errors.errs()
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse a plan with extensions
     let plan_text = r#"
 === Extensions
@@ -48,34 +42,32 @@ Root[revenue]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 
-    match Parser::parse(plan_text) {
-        Ok(plan) => {
-            // Show the plan in YAML format
-            println!("Plan Structure (YAML):");
-            match serde_yaml::to_string(&plan) {
-                Ok(yaml) => println!("{yaml}"),
-                Err(e) => println!("Error formatting YAML: {e}"),
-            }
-            println!();
-
-            // Standard output (concise)
-            println!("Standard Output:");
-            print_with_errors(&plan, None);
-
-            // Verbose output (shows all details)
-            println!("Verbose Output:");
-            print_with_errors(&plan, Some(&OutputOptions::verbose()));
-
-            // Custom output options
-            let custom_options = OutputOptions {
-                literal_types: Visibility::Always, // Show types for all literals
-                indent: "    ".to_string(),        // 4 spaces instead of 2
-                ..OutputOptions::default()
-            };
-
-            println!("Custom Output (4-space indent, always show types):");
-            print_with_errors(&plan, Some(&custom_options));
-        }
-        Err(e) => println!("Error parsing plan: {e}"),
+    let plan = Parser::parse(plan_text)?;
+    // Show the plan in YAML format
+    println!("Plan Structure (YAML):");
+    match serde_yaml::to_string(&plan) {
+        Ok(yaml) => println!("{yaml}"),
+        Err(e) => println!("Error formatting YAML: {e}"),
     }
+    println!();
+
+    // Standard output (concise)
+    println!("Standard Output:");
+    print_with_errors(&plan, None)?;
+
+    // Verbose output (shows all details)
+    println!("Verbose Output:");
+    print_with_errors(&plan, Some(&OutputOptions::verbose()))?;
+
+    // Custom output options
+    let custom_options = OutputOptions {
+        literal_types: Visibility::Always, // Show types for all literals
+        indent: "    ".to_string(),        // 4 spaces instead of 2
+        ..OutputOptions::default()
+    };
+
+    println!("Custom Output (4-space indent, always show types):");
+    print_with_errors(&plan, Some(&custom_options))?;
+
+    Ok(())
 }

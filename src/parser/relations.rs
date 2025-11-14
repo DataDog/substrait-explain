@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use pest::Span;
 use pest::iterators::Pair;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
@@ -46,13 +45,9 @@ impl<'a> RelationParsingContext<'a> {
                 name: extension_args.extension_name.clone(),
                 context: ParseContext::new(self.line_no, self.line.to_string()),
             }),
-            Err(err) => Err(ParseError::Plan(
+            Err(err) => Err(ParseError::ExtensionDetail(
                 ParseContext::new(self.line_no, self.line.to_string()),
-                MessageParseError::invalid(
-                    "extension_relation",
-                    Span::new("", 0, 0).unwrap(),
-                    err.to_string(),
-                ),
+                err,
             )),
         }
     }

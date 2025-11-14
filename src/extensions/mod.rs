@@ -9,7 +9,7 @@ pub mod conversion;
 pub mod registry;
 pub mod simple;
 
-pub use any::Any;
+pub use any::{Any, AnyRef};
 pub use args::{ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue};
 pub use registry::{AnyConvertible, Explainable, ExtensionError, ExtensionRegistry};
 pub use simple::{InsertError, SimpleExtension, SimpleExtensions};

@@ -23,7 +23,7 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{ExtensionRegistry, AnyConvertible, Explainable};
-//! use substrait_explain::extensions::{ExtensionArgs, ExtensionError, ExtensionValue, Any};
+//! use substrait_explain::extensions::{ExtensionArgs, ExtensionError, ExtensionValue, Any, AnyRef};
 //!
 //! // Define a custom extension type
 //! struct ParquetScanConfig {
@@ -40,9 +40,9 @@
 //!         ))
 //!     }
 //!
-//!     fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+//!     fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
 //!         // Deserialize from Any
-//!         let path = String::from_utf8(any.value.clone())
+//!         let path = String::from_utf8(any.value.to_vec())
 //!             .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {}", e)))?;
 //!         Ok(ParquetScanConfig { path })
 //!     }
@@ -54,6 +54,10 @@
 //!
 //! // Implement Explainable for text format conversion
 //! impl Explainable for ParquetScanConfig {
+//!     fn name() -> &'static str {
+//!         "ParquetScan"
+//!     }
+//!
 //!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
 //!         let path = match args.get_named_arg("path") {
 //!             Some(ExtensionValue::String(s)) => s.clone(),
@@ -76,7 +80,7 @@
 //!
 //! // Register the extension type
 //! let mut registry = ExtensionRegistry::new();
-//! registry.register::<ParquetScanConfig>("ParquetScan");
+//! registry.register::<ParquetScanConfig>();
 //! ```
 
 use std::collections::HashMap;
@@ -113,16 +117,15 @@ pub enum ExtensionError {
     TypeMismatch { expected: String, actual: String },
 }
 
-// All extension data structures have been moved to extensions/args.rs
-// Parsing implementations have been moved to parser/extensions.rs
-
-/// Trait for types that can be converted to/from protobuf Any messages
+/// Trait for types that can be converted to/from protobuf Any messages. Note
+/// that this is already implemented for all prost::Message types. For custom
+/// types, implement this trait.
 pub trait AnyConvertible: Sized {
     /// Convert this type to a protobuf Any message
     fn to_any(&self) -> Result<Any, ExtensionError>;
 
     /// Convert from a protobuf Any message to this type
-    fn from_any(any: &Any) -> Result<Self, ExtensionError>;
+    fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError>;
 
     /// Get the protobuf type URL for this type.
     /// For prost::Message types, this is provided automatically.
@@ -141,7 +144,7 @@ where
         Any::encode(self)
     }
 
-    fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+    fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
         any.decode()
     }
 
@@ -150,8 +153,18 @@ where
     }
 }
 
-/// Trait for types that can be converted to/from ExtensionArgs
+/// Trait for types that participate in text explanations.
 pub trait Explainable: Sized {
+    /// Canonical textual name for this extension. This is what appears in
+    /// Substrait text plans and how the registry identifies the type.
+    fn name() -> &'static str;
+
+    /// Optional aliases that should also resolve to this extension when parsing
+    /// text. The canonical `name()` is always used when textifying.
+    fn aliases() -> &'static [&'static str] {
+        &[]
+    }
+
     /// Parse extension arguments into this type
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
 
@@ -217,7 +230,7 @@ impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for Exten
         // Convert: AnyRef -> Any -> T -> ExtensionArgs
         // Create an owned Any from the AnyRef to work with existing T::from_any
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
-        T::from_any(&owned_any)?.to_args()
+        T::from_any(owned_any.as_ref())?.to_args()
     }
 
     fn argument_order(&self) -> Vec<String> {
@@ -242,18 +255,51 @@ impl ExtensionRegistry {
     }
 
     /// Register an extension type that implements both AnyConvertible and Explainable
-    pub fn register<T>(&mut self, name: impl Into<String>)
+    ///
+    /// The canonical textual name comes from `T::name()`. Additional aliases can
+    /// be provided via `T::aliases()`.
+    pub fn register<T>(&mut self)
     where
         T: AnyConvertible + Explainable + Send + Sync + 'static,
     {
-        let name = name.into();
+        let canonical_name = T::name();
         let type_url = T::type_url();
+        let handler: Arc<dyn ExtensionConverter> =
+            Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData));
 
-        self.handlers.insert(
-            name.clone(),
-            Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData)),
-        );
-        self.type_urls.insert(type_url, name);
+        if self.handlers.contains_key(canonical_name) {
+            panic!("Extension '{}' already registered", canonical_name);
+        }
+
+        self.handlers
+            .insert(canonical_name.to_string(), Arc::clone(&handler));
+
+        for &alias in T::aliases() {
+            if alias == canonical_name {
+                continue;
+            }
+            if self.handlers.contains_key(alias) {
+                panic!(
+                    "Extension alias '{}' collides with an existing handler",
+                    alias
+                );
+            }
+            self.handlers
+                .insert(alias.to_string(), Arc::clone(&handler));
+        }
+
+        match self
+            .type_urls
+            .insert(type_url.clone(), canonical_name.to_string())
+        {
+            Some(existing) if existing != canonical_name => {
+                panic!(
+                    "Type URL '{}' already registered to '{}'",
+                    type_url, existing
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Parse extension arguments into a protobuf Any message
@@ -295,7 +341,10 @@ impl ExtensionRegistry {
 
     /// Get all registered extension names
     pub fn extension_names(&self) -> Vec<&str> {
-        self.handlers.keys().map(|s| s.as_str()).collect()
+        let mut names: Vec<&str> = self.type_urls.values().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 
     /// Check if an extension is registered
@@ -338,9 +387,9 @@ mod tests {
             "test.TestExtension".to_string()
         }
 
-        fn from_any(any: &Any) -> Result<Self, ExtensionError> {
+        fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
             // Simple test implementation - parse from JSON-like bytes
-            let json_str = String::from_utf8(any.value.clone())
+            let json_str = String::from_utf8(any.value.to_vec())
                 .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {e}")))?;
 
             // Simple manual parsing for test
@@ -356,6 +405,10 @@ mod tests {
     }
 
     impl Explainable for TestExtension {
+        fn name() -> &'static str {
+            "TestExtension"
+        }
+
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let path = match args.get_named_arg("path") {
                 Some(ExtensionValue::String(s)) => s.clone(),
@@ -404,7 +457,7 @@ mod tests {
         assert!(!registry.has_extension("TestExtension"));
 
         // Register extension type
-        registry.register::<TestExtension>("TestExtension");
+        registry.register::<TestExtension>();
 
         // Now has extension
         assert_eq!(registry.extension_names().len(), 1);

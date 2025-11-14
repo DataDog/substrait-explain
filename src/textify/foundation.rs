@@ -125,14 +125,12 @@ impl ErrorAccumulator for ErrorQueue {
 
 impl fmt::Display for ErrorQueue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut first = true;
-        for e in self.receiver.try_iter() {
-            if first {
-                first = false;
-            } else {
-                writeln!(f)?;
+        for (i, e) in self.receiver.try_iter().enumerate() {
+            if i == 0 {
+                writeln!(f, "Warnings during conversion:")?;
             }
-            write!(f, "{e}")?;
+            let error_number = i + 1;
+            writeln!(f, "  - {error_number}: {e}")?;
         }
         Ok(())
     }
@@ -187,6 +185,8 @@ impl fmt::Debug for ErrorList {
         Ok(())
     }
 }
+
+impl std::error::Error for ErrorList {}
 
 impl<'e> IntoIterator for &'e ErrorQueue {
     type Item = FormatError;

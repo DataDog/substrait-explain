@@ -5,7 +5,7 @@
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format, format_with_options};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Substrait-Explain Basic Usage ===\n");
 
     // Parse a plan with extensions
@@ -23,33 +23,32 @@ Root[revenue]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 
-    match Parser::parse(plan_text) {
-        Ok(plan) => {
-            // Output with standard options
-            let (text, errors) = format(&plan);
-            println!("== Standard output ==");
-            println!("{text}");
+    let plan = Parser::parse(plan_text)?;
+    // Output with standard options
+    let (text, errors) = format(&plan);
+    println!("== Standard output ==");
+    println!("{text}");
 
-            if !errors.is_empty() {
-                println!("Warnings during conversion:");
-                for error in errors {
-                    println!("  - {error}");
-                }
-            }
-
-            // Output with verbose options
-            let (verbose_text, verbose_errors) =
-                format_with_options(&plan, &OutputOptions::verbose());
-            println!("\n== Verbose output ==");
-            println!("{verbose_text}");
-
-            if !verbose_errors.is_empty() {
-                println!("Warnings during verbose conversion:");
-                for error in verbose_errors {
-                    println!("  - {error}");
-                }
-            }
+    if !errors.is_empty() {
+        println!("Warnings during conversion:");
+        for error in errors {
+            println!("  - {error}");
         }
-        Err(e) => println!("Error parsing plan: {e}"),
+        return Err(("Unexpected warnings during conversion!!!").into());
     }
+
+    // Output with verbose options
+    let (verbose_text, verbose_errors) = format_with_options(&plan, &OutputOptions::verbose());
+    println!("\n== Verbose output ==");
+    println!("{verbose_text}");
+
+    if !verbose_errors.is_empty() {
+        println!("Warnings during verbose conversion:");
+        for error in verbose_errors {
+            println!("  - {error}");
+        }
+        return Err(("Unexpected warnings during verbose conversion!!!").into());
+    }
+
+    Ok(())
 }

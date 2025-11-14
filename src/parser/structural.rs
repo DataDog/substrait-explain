@@ -361,11 +361,7 @@ impl<'a> RelationParser<'a> {
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
-                    MessageParseError::invalid(
-                        "extension_relation",
-                        pest::Span::new("", 0, 0).unwrap(),
-                        e,
-                    ),
+                    MessageParseError::invalid("extension_relation", pair_span, e),
                 )
             })
     }

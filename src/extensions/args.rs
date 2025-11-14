@@ -117,40 +117,6 @@ impl ExtensionRelationType {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ExtensionRelationType;
-
-    #[test]
-    fn extension_multi_allows_zero_children() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(0).is_ok());
-    }
-
-    #[test]
-    fn extension_multi_allows_single_child() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(1).is_ok());
-    }
-
-    #[test]
-    fn extension_multi_allows_multiple_children() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(3).is_ok());
-    }
-
-    #[test]
-    fn extension_single_rejects_wrong_child_counts() {
-        assert!(
-            ExtensionRelationType::Single
-                .validate_child_count(0)
-                .is_err()
-        );
-        assert!(
-            ExtensionRelationType::Single
-                .validate_child_count(2)
-                .is_err()
-        );
-    }
-}
-
 // Note: create_rel is implemented in parser/extensions.rs to avoid
 // pulling in protobuf dependencies in the core args module
 
@@ -213,7 +179,8 @@ impl ExtensionArgs {
         let mut remaining_args: Vec<_> = self
             .named
             .iter()
-            .filter(|(name, _)| !self.argument_order.iter().any(|o| o == *name))
+            // Filter out arguments that are in the argument_order - already included above
+            .filter(|(name, _)| !self.argument_order.contains(name))
             .collect();
         remaining_args.sort_by_key(|(name, _)| name.as_str());
 
@@ -222,5 +189,39 @@ impl ExtensionArgs {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExtensionRelationType;
+
+    #[test]
+    fn extension_multi_allows_zero_children() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(0).is_ok());
+    }
+
+    #[test]
+    fn extension_multi_allows_single_child() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(1).is_ok());
+    }
+
+    #[test]
+    fn extension_multi_allows_multiple_children() {
+        assert!(ExtensionRelationType::Multi.validate_child_count(3).is_ok());
+    }
+
+    #[test]
+    fn extension_single_rejects_wrong_child_counts() {
+        assert!(
+            ExtensionRelationType::Single
+                .validate_child_count(0)
+                .is_err()
+        );
+        assert!(
+            ExtensionRelationType::Single
+                .validate_child_count(2)
+                .is_err()
+        );
     }
 }
