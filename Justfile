@@ -1,3 +1,6 @@
+# Default target is to run all checks and tests, including the examples.
+default: check test examples
+
 # Run clippy and fmt to check for linting errors and fix them.
 fix: fmt
     cargo clippy --examples --tests --all-features --fix --allow-dirty --allow-staged
@@ -20,6 +23,11 @@ test:
 # Run clippy to check for linting errors.
 check:
     cargo clippy --examples --tests --all-features
+
+examples:
+    cargo run --example basic_usage
+    cargo run --example advanced_usage --features serde
+    cargo run --example extensions --features cli
 
 # Generate the LICENSE-3rdparty.csv file from the Cargo.lock file, for tracking
 # licenses of third-parties.
