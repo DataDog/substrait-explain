@@ -8,64 +8,54 @@ use substrait_explain::extensions::{
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
 
-/// Custom protobuf message for our test extension.
+/// A custom extension configuration for a hypothetical "UserTable" data source.
+/// This differs from the file-based scan in the example by using logical table properties.
 #[derive(Clone, PartialEq, Message)]
-pub struct TestScanConfig {
+pub struct UserTableConfig {
     #[prost(string, tag = "1")]
-    pub path: String,
+    pub table_name: String,
     #[prost(int64, tag = "2")]
-    pub batch_size: i64,
-    #[prost(string, repeated, tag = "3")]
-    pub columns: Vec<String>,
+    pub version: i64,
+    #[prost(bool, tag = "3")]
+    pub is_temporary: bool,
+    #[prost(string, repeated, tag = "4")]
+    pub tracked_columns: Vec<String>,
 }
 
 // Implement Name trait for protobuf type URL
-impl Name for TestScanConfig {
-    const NAME: &'static str = "TestScanConfig";
+impl Name for UserTableConfig {
+    const NAME: &'static str = "UserTableConfig";
     const PACKAGE: &'static str = "test";
 
     fn full_name() -> String {
-        "test.TestScanConfig".to_string()
+        "test.UserTableConfig".to_string()
     }
 
     fn type_url() -> String {
-        "type.googleapis.com/test.TestScanConfig".to_string()
+        "type.googleapis.com/test.UserTableConfig".to_string()
     }
 }
 
 // Implement Explainable for text format conversion
-impl Explainable for TestScanConfig {
+impl Explainable for UserTableConfig {
     fn name() -> &'static str {
-        "TestScan"
+        "UserTable"
     }
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let path = match args.get_named_arg("path") {
-            Some(ExtensionValue::String(s)) => s.clone(),
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "path must be a string".to_string(),
-                ));
-            }
-            None => return Err(ExtensionError::MissingArgument("path".to_string())),
-        };
+        let mut extractor = args.extractor();
+        let table_name: &str = extractor.expect_named_arg("name")?;
+        let version: i64 = extractor.get_named_or("version", 1)?;
+        let is_temporary: bool = extractor.get_named_or("temp", false)?;
 
-        let batch_size = match args.get_named_arg("batch_size") {
-            Some(ExtensionValue::Integer(i)) => *i,
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "batch_size must be an integer".to_string(),
-                ));
-            }
-            None => 1024, // Default value
-        };
+        extractor.check_exhausted()?;
 
-        // Extract columns from output columns
-        let mut columns = Vec::new();
+        // Extract columns from output columns to populate tracked_columns
+        let mut tracked_columns = Vec::new();
         for col in &args.output_columns {
             match col {
                 ExtensionColumn::Named { name, .. } => {
-                    columns.push(name.clone());
+                    tracked_columns.push(name.clone());
                 }
                 _ => {
                     return Err(ExtensionError::InvalidArgument(
@@ -75,10 +65,11 @@ impl Explainable for TestScanConfig {
             }
         }
 
-        Ok(TestScanConfig {
-            path,
-            batch_size,
-            columns,
+        Ok(UserTableConfig {
+            table_name: table_name.to_string(),
+            version,
+            is_temporary,
+            tracked_columns,
         })
     }
 
@@ -87,16 +78,17 @@ impl Explainable for TestScanConfig {
 
         // Add named arguments
         args.add_named_arg(
-            "path".to_string(),
-            ExtensionValue::String(self.path.clone()),
+            "name".to_string(),
+            ExtensionValue::String(self.table_name.clone()),
         );
+        args.add_named_arg("version".to_string(), ExtensionValue::Integer(self.version));
         args.add_named_arg(
-            "batch_size".to_string(),
-            ExtensionValue::Integer(self.batch_size),
+            "temp".to_string(),
+            ExtensionValue::Boolean(self.is_temporary),
         );
 
         // Add output columns
-        for column in &self.columns {
+        for column in &self.tracked_columns {
             args.add_output_column(ExtensionColumn::Named {
                 name: column.clone(),
                 type_spec: "string".to_string(), // Simplified for test
@@ -106,34 +98,34 @@ impl Explainable for TestScanConfig {
         Ok(args)
     }
 
-    /// Specify preferred argument order: path first, then batch_size
+    /// Specify preferred argument order
     fn argument_order() -> Vec<String> {
-        vec!["path".to_string(), "batch_size".to_string()]
+        vec![
+            "name".to_string(),
+            "version".to_string(),
+            "temp".to_string(),
+        ]
     }
 }
 
 #[test]
 fn test_extension_leaf_roundtrip() {
-    // Create and populate extension registry
     let mut registry = ExtensionRegistry::new();
-    registry.register::<TestScanConfig>();
+    registry.register::<UserTableConfig>();
 
-    // Test plan with custom extension
+    // Test plan with UserTable extension
     let plan_text = r#"
 === Plan
 Root[result]
-  ExtensionLeaf:TestScan[path='data/test.parquet', batch_size=2048 => id:string, name:string, value:string]
+  ExtensionLeaf:UserTable[name='customers', version=2, temp=true => id:string, region:string]
 "#;
 
-    // Parse with registry
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
 
-    // Format back to text with registry
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
     assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
 
-    // Validate that the formatted output matches the input
     assert_eq!(formatted.trim(), plan_text.trim());
 }
 
@@ -150,15 +142,12 @@ Root[result]
     let parser = Parser::default();
     let result = parser.parse_plan(plan_text);
     assert!(result.is_err());
-
-    // Debugging-oriented parsing without a registry remains unsupported.
 }
 
 #[test]
 fn test_multiple_extensions_in_plan() {
-    // Create registry with multiple extension types
     let mut registry = ExtensionRegistry::new();
-    registry.register::<TestScanConfig>();
+    registry.register::<UserTableConfig>();
 
     // Also register a second type for variety
     #[derive(Clone, PartialEq, Message)]
@@ -186,15 +175,9 @@ fn test_multiple_extensions_in_plan() {
         }
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let expression = match args.get_named_arg("expr") {
-                Some(ExtensionValue::String(s)) => s.clone(),
-                Some(_) => {
-                    return Err(ExtensionError::InvalidArgument(
-                        "expr must be a string".to_string(),
-                    ));
-                }
-                None => return Err(ExtensionError::MissingArgument("expr".to_string())),
-            };
+            let mut extractor = args.extractor();
+            let expression: String = extractor.expect_named_arg::<&str>("expr")?.to_string();
+            extractor.check_exhausted()?;
 
             Ok(FilterConfig { expression })
         }
@@ -215,15 +198,13 @@ fn test_multiple_extensions_in_plan() {
     let plan_text = r#"
 === Plan
 Root[result]
-  ExtensionSingle:TestFilter[expr='value > 100' => $0, $1, $2]
-    ExtensionLeaf:TestScan[path='data/test.parquet', batch_size=1024 => id:string, name:string, value:i64]
+  ExtensionSingle:TestFilter[expr='status = "active"' => $0, $1]
+    ExtensionLeaf:UserTable[name='users_prod', version=1, temp=false => id:i64, status:string]
 "#;
 
-    // Parse with registry
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
 
-    // Verify both extensions were parsed
     assert_eq!(plan.relations.len(), 1);
 }
 
@@ -261,46 +242,25 @@ impl Explainable for LiteralConfig {
     }
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let path = match args.get_named_arg("path") {
-            Some(ExtensionValue::String(s)) => s.clone(),
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "path must be a string".to_string(),
-                ));
-            }
-            None => return Err(ExtensionError::MissingArgument("path".to_string())),
-        };
+        let mut extractor = args.extractor();
+        let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
+        let big: i64 = extractor.expect_named_arg("big")?;
 
-        let big = match args.get_named_arg("big") {
-            Some(ExtensionValue::Integer(i)) => *i,
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "big must be an integer".to_string(),
-                ));
-            }
-            None => return Err(ExtensionError::MissingArgument("big".to_string())),
-        };
-
-        let ratio = match args.get_named_arg("ratio") {
+        // Manually handle ratio to support both Integer and Float types
+        let ratio = match extractor.get_named_arg("ratio") {
             Some(ExtensionValue::Float(f)) => *f,
             Some(ExtensionValue::Integer(i)) => *i as f64,
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "ratio must be a float".to_string(),
-                ));
+            Some(v) => {
+                return Err(ExtensionError::InvalidArgument(format!(
+                    "ratio must be a float, got {v}"
+                )));
             }
             None => return Err(ExtensionError::MissingArgument("ratio".to_string())),
         };
 
-        let enabled = match args.get_named_arg("enabled") {
-            Some(ExtensionValue::Boolean(b)) => *b,
-            Some(_) => {
-                return Err(ExtensionError::InvalidArgument(
-                    "enabled must be a boolean".to_string(),
-                ));
-            }
-            None => return Err(ExtensionError::MissingArgument("enabled".to_string())),
-        };
+        let enabled: bool = extractor.expect_named_arg("enabled")?;
+
+        extractor.check_exhausted()?;
 
         Ok(LiteralConfig {
             path,
@@ -353,4 +313,28 @@ Root[result]
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
     assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
     assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_extension_unknown_arguments() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register::<UserTableConfig>();
+
+    // Test plan with unknown argument 'invalid_arg'
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:UserTable[name='customers', version=2, invalid_arg=true => id:string]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let result = parser.parse_plan(plan_text);
+
+    // Should fail during parsing when it tries to convert args
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Unknown named arguments: invalid_arg")
+    );
 }

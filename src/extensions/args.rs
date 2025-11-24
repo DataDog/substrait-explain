@@ -3,7 +3,12 @@
 //! This module contains the core data structures for extension arguments,
 //! values, and columns without any parser or textify dependencies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+use super::ExtensionError;
+use crate::textify::expressions::Reference;
+use crate::textify::types::escaped;
 
 /// Represents the arguments and output columns for an extension relation
 #[derive(Debug, Clone)]
@@ -23,6 +28,81 @@ pub struct ExtensionArgs {
     pub argument_order: Vec<String>,
 }
 
+/// Helper struct for extracting named arguments with validation
+pub struct ArgsExtractor<'a> {
+    args: &'a ExtensionArgs,
+    // Track keys that have been successfully requested/accessed
+    consumed: HashSet<&'a str>,
+}
+
+impl<'a> ArgsExtractor<'a> {
+    /// Create a new extractor for the given arguments
+    pub fn new(args: &'a ExtensionArgs) -> Self {
+        Self {
+            args,
+            consumed: HashSet::new(),
+        }
+    }
+
+    /// Get a named argument value, marking it as consumed if found.
+    pub fn get_named_arg(&mut self, name: &str) -> Option<&'a ExtensionValue> {
+        match self.args.named.get_key_value(name) {
+            Some((k, value)) => {
+                self.consumed.insert(k);
+                Some(value)
+            }
+            None => None,
+        }
+    }
+
+    /// Get a named argument value or return an error
+    /// Marks the argument as consumed if found
+    pub fn expect_named_arg<T>(&mut self, name: &str) -> Result<T, ExtensionError>
+    where
+        T: TryFrom<&'a ExtensionValue>,
+        T::Error: Into<ExtensionError>,
+    {
+        match self.get_named_arg(name) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Err(ExtensionError::MissingArgument(name.to_string())),
+        }
+    }
+
+    /// Get a named argument value or default
+    /// Marks the argument as consumed if it exists in the source args
+    pub fn get_named_or<T>(&mut self, name: &str, default: T) -> Result<T, ExtensionError>
+    where
+        T: TryFrom<&'a ExtensionValue>,
+        T::Error: Into<ExtensionError>,
+    {
+        match self.get_named_arg(name) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Ok(default),
+        }
+    }
+
+    /// Check that all named arguments in the source have been consumed
+    pub fn check_exhausted(&self) -> Result<(), ExtensionError> {
+        let mut unknown_args = Vec::new();
+        for name in self.args.named.keys() {
+            if !self.consumed.contains(name.as_str()) {
+                unknown_args.push(name.as_str());
+            }
+        }
+
+        if unknown_args.is_empty() {
+            Ok(())
+        } else {
+            // Sort for stable error messages
+            unknown_args.sort();
+            Err(ExtensionError::InvalidArgument(format!(
+                "Unknown named arguments: {}",
+                unknown_args.join(", ")
+            )))
+        }
+    }
+}
+
 /// Represents a value in extension arguments
 #[derive(Debug, Clone)]
 pub enum ExtensionValue {
@@ -38,6 +118,96 @@ pub enum ExtensionValue {
     Reference(i32),
     // TODO: Function call expression
     // Expression(…)
+}
+
+impl fmt::Display for ExtensionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtensionValue::String(s) => write!(f, "String({})", escaped(s)),
+            ExtensionValue::Integer(i) => write!(f, "Integer({})", i),
+            ExtensionValue::Float(n) => write!(f, "Float({})", n),
+            ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
+            ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a ExtensionValue> for &'a str {
+    type Error = ExtensionError;
+
+    fn try_from(value: &'a ExtensionValue) -> Result<&'a str, Self::Error> {
+        match value {
+            ExtensionValue::String(s) => Ok(s),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected string, got {v}",
+            ))),
+        }
+    }
+}
+
+impl TryFrom<ExtensionValue> for String {
+    type Error = ExtensionError;
+
+    fn try_from(value: ExtensionValue) -> Result<String, Self::Error> {
+        match value {
+            ExtensionValue::String(s) => Ok(s),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected string, got {v}",
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&ExtensionValue> for i64 {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<i64, Self::Error> {
+        match value {
+            &ExtensionValue::Integer(i) => Ok(i),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected integer, got {v}",
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&ExtensionValue> for f64 {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<f64, Self::Error> {
+        match value {
+            &ExtensionValue::Float(f) => Ok(f),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected float, got {v}",
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&ExtensionValue> for bool {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<bool, Self::Error> {
+        match value {
+            &ExtensionValue::Boolean(b) => Ok(b),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected boolean, got {v}",
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&ExtensionValue> for Reference {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<Reference, Self::Error> {
+        match value {
+            &ExtensionValue::Reference(r) => Ok(Reference(r)),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected reference, got {v}",
+            ))),
+        }
+    }
 }
 
 /// Represents an output column specification
@@ -129,9 +299,9 @@ impl ExtensionArgs {
         }
     }
 
-    /// Get a named argument value
-    pub fn get_named_arg(&self, name: &str) -> Option<&ExtensionValue> {
-        self.named.get(name)
+    /// Create an extractor for these arguments
+    pub fn extractor(&self) -> ArgsExtractor<'_> {
+        ArgsExtractor::new(self)
     }
 
     /// Add a named argument

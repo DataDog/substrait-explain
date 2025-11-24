@@ -1,14 +1,15 @@
 //! Extension Registry for Custom Substrait Extension Relations
 //!
-//! This module provides a registry system for custom Substrait extension relations,
-//! allowing users to register their own extension types with custom parsing and
-//! textification logic.
+//! This module provides a registry system for custom Substrait extension
+//! relations, allowing users to register their own extension types with custom
+//! parsing and textification logic.
 //!
 //! # Overview
 //!
 //! The extension registry allows users to:
 //! - Register custom extension handlers for specific extension names
-//! - Parse extension arguments/named arguments into `google.protobuf.Any` detail fields
+//! - Parse extension arguments/named arguments into `google.protobuf.Any`
+//!   detail fields
 //! - Textify extension detail fields back into readable text format
 //! - Support both compile-time and runtime extension registration
 //!
@@ -22,57 +23,55 @@
 //! # Example Usage
 //!
 //! ```rust
-//! use substrait_explain::extensions::{ExtensionRegistry, AnyConvertible, Explainable};
-//! use substrait_explain::extensions::{ExtensionArgs, ExtensionError, ExtensionValue, Any, AnyRef};
+//! use substrait_explain::extensions::{
+//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+//!     ExtensionRelationType, ExtensionValue,
+//! };
 //!
 //! // Define a custom extension type
-//! struct ParquetScanConfig {
+//! struct CustomScanConfig {
 //!     path: String,
 //! }
 //!
 //! // Implement AnyConvertible for protobuf serialization
-//! impl AnyConvertible for ParquetScanConfig {
+//! impl AnyConvertible for CustomScanConfig {
 //!     fn to_any(&self) -> Result<Any, ExtensionError> {
-//!         // For this example, we'll create a simple Any with the path
-//!         Ok(Any::new(
-//!             Self::type_url(),
-//!             self.path.as_bytes().to_vec()
-//!         ))
+//!         // For this example, we'll create a simple Any (protobuf details field) with the path
+//!         Ok(Any::new(Self::type_url(), self.path.as_bytes().to_vec()))
 //!     }
 //!
 //!     fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
 //!         // Deserialize from Any
 //!         let path = String::from_utf8(any.value.to_vec())
 //!             .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {}", e)))?;
-//!         Ok(ParquetScanConfig { path })
+//!         Ok(CustomScanConfig { path })
 //!     }
 //!
 //!     fn type_url() -> String {
-//!         "type.googleapis.com/example.ParquetScanConfig".to_string()
+//!         "type.googleapis.com/example.CustomScanConfig".to_string()
 //!     }
 //! }
 //!
 //! // Implement Explainable for text format conversion
-//! impl Explainable for ParquetScanConfig {
+//! impl Explainable for CustomScanConfig {
 //!     fn name() -> &'static str {
 //!         "ParquetScan"
 //!     }
 //!
 //!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-//!         let path = match args.get_named_arg("path") {
-//!             Some(ExtensionValue::String(s)) => s.clone(),
-//!             Some(_) => return Err(ExtensionError::InvalidArgument("path must be a string".to_string())),
-//!             None => return Err(ExtensionError::MissingArgument("path".to_string())),
-//!         };
-//!         Ok(ParquetScanConfig { path })
+//!         let mut extractor = args.extractor();
+//!         let path: &str = extractor.expect_named_arg("path")?;
+//!         extractor.check_exhausted()?;
+//!         Ok(CustomScanConfig {
+//!             path: path.to_string(),
+//!         })
 //!     }
 //!
 //!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-//!         use substrait_explain::extensions::ExtensionRelationType;
 //!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 //!         args.add_named_arg(
 //!             "path".to_string(),
-//!             substrait_explain::extensions::ExtensionValue::String(self.path.clone())
+//!             ExtensionValue::String(self.path.clone()),
 //!         );
 //!         Ok(args)
 //!     }
@@ -80,7 +79,7 @@
 //!
 //! // Register the extension type
 //! let mut registry = ExtensionRegistry::new();
-//! registry.register::<ParquetScanConfig>();
+//! registry.register::<CustomScanConfig>();
 //! ```
 
 use std::collections::HashMap;
@@ -394,27 +393,15 @@ mod tests {
         }
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let path = match args.get_named_arg("path") {
-                Some(ExtensionValue::String(s)) => s.clone(),
-                Some(_) => {
-                    return Err(ExtensionError::InvalidArgument(
-                        "path must be a string".to_string(),
-                    ));
-                }
-                None => return Err(ExtensionError::MissingArgument("path".to_string())),
-            };
+            let mut extractor = args.extractor();
+            let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
+            let batch_size: i64 = extractor.expect_named_arg("batch_size")?;
+            extractor.check_exhausted()?;
 
-            let batch_size = match args.get_named_arg("batch_size") {
-                Some(ExtensionValue::Integer(i)) => *i,
-                Some(_) => {
-                    return Err(ExtensionError::InvalidArgument(
-                        "batch_size must be an integer".to_string(),
-                    ));
-                }
-                None => return Err(ExtensionError::MissingArgument("batch_size".to_string())),
-            };
-
-            Ok(TestExtension { path, batch_size })
+            Ok(TestExtension {
+                path: path.to_string(),
+                batch_size,
+            })
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
@@ -460,7 +447,7 @@ mod tests {
         let any_ref = any.as_ref();
         let result = registry.decode(any_ref).unwrap();
         assert_eq!(result.0, "TestExtension");
-        match result.1.get_named_arg("path") {
+        match result.1.named.get("path") {
             Some(ExtensionValue::String(s)) => assert_eq!(s, "test.parquet"), // Due to our simple test impl
             _ => panic!("Expected String for path"),
         }
@@ -486,16 +473,22 @@ mod tests {
             type_spec: "i32".to_string(),
         });
 
-        // Test retrieval
-        match args.get_named_arg("path") {
+        // Test retrieval - use extractor
+        let mut extractor = args.extractor();
+
+        match extractor.get_named_arg("path") {
             Some(ExtensionValue::String(s)) => assert_eq!(s, "data/*.parquet"),
             _ => panic!("Expected String for path"),
         }
 
-        match args.get_named_arg("batch_size") {
+        match extractor.get_named_arg("batch_size") {
             Some(ExtensionValue::Integer(i)) => assert_eq!(*i, 1024),
             _ => panic!("Expected Integer for batch_size"),
         }
+
+        // Verify they were consumed
+        assert!(extractor.check_exhausted().is_ok());
+
         assert_eq!(args.positional.len(), 1);
         assert_eq!(args.output_columns.len(), 1);
     }
@@ -511,13 +504,15 @@ mod tests {
 
         // Missing argument
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        let result = args.get_named_arg("missing");
+        let mut extractor = args.extractor();
+        let result = extractor.get_named_arg("missing");
         assert!(result.is_none());
 
         // Type check example
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.add_named_arg("test".to_string(), ExtensionValue::Integer(42));
-        let result = args.get_named_arg("test");
+        let mut extractor = args.extractor();
+        let result = extractor.get_named_arg("test");
         match result {
             Some(ExtensionValue::Integer(42)) => {} // Expected
             _ => panic!("Expected Integer(42), got {result:?}"),

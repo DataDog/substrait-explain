@@ -56,37 +56,15 @@ impl Explainable for ParquetScanConfig {
     }
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut path = None;
-        let mut batch_size = None;
-        let mut use_dictionary = None;
+        let mut extractor = args.extractor();
+        // path is required
+        let path: &str = extractor.expect_named_arg("path")?;
+        // batch_size and use_dictionary are optional, with default values
+        let batch_size: i64 = extractor.get_named_or("batch_size", 1024)?;
+        let use_dictionary: bool = extractor.get_named_or("use_dictionary", true)?;
 
-        for (name, value) in args.named.iter() {
-            match (name.as_str(), value) {
-                ("path", ExtensionValue::String(s)) => path = Some(s.clone()),
-                ("path", _) => {
-                    return Err(ExtensionError::InvalidArgument(format!(
-                        "path must be a string: {value:?}"
-                    )));
-                }
-                ("batch_size", ExtensionValue::Integer(i)) => batch_size = Some(*i),
-                ("batch_size", _) => {
-                    return Err(ExtensionError::InvalidArgument(format!(
-                        "batch_size must be an integer: {value:?}"
-                    )));
-                }
-                ("use_dictionary", ExtensionValue::Boolean(b)) => use_dictionary = Some(*b),
-                ("use_dictionary", _) => {
-                    return Err(ExtensionError::InvalidArgument(format!(
-                        "use_dictionary must be a boolean: {value:?}"
-                    )));
-                }
-                (n, _) => {
-                    return Err(ExtensionError::InvalidArgument(format!(
-                        "unknown argument: {n}"
-                    )));
-                }
-            }
-        }
+        // Validate there are no other named arguments
+        extractor.check_exhausted()?;
 
         let selected_columns = args
             .output_columns
@@ -100,11 +78,10 @@ impl Explainable for ParquetScanConfig {
             .collect::<Result<Vec<String>, ExtensionError>>()?;
 
         Ok(ParquetScanConfig {
-            // path is required
-            path: path.ok_or_else(|| ExtensionError::MissingArgument("path".to_string()))?,
+            path: path.to_string(),
             // batch_size and use_dictionary are optional, with default values
-            batch_size: batch_size.unwrap_or(1024),
-            use_dictionary: use_dictionary.unwrap_or(true),
+            batch_size,
+            use_dictionary,
             selected_columns,
         })
     }
