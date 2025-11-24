@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_format_extension_args() {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScan".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.add_named_arg(
             "path".to_string(),
             ExtensionValue::String("data/*.parquet".to_string()),

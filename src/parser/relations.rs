@@ -33,16 +33,17 @@ impl<'a> RelationParsingContext<'a> {
     /// Resolve extension detail using registry. Any failure is treated as a hard parse error.
     pub fn resolve_extension_detail(
         &self,
+        extension_name: &str,
         extension_args: &ExtensionArgs,
     ) -> Result<Option<Any>, ParseError> {
         let detail = self
             .registry
-            .parse_extension(&extension_args.extension_name, extension_args);
+            .parse_extension(extension_name, extension_args);
 
         match detail {
             Ok(any) => Ok(Some(any)),
             Err(ExtensionError::ExtensionNotFound(_)) => Err(ParseError::UnregisteredExtension {
-                name: extension_args.extension_name.clone(),
+                name: extension_name.to_string(),
                 context: ParseContext::new(self.line_no, self.line.to_string()),
             }),
             Err(err) => Err(ParseError::ExtensionDetail(

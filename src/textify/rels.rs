@@ -1072,11 +1072,6 @@ Filter[gt($0, 10:i32) => $0, $1]
         let value = Value::AggregateFunction(&agg_fn);
         let (result, errors) = ctx.textify(&value);
 
-        println!("Textification result: {result}");
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
-
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "sum($1)");
     }
@@ -1188,12 +1183,6 @@ Filter[gt($0, 10:i32) => $0, $1]
         let relation = Relation::from(&aggregate_rel);
         let (result, errors) = ctx.textify(&relation);
 
-        println!("Aggregate relation textification result:");
-        println!("{result}");
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
-
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         // Expected: Aggregate[$0 => sum($1), count($1)]
         assert!(result.contains("Aggregate[$0 => sum($1), count($1)]"));
@@ -1264,7 +1253,6 @@ Filter[gt($0, 10:i32) => $0, $1]
             result.contains("Join["),
             "Expected Join relation to be formatted"
         );
-        println!("Unknown join type result: {result}");
     }
 
     #[test]

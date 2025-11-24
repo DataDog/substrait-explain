@@ -110,8 +110,7 @@ impl Explainable for ParquetScanConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args =
-            ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments from the message
         args.add_named_arg(

@@ -270,10 +270,10 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
 pub enum FormatError {
     /// Error in adding extensions to the plan - e.g. duplicates, invalid URN
     /// references, etc.
-    #[error("Error adding extension: {0}")]
+    #[error("Error adding simple extension: {0}")]
     Insert(#[from] InsertError),
     /// Error in looking up an extension - e.g. missing URN, anchor, name, etc.
-    #[error("Error finding extension: {0}")]
+    #[error("Error finding simple extension: {0}")]
     Lookup(#[from] MissingReference),
     /// Error in extension registry operations - e.g. extension not found, parse errors, etc.
     #[error("Extension error: {0}")]

@@ -326,7 +326,5 @@ Root[result]
         "Error should reference line information: {error_msg}"
     );
 
-    println!(
-        "✅ Malformed input error test passed: parsing fails gracefully with descriptive error message"
-    );
+    // Malformed input error test passed
 }

@@ -8,9 +8,6 @@ use std::collections::HashMap;
 /// Represents the arguments and output columns for an extension relation
 #[derive(Debug, Clone)]
 pub struct ExtensionArgs {
-    /// The name of the extension (e.g., "ParquetScan" from
-    /// "ExtensionLeaf:ParquetScan")
-    pub extension_name: String,
     /// Positional arguments (expressions, literals, references)
     pub positional: Vec<ExtensionValue>,
     /// Named arguments (key=value pairs)
@@ -122,9 +119,8 @@ impl ExtensionRelationType {
 
 impl ExtensionArgs {
     /// Create a new empty ExtensionArgs
-    pub fn new(relation_type: ExtensionRelationType, extension_name: String) -> Self {
+    pub fn new(relation_type: ExtensionRelationType) -> Self {
         Self {
-            extension_name,
             positional: Vec::new(),
             named: HashMap::new(),
             output_columns: Vec::new(),

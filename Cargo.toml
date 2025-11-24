@@ -31,6 +31,10 @@ path = "examples/extensions.rs"
 required-features = ["cli"]
 
 [features]
+# Default feature is the CLI, so 'cargo run' works automatically, as do 'cargo
+# run --example …' commands. Library users may not need the CLI, so they can
+# disable it.
+default = ["cli"]
 # Use a pre-built protoc binary instead of building from source. Useful for CI.
 protoc = ["substrait/protoc"]
 # Used in examples, otherwise not helpful

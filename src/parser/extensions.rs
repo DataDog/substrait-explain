@@ -366,13 +366,21 @@ impl ParsePair for ExtensionColumn {
     }
 }
 
-impl ParsePair for ExtensionArgs {
+/// Fully parsed extension invocation, including the user-supplied name and the
+/// structured argument payload.
+#[derive(Debug, Clone)]
+pub struct ExtensionInvocation {
+    pub name: String,
+    pub args: ExtensionArgs,
+}
+
+impl ParsePair for ExtensionInvocation {
     fn rule() -> Rule {
         Rule::extension_relation
     }
 
     fn message() -> &'static str {
-        "ExtensionArgs"
+        "ExtensionInvocation"
     }
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
@@ -394,7 +402,7 @@ impl ParsePair for ExtensionArgs {
         };
 
         let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
-        let mut args = ExtensionArgs::new(relation_type, custom_name);
+        let mut args = ExtensionArgs::new(relation_type);
 
         // Parse optional arguments and columns
         for inner_pair in iter {
@@ -435,7 +443,10 @@ impl ParsePair for ExtensionArgs {
             }
         }
 
-        args
+        ExtensionInvocation {
+            name: custom_name,
+            args,
+        }
     }
 }
 

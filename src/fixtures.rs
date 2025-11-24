@@ -1,7 +1,5 @@
 //! Test fixtures for working with Substrait plans and substrait_explain
 
-use core::panic;
-
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;

@@ -83,8 +83,7 @@ impl Explainable for TestScanConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args =
-            ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments
         args.add_named_arg(
@@ -201,10 +200,7 @@ fn test_multiple_extensions_in_plan() {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(
-                ExtensionRelationType::Single,
-                "TestFilterConfig".to_string(),
-            );
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
             args.add_named_arg(
                 "expr".to_string(),
                 ExtensionValue::String(self.expression.clone()),
@@ -315,7 +311,7 @@ impl Explainable for LiteralConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "LiteralTest".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.add_named_arg(
             "path".to_string(),
             ExtensionValue::String(self.path.clone()),

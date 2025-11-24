@@ -2,7 +2,7 @@ use prost::{Message, Name};
 
 use crate::extensions::registry::ExtensionError;
 
-/// A wrapper around the protobuf Any type. Converts to or from
+/// A wrapper around the protobuf `Any` type. Converts to or from
 /// `prost_types::Any` or `pbjson_types::Any`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Any {
@@ -10,8 +10,9 @@ pub struct Any {
     pub value: Vec<u8>,
 }
 
-/// A reference to an Any type. Can be created from references to
-/// `prost_types::Any`, `pbjson_types::Any`, or our own `Any` type.
+/// A reference to a protobuf `Any` type. Can be created from references to
+/// [`prost_types::Any`](prost_types::Any),
+/// [`pbjson_types::Any`](pbjson_types::Any), or our own [`Any`](Any) type.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct AnyRef<'a> {
     pub type_url: &'a str,
@@ -19,12 +20,12 @@ pub struct AnyRef<'a> {
 }
 
 impl<'a> AnyRef<'a> {
-    /// Create a new AnyRef with the given type URL and value bytes
+    /// Create a new [`AnyRef`]
     pub fn new(type_url: &'a str, value: &'a [u8]) -> Self {
         Self { type_url, value }
     }
 
-    /// Decode this AnyRef as a specific protobuf message type
+    /// Decode this [`AnyRef`] as a specific protobuf message type
     pub fn decode<M>(&self) -> Result<M, ExtensionError>
     where
         M: prost::Message + Name + Default,
@@ -73,17 +74,17 @@ impl<'a> From<&'a pbjson_types::Any> for AnyRef<'a> {
 }
 
 impl Any {
-    /// Create a new Any with the given type URL and value bytes
+    /// Create a new `Any` for the given type from the given value bytes.
     pub fn new(type_url: String, value: Vec<u8>) -> Self {
         Self { type_url, value }
     }
 
+    /// Convert this [`Any`] to a [`AnyRef`].
     pub fn as_ref(&self) -> AnyRef<'_> {
         AnyRef::from(self)
     }
 
-    /// Decode this Any as a specific protobuf message type
-    /// This is a convenience method that delegates to AnyRef::decode
+    /// Decode this [`Any`] as a specific protobuf message type
     pub fn decode<M>(&self) -> Result<M, ExtensionError>
     where
         M: prost::Message + Name + Default,
@@ -91,18 +92,12 @@ impl Any {
         self.as_ref().decode()
     }
 
-    /// Encode a protobuf message into an Any
+    /// Encode a protobuf message into an [`Any`].
     pub fn encode<M: Message + Name + Default>(message: &M) -> Result<Self, ExtensionError> {
         let mut buf = Vec::new();
         message
             .encode(&mut buf)
             .map_err(|e| ExtensionError::EncodeError(format!("Failed to encode message: {e}")))?;
-
-        // Validate the encoding by attempting to decode it back
-        // This ensures the data can be successfully round-tripped
-        let _decoded: M = M::decode(&buf[..]).map_err(|e| {
-            ExtensionError::EncodeError(format!("Failed to validate encoded message: {e}"))
-        })?;
 
         Ok(Any {
             type_url: M::type_url(),
@@ -129,7 +124,6 @@ impl From<Any> for prost_types::Any {
     }
 }
 
-// Conversion from pbjson_types::Any
 #[cfg(feature = "serde")]
 impl From<pbjson_types::Any> for Any {
     fn from(any: pbjson_types::Any) -> Self {
@@ -140,7 +134,6 @@ impl From<pbjson_types::Any> for Any {
     }
 }
 
-// Conversion to pbjson_types::Any
 #[cfg(feature = "serde")]
 impl From<Any> for pbjson_types::Any {
     fn from(any: Any) -> Self {

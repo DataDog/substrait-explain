@@ -69,7 +69,7 @@
 //!
 //!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
 //!         use substrait_explain::extensions::ExtensionRelationType;
-//!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "ParquetScanConfig".to_string());
+//!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 //!         args.add_named_arg(
 //!             "path".to_string(),
 //!             substrait_explain::extensions::ExtensionValue::String(self.path.clone())
@@ -159,12 +159,6 @@ pub trait Explainable: Sized {
     /// Substrait text plans and how the registry identifies the type.
     fn name() -> &'static str;
 
-    /// Optional aliases that should also resolve to this extension when parsing
-    /// text. The canonical `name()` is always used when textifying.
-    fn aliases() -> &'static [&'static str] {
-        &[]
-    }
-
     /// Parse extension arguments into this type
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
 
@@ -238,6 +232,10 @@ impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for Exten
     }
 }
 
+pub trait Extension: AnyConvertible + Explainable + Send + Sync + 'static {}
+
+impl<T> Extension for T where T: AnyConvertible + Explainable + Send + Sync + 'static {}
+
 /// Registry for extension handlers
 #[derive(Default, Clone)]
 pub struct ExtensionRegistry {
@@ -260,7 +258,7 @@ impl ExtensionRegistry {
     /// be provided via `T::aliases()`.
     pub fn register<T>(&mut self)
     where
-        T: AnyConvertible + Explainable + Send + Sync + 'static,
+        T: Extension,
     {
         let canonical_name = T::name();
         let type_url = T::type_url();
@@ -273,20 +271,6 @@ impl ExtensionRegistry {
 
         self.handlers
             .insert(canonical_name.to_string(), Arc::clone(&handler));
-
-        for &alias in T::aliases() {
-            if alias == canonical_name {
-                continue;
-            }
-            if self.handlers.contains_key(alias) {
-                panic!(
-                    "Extension alias '{}' collides with an existing handler",
-                    alias
-                );
-            }
-            self.handlers
-                .insert(alias.to_string(), Arc::clone(&handler));
-        }
 
         match self
             .type_urls
@@ -434,8 +418,7 @@ mod tests {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args =
-                ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.add_named_arg(
                 "path".to_string(),
                 ExtensionValue::String(self.path.clone()),
@@ -464,7 +447,7 @@ mod tests {
         assert!(registry.has_extension("TestExtension"));
 
         // Test parse and textify
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.add_named_arg(
             "path".to_string(),
             ExtensionValue::String("data.parquet".to_string()),
@@ -485,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_extension_args() {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named args
         args.add_named_arg(
@@ -522,17 +505,17 @@ mod tests {
         let registry = ExtensionRegistry::new();
 
         // Extension not found
-        let args = ExtensionArgs::new(ExtensionRelationType::Leaf, "NonExistent".to_string());
+        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         let result = registry.parse_extension("NonExistent", &args);
         assert!(matches!(result, Err(ExtensionError::ExtensionNotFound(_))));
 
         // Missing argument
-        let args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         let result = args.get_named_arg("missing");
         assert!(result.is_none());
 
         // Type check example
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf, "TestExtension".to_string());
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.add_named_arg("test".to_string(), ExtensionValue::Integer(42));
         let result = args.get_named_arg("test");
         match result {

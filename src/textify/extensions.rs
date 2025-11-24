@@ -1,8 +1,9 @@
 //! Extension textification support
 //!
-//! This module provides Textify implementations for extension-related types,
-//! including ExtensionValue, ExtensionColumn, ExtensionArgs, and the various
-//! extension relation types (ExtensionLeafRel, ExtensionSingleRel, ExtensionMultiRel).
+//! This module provides [`Textify`] implementations for extension-related
+//! types, including [`ExtensionValue`], [`ExtensionColumn`], [`ExtensionArgs`],
+//! and the various extension relation types ([`ExtensionLeafRel`],
+//! [`ExtensionSingleRel`], [`ExtensionMultiRel`]).
 
 use std::fmt;
 
@@ -15,12 +16,7 @@ use crate::textify::foundation::{Scope, Textify};
 use crate::textify::rels::Value;
 use crate::textify::types::Name;
 
-/// Format extension with proper error handling and registry lookup
-///
-/// This function handles all extension formatting logic:
-/// - Converts detail to AnyRef and calls registry.decode()
-/// - Formats as ExtensionType:name[args] on success
-/// - Provides graceful fallbacks for missing registry/detail/decode errors
+/// Decode an extension from an [`AnyRef`], and format it as text
 fn format_extension<S: Scope, W: fmt::Write>(
     ctx: &S,
     w: &mut W,

@@ -12,11 +12,11 @@ use substrait::proto::{
     SortRel, plan_rel,
 };
 
-use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions, simple};
+use crate::extensions::{ExtensionRegistry, SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, ParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
-use crate::parser::extensions::{ExtensionParseError, ExtensionParser};
+use crate::parser::extensions::{ExtensionInvocation, ExtensionParseError, ExtensionParser};
 use crate::parser::relations::RelationParsingContext;
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
@@ -331,8 +331,11 @@ impl<'a> RelationParser<'a> {
         let line = pair.as_str();
         let pair_span = pair.as_span();
 
-        // Parse extension arguments directly using ExtensionArgs::parse_pair
-        let extension_args = ExtensionArgs::parse_pair(pair);
+        // Parse extension invocation, which includes the user-provided name
+        let ExtensionInvocation {
+            name,
+            args: extension_args,
+        } = ExtensionInvocation::parse_pair(pair);
 
         // Validate child count matches relation type
         let child_count = child_relations.len();
@@ -353,7 +356,7 @@ impl<'a> RelationParser<'a> {
             line,
         };
 
-        let detail = context.resolve_extension_detail(&extension_args)?;
+        let detail = context.resolve_extension_detail(&name, &extension_args)?;
 
         extension_args
             .relation_type
@@ -1085,14 +1088,12 @@ Project[$0, $1, 42, 84]
                     Some(RelType::Project(project)) => {
                         // Verify Project relation
                         assert_eq!(project.expressions.len(), 2); // 42 and 84
-                        println!("Project input: {:?}", project.input.is_some());
                         assert!(project.input.is_some()); // Should have Filter as input
 
                         // Check the Filter input
                         let filter_input = project.input.as_ref().unwrap();
                         match &filter_input.rel_type {
                             Some(RelType::Filter(filter)) => {
-                                println!("Filter input: {:?}", filter.input.is_some());
                                 assert!(filter.input.is_some()); // Should have Read as input
 
                                 // Check the Read input
