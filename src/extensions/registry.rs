@@ -79,7 +79,7 @@
 //!
 //! // Register the extension type
 //! let mut registry = ExtensionRegistry::new();
-//! registry.register::<CustomScanConfig>();
+//! registry.register_relation::<CustomScanConfig>();
 //! ```
 
 use std::collections::HashMap;
@@ -90,6 +90,17 @@ use thiserror::Error;
 
 use crate::extensions::any::{Any, AnyRef};
 use crate::extensions::args::ExtensionArgs;
+
+/// Type of extension in the registry, used for namespace separation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionType {
+    /// Relation extension (e.g., ExtensionLeaf, ExtensionSingle, ExtensionMulti)
+    Relation,
+    /// Enhancement attached to a relation (uses `+ Enh:` prefix in text format)
+    Enhancement,
+    /// Optimization attached to a relation (uses `+ Opt:` prefix in text format)
+    Optimization,
+}
 
 /// Error types for extension registry operations
 #[derive(Debug, Error, Clone)]
@@ -238,8 +249,10 @@ impl<T> Extension for T where T: AnyConvertible + Explainable + Send + Sync + 's
 /// Registry for extension handlers
 #[derive(Default, Clone)]
 pub struct ExtensionRegistry {
-    handlers: HashMap<String, Arc<dyn ExtensionConverter>>,
-    type_urls: HashMap<String, String>, // type_url -> extension_name
+    // Composite key: (ExtensionType, name) -> handler
+    handlers: HashMap<(ExtensionType, String), Arc<dyn ExtensionConverter>>,
+    // Composite key: (ExtensionType, type_url) -> name
+    type_urls: HashMap<(ExtensionType, String), String>,
 }
 
 impl ExtensionRegistry {
@@ -251,11 +264,8 @@ impl ExtensionRegistry {
         }
     }
 
-    /// Register an extension type that implements both AnyConvertible and Explainable
-    ///
-    /// The canonical textual name comes from `T::name()`. Additional aliases can
-    /// be provided via `T::aliases()`.
-    pub fn register<T>(&mut self)
+    /// Register an extension type with a specific ExtensionType
+    fn register<T>(&mut self, ext_type: ExtensionType)
     where
         T: Extension,
     {
@@ -264,25 +274,66 @@ impl ExtensionRegistry {
         let handler: Arc<dyn ExtensionConverter> =
             Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData));
 
-        if self.handlers.contains_key(canonical_name) {
-            panic!("Extension '{}' already registered", canonical_name);
+        let key = (ext_type, canonical_name.to_string());
+        if self.handlers.contains_key(&key) {
+            panic!(
+                "{:?} extension '{}' already registered",
+                ext_type, canonical_name
+            );
         }
 
-        self.handlers
-            .insert(canonical_name.to_string(), Arc::clone(&handler));
+        self.handlers.insert(key.clone(), Arc::clone(&handler));
 
+        let type_url_key = (ext_type, type_url.clone());
         match self
             .type_urls
-            .insert(type_url.clone(), canonical_name.to_string())
+            .insert(type_url_key.clone(), canonical_name.to_string())
         {
             Some(existing) if existing != canonical_name => {
                 panic!(
-                    "Type URL '{}' already registered to '{}'",
-                    type_url, existing
+                    "Type URL '{}' already registered to {:?} extension '{}'",
+                    type_url, ext_type, existing
                 );
             }
             _ => {}
         }
+    }
+
+    /// Register a relation extension type that implements both AnyConvertible and Explainable
+    ///
+    /// The canonical textual name comes from `T::name()`. Additional aliases can
+    /// be provided via `T::aliases()`.
+    pub fn register_relation<T>(&mut self)
+    where
+        T: Extension,
+    {
+        self.register::<T>(ExtensionType::Relation)
+    }
+
+    /// Register an enhancement type that implements both AnyConvertible and Explainable
+    ///
+    /// Enhancements are registered in a separate namespace from relation extensions,
+    /// allowing the same type URL to exist in both namespaces without conflict.
+    ///
+    /// The canonical textual name comes from `T::name()`.
+    pub fn register_enhancement<T>(&mut self)
+    where
+        T: Extension,
+    {
+        self.register::<T>(ExtensionType::Enhancement)
+    }
+
+    /// Register an optimization type that implements both AnyConvertible and Explainable
+    ///
+    /// Optimizations are registered in a separate namespace from relation extensions,
+    /// allowing the same type URL to exist in both namespaces without conflict.
+    ///
+    /// The canonical textual name comes from `T::name()`.
+    pub fn register_optimization<T>(&mut self)
+    where
+        T: Extension,
+    {
+        self.register::<T>(ExtensionType::Optimization)
     }
 
     /// Parse extension arguments into a protobuf Any message
@@ -291,10 +342,45 @@ impl ExtensionRegistry {
         extension_name: &str,
         args: &ExtensionArgs,
     ) -> Result<Any, ExtensionError> {
+        self.parse_with_type(ExtensionType::Relation, extension_name, args)
+    }
+
+    /// Parse enhancement arguments into a protobuf Any message
+    ///
+    /// Looks up the enhancement handler in the enhancement namespace and parses
+    /// the arguments into a protobuf Any message.
+    pub fn parse_enhancement(
+        &self,
+        enhancement_name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ExtensionError> {
+        self.parse_with_type(ExtensionType::Enhancement, enhancement_name, args)
+    }
+
+    /// Parse optimization arguments into a protobuf Any message
+    ///
+    /// Looks up the optimization handler in the optimization namespace and parses
+    /// the arguments into a protobuf Any message.
+    pub fn parse_optimization(
+        &self,
+        optimization_name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ExtensionError> {
+        self.parse_with_type(ExtensionType::Optimization, optimization_name, args)
+    }
+
+    /// Internal method to parse extension arguments with a specific ExtensionType
+    fn parse_with_type(
+        &self,
+        ext_type: ExtensionType,
+        name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ExtensionError> {
+        let key = (ext_type, name.to_string());
         let handler = self
             .handlers
-            .get(extension_name)
-            .ok_or_else(|| ExtensionError::ExtensionNotFound(extension_name.to_string()))?;
+            .get(&key)
+            .ok_or_else(|| ExtensionError::ExtensionNotFound(name.to_string()))?;
         handler.parse_detail(args)
     }
 
@@ -302,16 +388,55 @@ impl ExtensionRegistry {
     /// This is the primary method for textification - given an AnyRef with extension detail,
     /// decode it to the extension name and appropriate ExtensionArgs for display
     pub fn decode(&self, detail: AnyRef<'_>) -> Result<(String, ExtensionArgs), ExtensionError> {
-        // Find extension name by type URL
+        self.decode_with_type(ExtensionType::Relation, detail)
+    }
+
+    /// Decode enhancement detail to enhancement name and ExtensionArgs
+    ///
+    /// This is the primary method for textification of enhancements - given an AnyRef
+    /// with enhancement detail, decode it to the enhancement name and appropriate
+    /// ExtensionArgs for display.
+    ///
+    /// Looks up the enhancement handler in the enhancement namespace by type URL.
+    pub fn decode_enhancement(
+        &self,
+        detail: AnyRef<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type(ExtensionType::Enhancement, detail)
+    }
+
+    /// Decode optimization detail to optimization name and ExtensionArgs
+    ///
+    /// This is the primary method for textification of optimizations - given an AnyRef
+    /// with optimization detail, decode it to the optimization name and appropriate
+    /// ExtensionArgs for display.
+    ///
+    /// Looks up the optimization handler in the optimization namespace by type URL.
+    pub fn decode_optimization(
+        &self,
+        detail: AnyRef<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type(ExtensionType::Optimization, detail)
+    }
+
+    /// Internal method to decode extension detail with a specific ExtensionType
+    fn decode_with_type(
+        &self,
+        ext_type: ExtensionType,
+        detail: AnyRef<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        // Find extension name by type URL in the specified namespace
+        let type_url_key = (ext_type, detail.type_url.to_string());
         let extension_name = self
             .type_urls
-            .get(detail.type_url)
+            .get(&type_url_key)
             .ok_or_else(|| ExtensionError::ExtensionNotFound(detail.type_url.to_string()))?;
 
         // Get handler and textify the detail
+        let name_key = (ext_type, extension_name.clone());
         let handler = self
             .handlers
-            .get(extension_name)
+            .get(&name_key)
             .ok_or_else(|| ExtensionError::ExtensionNotFound(extension_name.clone()))?;
 
         let mut args = handler.textify_detail(detail)?;
@@ -322,24 +447,45 @@ impl ExtensionRegistry {
         Ok((extension_name.clone(), args))
     }
 
-    /// Get all registered extension names
-    pub fn extension_names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.type_urls.values().map(|s| s.as_str()).collect();
+    /// Get all registered extension names for a specific ExtensionType
+    pub fn extension_names(&self, ext_type: ExtensionType) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .type_urls
+            .iter()
+            .filter_map(|((t, _), name)| {
+                if *t == ext_type {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         names.sort_unstable();
         names.dedup();
         names
     }
 
-    /// Check if an extension is registered
-    pub fn has_extension(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
+    /// Check if an extension is registered for a specific ExtensionType
+    pub fn has_extension(&self, ext_type: ExtensionType, name: &str) -> bool {
+        self.handlers.contains_key(&(ext_type, name.to_string()))
     }
 }
 
 impl fmt::Debug for ExtensionRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let relation_names: Vec<_> = self
+            .handlers
+            .keys()
+            .filter_map(|(t, n)| {
+                if *t == ExtensionType::Relation {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+            .collect();
         f.debug_struct("ExtensionRegistry")
-            .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
+            .field("relation_handlers", &relation_names)
             .finish()
     }
 }
@@ -423,15 +569,15 @@ mod tests {
         let mut registry = ExtensionRegistry::new();
 
         // Initially empty
-        assert_eq!(registry.extension_names().len(), 0);
-        assert!(!registry.has_extension("TestExtension"));
+        assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 0);
+        assert!(!registry.has_extension(ExtensionType::Relation, "TestExtension"));
 
         // Register extension type
-        registry.register::<TestExtension>();
+        registry.register_relation::<TestExtension>();
 
         // Now has extension
-        assert_eq!(registry.extension_names().len(), 1);
-        assert!(registry.has_extension("TestExtension"));
+        assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 1);
+        assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
 
         // Test parse and textify
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
@@ -517,5 +663,124 @@ mod tests {
             Some(ExtensionValue::Integer(42)) => {} // Expected
             _ => panic!("Expected Integer(42), got {result:?}"),
         }
+    }
+
+    // Mock enhancement type for testing namespace separation
+    struct TestEnhancement {
+        hint: String,
+    }
+
+    impl AnyConvertible for TestEnhancement {
+        fn to_any(&self) -> Result<Any, ExtensionError> {
+            let json_str = format!(r#"{{"hint":"{}"}}"#, self.hint);
+            Ok(Any::new(Self::type_url(), json_str.into_bytes()))
+        }
+
+        fn type_url() -> String {
+            // Same type URL as TestExtension to test namespace separation
+            "test.TestExtension".to_string()
+        }
+
+        fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
+            let json_str = String::from_utf8(any.value.to_vec())
+                .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {e}")))?;
+            if json_str.contains("hint") {
+                Ok(TestEnhancement {
+                    hint: "test_hint".to_string(),
+                })
+            } else {
+                Err(ExtensionError::ParseError("Missing hint field".to_string()))
+            }
+        }
+    }
+
+    impl Explainable for TestEnhancement {
+        fn name() -> &'static str {
+            "TestEnhancement"
+        }
+
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let mut extractor = args.extractor();
+            let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_string();
+            extractor.check_exhausted()?;
+            Ok(TestEnhancement { hint })
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            args.add_named_arg(
+                "hint".to_string(),
+                ExtensionValue::String(self.hint.clone()),
+            );
+            Ok(args)
+        }
+    }
+
+    #[test]
+    fn test_namespace_separation() {
+        let mut registry = ExtensionRegistry::new();
+
+        // Register same type URL in both namespaces - should not conflict
+        registry.register_relation::<TestExtension>();
+        registry.register_enhancement::<TestEnhancement>();
+
+        // Verify both are registered
+        assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
+        assert!(registry.has_extension(ExtensionType::Enhancement, "TestEnhancement"));
+        assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 1);
+        assert_eq!(
+            registry.extension_names(ExtensionType::Enhancement).len(),
+            1
+        );
+
+        // Test that extension namespace works
+        let mut ext_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        ext_args.add_named_arg(
+            "path".to_string(),
+            ExtensionValue::String("data.parquet".to_string()),
+        );
+        ext_args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(2048));
+
+        let ext_any = registry
+            .parse_extension("TestExtension", &ext_args)
+            .unwrap();
+        assert_eq!(ext_any.type_url, "test.TestExtension");
+
+        // Test that enhancement namespace works
+        let mut enh_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        enh_args.add_named_arg(
+            "hint".to_string(),
+            ExtensionValue::String("optimize".to_string()),
+        );
+
+        let enh_any = registry
+            .parse_enhancement("TestEnhancement", &enh_args)
+            .unwrap();
+        assert_eq!(enh_any.type_url, "test.TestExtension"); // Same type URL!
+
+        // Test decode_enhancement
+        let enh_ref = enh_any.as_ref();
+        let (name, args) = registry.decode_enhancement(enh_ref).unwrap();
+        assert_eq!(name, "TestEnhancement");
+        match args.named().get("hint") {
+            Some(ExtensionValue::String(s)) => assert_eq!(s, "test_hint"), // Due to test impl
+            _ => panic!("Expected String for hint"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Enhancement extension 'TestEnhancement' already registered")]
+    fn test_enhancement_duplicate_registration_panics() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_enhancement::<TestEnhancement>();
+        registry.register_enhancement::<TestEnhancement>(); // Should panic
+    }
+
+    #[test]
+    fn test_enhancement_not_found_error() {
+        let registry = ExtensionRegistry::new();
+        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let result = registry.parse_enhancement("NonExistentEnhancement", &args);
+        assert!(matches!(result, Err(ExtensionError::ExtensionNotFound(_))));
     }
 }

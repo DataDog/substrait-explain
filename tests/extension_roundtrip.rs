@@ -111,7 +111,7 @@ impl Explainable for UserTableConfig {
 #[test]
 fn test_extension_leaf_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>();
 
     // Test plan with UserTable extension
     let plan_text = r#"
@@ -147,7 +147,7 @@ Root[result]
 #[test]
 fn test_multiple_extensions_in_plan() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>();
 
     // Also register a second type for variety
     #[derive(Clone, PartialEq, Message)]
@@ -192,7 +192,7 @@ fn test_multiple_extensions_in_plan() {
         }
     }
 
-    registry.register::<FilterConfig>();
+    registry.register_relation::<FilterConfig>();
 
     // Plan with multiple extension types
     let plan_text = r#"
@@ -299,7 +299,7 @@ impl Explainable for LiteralConfig {
 #[test]
 fn test_extension_literal_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<LiteralConfig>();
+    registry.register_relation::<LiteralConfig>();
 
     let plan_text = r#"
 === Plan
@@ -318,7 +318,7 @@ Root[result]
 #[test]
 fn test_extension_unknown_arguments() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>();
 
     // Test plan with unknown argument 'invalid_arg'
     let plan_text = r#"
