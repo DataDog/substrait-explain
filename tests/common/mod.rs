@@ -41,6 +41,9 @@ pub fn roundtrip_plan(input: &str) {
 
 /// Roundtrip a plan and verify that the output is the same as the input, after
 /// being parsed to a Substrait plan and then back to text.
+// This is used in some integration tests but not others, so it will warn for
+// some targets. Disable that warning.
+#[allow(dead_code)]
 pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
     // Parse the simple plan
     let simple_plan = match Parser::parse(input) {
