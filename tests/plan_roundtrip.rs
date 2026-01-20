@@ -56,7 +56,7 @@ Root[c, d]
 #[test]
 fn test_plan_with_extensions_roundtrip() {
     let plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: add
@@ -73,7 +73,7 @@ Root[result]
 #[test]
 fn test_complex_plan_roundtrip() {
     let plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
   @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
@@ -92,7 +92,7 @@ Root[name, parent, sum, count]
 #[test]
 fn test_plan_with_verbose_and_simple_output() {
     let simple_plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: coalesce
@@ -103,7 +103,7 @@ Root[name, num]
     Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
 
     let verbose_plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: coalesce
@@ -153,7 +153,7 @@ Root[name, some_value]
 #[test]
 fn test_aggregate_relation_roundtrip() {
     let plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
   # 10 @  1: sum
@@ -170,7 +170,7 @@ Root[category, total, count]
 #[test]
 fn test_aggregate_relation() {
     let plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
   # 10 @  1: sum
@@ -229,7 +229,7 @@ Root[a, b]
 #[test]
 fn test_join_relation_roundtrip() {
     let plan = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
   # 10 @  1: eq
@@ -247,7 +247,7 @@ Root[id, name, amount]
 fn test_join_relation_semi_types_roundtrip() {
     // Test LeftSemi join - should output only left columns
     let plan_semi = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
   # 10 @  1: eq
@@ -266,7 +266,7 @@ fn test_join_relation_right_mark_roundtrip() {
     // Left: 2 columns, Right: 3 columns, RightMark outputs 4 total: $0, $1, $2, $3
     // We output just the last right column ($2) and the mark ($3)
     let plan_right_mark = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
   # 10 @  1: eq

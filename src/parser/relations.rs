@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn test_parse_aggregate_relation() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
             .with_function(1, 11, "count")
             .extensions;
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn test_parse_aggregate_relation_simple() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
             .with_function(1, 11, "count")
             .extensions;
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn test_parse_aggregate_relation_no_group_by() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
             .with_function(1, 11, "count")
             .extensions;
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn test_parse_aggregate_relation_empty_group_by() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
             .with_function(1, 11, "count")
             .extensions;
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn test_parse_join_relation() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
             .with_function(1, 10, "eq")
             .extensions;
 
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn test_parse_join_relation_left_outer() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
             .with_function(1, 10, "eq")
             .extensions;
 
@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn test_parse_join_relation_left_semi() {
         let extensions = TestContext::new()
-            .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
             .with_function(1, 10, "eq")
             .extensions;
 

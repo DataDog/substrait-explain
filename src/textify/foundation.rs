@@ -25,8 +25,8 @@ pub enum Visibility {
 /// OutputOptions holds the options for textifying a Substrait type.
 #[derive(Debug, Clone)]
 pub struct OutputOptions {
-    /// Show the extension URIs in the output.
-    pub show_extension_uris: bool,
+    /// Show the extension s in the output.
+    pub show_extension_urns: bool,
     /// Show the extensions in the output. By default, simple extensions are
     /// expanded into the input.
     pub show_simple_extensions: bool,
@@ -57,7 +57,7 @@ pub struct OutputOptions {
 impl Default for OutputOptions {
     fn default() -> Self {
         Self {
-            show_extension_uris: false,
+            show_extension_urns: false,
             show_simple_extensions: false,
             show_simple_extension_anchors: Visibility::Required,
             literal_types: Visibility::Required,
@@ -76,7 +76,7 @@ impl OutputOptions {
     /// reconstructing a plan.
     pub fn verbose() -> Self {
         Self {
-            show_extension_uris: true,
+            show_extension_urns: true,
             show_simple_extensions: true,
             show_simple_extension_anchors: Visibility::Always,
             literal_types: Visibility::Always,
@@ -264,11 +264,11 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
 /// Errors that can occur when formatting a plan.
 #[derive(Error, Debug, Clone)]
 pub enum FormatError {
-    /// Error in adding extensions to the plan - e.g. duplicates, invalid URI
+    /// Error in adding extensions to the plan - e.g. duplicates, invalid 
     /// references, etc.
     #[error("Error adding extension: {0}")]
     Insert(#[from] InsertError),
-    /// Error in looking up an extension - e.g. missing URI, anchor, name, etc.
+    /// Error in looking up an extension - e.g. missing , anchor, name, etc.
     #[error("Error finding extension: {0}")]
     Lookup(#[from] MissingReference),
     /// Error in formatting the plan - e.g. invalid value, unimplemented, etc.
@@ -279,17 +279,17 @@ pub enum FormatError {
 impl FormatError {
     pub fn message(&self) -> &'static str {
         match self {
-            FormatError::Lookup(MissingReference::MissingUri(_)) => "uri",
+            FormatError::Lookup(MissingReference::MissingUrn(_)) => "uri",
             FormatError::Lookup(MissingReference::MissingAnchor(k, _)) => k.name(),
             FormatError::Lookup(MissingReference::MissingName(k, _)) => k.name(),
             FormatError::Lookup(MissingReference::Mismatched(k, _, _)) => k.name(),
             FormatError::Lookup(MissingReference::DuplicateName(k, _)) => k.name(),
             FormatError::Format(m) => m.message,
             FormatError::Insert(InsertError::MissingMappingType) => "extension",
-            FormatError::Insert(InsertError::DuplicateUriAnchor { .. }) => "uri",
+            FormatError::Insert(InsertError::DuplicateUrnAnchor { .. }) => "uri",
             FormatError::Insert(InsertError::DuplicateAnchor { .. }) => "extension",
-            FormatError::Insert(InsertError::MissingUri { .. }) => "uri",
-            FormatError::Insert(InsertError::DuplicateAndMissingUri { .. }) => "uri",
+            FormatError::Insert(InsertError::MissingUrn { .. }) => "uri",
+            FormatError::Insert(InsertError::DuplicateAndMissingUrn { .. }) => "uri",
         }
     }
 }

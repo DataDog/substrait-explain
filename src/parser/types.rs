@@ -227,9 +227,9 @@ fn parse_user_defined_type(
         .try_pop(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-    // TODO: Handle uri_anchor; validate that it matches the anchor
-    let _uri_anchor = iter
-        .try_pop(Rule::uri_anchor)
+    // TODO: Handle urn_anchor; validate that it matches the anchor
+    let _urn_anchor = iter
+        .try_pop(Rule::urn_anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
     let nullability = iter.parse_next::<Nullability>();
@@ -390,7 +390,7 @@ mod tests {
     fn test_udts() {
         let mut extensions = SimpleExtensions::default();
         extensions
-            .add_extension_uri("some_source".to_string(), 4)
+            .add_extension_urn("some_source".to_string(), 4)
             .unwrap();
         extensions
             .add_extension(ExtensionKind::Type, 4, 42, "udt".to_string())

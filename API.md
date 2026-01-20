@@ -27,7 +27,7 @@ use substrait_explain::{parse, format};
 // Parse a plan from text format (includes extensions for custom functions)
 let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   ## 10 @  1: add
@@ -100,7 +100,7 @@ The library produces a structured text format that's easy to read and parse. For
 
 ```text
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
   @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:

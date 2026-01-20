@@ -19,7 +19,7 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
     pub fn new(options: &'a OutputOptions, plan: &'a proto::Plan) -> (Self, E) {
         let (extensions, errs) =
-            SimpleExtensions::from_extensions(&plan.extension_uris, &plan.extensions);
+            SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
 
         let errors = E::default();
         for err in errs {
@@ -99,16 +99,18 @@ mod tests {
     fn test_plan_writer() {
         let mut plan = proto::Plan::default();
 
-        // Add extension URI
-        plan.extension_uris.push(pext::SimpleExtensionUri {
-            extension_uri_anchor: 1,
-            uri: "https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml".to_string(),
+        // Add extension 
+        plan.extension_urns.push(pext::SimpleExtensionUrn {
+            extension_urn_anchor: 1,
+            urn: "https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml".to_string(),
         });
 
         // Add extension function declaration
         plan.extensions.push(pext::SimpleExtensionDeclaration {
+            #[allow(deprecated)]
             mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
-                extension_uri_reference: 1,
+                extension_urn_reference: 1,
+                extension_uri_reference: Default::default(),
                 function_anchor: 10,
                 name: "add".to_string(),
             })),
@@ -197,7 +199,7 @@ mod tests {
 
         let expected = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: add

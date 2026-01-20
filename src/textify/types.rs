@@ -470,7 +470,8 @@ impl Textify for ptype::Kind {
                     type_parameters: vec![],
                 };
                 ptype::Kind::UserDefined(udf).textify(ctx, w)
-            }
+            },
+            ptype::Kind::Alias(_p) => todo!()
         }
     }
 }
@@ -591,7 +592,7 @@ mod tests {
     #[test]
     fn type_display() {
         let ctx = TestContext::new()
-            .with_uri(1, "first")
+            .with_urn(1, "first")
             .with_type_variation(1, 2, "u8");
 
         let t = proto::Type {
@@ -637,7 +638,7 @@ mod tests {
     #[test]
     fn type_display_with_errors() {
         let ctx = TestContext::new()
-            .with_uri(1, "first")
+            .with_urn(1, "first")
             .with_type(1, 100, "cow");
 
         let t = proto::Type {

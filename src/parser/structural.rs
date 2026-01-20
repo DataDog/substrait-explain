@@ -461,7 +461,7 @@ impl<'a> RelationParser<'a> {
 ///
 /// ```text
 /// === Extensions
-/// URIs:
+/// URNs:
 ///   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 /// Functions:
 ///   # 10 @  1: add
@@ -471,7 +471,7 @@ impl<'a> RelationParser<'a> {
 ///     ChildRelation[arguments => columns]
 /// ```
 ///
-/// - **Extensions section** (optional): Defines URIs and function/type declarations
+/// - **Extensions section** (optional): Defines URNs and function/type declarations
 /// - **Plan section** (required): Defines the query structure with indented relations
 ///
 /// ## Error Handling
@@ -507,7 +507,7 @@ impl<'a> RelationParser<'a> {
 /// ## Extensions Support
 ///
 /// The parser fully supports Substrait Simple Extensions, allowing you to:
-/// - Define custom functions with URIs and anchors
+/// - Define custom functions with URNs and anchors
 /// - Reference functions by name in expressions
 /// - Use custom types and type variations
 ///
@@ -516,7 +516,7 @@ impl<'a> RelationParser<'a> {
 ///
 /// let plan_with_extensions = r#"
 /// === Extensions
-/// URIs:
+/// URNs:
 ///   @  1: https://example.com/functions.yaml
 /// Functions:
 ///   ## 10 @  1: my_custom_function
@@ -691,7 +691,7 @@ impl<'a> Parser<'a> {
 
         // Build the final plan
         Ok(Plan {
-            extension_uris: extensions.to_extension_uris(),
+            extension_urns: extensions.to_extension_urns(),
             extensions: extensions.to_extension_declarations(),
             relations: root_relations,
             ..Default::default()
@@ -711,10 +711,10 @@ mod tests {
     fn test_parse_basic_block() {
         let mut expected_extensions = SimpleExtensions::new();
         expected_extensions
-            .add_extension_uri("/uri/common".to_string(), 1)
+            .add_extension_urn("/urn/common".to_string(), 1)
             .unwrap();
         expected_extensions
-            .add_extension_uri("/uri/specific_funcs".to_string(), 2)
+            .add_extension_urn("/urn/specific_funcs".to_string(), 2)
             .unwrap();
         expected_extensions
             .add_extension(ExtensionKind::Function, 1, 10, "func_a".to_string())
@@ -731,9 +731,9 @@ mod tests {
 
         let mut parser = ExtensionParser::default();
         let input_block = r#"
-URIs:
-  @  1: /uri/common
-  @  2: /uri/specific_funcs
+URNs:
+  @  1: /urn/common
+  @  2: /urn/specific_funcs
 Functions:
   # 10 @  1: func_a
   # 11 @  2: func_b_special
@@ -777,11 +777,11 @@ Type Variations:
     fn test_parse_complete_extension_block() {
         let mut parser = ExtensionParser::default();
         let input_block = r#"
-URIs:
-  @  1: /uri/common
-  @  2: /uri/specific_funcs
-  @  3: /uri/types_lib
-  @  4: /uri/variations_lib
+URNs:
+  @  1: /urn/common
+  @  2: /urn/specific_funcs
+  @  3: /urn/types_lib
+  @  4: /urn/variations_lib
 Functions:
   # 10 @  1: func_a
   # 11 @  2: func_b_special
@@ -944,9 +944,9 @@ Root[]
         // Test a complete Substrait plan with extensions and relations
         let input = r#"
 === Extensions
-URIs:
-  @  1: /uri/common
-  @  2: /uri/specific_funcs
+URNs:
+  @  1: /urn/common
+  @  2: /urn/specific_funcs
 Functions:
   # 10 @  1: func_a
   # 11 @  2: func_b_special
@@ -964,25 +964,25 @@ Project[$0, $1, 42, 84]
         let plan = Parser::parse(input).unwrap();
 
         // Verify the plan structure
-        assert_eq!(plan.extension_uris.len(), 2);
+        assert_eq!(plan.extension_urns.len(), 2);
         assert_eq!(plan.extensions.len(), 4);
         assert_eq!(plan.relations.len(), 1);
 
-        // Verify extension URIs
-        let uri1 = &plan.extension_uris[0];
-        assert_eq!(uri1.extension_uri_anchor, 1);
-        assert_eq!(uri1.uri, "/uri/common");
+        // Verify extension URNs
+        let urn1 = &plan.extension_urns[0];
+        assert_eq!(urn1.extension_urn_anchor, 1);
+        assert_eq!(urn1.urn, "/urn/common");
 
-        let uri2 = &plan.extension_uris[1];
-        assert_eq!(uri2.extension_uri_anchor, 2);
-        assert_eq!(uri2.uri, "/uri/specific_funcs");
+        let urn2 = &plan.extension_urns[1];
+        assert_eq!(urn2.extension_urn_anchor, 2);
+        assert_eq!(urn2.urn, "/urn/specific_funcs");
 
         // Verify extensions
         let func1 = &plan.extensions[0];
         match &func1.mapping_type {
             Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 10);
-                assert_eq!(f.extension_uri_reference, 1);
+                assert_eq!(f.extension_urn_reference, 1);
                 assert_eq!(f.name, "func_a");
             }
             other => panic!("Expected ExtensionFunction, got {other:?}"),
@@ -992,7 +992,7 @@ Project[$0, $1, 42, 84]
         match &func2.mapping_type {
             Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 11);
-                assert_eq!(f.extension_uri_reference, 2);
+                assert_eq!(f.extension_urn_reference, 2);
                 assert_eq!(f.name, "func_b_special");
             }
             other => panic!("Expected ExtensionFunction, got {other:?}"),
@@ -1002,7 +1002,7 @@ Project[$0, $1, 42, 84]
         match &type1.mapping_type {
             Some(MappingType::ExtensionType(t)) => {
                 assert_eq!(t.type_anchor, 20);
-                assert_eq!(t.extension_uri_reference, 1);
+                assert_eq!(t.extension_urn_reference, 1);
                 assert_eq!(t.name, "SomeType");
             }
             other => panic!("Expected ExtensionType, got {other:?}"),
@@ -1012,7 +1012,7 @@ Project[$0, $1, 42, 84]
         match &var1.mapping_type {
             Some(MappingType::ExtensionTypeVariation(v)) => {
                 assert_eq!(v.type_variation_anchor, 30);
-                assert_eq!(v.extension_uri_reference, 2);
+                assert_eq!(v.extension_urn_reference, 2);
                 assert_eq!(v.name, "VarX");
             }
             other => panic!("Expected ExtensionTypeVariation, got {other:?}"),

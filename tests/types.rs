@@ -69,7 +69,7 @@ fn test_types() {
     let options = OutputOptions::verbose();
     let mut extensions = SimpleExtensions::default();
     extensions
-        .add_extension_uri("some_source".to_string(), 4)
+        .add_extension_urn("some_source".to_string(), 4)
         .unwrap();
     extensions
         .add_extension(ExtensionKind::Type, 4, 12, "MyType".to_string())
@@ -113,7 +113,7 @@ fn test_expression() {
     let options = OutputOptions::default();
     let mut extensions = SimpleExtensions::default();
     extensions
-        .add_extension_uri("some_source".to_string(), 4)
+        .add_extension_urn("some_source".to_string(), 4)
         .unwrap();
     extensions
         .add_extension(ExtensionKind::Function, 4, 12, "foo".to_string())
@@ -140,7 +140,7 @@ fn test_expression() {
 fn test_verbose_and_simple_output() {
     let mut extensions = SimpleExtensions::default();
     extensions
-        .add_extension_uri("some_source".to_string(), 4)
+        .add_extension_urn("some_source".to_string(), 4)
         .unwrap();
     extensions
         .add_extension(ExtensionKind::Function, 4, 12, "foo".to_string())

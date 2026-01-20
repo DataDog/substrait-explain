@@ -39,7 +39,7 @@ literal = { (float | integer | boolean | string_literal) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
-uri_anchor = { "@" ~ sp ~ integer }
+urn_anchor = { "@" ~ sp ~ integer }
 
 parameter = { type | integer | name }
 
@@ -111,12 +111,12 @@ compound_type = { list_type | map_type | struct_type }
 // - The `u!` prefix is optional.
 // - The anchor is optional if the name is unique in the extensions; otherwise,
 // required.
-// - The URI anchor is optional. Note that this is different from type
+// - The  anchor is optional. Note that this is different from type
 // expressions in the YAML, where these do not exist.
 // - If the type is nullable, the nullability is required.
 // - The parameters are required if they exist for this type.
 user_defined_type = {
-    "u!"? ~ name ~ anchor? ~ uri_anchor? ~ nullability ~ parameters?
+    "u!"? ~ name ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
 }
 
 // A type expression is a simple type, a compound type, or a user-defined type.
@@ -129,11 +129,11 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // Scalar function call:
 // - Function name
 // - Optional Anchor, e.g. #1
-// - Optional URI Anchor, e.g. @1
+// - Optional  Anchor, e.g. @1
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Optional output type, e.g. :i64
 function_call = {
-    name ~ sp ~ anchor? ~ sp ~ uri_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
+    name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
 // Top-level Expression Rule
@@ -143,24 +143,24 @@ expression = { function_call | reference | literal }
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
 
-// -- URI Extension Declaration --
-// Format: @anchor: uri_value
-// Example: @1: /my/uri1
-// `uri_anchor` is defined above as "@" ~ integer.
+// --  Extension Declaration --
+// Format: @anchor: urn_value
+// Example: @1: /my/urn1
+// `urn_anchor` is defined above as "@" ~ integer.
 // `sp` is defined above as whitespace*.
 
-// A URI value can be a sequence of non-whitespace characters
-uri = @{ (!whitespace ~ ANY)+ }
+// A  value can be a sequence of non-whitespace characters
+urn = @{ (!whitespace ~ ANY)+ }
 
-extension_uri_declaration = { uri_anchor ~ ":" ~ sp ~ uri }
+extension_urn_declaration = { urn_anchor ~ ":" ~ sp ~ urn }
 
 // -- Simple Extension Declaration (Function, Type, TypeVariation) --
-// Format: #anchor@uri_ref: name
+// Format: #anchor@urn_ref: name
 // Example: #10@1: my_func
 // `anchor` is defined above as "#" ~ integer.
-// `uri_anchor` is defined above as "@" ~ integer.
+// `urn_anchor` is defined above as "@" ~ integer.
 // `name` is defined above as identifier | quoted_name.
-simple_extension = { anchor ~ sp ~ uri_anchor ~ sp ~ ":" ~ sp ~ name }
+simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ name }
 
 // == Relations ==
 // These rules are for parsing relations - well, for parsing one relation on one line.

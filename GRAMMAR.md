@@ -6,7 +6,7 @@ This document describes the grammar for the human-readable Substrait text format
 
 The Substrait text format consists of two main sections:
 
-1. **Extensions Section** (optional) - Defines URIs and function/type extensions
+1. **Extensions Section** (optional) - Defines URNs and function/type extensions
 2. **Plan Section** - Contains the actual query plan with relations
 
 ## Design Principles
@@ -35,7 +35,7 @@ This prevents ambiguity and makes plans self-documenting while being familiar to
 
 ### 3. Extension Support and Structured Syntax
 
-- Extensions section defines URIs and function/type mappings.
+- Extensions section defines URNs and function/type mappings.
 - Function calls can include anchors: `add#10@1($0, $1)`.
 - Clear structural boundaries: `[]` for relations, `<>` for types, `()` for functions.
 - Maintains full Substrait compatibility while keeping the text format readable and parseable.
@@ -68,7 +68,7 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   ## 10 @  1: add
@@ -95,28 +95,28 @@ A Substrait text format document consists of two main sections with specific for
 
 The document uses `===` headers to separate major sections:
 
-- **`=== Extensions`** - Defines URIs and function/type mappings (optional)
+- **`=== Extensions`** - Defines URNs and function/type mappings (optional)
 - **`=== Plan`** - Contains the actual query plan (required)
 
 #### Extension format
 
 ```text
 === Extensions
-URIs:
-  @  uri_anchor: uri
+URNs:
+  @  urn_anchor: urn
   …
 Functions:
-  ##  anchor @  uri_anchor: name
+  ##  anchor @  urn_anchor: name
   …
 Types:
-  ##  anchor @  uri_anchor: name
+  ##  anchor @  urn_anchor: name
   …
 Type Variations:
-  ##  anchor @  uri_anchor: name
+  ##  anchor @  urn_anchor: name
   …
 ```
 
-Where `anchor` and `uri_anchor` are integers, `uri` is a text URI, and function, type, and type variation names are identifiers or quoted text.
+Where `anchor` and `urn_anchor` are integers, `urn` is a text URN, and function, type, and type variation names are identifiers or quoted text.
 
 ### Plan Hierarchy and Indentation
 
@@ -133,7 +133,7 @@ Relations use indentation to show the query plan hierarchy:
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   ## 10 @  1: gt
@@ -209,14 +209,14 @@ All literal types (`integer`, `float`, `boolean`, and `string`) are now supporte
 
 ## Types
 
-The type syntax in this grammar follows the [standard Substrait type definition syntax](https://substrait.io/types/type_parsing/), with extensions to support anchors and URI references for user-defined types.
+The type syntax in this grammar follows the [standard Substrait type definition syntax](https://substrait.io/types/type_parsing/), with extensions to support anchors and URN references for user-defined types.
 
 ### Type Syntax Overview
 
 All types follow this general pattern:
 
 ```text
-type := "u!"? name anchor? uri_anchor? nullability? parameters?
+type := "u!"? name anchor? urn_anchor? nullability? parameters?
 ```
 
 Where:
@@ -224,7 +224,7 @@ Where:
 - **`"u!"`** - Optional prefix for user-defined types
 - **`name`** - Type name (case-insensitive, lowercase preferred)
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
-- **`uri_anchor`**` := "@" integer` - URI anchor (e.g., `@1`)
+- **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
 - **`parameters`**` := "<" (param ("," param)*)? ">"` - Optional type parameters
 - **`param`**` := type / integer / name` - Type parameter (type, integer, or name)
@@ -296,16 +296,16 @@ assert_eq!(plan.relations.len(), 1);
 
 ### User-Defined Types
 
-User-defined types extend the standard Substrait UDT syntax to support anchors and URI references.
+User-defined types extend the standard Substrait UDT syntax to support anchors and URN references.
 
 #### Syntax
 
-`"u!"? name anchor? uri_anchor? nullability? parameters?`
+`"u!"? name anchor? urn_anchor? nullability? parameters?`
 
 #### Key differences from standard Substrait
 
 - The `u!` prefix is optional (can be omitted when anchors are present)
-- Adds optional `anchor` and `uri_anchor` for extension references
+- Adds optional `anchor` and `urn_anchor` for extension references
 - Maintains compatibility with standard Substrait UDT syntax
 
 #### Examples
@@ -315,7 +315,7 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://example.com/types
   @  2: https://example.com/functions
 Types:
@@ -375,13 +375,13 @@ assert_eq!(plan.relations.len(), 1);
 
 #### Syntax
 
-`function_call := name anchor? uri_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
 
 #### Components
 
 - `name` - function name
 - `anchor` - optional anchor (e.g., `#10`)
-- `uri_anchor` - optional URI anchor (e.g., `@1`)
+- `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above
 - `type` - optional output type
 
@@ -391,7 +391,7 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 
 #### Syntax
 
-- `aggregate_measure := name anchor? uri_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
+- `aggregate_measure := name anchor? urn_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
 - Field references: `$0`, `$1`, ...
 
 #### Examples
@@ -527,7 +527,7 @@ Root[result2]
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   ## 10 @  1: gt
@@ -588,7 +588,7 @@ Root[result]
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
 Functions:
   ## 10 @  1: sum
@@ -648,7 +648,7 @@ For joins, field references map to the combined schema of left and right inputs:
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
   ## 10 @  1: eq
@@ -673,7 +673,7 @@ A complete query that joins users and orders tables, calculates total order valu
 #
 # let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
   @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
   @  3: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml

@@ -412,9 +412,9 @@ impl ScopedParsePair for ScalarFunction {
             .try_pop(Rule::anchor)
             .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-        // Parse optional URI anchor (e.g., @1)
-        let _uri_anchor = iter
-            .try_pop(Rule::uri_anchor)
+        // Parse optional  anchor (e.g., @1)
+        let _urn_anchor = iter
+            .try_pop(Rule::urn_anchor)
             .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
         // Parse argument list (required)
@@ -737,7 +737,7 @@ mod tests {
     //             name: "add".to_string(),
     //             parameters: None,
     //             anchor: None,
-    //             uri_anchor: None,
+    //             urn_anchor: None,
     //             arguments: vec![],
     //         },
     //     );
@@ -751,7 +751,7 @@ mod tests {
     //             name: "add".to_string(),
     //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
     //             anchor: None,
-    //             uri_anchor: None,
+    //             urn_anchor: None,
     //             arguments: vec![],
     //         },
     //     );
@@ -765,21 +765,21 @@ mod tests {
     //             name: "add".to_string(),
     //             parameters: None,
     //             anchor: Some(1),
-    //             uri_anchor: None,
+    //             urn_anchor: None,
     //             arguments: vec![],
     //         },
     //     );
     // }
 
     // #[test]
-    // fn test_parse_function_call_with_uri_anchor() {
+    // fn test_parse_function_call_with_urn_anchor() {
     //     assert_parses_to(
     //         "add@1()",
     //         FunctionCall {
     //             name: "add".to_string(),
     //             parameters: None,
     //             anchor: None,
-    //             uri_anchor: Some(1),
+    //             urn_anchor: Some(1),
     //             arguments: vec![],
     //         },
     //     );
@@ -793,7 +793,7 @@ mod tests {
     //             name: "add".to_string(),
     //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
     //             anchor: Some(1),
-    //             uri_anchor: Some(2),
+    //             urn_anchor: Some(2),
     //             arguments: vec![],
     //         },
     //     );
@@ -807,7 +807,7 @@ mod tests {
     //             name: "add".to_string(),
     //             parameters: None,
     //             anchor: None,
-    //             uri_anchor: None,
+    //             urn_anchor: None,
     //             arguments: vec![
     //                 Expression::Literal(Literal::Integer(1)),
     //                 Expression::Literal(Literal::Integer(2)),
@@ -824,13 +824,13 @@ mod tests {
     //             name: "outer_func".to_string(),
     //             parameters: None,
     //             anchor: None,
-    //             uri_anchor: None,
+    //             urn_anchor: None,
     //             arguments: vec![
     //                 Expression::FunctionCall(Box::new(FunctionCall {
     //                     name: "inner_func".to_string(),
     //                     parameters: None,
     //                     anchor: None,
-    //                     uri_anchor: None,
+    //                     urn_anchor: None,
     //                     arguments: vec![],
     //                 })),
     //                 Expression::Reference(Reference(1)),
@@ -847,7 +847,7 @@ mod tests {
     //             name: "funny name".to_string(),
     //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
     //             anchor: Some(1),
-    //             uri_anchor: Some(2),
+    //             urn_anchor: Some(2),
     //             arguments: vec![],
     //         },
     //     );

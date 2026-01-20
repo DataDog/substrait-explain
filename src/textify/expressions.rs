@@ -25,7 +25,7 @@ use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // $… for field reference
 // #… for anchor
-// @… for URI anchor
+// @… for  anchor
 // …::… for cast
 // …:… for specifying type
 // &… for enum
@@ -894,7 +894,7 @@ mod tests {
         }
         assert_eq!(s, "!{function}#1000()");
 
-        let ctx = ctx.with_uri(1, "first").with_function(1, 100, "first");
+        let ctx = ctx.with_urn(1, "first").with_function(1, 100, "first");
         let func = RexType::ScalarFunction(ScalarFunction {
             function_reference: 100,
             arguments: vec![],
@@ -911,8 +911,8 @@ mod tests {
 
         let ctx = TestContext::new()
             .with_options(options_show_anchor)
-            .with_uri(1, "somewhere_on_the_internet")
-            .with_uri(2, "somewhere_else")
+            .with_urn(1, "somewhere_on_the_internet")
+            .with_urn(2, "somewhere_else")
             .with_function(1, 231, "duplicated")
             .with_function(2, 232, "duplicated");
 

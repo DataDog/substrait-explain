@@ -923,7 +923,7 @@ mod tests {
     #[test]
     fn test_filter_rel() {
         let ctx = TestContext::new()
-            .with_uri(1, "test_uri")
+            .with_urn(1, "test_urn")
             .with_function(1, 10, "gt");
 
         // Create a simple FilterRel with a ReadRel input and a filter expression
@@ -1012,7 +1012,7 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_function_textify() {
         let ctx = TestContext::new()
-        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
         .with_function(1, 10, "sum")
         .with_function(1, 11, "count");
 
@@ -1050,7 +1050,7 @@ Filter[gt($0, 10:i32) => $0, $1]
     #[test]
     fn test_aggregate_relation_textify() {
         let ctx = TestContext::new()
-        .with_uri(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
         .with_function(1, 10, "sum")
         .with_function(1, 11, "count");
 
