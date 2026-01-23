@@ -111,7 +111,7 @@ compound_type = { list_type | map_type | struct_type }
 // - The `u!` prefix is optional.
 // - The anchor is optional if the name is unique in the extensions; otherwise,
 // required.
-// - The  anchor is optional. Note that this is different from type
+// - The URN anchor is optional. Note that this is different from type
 // expressions in the YAML, where these do not exist.
 // - If the type is nullable, the nullability is required.
 // - The parameters are required if they exist for this type.
@@ -129,7 +129,7 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // Scalar function call:
 // - Function name
 // - Optional Anchor, e.g. #1
-// - Optional  Anchor, e.g. @1
+// - Optional URN Anchor, e.g. @1
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Optional output type, e.g. :i64
 function_call = {
@@ -143,13 +143,13 @@ expression = { function_call | reference | literal }
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
 
-// --  Extension Declaration --
+// -- URN Extension Declaration --
 // Format: @anchor: urn_value
 // Example: @1: /my/urn1
 // `urn_anchor` is defined above as "@" ~ integer.
 // `sp` is defined above as whitespace*.
 
-// A  value can be a sequence of non-whitespace characters
+// A URN value can be a sequence of non-whitespace characters
 urn = @{ (!whitespace ~ ANY)+ }
 
 extension_urn_declaration = { urn_anchor ~ ":" ~ sp ~ urn }

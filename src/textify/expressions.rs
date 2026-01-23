@@ -25,7 +25,7 @@ use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // $… for field reference
 // #… for anchor
-// @… for  anchor
+// @… for URN anchor
 // …::… for cast
 // …:… for specifying type
 // &… for enum

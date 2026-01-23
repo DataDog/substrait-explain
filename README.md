@@ -14,16 +14,16 @@ Substrait query plans are complex protobuf structures that are difficult to read
 <summary>Raw Substrait YAML (click to expand)</summary>
 
 ```yaml
-extensions:
-  - extensionAnchor: 1
+extensionsURNs:
+  - extensionUrnAnchor: 1
     urn: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 extensions:
   - extensionFunction:
-      extensionReference: 1
+      extensionUrnReference: 1
       functionAnchor: 10
       name: gt
   - extensionFunction:
-      extensionReference: 1
+      extensionUrnReference: 1
       functionAnchor: 11
       name: multiply
 relations:
@@ -94,7 +94,7 @@ relations:
 
 ```text
 === Extensions
-s:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: gt
@@ -133,7 +133,7 @@ use substrait_explain::{parse, format};
 
 let plan_text = r#"
 === Extensions
-s:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   ## 10 @  1: multiply

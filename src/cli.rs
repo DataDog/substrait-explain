@@ -444,7 +444,7 @@ Root[result]
 "#;
 
     const PLAN_WITH_EXTENSIONS: &str = r#"=== Extensions
-s:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: gt

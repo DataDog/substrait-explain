@@ -99,7 +99,7 @@ mod tests {
     fn test_plan_writer() {
         let mut plan = proto::Plan::default();
 
-        // Add extension 
+        // Add extension URN
         plan.extension_urns.push(pext::SimpleExtensionUrn {
             extension_urn_anchor: 1,
             urn: "https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml".to_string(),

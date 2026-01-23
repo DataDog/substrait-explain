@@ -25,7 +25,7 @@ pub enum Visibility {
 /// OutputOptions holds the options for textifying a Substrait type.
 #[derive(Debug, Clone)]
 pub struct OutputOptions {
-    /// Show the extension s in the output.
+    /// Show the extension URNs in the output.
     pub show_extension_urns: bool,
     /// Show the extensions in the output. By default, simple extensions are
     /// expanded into the input.
@@ -264,11 +264,11 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
 /// Errors that can occur when formatting a plan.
 #[derive(Error, Debug, Clone)]
 pub enum FormatError {
-    /// Error in adding extensions to the plan - e.g. duplicates, invalid 
+    /// Error in adding extensions to the plan - e.g. duplicates, invalid URN 
     /// references, etc.
     #[error("Error adding extension: {0}")]
     Insert(#[from] InsertError),
-    /// Error in looking up an extension - e.g. missing , anchor, name, etc.
+    /// Error in looking up an extension - e.g. missing URN, anchor, name, etc.
     #[error("Error finding extension: {0}")]
     Lookup(#[from] MissingReference),
     /// Error in formatting the plan - e.g. invalid value, unimplemented, etc.

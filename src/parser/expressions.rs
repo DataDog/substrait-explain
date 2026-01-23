@@ -421,12 +421,12 @@ impl ScopedParsePair for ScalarFunction {
         // Parse function name (required)
         let name = iter.parse_next::<Name>();
 
-        // Parse optional anchor (e.g., #1)
+        // Parse optional URN anchor (e.g., #1)
         let anchor = iter
             .try_pop(Rule::anchor)
             .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-        // Parse optional  anchor (e.g., @1)
+        // Parse optional URN anchor (e.g., @1)
         let _urn_anchor = iter
             .try_pop(Rule::urn_anchor)
             .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
