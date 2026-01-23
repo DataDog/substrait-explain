@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::ReferenceType;
-use substrait::proto::expression::literal::{LiteralType, PrecisionTimestamp};
+use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
     FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
 };
@@ -219,7 +219,6 @@ fn to_string_literal(
         });
     };
 
-    #[allow(deprecated)]
     match &kind {
         Kind::Date(d) => {
             // Parse date in ISO 8601 format: YYYY-MM-DD
@@ -239,19 +238,7 @@ fn to_string_literal(
                 type_variation_reference: t.type_variation_reference,
             })
         }
-        Kind::PrecisionTimestamp(ts) => {
-            // Parse timestamp in ISO 8601 format: YYYY-MM-DDTHH:MM:SS[.fff] or YYYY-MM-DD HH:MM:SS[.fff]
-            let timestamp_microseconds =
-                parse_timestamp_to_microseconds(&string_value, value.as_span())?;
-            Ok(Literal {
-                literal_type: Some(LiteralType::PrecisionTimestamp(PrecisionTimestamp {
-                    precision: 6,
-                    value: timestamp_microseconds,
-                })),
-                nullable: ts.nullability != Nullability::Required as i32,
-                type_variation_reference: ts.type_variation_reference,
-            })
-        }
+        #[allow(deprecated)]
         Kind::Timestamp(ts) => {
             // Parse timestamp in ISO 8601 format: YYYY-MM-DDTHH:MM:SS[.fff] or YYYY-MM-DD HH:MM:SS[.fff]
             let timestamp_microseconds =
@@ -705,9 +692,10 @@ mod tests {
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
-            Some(LiteralType::PrecisionTimestamp(microseconds)) => {
+            #[allow(deprecated)]
+            Some(LiteralType::Timestamp(microseconds)) => {
                 assert!(
-                    microseconds.value > 0,
+                    microseconds > 0,
                     "Expected positive microseconds since epoch"
                 );
             }
@@ -725,9 +713,10 @@ mod tests {
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
-            Some(LiteralType::PrecisionTimestamp(microseconds)) => {
+            #[allow(deprecated)]
+            Some(LiteralType::Timestamp(microseconds)) => {
                 assert!(
-                    microseconds.value > 0,
+                    microseconds > 0,
                     "Expected positive microseconds since epoch"
                 );
             }

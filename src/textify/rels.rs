@@ -574,7 +574,6 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
     fn from(rel: &'a FetchRel) -> Self {
         let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
         let mut named_args = Vec::new();
-        #[allow(deprecated)]
         match &rel.count_mode {
             Some(CountMode::CountExpr(expr)) => {
                 named_args.push(NamedArg {
@@ -582,6 +581,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
                     value: Value::Expression(expr),
                 });
             }
+            #[allow(deprecated)]
             Some(CountMode::Count(val)) => {
                 named_args.push(NamedArg {
                     name: "limit",
@@ -591,7 +591,6 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
             None => {}
         }
         if let Some(offset) = &rel.offset_mode {
-            #[allow(deprecated)]
             match offset {
                 substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr) => {
                     named_args.push(NamedArg {
@@ -599,6 +598,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
                         value: Value::Expression(expr),
                     });
                 }
+                #[allow(deprecated)]
                 substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
                         name: "offset",

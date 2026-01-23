@@ -140,14 +140,14 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
-        "timestamp" => Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
+        #[allow(deprecated)]
+        "timestamp" => Kind::Timestamp(proto::r#type::Timestamp {
             nullability: nullability.into(),
-            precision: 0,
             type_variation_reference: 0,
         }),
-        "timestamp_tz" => Kind::PrecisionTimestampTz(proto::r#type::PrecisionTimestampTz {
+        #[allow(deprecated)]
+        "timestamp_tz" => Kind::TimestampTz(proto::r#type::TimestampTz {
             nullability: nullability.into(),
-            precision: 0,
             type_variation_reference: 0,
         }),
         "date" => Kind::Date(proto::r#type::Date {

@@ -466,7 +466,7 @@ mod tests {
         pext::SimpleExtensionDeclaration {
             mapping_type: Some(MappingType::ExtensionType(ExtensionType {
                 extension_urn_reference: urn_ref,
-                extension_uri_reference: Default::default(),
+                extension_uri_reference: Default::default(), // deprecated
                 type_anchor: anchor,
                 name: name.to_string(),
             })),
@@ -479,7 +479,7 @@ mod tests {
             mapping_type: Some(MappingType::ExtensionTypeVariation(
                 ExtensionTypeVariation {
                     extension_urn_reference: urn_ref,
-                    extension_uri_reference: Default::default(),
+                    extension_uri_reference: Default::default(), // deprecated
                     type_variation_anchor: anchor,
                     name: name.to_string(),
                 },

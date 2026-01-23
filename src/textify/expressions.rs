@@ -110,54 +110,12 @@ fn microseconds_to_timestamp_string(microseconds: i64) -> String {
     }
 }
 
-fn precision_value_to_timestamp_string(
-    value: i64,
-    precision: i32,
-    kind: &'static str,
-) -> Result<String, PlanError> {
-    if precision < 0 {
-        return Err(PlanError::invalid(
-            "LiteralType",
-            Some(kind),
-            format!("Precision must be non-negative, got {precision}"),
-        ));
-    }
-    let precision_u32 = precision as u32;
-    let units = 10_i64.checked_pow(precision_u32).ok_or_else(|| {
-        PlanError::invalid(
-            "LiteralType",
-            Some(kind),
-            format!("Precision {precision} is too large to format"),
-        )
-    })?;
-    let seconds = value.div_euclid(units);
-    let fractional = value.rem_euclid(units);
-    let base = DateTime::from_timestamp(seconds, 0).ok_or_else(|| {
-        PlanError::invalid(
-            "LiteralType",
-            Some(kind),
-            format!("Timestamp value {value} is out of range"),
-        )
-    })?;
-    let mut s = base.format("%Y-%m-%dT%H:%M:%S").to_string();
-    if precision_u32 > 0 {
-        let mut frac = format!("{fractional:0width$}", width = precision_u32 as usize);
-        frac = frac.trim_end_matches('0').to_string();
-        if !frac.is_empty() {
-            s.push('.');
-            s.push_str(&frac);
-        }
-    }
-    Ok(s)
-}
-
 trait Kinded {
     fn kind(&self, ctx: &SimpleExtensions) -> Option<Kind>;
 }
 
 impl Kinded for LiteralType {
     fn kind(&self, _ctx: &SimpleExtensions) -> Option<Kind> {
-        #[allow(deprecated)]
         match self {
             LiteralType::Boolean(_) => Some(Kind::Bool(ptype::Boolean {
                 type_variation_reference: 0,
@@ -195,6 +153,7 @@ impl Kinded for LiteralType {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
             })),
+            #[allow(deprecated)]
             LiteralType::Timestamp(_) => Some(Kind::Timestamp(ptype::Timestamp {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
@@ -213,6 +172,7 @@ impl Kinded for LiteralType {
             })),
             LiteralType::IntervalDayToSecond(i) => {
                 let precision = match i.precision_mode {
+                    #[allow(deprecated)]
                     Some(expr::literal::interval_day_to_second::PrecisionMode::Microseconds(
                         _m,
                     )) => Some(6),
@@ -236,35 +196,16 @@ impl Kinded for LiteralType {
             LiteralType::Decimal(_d) => todo!(),
             LiteralType::PrecisionTime(_t) => todo!(),
             LiteralType::PrecisionTimestamp(t) => {
-                if t.precision == 6 {
-                    Some(Kind::Timestamp(ptype::Timestamp {
-                        type_variation_reference: 0,
-                        nullability: Nullability::Required.into(),
-                    }))
-                } else {
-                    Some(Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
-                        type_variation_reference: 0,
-                        nullability: Nullability::Required.into(),
-                        precision: t.precision,
-                    }))
-                }
+                Some(Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
+                    type_variation_reference: 0,
+                    nullability: Nullability::Required.into(),
+                    precision: t.precision,
+                }))
             }
-            LiteralType::PrecisionTimestampTz(t) => {
-                if t.precision == 6 {
-                    Some(Kind::TimestampTz(ptype::TimestampTz {
-                        type_variation_reference: 0,
-                        nullability: Nullability::Required.into(),
-                    }))
-                } else {
-                    Some(Kind::PrecisionTimestampTz(ptype::PrecisionTimestampTz {
-                        type_variation_reference: 0,
-                        nullability: Nullability::Required.into(),
-                        precision: t.precision,
-                    }))
-                }
-            }
+            LiteralType::PrecisionTimestampTz(_t) => todo!(),
             LiteralType::Struct(_s) => todo!(),
             LiteralType::Map(_m) => todo!(),
+            #[allow(deprecated)]
             LiteralType::TimestampTz(_t) => todo!(),
             LiteralType::Uuid(_u) => todo!(),
             LiteralType::Null(_n) => todo!(),
@@ -281,7 +222,6 @@ impl Textify for LiteralType {
         "LiteralType"
     }
 
-    #[allow(deprecated)]
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
             LiteralType::Boolean(true) => write!(w, "true")?,
@@ -306,6 +246,7 @@ impl Textify for LiteralType {
             }
             LiteralType::String(s) => write!(w, "'{}'", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
+            #[allow(deprecated)]
             LiteralType::Timestamp(microseconds) => {
                 let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
@@ -442,57 +383,27 @@ impl Textify for LiteralType {
                     ))
                 );
             }
-            LiteralType::PrecisionTimestamp(t) => {
-                let k = match self.kind(ctx.extensions()) {
-                    Some(k) => k,
-                    None => {
-                        let err = PlanError::internal(
-                            "LiteralType",
-                            Some("PrecisionTimestamp"),
-                            format!("No kind found for {self:?}"),
-                        );
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                let s = match precision_value_to_timestamp_string(
-                    t.value,
-                    t.precision,
-                    "PrecisionTimestamp",
-                ) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                textify_literal_from_string(&s, k, ctx, w)?
+            LiteralType::PrecisionTimestamp(_p) => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "LiteralType",
+                        Some("PrecisionTimestamp"),
+                        "PrecisionTimestamp literal textification not implemented",
+                    ))
+                );
             }
-            LiteralType::PrecisionTimestampTz(t) => {
-                let k = match self.kind(ctx.extensions()) {
-                    Some(k) => k,
-                    None => {
-                        let err = PlanError::internal(
-                            "LiteralType",
-                            Some("PrecisionTimestampTz"),
-                            format!("No kind found for {self:?}"),
-                        );
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                let s = match precision_value_to_timestamp_string(
-                    t.value,
-                    t.precision,
-                    "PrecisionTimestampTz",
-                ) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                textify_literal_from_string(&s, k, ctx, w)?
+            LiteralType::PrecisionTimestampTz(_p) => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "LiteralType",
+                        Some("PrecisionTimestampTz"),
+                        "PrecisionTimestampTz literal textification not implemented",
+                    ))
+                );
             }
             LiteralType::Struct(_s) => {
                 return write!(
@@ -516,6 +427,7 @@ impl Textify for LiteralType {
                     )),
                 );
             }
+            #[allow(deprecated)]
             LiteralType::TimestampTz(_t) => {
                 return write!(
                     w,
@@ -784,7 +696,6 @@ impl Textify for RexType {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        #[allow(deprecated)]
         match self {
             RexType::Literal(literal) => literal.textify(ctx, w),
             RexType::Selection(f) => f.textify(ctx, w),
@@ -870,6 +781,7 @@ impl Textify for RexType {
                     "DynamicParameter textification not implemented",
                 ))
             ),
+            #[allow(deprecated)]
             RexType::Enum(_) => write!(
                 w,
                 "{}",
@@ -1028,77 +940,5 @@ mod tests {
         });
         let s = ctx.textify_no_errors(&rex_dup);
         assert_eq!(s, "duplicated#231(true)");
-    }
-
-    #[test]
-    fn precision_0_epoch() {
-        let s = precision_value_to_timestamp_string(0, 0, "Timestamp").unwrap();
-        assert_eq!(s, "1970-01-01T00:00:00");
-    }
-
-    #[test]
-    fn precision_3_millis_small_fraction() {
-        // 1 millisecond after epoch
-        let s = precision_value_to_timestamp_string(1, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1970-01-01T00:00:00.001");
-    }
-
-    #[test]
-    fn precision_3_trims_trailing_zeros() {
-        // 100 milliseconds -> formatted as ".1" because trailing zeros are trimmed.
-        let s = precision_value_to_timestamp_string(100, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1970-01-01T00:00:00.1");
-
-        // 120 milliseconds -> ".12"
-        let s = precision_value_to_timestamp_string(120, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1970-01-01T00:00:00.12");
-
-        // exact second -> no fractional part at all
-        let s = precision_value_to_timestamp_string(1000, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1970-01-01T00:00:01");
-    }
-
-    #[test]
-    fn negative_values_use_euclidean_split() {
-        // -0.001 seconds should become 1969-12-31T23:59:59.999
-        let s = precision_value_to_timestamp_string(-1, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1969-12-31T23:59:59.999");
-
-        // exactly -1.000 seconds -> no fractional part
-        let s = precision_value_to_timestamp_string(-1000, 3, "Timestamp").unwrap();
-        assert_eq!(s, "1969-12-31T23:59:59");
-    }
-
-    #[test]
-    fn precision_must_be_non_negative() {
-        let err = precision_value_to_timestamp_string(0, -1, "Timestamp").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("Precision must be non-negative"),
-            "unexpected error message: {msg}"
-        );
-    }
-
-    #[test]
-    fn precision_too_large_overflows_units() {
-        // 10^19 doesn't fit in i64; 10^18 does.
-        let err = precision_value_to_timestamp_string(0, 19, "Timestamp").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("too large to format") || msg.contains("Precision 19"),
-            "unexpected error message: {msg}"
-        );
-    }
-
-    #[test]
-    fn out_of_range_timestamp_errors() {
-        // i64::MAX seconds is far outside chrono's supported timestamp range.
-        // Using precision 0 avoids unit overflow; we hit the chrono range check.
-        let err = precision_value_to_timestamp_string(i64::MAX, 0, "Timestamp").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("out of range") || msg.contains("Timestamp value"),
-            "unexpected error message: {msg}"
-        );
     }
 }
