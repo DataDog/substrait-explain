@@ -102,6 +102,7 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
     let name = iter.pop(Rule::simple_type_name).as_str();
     let nullability = iter.parse_next::<Nullability>();
     iter.done();
+
     let kind = match name {
         "boolean" => Kind::Bool(proto::r#type::Boolean {
             nullability: nullability.into(),
@@ -139,12 +140,14 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
-        "timestamp" => Kind::Timestamp(proto::r#type::Timestamp {
+        "timestamp" => Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
             nullability: nullability.into(),
+            precision: 0,
             type_variation_reference: 0,
         }),
-        "timestamp_tz" => Kind::TimestampTz(proto::r#type::TimestampTz {
+        "timestamp_tz" => Kind::PrecisionTimestampTz(proto::r#type::PrecisionTimestampTz {
             nullability: nullability.into(),
+            precision: 0,
             type_variation_reference: 0,
         }),
         "date" => Kind::Date(proto::r#type::Date {

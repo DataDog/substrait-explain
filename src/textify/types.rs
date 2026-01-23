@@ -337,6 +337,7 @@ impl Textify for ptype::Kind {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        #[allow(deprecated)]
         match self {
             // This is the expansion of:
             //     textify_kind!(ctx, w, k, "boolean")
@@ -405,15 +406,34 @@ impl Textify for ptype::Kind {
                 p.type_variation_reference,
                 Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
             ),
-            ptype::Kind::PrecisionTimestamp(p) => textify_type(
-                ctx,
-                w,
-                "precisiontimestamp",
-                p.nullability(),
-                p.type_variation_reference,
-                Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
-            ),
-            ptype::Kind::PrecisionTimestampTz(_p) => todo!(),
+            ptype::Kind::PrecisionTimestamp(p) => {
+                if p.precision == 0 {
+                    textify_kind!(ctx, w, p, "timestamp")
+                } else {
+                    textify_type(
+                        ctx,
+                        w,
+                        "precisiontimestamp",
+                        p.nullability(),
+                        p.type_variation_reference,
+                        Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
+                    )
+                }
+            }
+            ptype::Kind::PrecisionTimestampTz(p) => {
+                if p.precision == 0 {
+                    textify_kind!(ctx, w, p, "timestamp_tz")
+                } else {
+                    textify_type(
+                        ctx,
+                        w,
+                        "precisiontimestamp_tz",
+                        p.nullability(),
+                        p.type_variation_reference,
+                        Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
+                    )
+                }
+            }
             ptype::Kind::Struct(s) => textify_type(
                 ctx,
                 w,
@@ -694,7 +714,7 @@ mod tests {
     #[test]
     fn struct_display() {
         let ctx = TestContext::new();
-
+        #[allow(deprecated)]
         let t = proto::Type {
             kind: Some(ptype::Kind::Struct(ptype::Struct {
                 type_variation_reference: 0,
@@ -724,12 +744,19 @@ mod tests {
                             nullability: ptype::Nullability::Required as i32,
                         })),
                     },
+                     proto::Type {
+                        kind: Some(ptype::Kind::PrecisionTimestampTz(ptype::PrecisionTimestampTz {
+                            type_variation_reference: 0,
+                            nullability: ptype::Nullability::Required as i32,
+                            precision: 0
+                        })),
+                    },
                 ],
             })),
         };
         assert_eq!(
             ctx.textify_no_errors(&t),
-            "struct?<string, i8, i32?, timestamp_tz>"
+            "struct?<string, i8, i32?, timestamp_tz, timestamp_tz>"
         );
     }
 

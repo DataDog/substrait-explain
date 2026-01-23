@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::{Literal, RexType};
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
@@ -615,7 +617,7 @@ impl ScopedParsePair for CountMode {
                         format!("Fetch limit must be non-negative, got: {value}"),
                     ));
                 }
-                Ok(CountMode::Count(value))
+                Ok(CountMode::CountExpr(i64_literal_expr(value)))
             }
             Rule::expression => {
                 let expr = Expression::parse_pair(extensions, value_pair)?;
@@ -628,6 +630,16 @@ impl ScopedParsePair for CountMode {
             )),
         }
     }
+}
+
+fn i64_literal_expr(value: i64) -> Box<Expression> {
+    Box::new(Expression {
+        rex_type: Some(RexType::Literal(Literal {
+            nullable: false,                 
+            type_variation_reference: 0,    
+            literal_type: Some(LiteralType::I64(value)),
+        })),
+    })
 }
 
 impl ScopedParsePair for OffsetMode {
@@ -664,7 +676,7 @@ impl ScopedParsePair for OffsetMode {
                         format!("Fetch offset must be non-negative, got: {value}"),
                     ));
                 }
-                Ok(OffsetMode::Offset(value))
+                Ok(OffsetMode::OffsetExpr(i64_literal_expr(value)))
             }
             Rule::expression => {
                 let expr = Expression::parse_pair(extensions, value_pair)?;
@@ -1131,8 +1143,14 @@ mod tests {
         .unwrap();
 
         // Verify the limit and offset values are correct
-        assert_eq!(fetch_rel.count_mode, Some(CountMode::Count(10)));
-        assert_eq!(fetch_rel.offset_mode, Some(OffsetMode::Offset(5)));
+        assert_eq!(
+            fetch_rel.count_mode,
+            Some(CountMode::CountExpr(i64_literal_expr(10)))
+        );
+        assert_eq!(
+            fetch_rel.offset_mode,
+            Some(OffsetMode::OffsetExpr(i64_literal_expr(5)))
+        );
     }
 
     #[test]
