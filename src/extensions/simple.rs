@@ -237,7 +237,7 @@ impl SimpleExtensions {
                         #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionFunction {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated 
+                            extension_uri_reference: Default::default(), // deprecated
                             function_anchor: *anchor,
                             name: name.clone(),
                         },
@@ -246,7 +246,7 @@ impl SimpleExtensions {
                         #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionType {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated 
+                            extension_uri_reference: Default::default(), // deprecated
                             type_anchor: *anchor,
                             name: name.clone(),
                         },
@@ -255,7 +255,7 @@ impl SimpleExtensions {
                         #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionTypeVariation {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated 
+                            extension_uri_reference: Default::default(), // deprecated
                             type_variation_anchor: *anchor,
                             name: name.clone(),
                         },
@@ -450,12 +450,11 @@ mod tests {
     }
 
     fn new_ext_fn(anchor: u32, urn_ref: u32, name: &str) -> pext::SimpleExtensionDeclaration {
-        
         pext::SimpleExtensionDeclaration {
             #[allow(deprecated)]
             mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
                 extension_urn_reference: urn_ref,
-                extension_uri_reference: Default::default(), // deprecated 
+                extension_uri_reference: Default::default(), // deprecated
                 function_anchor: anchor,
                 name: name.to_string(),
             })),

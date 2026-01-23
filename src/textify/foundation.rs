@@ -264,7 +264,7 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
 /// Errors that can occur when formatting a plan.
 #[derive(Error, Debug, Clone)]
 pub enum FormatError {
-    /// Error in adding extensions to the plan - e.g. duplicates, invalid URN 
+    /// Error in adding extensions to the plan - e.g. duplicates, invalid URN
     /// references, etc.
     #[error("Error adding extension: {0}")]
     Insert(#[from] InsertError),

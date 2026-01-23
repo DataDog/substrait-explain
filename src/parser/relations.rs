@@ -635,8 +635,8 @@ impl ScopedParsePair for CountMode {
 fn i64_literal_expr(value: i64) -> Box<Expression> {
     Box::new(Expression {
         rex_type: Some(RexType::Literal(Literal {
-            nullable: false,                 
-            type_variation_reference: 0,    
+            nullable: false,
+            type_variation_reference: 0,
             literal_type: Some(LiteralType::I64(value)),
         })),
     })

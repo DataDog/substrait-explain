@@ -490,8 +490,8 @@ impl Textify for ptype::Kind {
                     type_parameters: vec![],
                 };
                 ptype::Kind::UserDefined(udf).textify(ctx, w)
-            },
-            ptype::Kind::Alias(_p) => todo!()
+            }
+            ptype::Kind::Alias(_p) => todo!(),
         }
     }
 }
@@ -744,12 +744,14 @@ mod tests {
                             nullability: ptype::Nullability::Required as i32,
                         })),
                     },
-                     proto::Type {
-                        kind: Some(ptype::Kind::PrecisionTimestampTz(ptype::PrecisionTimestampTz {
-                            type_variation_reference: 0,
-                            nullability: ptype::Nullability::Required as i32,
-                            precision: 0
-                        })),
+                    proto::Type {
+                        kind: Some(ptype::Kind::PrecisionTimestampTz(
+                            ptype::PrecisionTimestampTz {
+                                type_variation_reference: 0,
+                                nullability: ptype::Nullability::Required as i32,
+                                precision: 0,
+                            },
+                        )),
                     },
                 ],
             })),
