@@ -395,9 +395,34 @@ impl Textify for ptype::Kind {
                 c.type_variation_reference,
                 Parameters(&[Some(Parameter::Integer(c.length as i64))]),
             ),
-            ptype::Kind::Varchar(_c) => todo!(),
-            ptype::Kind::FixedBinary(_b) => todo!(),
-            ptype::Kind::Decimal(_d) => todo!(),
+            ptype::Kind::Varchar(c) => textify_type(
+                ctx,
+                w,
+                "varchar",
+                c.nullability(),
+                c.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(c.length as i64))]),
+            ),
+            ptype::Kind::FixedBinary(b) => textify_type(
+                ctx,
+                w,
+                "fixedbinary",
+                b.nullability(),
+                b.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(b.length as i64))]),
+            ),
+            ptype::Kind::Decimal(d) => {
+                let p = Parameter::Integer(d.precision as i64);
+                let s = Parameter::Integer(d.precision as i64);
+                textify_type(
+                    ctx,
+                    w,
+                    "decimal",
+                    d.nullability(),
+                    d.type_variation_reference,
+                    Parameters(&[Some(p), Some(s)]),
+                )
+            }
             ptype::Kind::PrecisionTime(p) => textify_type(
                 ctx,
                 w,
@@ -414,7 +439,14 @@ impl Textify for ptype::Kind {
                 p.type_variation_reference,
                 Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
             ),
-            ptype::Kind::PrecisionTimestampTz(_p) => todo!(),
+            ptype::Kind::PrecisionTimestampTz(p) => textify_type(
+                ctx,
+                w,
+                "precisiontimestamptz",
+                p.nullability(),
+                p.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
+            ),
             ptype::Kind::Struct(s) => textify_type(
                 ctx,
                 w,
