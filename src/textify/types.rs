@@ -413,7 +413,7 @@ impl Textify for ptype::Kind {
             ),
             ptype::Kind::Decimal(d) => {
                 let p = Parameter::Integer(d.precision as i64);
-                let s = Parameter::Integer(d.precision as i64);
+                let s = Parameter::Integer(d.scale as i64);
                 textify_type(
                     ctx,
                     w,
@@ -512,7 +512,7 @@ impl Textify for ptype::Kind {
                     ctx.failure(PlanError::unimplemented(
                         "AliasType",
                         Some("Alias"),
-                        "TypeAliadReference textification not implemented",
+                        "TypeAliasReference textification not implemented",
                     ))
                 )
             }
