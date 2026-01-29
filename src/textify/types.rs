@@ -505,7 +505,17 @@ impl Textify for ptype::Kind {
                 };
                 ptype::Kind::UserDefined(udf).textify(ctx, w)
             }
-            ptype::Kind::Alias(_p) => todo!(),
+            ptype::Kind::Alias(_p) => {
+                write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "AliasType",
+                        Some("Alias"),
+                        "TypeAliadReference textification not implemented",
+                    ))
+                )
+            }
         }
     }
 }
