@@ -25,7 +25,7 @@ use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // $… for field reference
 // #… for anchor
-// @… for URI anchor
+// @… for URN anchor
 // …::… for cast
 // …:… for specifying type
 // &… for enum
@@ -153,6 +153,7 @@ impl Kinded for LiteralType {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
             })),
+            #[allow(deprecated)]
             LiteralType::Timestamp(_) => Some(Kind::Timestamp(ptype::Timestamp {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
@@ -171,6 +172,7 @@ impl Kinded for LiteralType {
             })),
             LiteralType::IntervalDayToSecond(i) => {
                 let precision = match i.precision_mode {
+                    #[allow(deprecated)]
                     Some(expr::literal::interval_day_to_second::PrecisionMode::Microseconds(
                         _m,
                     )) => Some(6),
@@ -203,6 +205,7 @@ impl Kinded for LiteralType {
             LiteralType::PrecisionTimestampTz(_t) => todo!(),
             LiteralType::Struct(_s) => todo!(),
             LiteralType::Map(_m) => todo!(),
+            #[allow(deprecated)]
             LiteralType::TimestampTz(_t) => todo!(),
             LiteralType::Uuid(_u) => todo!(),
             LiteralType::Null(_n) => todo!(),
@@ -243,6 +246,7 @@ impl Textify for LiteralType {
             }
             LiteralType::String(s) => write!(w, "'{}'", s.escape_debug())?,
             LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
+            #[allow(deprecated)]
             LiteralType::Timestamp(microseconds) => {
                 let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
@@ -423,6 +427,7 @@ impl Textify for LiteralType {
                     )),
                 );
             }
+            #[allow(deprecated)]
             LiteralType::TimestampTz(_t) => {
                 return write!(
                     w,
@@ -776,6 +781,7 @@ impl Textify for RexType {
                     "DynamicParameter textification not implemented",
                 ))
             ),
+            #[allow(deprecated)]
             RexType::Enum(_) => write!(
                 w,
                 "{}",
@@ -894,7 +900,7 @@ mod tests {
         }
         assert_eq!(s, "!{function}#1000()");
 
-        let ctx = ctx.with_uri(1, "first").with_function(1, 100, "first");
+        let ctx = ctx.with_urn(1, "first").with_function(1, 100, "first");
         let func = RexType::ScalarFunction(ScalarFunction {
             function_reference: 100,
             arguments: vec![],
@@ -911,8 +917,8 @@ mod tests {
 
         let ctx = TestContext::new()
             .with_options(options_show_anchor)
-            .with_uri(1, "somewhere_on_the_internet")
-            .with_uri(2, "somewhere_else")
+            .with_urn(1, "somewhere_on_the_internet")
+            .with_urn(2, "somewhere_else")
             .with_function(1, 231, "duplicated")
             .with_function(2, 232, "duplicated");
 

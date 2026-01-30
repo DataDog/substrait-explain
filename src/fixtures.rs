@@ -28,33 +28,33 @@ impl TestContext {
         self
     }
 
-    pub fn with_uri(mut self, anchor: u32, uri: &str) -> Self {
+    pub fn with_urn(mut self, anchor: u32, urn: &str) -> Self {
         self.extensions
-            .add_extension_uri(uri.to_string(), anchor)
+            .add_extension_urn(urn.to_string(), anchor)
             .unwrap();
         self
     }
 
-    pub fn with_function(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_ok());
+    pub fn with_function(mut self, urn: u32, anchor: u32, name: impl Into<String>) -> Self {
+        assert!(self.extensions.find_urn(urn).is_ok());
         self.extensions
-            .add_extension(ExtensionKind::Function, uri, anchor, name.into())
+            .add_extension(ExtensionKind::Function, urn, anchor, name.into())
             .unwrap();
         self
     }
 
-    pub fn with_type(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_ok());
+    pub fn with_type(mut self, urn: u32, anchor: u32, name: impl Into<String>) -> Self {
+        assert!(self.extensions.find_urn(urn).is_ok());
         self.extensions
-            .add_extension(ExtensionKind::Type, uri, anchor, name.into())
+            .add_extension(ExtensionKind::Type, urn, anchor, name.into())
             .unwrap();
         self
     }
 
-    pub fn with_type_variation(mut self, uri: u32, anchor: u32, name: impl Into<String>) -> Self {
-        assert!(self.extensions.find_uri(uri).is_ok());
+    pub fn with_type_variation(mut self, urn: u32, anchor: u32, name: impl Into<String>) -> Self {
+        assert!(self.extensions.find_urn(urn).is_ok());
         self.extensions
-            .add_extension(ExtensionKind::TypeVariation, uri, anchor, name.into())
+            .add_extension(ExtensionKind::TypeVariation, urn, anchor, name.into())
             .unwrap();
         self
     }

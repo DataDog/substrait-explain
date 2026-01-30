@@ -11,7 +11,7 @@ fn main() {
     // Parse a plan with extensions
     let plan_text = r#"
 === Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
 Functions:
   # 10 @  1: gt

@@ -102,6 +102,7 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
     let name = iter.pop(Rule::simple_type_name).as_str();
     let nullability = iter.parse_next::<Nullability>();
     iter.done();
+
     let kind = match name {
         "boolean" => Kind::Bool(proto::r#type::Boolean {
             nullability: nullability.into(),
@@ -139,10 +140,12 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
+        #[allow(deprecated)]
         "timestamp" => Kind::Timestamp(proto::r#type::Timestamp {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
+        #[allow(deprecated)]
         "timestamp_tz" => Kind::TimestampTz(proto::r#type::TimestampTz {
             nullability: nullability.into(),
             type_variation_reference: 0,
@@ -227,9 +230,9 @@ fn parse_user_defined_type(
         .try_pop(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
-    // TODO: Handle uri_anchor; validate that it matches the anchor
-    let _uri_anchor = iter
-        .try_pop(Rule::uri_anchor)
+    // TODO: Handle urn_anchor; validate that it matches the anchor
+    let _urn_anchor = iter
+        .try_pop(Rule::urn_anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
 
     let nullability = iter.parse_next::<Nullability>();
@@ -390,7 +393,7 @@ mod tests {
     fn test_udts() {
         let mut extensions = SimpleExtensions::default();
         extensions
-            .add_extension_uri("some_source".to_string(), 4)
+            .add_extension_urn("some_source".to_string(), 4)
             .unwrap();
         extensions
             .add_extension(ExtensionKind::Type, 4, 42, "udt".to_string())

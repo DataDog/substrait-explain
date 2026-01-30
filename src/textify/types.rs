@@ -357,13 +357,14 @@ impl Textify for ptype::Kind {
             ptype::Kind::Fp64(k) => textify_kind!(ctx, w, k, "fp64"),
             ptype::Kind::String(k) => textify_kind!(ctx, w, k, "string"),
             ptype::Kind::Binary(k) => textify_kind!(ctx, w, k, "binary"),
+            #[allow(deprecated)]
             ptype::Kind::Timestamp(k) => textify_kind!(ctx, w, k, "timestamp"),
             ptype::Kind::Date(k) => textify_kind!(ctx, w, k, "date"),
             ptype::Kind::Time(k) => textify_kind!(ctx, w, k, "time"),
             ptype::Kind::IntervalYear(i) => {
                 textify_kind!(ctx, w, i, "interval_year")
             }
-
+            #[allow(deprecated)]
             ptype::Kind::TimestampTz(ts) => {
                 textify_kind!(ctx, w, ts, "timestamp_tz")
             }
@@ -394,9 +395,34 @@ impl Textify for ptype::Kind {
                 c.type_variation_reference,
                 Parameters(&[Some(Parameter::Integer(c.length as i64))]),
             ),
-            ptype::Kind::Varchar(_c) => todo!(),
-            ptype::Kind::FixedBinary(_b) => todo!(),
-            ptype::Kind::Decimal(_d) => todo!(),
+            ptype::Kind::Varchar(c) => textify_type(
+                ctx,
+                w,
+                "varchar",
+                c.nullability(),
+                c.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(c.length as i64))]),
+            ),
+            ptype::Kind::FixedBinary(b) => textify_type(
+                ctx,
+                w,
+                "fixedbinary",
+                b.nullability(),
+                b.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(b.length as i64))]),
+            ),
+            ptype::Kind::Decimal(d) => {
+                let p = Parameter::Integer(d.precision as i64);
+                let s = Parameter::Integer(d.scale as i64);
+                textify_type(
+                    ctx,
+                    w,
+                    "decimal",
+                    d.nullability(),
+                    d.type_variation_reference,
+                    Parameters(&[Some(p), Some(s)]),
+                )
+            }
             ptype::Kind::PrecisionTime(p) => textify_type(
                 ctx,
                 w,
@@ -413,7 +439,14 @@ impl Textify for ptype::Kind {
                 p.type_variation_reference,
                 Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
             ),
-            ptype::Kind::PrecisionTimestampTz(_p) => todo!(),
+            ptype::Kind::PrecisionTimestampTz(p) => textify_type(
+                ctx,
+                w,
+                "precisiontimestamptz",
+                p.nullability(),
+                p.type_variation_reference,
+                Parameters(&[Some(Parameter::Integer(p.precision as i64))]),
+            ),
             ptype::Kind::Struct(s) => textify_type(
                 ctx,
                 w,
@@ -460,6 +493,7 @@ impl Textify for ptype::Kind {
                 )
             }
             ptype::Kind::UserDefined(u) => u.textify(ctx, w),
+            #[allow(deprecated)]
             ptype::Kind::UserDefinedTypeReference(r) => {
                 // Defer to the UserDefined definition, using defaults for
                 // variation, and non-nullable as suggested by the docs
@@ -470,6 +504,17 @@ impl Textify for ptype::Kind {
                     type_parameters: vec![],
                 };
                 ptype::Kind::UserDefined(udf).textify(ctx, w)
+            }
+            ptype::Kind::Alias(_p) => {
+                write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "AliasType",
+                        Some("Alias"),
+                        "TypeAliasReference textification not implemented",
+                    ))
+                )
             }
         }
     }
@@ -591,7 +636,7 @@ mod tests {
     #[test]
     fn type_display() {
         let ctx = TestContext::new()
-            .with_uri(1, "first")
+            .with_urn(1, "first")
             .with_type_variation(1, 2, "u8");
 
         let t = proto::Type {
@@ -637,7 +682,7 @@ mod tests {
     #[test]
     fn type_display_with_errors() {
         let ctx = TestContext::new()
-            .with_uri(1, "first")
+            .with_urn(1, "first")
             .with_type(1, 100, "cow");
 
         let t = proto::Type {
@@ -693,7 +738,6 @@ mod tests {
     #[test]
     fn struct_display() {
         let ctx = TestContext::new();
-
         let t = proto::Type {
             kind: Some(ptype::Kind::Struct(ptype::Struct {
                 type_variation_reference: 0,
@@ -718,6 +762,7 @@ mod tests {
                         })),
                     },
                     proto::Type {
+                        #[allow(deprecated)] // TimestampTz is deprecated
                         kind: Some(ptype::Kind::TimestampTz(ptype::TimestampTz {
                             type_variation_reference: 0,
                             nullability: ptype::Nullability::Required as i32,
