@@ -118,7 +118,17 @@ Use `ArgsExtractor` for convenient argument parsing:
 - `extractor.get_named_or::<T>(name, default)` - Optional with default
 - `extractor.check_exhausted()` - Verify no unexpected arguments
 
+### Extension Namespaces
+
+Extensions are organized into namespaces by their type:
+
+- **Relation** - Custom relation types (ExtensionLeaf, ExtensionSingle, ExtensionMulti)
+- **Enhancement** - Metadata attached to relations (displayed with `+ Enh:` prefix)
+- **Optimization** - Optimization hints (displayed with `+ Opt:` prefix)
+
 ### Using the ExtensionRegistry
+
+Register extensions to the appropriate namespace:
 
 ```rust,no_run
 # use prost::{Message, Name};
@@ -148,15 +158,21 @@ impl Name for MySourceConfig {
 # use substrait_explain::format_with_registry;
 
 let mut registry = ExtensionRegistry::new();
-registry.register::<MySourceConfig>();
+
+// Register a relation extension
+registry.register_relation::<MySourceConfig>();
+
+// Enhancement and optimization extensions use:
+// registry.register_enhancement::<MyEnhancement>();
+// registry.register_optimization::<MyOptimization>();
 
 let parser = Parser::new().with_extension_registry(registry.clone());
 # let plan = parser.parse_plan(r"
-=== Plan
-Root[x]
-  Read[t => x:i64]
-").unwrap();
-let (output, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# === Plan
+# Root[x]
+#   Read[t => x:i64]
+# ").unwrap();
+# let (output, errors) = format_with_registry(&plan, &Default::default(), &registry);
 ```
 
 See `examples/extensions.rs` for a complete working example with a custom `ParquetScan` extension type.
