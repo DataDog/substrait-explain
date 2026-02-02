@@ -683,6 +683,49 @@ Root[user_orders]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
+### Extension Relations
+
+Extension relations allow custom relation types with user-defined protobuf payloads. They enable integration with custom data sources, optimizations, or specialized operations beyond standard Substrait relations.
+
+#### Types
+
+There are three extension relation types, based on their input cardinality:
+
+- **`ExtensionLeaf`** - No child relations (e.g., custom data sources)
+- **`ExtensionSingle`** - Exactly one child relation (e.g., custom transformations)
+- **`ExtensionMulti`** - Zero or more child relations (e.g., custom joins)
+
+#### Syntax
+
+```text
+extension_relation := extension_type ":" name "[" arguments "=>" columns "]"
+extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
+arguments := named_arg ("," named_arg)*
+named_arg := name "=" literal
+columns := named_column ("," named_column)*
+named_column := name ":" type
+```
+
+#### Components
+
+- **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
+- **`name`** - The extension name (registered with `ExtensionRegistry`)
+- **`arguments`** - Named arguments as `key=value` pairs
+- **`columns`** - Output column names and types
+
+#### Example
+
+```text
+=== Plan
+Root[result]
+  ExtensionSingle:CustomFilter[threshold=100 => $0, $1]
+    ExtensionLeaf:ParquetScan[path='data/users.parquet', batch_size=1024 => id:i64, name:string]
+```
+
+#### Custom Extension Types
+
+To use extension relations with custom protobuf payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
+
 ## Complete Example
 
 A complete query that joins users and orders tables, calculates total order value, filters for high-value orders, and groups by user to show total revenue per customer:
