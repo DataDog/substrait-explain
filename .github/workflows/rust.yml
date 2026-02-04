@@ -29,18 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: ./.github/actions/cache
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          # Cache based on OS and cargo.lock
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          # Cache fallback to just OS
+          key-prefix: cargo-build
           restore-keys: |
+            ${{ runner.os }}-cargo-build-
             ${{ runner.os }}-cargo-
       - name: Lint with Clippy
         run: cargo clippy --features protoc -- -D warnings
@@ -52,16 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: ./.github/actions/cache
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key-prefix: cargo-build
           restore-keys: |
+            ${{ runner.os }}-cargo-build-
             ${{ runner.os }}-cargo-
 
       - name: Run tests
