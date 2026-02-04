@@ -1,0 +1,30 @@
+name: Cargo cache
+description: A cache for cargo
+inputs:
+  key-prefix:
+    description: |
+      Cache key name for this step. Should be the same for steps with similar
+      behavior (e.g. cargo check, cargo test).
+    required: true
+  restore-keys:
+    description: A prefix (or list of prefixes) to be used during cache misses.
+    required: true
+  cache-paths:
+    description: Optional cache paths override
+    required: false
+    default: |
+      ~/.cargo/bin/
+      ~/.cargo/registry/index/
+      ~/.cargo/registry/cache/
+      ~/.cargo/git/db/
+      target/
+runs:
+  using: "composite"
+  steps:
+    - name: Cache cargo
+      if: ${{ inputs.restore-keys != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.cache-paths }}
+        key: ${{ runner.os }}-${{ inputs.key-prefix }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+        restore-keys: ${{ inputs.restore-keys }}
