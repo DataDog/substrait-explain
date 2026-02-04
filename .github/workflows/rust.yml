@@ -29,19 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          # Cache based on OS and cargo.lock
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          # Cache fallback to just OS
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        # Uses rust cache action, stnadard in Rust community.
+        # Added to allowlist here:
+        # https://github.com/DataDog/substrait-explain/settings/actions
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # 2.8.1
       - name: Lint with Clippy
         run: cargo clippy --features protoc -- -D warnings
       - name: Lint with Clippy (All features)
@@ -52,17 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # 2.8.1
 
       - name: Run tests
         run: cargo test --all-features --verbose
