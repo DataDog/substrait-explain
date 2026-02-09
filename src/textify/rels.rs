@@ -1,9 +1,10 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Debug;
 
-use prost::UnknownEnumValue;
+use prost::{Message, UnknownEnumValue};
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -459,22 +460,38 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// 4. Children: The input relation
     fn from(rel: &'a AggregateRel) -> Self {
         // Arguments: group-by fields (as expressions)
-        let positional = rel
+        let mut positional = rel
             .grouping_expressions
             .iter()
             .map(Value::Expression)
             .collect::<Vec<_>>();
 
+        if positional.is_empty() {
+            // groupings might have the same expressions in their set so we use a map to get unique expresisons
+            let mut expression_set = HashMap::new();
+            for group in &rel.groupings {
+                #[allow(deprecated)]
+                // group.grouping_expressions is deprecated but substrait might still be encoded using this format
+                for exp in &group.grouping_expressions {
+                    expression_set.insert(exp.encode_to_vec(), Value::Expression(exp));
+                }
+            }
+            for (_key, value) in expression_set {
+                positional.push(value);
+            }
+        }
+
+        // The columns are the direct outputs of this relation (before emit)
+        let mut all_outputs: Vec<Value> = vec![];
+        let input_field_count = positional.len();
+        for i in 0..input_field_count {
+            all_outputs.push(Value::Reference(i as i32));
+        }
+
         let arguments = Some(Arguments {
             positional,
             named: vec![],
         });
-        // The columns are the direct outputs of this relation (before emit)
-        let mut all_outputs: Vec<Value> = vec![];
-        let input_field_count = rel.grouping_expressions.len();
-        for i in 0..input_field_count {
-            all_outputs.push(Value::Reference(i as i32));
-        }
 
         // Then, add all measures (aggregate functions)
         // These are indexed after the group-by fields
@@ -862,12 +879,17 @@ impl<'a> Textify for NamedArg<'a> {
 mod tests {
     use substrait::proto::expression::literal::LiteralType;
     use substrait::proto::expression::{Literal, RexType, ScalarFunction};
+    use substrait::proto::extensions::simple_extension_declaration::{ExtensionType, MappingType};
+    use substrait::proto::extensions::{
+        SimpleExtensionDeclaration, SimpleExtensionUri, SimpleExtensionUrn,
+    };
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
-    use substrait::proto::rel_common::Emit;
+    use substrait::proto::rel_common::{Direct, Emit};
     use substrait::proto::r#type::{self as ptype, Kind, Nullability, Struct};
     use substrait::proto::{
-        Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
+        Expression, FunctionArgument, NamedStruct, Plan, PlanRel, ReadRel, Type, Version,
+        aggregate_rel,
     };
 
     use super::*;
@@ -1198,6 +1220,133 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "limit=10, offset=5");
+    }
+
+    #[test]
+    fn test_project_over_grouping_with_emit_out_of_bounds() {
+        // Repro for JSON plan that uses AggregateRel.groupings with deprecated
+        // grouping_expressions, leaving AggregateRel.grouping_expressions empty.
+        let read_rel = ReadRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            base_schema: Some(NamedStruct {
+                names: vec!["service".into(), "hosts".into()],
+                r#struct: Some(Struct {
+                    type_variation_reference: 0,
+                    types: vec![
+                        Type {
+                            kind: Some(Kind::String(ptype::String {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                        Type {
+                            kind: Some(Kind::UserDefined(ptype::UserDefined {
+                                type_reference: 1,
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                                type_parameters: vec![],
+                            })),
+                        },
+                    ],
+                    nullability: Nullability::Required as i32,
+                }),
+            }),
+            filter: None,
+            best_effort_filter: None,
+            projection: None,
+            advanced_extension: None,
+            read_type: Some(ReadType::NamedTable(NamedTable {
+                names: vec!["events".into(), "logs".into()],
+                advanced_extension: None,
+            })),
+        };
+
+        let grouping_expr_0 = Expression {
+            rex_type: Some(RexType::Selection(Box::new(
+                FieldIndex(0).to_field_reference(),
+            ))),
+        };
+        let grouping_expr_1 = Expression {
+            rex_type: Some(RexType::Selection(Box::new(
+                FieldIndex(1).to_field_reference(),
+            ))),
+        };
+
+        let aggregate_rel = AggregateRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit {
+                    output_mapping: vec![0, 1],
+                })),
+                ..Default::default()
+            }),
+            input: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(read_rel))),
+            })),
+            groupings: vec![aggregate_rel::Grouping {
+                #[allow(deprecated)]
+                grouping_expressions: vec![grouping_expr_0.clone(), grouping_expr_1.clone()],
+                expression_references: vec![],
+            }],
+            measures: vec![],
+            grouping_expressions: vec![],
+            advanced_extension: None,
+        };
+
+        let project_rel = ProjectRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit {
+                    output_mapping: vec![2, 3],
+                })),
+                ..Default::default()
+            }),
+            input: Some(Box::new(Rel {
+                rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+            })),
+            expressions: vec![grouping_expr_0, grouping_expr_1],
+            advanced_extension: None,
+        };
+
+        #[allow(deprecated)]
+        let plan = Plan {
+            version: Some(Version {
+                major_number: 0,
+                minor_number: 20,
+                patch_number: 0,
+                git_hash: "".into(),
+                producer: "beagle".into(),
+            }),
+            extension_uris: vec![SimpleExtensionUri {
+                extension_uri_anchor: 1,
+                uri: "/functions_datadog.yaml".into(),
+            }],
+            extension_urns: vec![SimpleExtensionUrn {
+                extension_urn_anchor: 1,
+                urn: "extension:com.datadog:functions_datadog".into(),
+            }],
+            extensions: vec![SimpleExtensionDeclaration {
+                mapping_type: Some(MappingType::ExtensionType(ExtensionType {
+                    extension_uri_reference: 1,
+                    extension_urn_reference: 1,
+                    type_anchor: 1,
+                    name: "group".into(),
+                })),
+            }],
+            relations: vec![PlanRel {
+                rel_type: Some(PlanRelType::Root(RelRoot {
+                    input: Some(Rel {
+                        rel_type: Some(RelType::Project(Box::new(project_rel))),
+                    }),
+                    names: vec!["service".into(), "hosts".into()],
+                })),
+            }],
+            ..Default::default()
+        };
+
+        let (_text, errors) = crate::format(&plan);
+        assert!(errors.is_empty());
     }
 
     #[test]
