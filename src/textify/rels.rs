@@ -473,11 +473,16 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                 #[allow(deprecated)]
                 // group.grouping_expressions is deprecated but substrait might still be encoded using this format
                 for exp in &group.grouping_expressions {
-                    expression_set.insert(exp.encode_to_vec(), Value::Expression(exp));
+                    let key = exp.encode_to_vec();
+                    match expression_set.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(_entry) => {}
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let value = Value::Expression(exp);
+                            positional.push(value.clone());
+                            entry.insert(value);
+                        }
+                    }
                 }
-            }
-            for (_key, value) in expression_set {
-                positional.push(value);
             }
         }
 
