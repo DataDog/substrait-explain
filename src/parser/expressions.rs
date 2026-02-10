@@ -537,15 +537,8 @@ impl ScopedParsePair for IfThen {
 
         // gets all of the if clauses
         while let Some(p) = iter.try_pop(Rule::if_clause) {
-            let if_clause = Some(IfClause::parse_pair(extensions, p));
-            match if_clause {
-                Some(clause) => {
-                    ifs.push(clause.unwrap());
-                }
-                None => {
-                    println!("Failed to parse if clause");
-                }
-            }
+            let if_clause = IfClause::parse_pair(extensions, p)?;
+            ifs.push(if_clause);
         }
 
         let pair = iter.try_pop(Rule::expression).unwrap(); // should be else expression
