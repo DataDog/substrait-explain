@@ -1229,7 +1229,7 @@ Filter[gt($0, 10:i32) => $0, $1]
 
     #[test]
     fn test_project_over_grouping_with_emit_out_of_bounds() {
-        // Repro for JSON plan that uses AggregateRel.groupings with deprecated
+        // JSON plan that uses AggregateRel.groupings with deprecated
         // grouping_expressions, leaving AggregateRel.grouping_expressions empty.
         let read_rel = ReadRel {
             common: Some(RelCommon {
@@ -1237,7 +1237,7 @@ Filter[gt($0, 10:i32) => $0, $1]
                 ..Default::default()
             }),
             base_schema: Some(NamedStruct {
-                names: vec!["service".into(), "hosts".into()],
+                names: vec!["col_a".into(), "col_b".into()],
                 r#struct: Some(Struct {
                     type_variation_reference: 0,
                     types: vec![
@@ -1264,7 +1264,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             projection: None,
             advanced_extension: None,
             read_type: Some(ReadType::NamedTable(NamedTable {
-                names: vec!["events".into(), "logs".into()],
+                names: vec!["dataset_x".into(), "entity_y".into()],
                 advanced_extension: None,
             })),
         };
@@ -1316,20 +1316,13 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         #[allow(deprecated)]
         let plan = Plan {
-            version: Some(Version {
-                major_number: 0,
-                minor_number: 20,
-                patch_number: 0,
-                git_hash: "".into(),
-                producer: "beagle".into(),
-            }),
             extension_uris: vec![SimpleExtensionUri {
                 extension_uri_anchor: 1,
-                uri: "/functions_datadog.yaml".into(),
+                uri: "/extensions_catalog.yaml".into(),
             }],
             extension_urns: vec![SimpleExtensionUrn {
                 extension_urn_anchor: 1,
-                urn: "extension:com.datadog:functions_datadog".into(),
+                urn: "extension:com.example:extensions_catalog".into(),
             }],
             extensions: vec![SimpleExtensionDeclaration {
                 mapping_type: Some(MappingType::ExtensionType(ExtensionType {
@@ -1344,7 +1337,7 @@ Filter[gt($0, 10:i32) => $0, $1]
                     input: Some(Rel {
                         rel_type: Some(RelType::Project(Box::new(project_rel))),
                     }),
-                    names: vec!["service".into(), "hosts".into()],
+                    names: vec!["out_a".into(), "out_b".into()],
                 })),
             }],
             ..Default::default()
