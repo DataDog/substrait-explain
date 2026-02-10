@@ -136,9 +136,11 @@ function_call = {
     name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
+cast = {"cast(" ~ sp ~ expression ~ sp ~  ")" ~ sp ~ ":" ~ sp ~ type }
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
-expression = { function_call | reference | literal }
+expression = { cast | function_call | reference | literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.

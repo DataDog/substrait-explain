@@ -3,7 +3,7 @@ use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
+    Cast, FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
@@ -479,6 +479,38 @@ impl ScopedParsePair for Expression {
             }),
             _ => unimplemented!("Expression unexpected rule: {:?}", inner.as_rule()),
         }
+    }
+}
+
+impl ScopedParsePair for Cast {
+    fn rule() -> Rule {
+        Rule::cast
+    }
+
+    fn message() -> &'static str {
+        "Cast"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut pairs = pair.into_inner();
+        let input_expression = pairs.next().unwrap(); // First expression
+        let cast_type = pairs.next(); // type to cast to
+        assert!(pairs.next().is_none());
+
+        let expression = Expression::parse_pair(extensions, input_expression)?;
+        let typ = match cast_type {
+            Some(t) => Some(Type::parse_pair(extensions, t)?),
+            None => None,
+        };
+        Ok(Cast {
+            r#type: typ,
+            input: Some(Box::new(expression)),
+            failure_behavior: 2, //FAILURE_BEHAVIOR_THROW_EXCEPTION = 2;
+        })
     }
 }
 

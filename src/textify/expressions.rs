@@ -5,7 +5,7 @@ use expr::RexType;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, ReferenceSegment, ScalarFunction, reference_segment,
+    Cast, FieldReference, ReferenceSegment, ScalarFunction, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
@@ -745,15 +745,8 @@ impl Textify for RexType {
                     "MultiOrList textification not implemented",
                 ))
             ),
-            RexType::Cast(_c) => write!(
-                w,
-                "{}",
-                ctx.failure(PlanError::unimplemented(
-                    "RexType",
-                    Some("Cast"),
-                    "Cast textification not implemented",
-                ))
-            ),
+            RexType::Cast(c) => c.textify(ctx, w),
+
             RexType::Subquery(_s) => write!(
                 w,
                 "{}",
@@ -792,6 +785,19 @@ impl Textify for RexType {
                 ))
             ),
         }
+    }
+}
+
+impl Textify for Cast {
+    fn name() -> &'static str {
+        "Cast"
+    }
+
+    // represents the cast on a expression in the format: `x::TYPE`
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let cast_to_type = ctx.expect(self.r#type.as_ref());
+        let input = ctx.expect(self.input.as_deref());
+        write!(w, "cast({input}):{cast_to_type}")
     }
 }
 
@@ -839,6 +845,8 @@ impl Textify for AggregateFunction {
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto::Type;
+
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
@@ -940,5 +948,38 @@ mod tests {
         });
         let s = ctx.textify_no_errors(&rex_dup);
         assert_eq!(s, "duplicated#231(true)");
+    }
+
+    #[test]
+    fn test_test_cast_textifycast() {
+        let ctx = TestContext::new();
+
+        let int32 = int_expression(78);
+        let cast = Expression {
+            rex_type: Some(RexType::Cast(Box::new(Cast {
+                r#type: Some(Type {
+                    kind: Some(Kind::I16(ptype::I16 {
+                        nullability: Nullability::Nullable as i32,
+                        type_variation_reference: 0,
+                    })),
+                }),
+                input: Some(Box::new(int32)),
+                failure_behavior: 2,
+            }))),
+        };
+        let (result, errors) = ctx.textify(&cast);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        let expected = r#"cast(78:i32):i16?"#.trim_start();
+        assert_eq!(result, expected);
+    }
+
+    fn int_expression(value: i32) -> Expression {
+        Expression {
+            rex_type: Some(RexType::Literal(expr::Literal {
+                nullable: false,
+                type_variation_reference: 0,
+                literal_type: Some(expr::literal::LiteralType::I32(value)),
+            })),
+        }
     }
 }
