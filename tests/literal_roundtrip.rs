@@ -85,7 +85,7 @@ Root[result]
 fn test_if_then_expression_roundtrip() {
     let plan = r#"
 === Plan
-Root["CASE  WHEN status = \'info\' THEN \'foo\'  ELSE \'bar\' END"]
+Root[statusq]
   Fetch[limit=10, offset=0 => ]
     Project[if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]

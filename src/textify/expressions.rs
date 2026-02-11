@@ -1,4 +1,4 @@
-use std::fmt::{self, Write};
+use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate};
 use expr::RexType;
@@ -699,18 +699,14 @@ impl Textify for IfThen {
     // followed by the final else clause denoted with '_'
     // ex: true -> if_then(true || false -> true, _ -> false)
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let mut output = String::from("if_then(");
+        write!(w, "if_then(")?;
         for clause in &self.ifs {
             let if_expr = ctx.expect(clause.r#if.as_ref());
             let then_expr = ctx.expect(clause.then.as_ref());
-            write!(&mut output, "{if_expr} -> {then_expr}")?;
-            output.push_str(", ");
+            write!(w, "{if_expr} -> {then_expr}, ")?;
         }
-
         let else_expr = ctx.expect(self.r#else.as_deref());
-        write!(&mut output, "_ -> {else_expr}")?;
-        output.push(')');
-        write!(w, "{output}")
+        write!(w, "_ -> {else_expr})")
     }
 }
 
