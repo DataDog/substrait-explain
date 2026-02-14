@@ -448,6 +448,12 @@ impl<'a> From<&'a Rel> for Relation<'a> {
     }
 }
 
+// 1. grouping=[],measure >=1 group_exp = [], ==> _ -> (count($1)...)
+// 2. grouping>=1, measure >=1 grouping_exp ==> _ -> (count($1)..)
+//4. grouping>=1, measure = [], grouping_exp>=1 ==> (1) -> $1
+// 3. grouping >=1, measure >=1 group_exp>=1 ==> (1),(1) -> ($0, $1, count(1))
+//5. grouping>=1, measure>=1, grouping_exp>=1  ==> (1), (1) -> ...
+
 impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// Convert an AggregateRel to a Relation for textification.
     ///
@@ -459,47 +465,63 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// 3. Emit: Uses the relation's emit mapping to select which outputs to display
     /// 4. Children: The input relation
     fn from(rel: &'a AggregateRel) -> Self {
-        // Arguments: group-by fields (as expressions)
-        let mut positional = rel
-            .grouping_expressions
-            .iter()
-            .map(Value::Expression)
-            .collect::<Vec<_>>();
+        let mut grouping_sets: Vec<Vec<Value>> = vec![]; // the Groupings in the Aggregate
+        let mut expression_list: Vec<Value> = Vec::new(); // grouping_expressions defined on Aggregate
 
-        if positional.is_empty() {
+        // group.grouping_expressions is deprecated but substrait might still be encoded using this format
+        if rel.grouping_expressions.is_empty() {
             // groupings might have the same expressions in their set so we use a map to get unique expresisons
             let mut expression_set = HashMap::new();
+            let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
+
             for group in &rel.groupings {
+                let mut grouping_set: Vec<Value> = vec![];
                 #[allow(deprecated)]
-                // group.grouping_expressions is deprecated but substrait might still be encoded using this format
                 for exp in &group.grouping_expressions {
                     let key = exp.encode_to_vec();
-                    match expression_set.entry(key) {
+                    match expression_set.entry(key.clone()) {
                         std::collections::hash_map::Entry::Occupied(_entry) => {}
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             let value = Value::Expression(exp);
-                            positional.push(value.clone());
-                            entry.insert(value);
+                            expression_list.push(value); // new unique expression found
+                            entry.insert(i); // mpaping the byte encoded expresison to its index in the group_expression list
+                            i += 1;
                         }
                     }
+                    grouping_set.push(Value::Reference(expression_set[&key]));
                 }
+                grouping_sets.push(grouping_set);
+            }
+        } else {
+            expression_list = rel
+                .grouping_expressions
+                .iter()
+                .map(Value::Expression)
+                .collect::<Vec<_>>(); // already a list of the unique expresisons
+            for group in &rel.groupings {
+                let mut grouping_set: Vec<Value> = vec![];
+                for i in &group.expression_references {
+                    grouping_set.push(Value::Reference(*i as i32));
+                }
+                grouping_sets.push(grouping_set);
             }
         }
 
-        // The columns are the direct outputs of this relation (before emit)
-        let mut all_outputs: Vec<Value> = vec![];
-        let input_field_count = positional.len();
-        for i in 0..input_field_count {
-            all_outputs.push(Value::Reference(i as i32));
+        let mut arguments: Vec<Value> = vec![];
+        for g in grouping_sets {
+            arguments.push(Value::Tuple(g));
         }
 
+        // adding the grouping_sets as a list of Agurments to Aggregate Rel
         let arguments = Some(Arguments {
-            positional,
+            positional: arguments,
             named: vec![],
         });
 
-        // Then, add all measures (aggregate functions)
-        // These are indexed after the group-by fields
+        // The columns are the direct outputs of this relation (before emit)
+        let mut all_outputs: Vec<Value> = expression_list;
+
+        // Add all measures (aggregate functions) These are indexed after the group-by fields
         for m in &rel.measures {
             if let Some(agg_fn) = m.measure.as_ref() {
                 all_outputs.push(Value::AggregateFunction(agg_fn));
@@ -882,19 +904,19 @@ impl<'a> Textify for NamedArg<'a> {
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto::aggregate_rel::Grouping;
     use substrait::proto::expression::literal::LiteralType;
     use substrait::proto::expression::{Literal, RexType, ScalarFunction};
-    use substrait::proto::extensions::simple_extension_declaration::{ExtensionType, MappingType};
-    use substrait::proto::extensions::{
-        SimpleExtensionDeclaration, SimpleExtensionUri, SimpleExtensionUrn,
-    };
+    // use substrait::proto::extensions::simple_extension_declaration::{ExtensionType, MappingType};
+    // use substrait::proto::extensions::{
+    //     SimpleExtensionDeclaration, SimpleExtensionUri, SimpleExtensionUrn,
+    // };
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
     use substrait::proto::rel_common::{Direct, Emit};
     use substrait::proto::r#type::{self as ptype, Kind, Nullability, Struct};
     use substrait::proto::{
-        Expression, FunctionArgument, NamedStruct, Plan, PlanRel, ReadRel, Type, Version,
-        aggregate_rel,
+        Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
     };
 
     use super::*;
@@ -1190,8 +1212,8 @@ Filter[gt($0, 10:i32) => $0, $1]
         }
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        // Expected: Aggregate[$0 => sum($1), count($1)]
-        assert!(result.contains("Aggregate[$0 => sum($1), count($1)]"));
+        // Expected: Aggregate[_ => $0, sum($1), count($1)]
+        assert!(result.contains("Aggregate[_ =>$0, sum($1), count($1)]"));
     }
 
     #[test]
@@ -1228,9 +1250,12 @@ Filter[gt($0, 10:i32) => $0, $1]
     }
 
     #[test]
-    fn test_project_over_grouping_with_emit_out_of_bounds() {
-        // JSON plan that uses AggregateRel.groupings with deprecated
+    fn test_multiple_groupings_on_aggregate_deprecated() {
+        // Protobuf plan that uses AggregateRel.groupings with deprecated
         // grouping_expressions, leaving AggregateRel.grouping_expressions empty.
+        let ctx = TestContext::new()
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 11, "count");
         let read_rel = ReadRel {
             common: Some(RelCommon {
                 emit_kind: Some(EmitKind::Direct(Direct {})),
@@ -1248,11 +1273,9 @@ Filter[gt($0, 10:i32) => $0, $1]
                             })),
                         },
                         Type {
-                            kind: Some(Kind::UserDefined(ptype::UserDefined {
-                                type_reference: 1,
+                            kind: Some(Kind::String(ptype::String {
                                 type_variation_reference: 0,
                                 nullability: Nullability::Nullable as i32,
-                                type_parameters: vec![],
                             })),
                         },
                     ],
@@ -1290,61 +1313,399 @@ Filter[gt($0, 10:i32) => $0, $1]
             input: Some(Box::new(Rel {
                 rel_type: Some(RelType::Read(Box::new(read_rel))),
             })),
-            groupings: vec![aggregate_rel::Grouping {
-                #[allow(deprecated)]
-                grouping_expressions: vec![grouping_expr_0.clone(), grouping_expr_1.clone()],
-                expression_references: vec![],
-            }],
+            groupings: vec![
+                aggregate_rel::Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![grouping_expr_0.clone()],
+                    expression_references: vec![],
+                },
+                aggregate_rel::Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![grouping_expr_0.clone(), grouping_expr_1.clone()],
+                    expression_references: vec![],
+                },
+            ],
+
             measures: vec![],
             grouping_expressions: vec![],
             advanced_extension: None,
         };
 
-        let project_rel = ProjectRel {
+        // let project_rel = ProjectRel {
+        //     common: Some(RelCommon {
+        //         emit_kind: Some(EmitKind::Emit(Emit {
+        //             output_mapping: vec![2, 3],
+        //         })),
+        //         ..Default::default()
+        //     }),
+        //     input: Some(Box::new(Rel {
+        //         rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        //     })),
+        //     expressions: vec![grouping_expr_0, grouping_expr_1],
+        //     advanced_extension: None,
+        // };
+
+        // let relation: Relation = (&aggregate_rel).into();
+
+        // assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        // assert_eq!(
+        //     result,
+        //     "Read[some_db.test_table => col1:i32?, \"column 2\":string?]"
+        // );
+
+        let relation = Relation::from(&aggregate_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        println!("Aggregate relation textification result:");
+        println!("{result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        // Expected: Aggregate[$0 => sum($1), count($1)]
+        assert!(result.contains("Aggregate[($0), ($0, $1) => $0, $1]"));
+    }
+
+    #[test]
+    fn test_multiple_groupings_with_measure_deprecated() {
+        // Protobuf plan that uses AggregateRel.groupings with deprecated
+        // grouping_expressions, leaving AggregateRel.grouping_expressions empty.
+        let ctx = TestContext::new()
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 10, "count");
+
+        let agg_fn1 = AggregateFunction {
+            function_reference: 10, // sum
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(1).to_field_reference(),
+                    ))),
+                })),
+            }],
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
+        };
+
+        let read_rel = ReadRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            base_schema: Some(NamedStruct {
+                names: vec!["col_a".into(), "col_b".into()],
+                r#struct: Some(Struct {
+                    type_variation_reference: 0,
+                    types: vec![
+                        Type {
+                            kind: Some(Kind::String(ptype::String {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                        Type {
+                            kind: Some(Kind::String(ptype::String {
+                                type_variation_reference: 0,
+                                nullability: Nullability::Nullable as i32,
+                            })),
+                        },
+                    ],
+                    nullability: Nullability::Required as i32,
+                }),
+            }),
+            filter: None,
+            best_effort_filter: None,
+            projection: None,
+            advanced_extension: None,
+            read_type: Some(ReadType::NamedTable(NamedTable {
+                names: vec!["dataset_x".into(), "entity_y".into()],
+                advanced_extension: None,
+            })),
+        };
+
+        let grouping_expr_0 = Expression {
+            rex_type: Some(RexType::Selection(Box::new(
+                FieldIndex(0).to_field_reference(),
+            ))),
+        };
+        let grouping_expr_1 = Expression {
+            rex_type: Some(RexType::Selection(Box::new(
+                FieldIndex(1).to_field_reference(),
+            ))),
+        };
+
+        let aggregate_rel = AggregateRel {
             common: Some(RelCommon {
                 emit_kind: Some(EmitKind::Emit(Emit {
-                    output_mapping: vec![2, 3],
+                    output_mapping: vec![0, 1, 2],
                 })),
                 ..Default::default()
             }),
             input: Some(Box::new(Rel {
-                rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+                rel_type: Some(RelType::Read(Box::new(read_rel))),
             })),
-            expressions: vec![grouping_expr_0, grouping_expr_1],
+            groupings: vec![
+                aggregate_rel::Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![grouping_expr_0.clone()],
+                    expression_references: vec![],
+                },
+                aggregate_rel::Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![grouping_expr_0.clone(), grouping_expr_1.clone()],
+                    expression_references: vec![],
+                },
+            ],
+
+            measures: vec![aggregate_rel::Measure {
+                measure: Some(agg_fn1),
+                filter: None,
+            }],
+            grouping_expressions: vec![],
             advanced_extension: None,
         };
 
-        #[allow(deprecated)]
-        let plan = Plan {
-            extension_uris: vec![SimpleExtensionUri {
-                extension_uri_anchor: 1,
-                uri: "/extensions_catalog.yaml".into(),
-            }],
-            extension_urns: vec![SimpleExtensionUrn {
-                extension_urn_anchor: 1,
-                urn: "extension:com.example:extensions_catalog".into(),
-            }],
-            extensions: vec![SimpleExtensionDeclaration {
-                mapping_type: Some(MappingType::ExtensionType(ExtensionType {
-                    extension_uri_reference: 1,
-                    extension_urn_reference: 1,
-                    type_anchor: 1,
-                    name: "group".into(),
+        let relation = Relation::from(&aggregate_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        println!("Aggregate relation textification result:");
+        println!("{result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        // Expected: Aggregate[$0 => sum($1), count($1)]
+        assert!(result.contains("($0), ($0, $1) => $0, $1, count($1)"));
+    }
+
+    #[test]
+    fn test_multiple_groupings_on_aggregate() {
+        let ctx = TestContext::new()
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 11, "count");
+
+        let agg_fn2 = AggregateFunction {
+            function_reference: 11, // count
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(2).to_field_reference(),
+                    ))),
                 })),
             }],
-            relations: vec![PlanRel {
-                rel_type: Some(PlanRelType::Root(RelRoot {
-                    input: Some(Rel {
-                        rel_type: Some(RelType::Project(Box::new(project_rel))),
-                    }),
-                    names: vec!["out_a".into(), "out_b".into()],
-                })),
-            }],
-            ..Default::default()
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
         };
 
-        let (_text, errors) = crate::format(&plan);
-        assert!(errors.is_empty());
+        let aggregate_rel = AggregateRel {
+            input: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(ReadRel {
+                    common: None,
+                    base_schema: Some(NamedStruct {
+                        names: vec!["category".into(), "amount".into(), "value".into()],
+                        r#struct: Some(Struct {
+                            type_variation_reference: 0,
+                            types: vec![
+                                Type {
+                                    kind: Some(Kind::String(ptype::String {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                                Type {
+                                    kind: Some(Kind::Fp64(ptype::Fp64 {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                                Type {
+                                    kind: Some(Kind::I32(ptype::I32 {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                            ],
+                            nullability: Nullability::Nullable as i32,
+                        }),
+                    }),
+                    filter: None,
+                    best_effort_filter: None,
+                    projection: None,
+                    advanced_extension: None,
+                    read_type: Some(ReadType::NamedTable(NamedTable {
+                        names: vec!["orders".into()],
+                        advanced_extension: None,
+                    })),
+                }))),
+            })),
+            grouping_expressions: vec![
+                Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(0).to_field_reference(),
+                    ))),
+                },
+                Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(1).to_field_reference(),
+                    ))),
+                },
+            ],
+            groupings: vec![
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![0, 1],
+                },
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![1],
+                },
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![1, 1],
+                },
+            ],
+            measures: vec![aggregate_rel::Measure {
+                measure: Some(agg_fn2),
+                filter: None,
+            }],
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&aggregate_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        println!("Aggregate relation textification result:");
+        println!("{result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[($0, $1), ($1), ($1, $1) => $0, $1, count($2)]"));
+    }
+
+    #[test]
+    fn test_duplicate_groupings_on_aggregate() {
+        let ctx = TestContext::new()
+        .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+        .with_function(1, 11, "count");
+
+        let agg_fn2 = AggregateFunction {
+            function_reference: 11, // count
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(2).to_field_reference(),
+                    ))),
+                })),
+            }],
+            options: vec![],
+            output_type: None,
+            invocation: 0,
+            phase: 0,
+            sorts: vec![],
+            #[allow(deprecated)]
+            args: vec![],
+        };
+
+        let aggregate_rel = AggregateRel {
+            input: Some(Box::new(Rel {
+                rel_type: Some(RelType::Read(Box::new(ReadRel {
+                    common: None,
+                    base_schema: Some(NamedStruct {
+                        names: vec!["category".into(), "amount".into()],
+                        r#struct: Some(Struct {
+                            type_variation_reference: 0,
+                            types: vec![
+                                Type {
+                                    kind: Some(Kind::String(ptype::String {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                                Type {
+                                    kind: Some(Kind::Fp64(ptype::Fp64 {
+                                        type_variation_reference: 0,
+                                        nullability: Nullability::Nullable as i32,
+                                    })),
+                                },
+                            ],
+                            nullability: Nullability::Nullable as i32,
+                        }),
+                    }),
+                    filter: None,
+                    best_effort_filter: None,
+                    projection: None,
+                    advanced_extension: None,
+                    read_type: Some(ReadType::NamedTable(NamedTable {
+                        names: vec!["orders".into()],
+                        advanced_extension: None,
+                    })),
+                }))),
+            })),
+            grouping_expressions: vec![
+                Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(0).to_field_reference(),
+                    ))),
+                },
+                Expression {
+                    rex_type: Some(RexType::Selection(Box::new(
+                        FieldIndex(1).to_field_reference(),
+                    ))),
+                },
+            ],
+            groupings: vec![
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![0, 1],
+                },
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![0, 1],
+                },
+            ],
+            measures: vec![aggregate_rel::Measure {
+                measure: Some(agg_fn2),
+                filter: None,
+            }],
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            advanced_extension: None,
+        };
+
+        let relation = Relation::from(&aggregate_rel);
+        let (result, errors) = ctx.textify(&relation);
+
+        println!("Aggregate relation textification result:");
+        println!("{result}");
+        if !errors.is_empty() {
+            println!("Errors: {errors:?}");
+        }
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[($0, $1), ($0, $1) => $0, $1, count($2)]"));
     }
 
     #[test]
