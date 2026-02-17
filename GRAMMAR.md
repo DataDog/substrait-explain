@@ -573,11 +573,12 @@ Root[result]
 
 #### Syntax
 
-`"Aggregate" "[" group_by "=>" aggregate_output "]"`
+`"Aggregate" "[" grouping_sets "=>" aggregate_output "]"`
 
 #### Components
 
-- `group_by := reference_list | "_"` - comma-separated list of field references for grouping, or `_` for global aggregation
+- `grouping_sets := grouping_set*` - comma-separated list of group by lists
+- `grouping_set := reference_list | "_"` - comma-separated list of field references for a grouping, or `_`, for an empty group(global aggregation)
 - `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
 - `aggregate_measure` - field references or aggregate function calls. See [Aggregate Measures section](#aggregate-measures)
 
@@ -596,7 +597,7 @@ Functions:
 
 === Plan
 Root[result]
-  Aggregate[$0 => $0, sum($1), count($2)]           // Group by field 0
+  Aggregate[($0) => $0, sum($1), count($2)]           // Group by field 0
     Read[orders => category:string, amount:i64]
 # "#;
 #
@@ -685,7 +686,7 @@ Functions:
 
 === Plan
 Root[customer_revenue]
-  Aggregate[$0, $1 => $0, $1, sum($3)]
+  Aggregate[($0, $1) => $0, $1, sum($3)]
     Filter[gt($3, 100) => $0, $1, $2, $3]
       Project[$0, $1, $2, multiply($4, $5)]
         Join[&Inner, eq($0, $3) => $0, $1, $2, $3, $4, $5]

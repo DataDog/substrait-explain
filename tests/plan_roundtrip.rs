@@ -161,7 +161,7 @@ Functions:
 
 === Plan
 Root[category, total, count]
-  Aggregate[$0 => sum($1), count($1)]
+  Aggregate[($0) => sum($1), count($1)]
     Read[orders => category:string?, amount:fp64?]"#;
 
     roundtrip_plan(plan);
@@ -178,7 +178,7 @@ Functions:
 
 === Plan
 Root[category, region, total, count]
-  Aggregate[$0, $1 => sum($2), $0, count($2)]
+  Aggregate[($0, $1) => sum($2), $0, count($2)]
     Read[orders => category:string?, region:string?, amount:fp64?]"#;
 
     roundtrip_plan(plan);
