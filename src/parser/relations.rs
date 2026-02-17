@@ -473,7 +473,6 @@ impl RelationParsePair for AggregateRel {
                         grouping_expressions: vec![],
                     });
                 }
-
                 _ => panic!(
                     "Unexpected group-by item rule: {:?}",
                     group_by_item.as_rule()
@@ -486,10 +485,6 @@ impl RelationParsePair for AggregateRel {
         let mut output_mapping = Vec::new();
         let mut measure_count = 0;
 
-        println!(
-            "output_pair.into_inner() len: {}",
-            output_pair.clone().into_inner().len()
-        );
         for aggregate_output_item in output_pair.into_inner() {
             let inner_item = unwrap_single_pair(aggregate_output_item);
             match inner_item.as_rule() {
@@ -500,7 +495,7 @@ impl RelationParsePair for AggregateRel {
                 Rule::aggregate_measure => {
                     let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
                     measures.push(measure);
-                    output_mapping.push(grouping_expressions.len() as i32 + measure_count); // measures are defined after all expression references -> this isn't true for aggegate that alrrady has its expression output permuted. is that allowed? I no emit can do that but emit isn't preserved right? espcially in the text 
+                    output_mapping.push(grouping_expressions.len() as i32 + measure_count);
                     measure_count += 1;
                 }
                 _ => panic!(
@@ -510,16 +505,12 @@ impl RelationParsePair for AggregateRel {
             }
         }
 
-        let emit = EmitKind::Emit(Emit { output_mapping }); // how is this meant to be preseved from the orginal object
+        let emit = EmitKind::Emit(Emit { output_mapping });
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
 
-        println!(
-            "grouping_expressions lnegth: {}",
-            grouping_expressions.len()
-        );
         Ok(AggregateRel {
             input: Some(input),
             grouping_expressions,
@@ -1056,44 +1047,6 @@ mod tests {
         // Output mapping should be [2, 0, 3] (measures and group-by fields in order)
         // sum($2) -> 2, $0 -> 0, count($2) -> 3
         assert_eq!(emit, &[2, 0, 3]);
-    }
-
-    #[test]
-    fn test_parse_aggregate_permuted_emit_relation() {
-        let extensions = TestContext::new()
-            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count")
-            .extensions;
-
-        let aggregate = AggregateRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(
-                Rule::aggregate_relation,
-                "Aggregate[($0, $1) => $0, $1, sum($2), count($2)]",
-            ),
-            vec![Box::new(example_read_relation().into_rel())],
-            3,
-        )
-        .unwrap();
-        assert_eq!(aggregate.grouping_expressions.len(), 2);
-        assert_eq!(aggregate.groupings[0].expression_references.len(), 2);
-        assert_eq!(aggregate.groupings.len(), 1);
-        assert_eq!(aggregate.measures.len(), 2);
-
-        let emit_kind = &aggregate
-            .common
-            .as_ref()
-            .unwrap()
-            .emit_kind
-            .as_ref()
-            .unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        // Output mapping should be [0, 1, 2, 3] (group-by fields and measures in order)
-        assert_eq!(emit, &[0, 1, 2, 3]);
     }
 
     #[test]

@@ -448,12 +448,6 @@ impl<'a> From<&'a Rel> for Relation<'a> {
     }
 }
 
-// 1. grouping=[],measure >=1 group_exp = [], ==> _ -> (count($1)...)
-// 2. grouping>=1, measure >=1 grouping_exp ==> _ -> (count($1)..)
-//4. grouping>=1, measure = [], grouping_exp>=1 ==> (1) -> $1
-// 3. grouping >=1, measure >=1 group_exp>=1 ==> (1),(1) -> ($0, $1, count(1))
-//5. grouping>=1, measure>=1, grouping_exp>=1  ==> (1), (1) -> ...
-
 impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// Convert an AggregateRel to a Relation for textification.
     ///
@@ -512,7 +506,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
             arguments.push(Value::Tuple(g));
         }
 
-        // adding the grouping_sets as a list of Agurments to Aggregate Rel
+        // adding the grouping_sets as a list of Arguments to Aggregate Rel
         let arguments = Some(Arguments {
             positional: arguments,
             named: vec![],

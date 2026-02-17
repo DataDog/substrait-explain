@@ -222,14 +222,6 @@ grouping_set = {empty | ("(" ~ sp ~ reference ~ (sp ~ "," ~ sp ~ reference)* ~ s
 aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
 aggregate_output_item = { reference | aggregate_measure }
 // TODO: Add support for filter, invocation, etc.
-
-// _ 
-// (0)
-// (0, 1)
-// (0, 1, 2, 3)
-// (0, 1, 2, 3)
-// Aggregate[($0, $1), ($0), () => …]
-
 aggregate_measure = { function_call }
 
 // Empty grouping symbol
