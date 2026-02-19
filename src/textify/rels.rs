@@ -484,7 +484,6 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                             i += 1;
                         }
                     }
-
                     grouping_set.push(Value::Reference(expression_index_map[&key]));
                 }
                 grouping_sets.push(grouping_set);

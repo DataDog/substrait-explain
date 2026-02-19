@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
@@ -429,15 +429,17 @@ impl RelationParsePair for AggregateRel {
         iter.done();
 
         let mut grouping_sets: Vec<Grouping> = Vec::new();
-        let mut expression_set = HashSet::new();
+        let mut expression_index_map = HashMap::new();
         let mut grouping_expressions: Vec<Expression> = Vec::new();
+
+        let mut i = 0;
 
         // outer list of grouping_sets
         for group_by_item in group_by_pair.into_inner() {
             match group_by_item.as_rule() {
                 // rule that matches each group_set inside set list
                 Rule::grouping_set => {
-                    let mut expression_references = vec![];
+                    let mut expression_references: Vec<u32> = vec![];
                     for group_set in group_by_item.into_inner() {
                         match group_set.as_rule() {
                             Rule::empty => {
@@ -445,20 +447,25 @@ impl RelationParsePair for AggregateRel {
                             }
                             Rule::reference => {
                                 let field_index = FieldIndex::parse_pair(group_set);
-                                expression_references.push(field_index.0 as u32);
 
                                 // this is necessary to maintain order of output columns defined in emit
                                 let index = field_index.0;
-                                if !expression_set.contains(&index) {
-                                    grouping_expressions.push(Expression {
-                                        rex_type: Some(
-                                            substrait::proto::expression::RexType::Selection(
-                                                Box::new(field_index.to_field_reference()),
+                                match expression_index_map.entry(index) {
+                                    std::collections::hash_map::Entry::Occupied(_e) => {}
+                                    std::collections::hash_map::Entry::Vacant(entry) => {
+                                        grouping_expressions.push(Expression {
+                                            rex_type: Some(
+                                                substrait::proto::expression::RexType::Selection(
+                                                    Box::new(field_index.to_field_reference()),
+                                                ),
                                             ),
-                                        ),
-                                    });
-                                    expression_set.insert(index);
+                                        });
+                                        entry.insert(i);
+                                        i += 1;
+                                    }
                                 }
+                                expression_references
+                                    .push(*expression_index_map.get(&index).unwrap());
                             }
                             _ => panic!("Unexpected group-by item rule: {:?}", group_set.as_rule()),
                         }
@@ -1121,6 +1128,27 @@ mod tests {
         };
         // Output mapping should be [1, 0, 2] (grouping fields + measures)
         assert_eq!(emit, &[1, 0, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_expression_references_are_positions_not_field_indices() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::aggregate_relation, "Aggregate[($2, $0) => sum($1)]"),
+            vec![Box::new(example_read_relation().into_rel())],
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        assert_eq!(aggregate.groupings.len(), 1);
+        // expression_references must be positions [0, 1], not raw field indices [2, 0]
+        assert_eq!(aggregate.groupings[0].expression_references, vec![0, 1]);
     }
 
     #[test]
