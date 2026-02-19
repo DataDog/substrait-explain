@@ -577,7 +577,7 @@ Root[result]
 
 #### Components
 
-- `grouping_sets := grouping_set*` - comma-separated list of group by lists
+- `grouping_sets :=  (grouping_set ~ (sp ~ "," ~ sp ~ grouping_set)*)?` - comma-separated list of group by lists
 - `grouping_set := reference_list | "_"` - comma-separated list of field references for a grouping, or `_`, for an empty group(global aggregation)
 - `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
 - `aggregate_measure` - field references or aggregate function calls. See [Aggregate Measures section](#aggregate-measures)
@@ -597,8 +597,8 @@ Functions:
 
 === Plan
 Root[result]
-  Aggregate[($0) => $0, sum($1), count($2)]           // Group by field 0
-    Read[orders => category:string, amount:i64]
+  Aggregate[($0), ($0, $1) => $0, $1, sum($2), count($2)]           // Group by field 0, and ($0, $1)
+    Read[orders => category:string, region:string?,  amount:i64]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();

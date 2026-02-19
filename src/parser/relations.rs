@@ -1016,17 +1016,17 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[($0, $1) => sum($2), $0, count($2)]",
+                "Aggregate[($0, $1), (_) => sum($2), $0, count($2)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
         )
         .unwrap();
 
-        // Should have 2 group-by fields ($0, $1) and 2 measures (sum($2), count($2))
+        // Should have 2 group-by sets ($0, $1) and an empty group, and emit 2 measures (sum($2), count($2))
         assert_eq!(aggregate.grouping_expressions.len(), 2);
         assert_eq!(aggregate.groupings[0].expression_references.len(), 2);
-        assert_eq!(aggregate.groupings.len(), 1);
+        assert_eq!(aggregate.groupings.len(), 2);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1057,7 +1057,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[($0), (_) => sum($1), count($1)]",
+                "Aggregate[($0) => $0, sum($1), count($1)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
@@ -1066,7 +1066,7 @@ mod tests {
 
         // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
         assert_eq!(aggregate.grouping_expressions.len(), 1);
-        assert_eq!(aggregate.groupings.len(), 2);
+        assert_eq!(aggregate.groupings.len(), 1);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1080,8 +1080,47 @@ mod tests {
             EmitKind::Emit(emit) => &emit.output_mapping,
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
-        // Output mapping should be [1, 2] (measures only)
-        assert_eq!(emit, &[1, 2]);
+        // Output mapping should be [0, 1, 2] (grouping fields + measures)
+        assert_eq!(emit, &[0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_maintain_column_order() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .with_function(1, 11, "count")
+            .extensions;
+
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[($0) => sum($1), $0, count($1)]",
+            ),
+            vec![Box::new(example_read_relation().into_rel())],
+            3,
+        )
+        .unwrap();
+
+        // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
+        assert_eq!(aggregate.grouping_expressions.len(), 1);
+        assert_eq!(aggregate.groupings.len(), 1);
+        assert_eq!(aggregate.measures.len(), 2);
+
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [1, 0, 2] (grouping fields + measures)
+        assert_eq!(emit, &[1, 0, 2]);
     }
 
     #[test]

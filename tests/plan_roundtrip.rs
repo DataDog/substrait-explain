@@ -168,7 +168,7 @@ Root[category, total, count]
 }
 
 #[test]
-fn test_aggregate_relation() {
+fn test_aggregate_multiple_grouping_sets_roundtrip() {
     let plan = r#"=== Extensions
 URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
@@ -177,8 +177,25 @@ Functions:
   # 11 @  1: count
 
 === Plan
-Root[category, region, total, count]
+Root[sum, category, count]
   Aggregate[($0, $1), ($0), (_) => sum($2), $0, count($2)]
+    Read[orders => category:string?, region:string?, amount:fp64?]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_global_aggregate_relation_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+  # 11 @  1: count
+
+=== Plan
+Root[sum, count]
+  Aggregate[(_) => sum($2), count($2)]
     Read[orders => category:string?, region:string?, amount:fp64?]"#;
 
     roundtrip_plan(plan);

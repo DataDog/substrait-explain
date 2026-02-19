@@ -211,7 +211,7 @@ impl<'a> Textify for Emitted<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Arguments<'a> {
-    /// Positional arguments (e.g., a filter condition, group-bys, etc.))
+    /// Positional arguments (e.g., a filter condition, group-bys, etc.)
     pub positional: Vec<Value<'a>>,
     /// Named arguments (e.g., limit=10, offset=5)
     pub named: Vec<NamedArg<'a>>,
@@ -486,12 +486,6 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                     }
 
                     grouping_set.push(Value::Reference(expression_index_map[&key]));
-                }
-
-                #[allow(deprecated)]
-                if group.grouping_expressions.is_empty() {
-                    // a group can have zero or more expressions
-                    grouping_sets.push(vec![]);
                 }
                 grouping_sets.push(grouping_set);
             }
