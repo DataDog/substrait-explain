@@ -84,6 +84,7 @@ pub enum Value<'a> {
     /// Represents a valid enum value as a string for textification.
     Enum(Cow<'a, str>),
     Integer(i32),
+    EmptyGroup(),
 }
 
 impl<'a> Value<'a> {
@@ -124,6 +125,7 @@ impl<'a> Textify for Value<'a> {
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
             Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
+            Value::EmptyGroup() => write!(w, "(_)"),
         }
     }
 }
@@ -464,8 +466,8 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
 
         // group.grouping_expressions is deprecated but substrait might still be encoded using this format
         if rel.grouping_expressions.is_empty() {
-            // groupings might have the same expressions in their set so we use a map to get unique expresisons
-            let mut expression_set = HashMap::new();
+            // groupings might have the same expressions in their set so we use a map to get unique expressions
+            let mut expression_index_map = HashMap::new();
             let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
 
             for group in &rel.groupings {
@@ -473,16 +475,23 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                 #[allow(deprecated)]
                 for exp in &group.grouping_expressions {
                     let key = exp.encode_to_vec();
-                    match expression_set.entry(key.clone()) {
+                    match expression_index_map.entry(key.clone()) {
                         std::collections::hash_map::Entry::Occupied(_entry) => {}
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             let value = Value::Expression(exp);
                             expression_list.push(value); // new unique expression found
-                            entry.insert(i); // mpaping the byte encoded expresison to its index in the group_expression list
+                            entry.insert(i); // mapping the byte encoded expression to its index in the group_expression list
                             i += 1;
                         }
                     }
-                    grouping_set.push(Value::Reference(expression_set[&key]));
+
+                    grouping_set.push(Value::Reference(expression_index_map[&key]));
+                }
+
+                #[allow(deprecated)]
+                if group.grouping_expressions.is_empty() {
+                    // a group can have zero or more expressions
+                    grouping_sets.push(vec![]);
                 }
                 grouping_sets.push(grouping_set);
             }
@@ -491,7 +500,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                 .grouping_expressions
                 .iter()
                 .map(Value::Expression)
-                .collect::<Vec<_>>(); // already a list of the unique expresisons
+                .collect::<Vec<_>>(); // already a list of the unique expressions
             for group in &rel.groupings {
                 let mut grouping_set: Vec<Value> = vec![];
                 for i in &group.expression_references {
@@ -499,16 +508,24 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
                 }
                 grouping_sets.push(grouping_set);
             }
+            // no defined groupings means there is global group by
+            if rel.groupings.is_empty() {
+                grouping_sets.push(vec![]);
+            }
         }
 
-        let mut arguments: Vec<Value> = vec![];
+        let mut positional: Vec<Value> = vec![];
         for g in grouping_sets {
-            arguments.push(Value::Tuple(g));
+            if g.is_empty() {
+                positional.push(Value::EmptyGroup());
+            } else {
+                positional.push(Value::Tuple(g));
+            }
         }
 
         // adding the grouping_sets as a list of Arguments to Aggregate Rel
         let arguments = Some(Arguments {
-            positional: arguments,
+            positional,
             named: vec![],
         });
 
@@ -901,10 +918,6 @@ mod tests {
     use substrait::proto::aggregate_rel::Grouping;
     use substrait::proto::expression::literal::LiteralType;
     use substrait::proto::expression::{Literal, RexType, ScalarFunction};
-    // use substrait::proto::extensions::simple_extension_declaration::{ExtensionType, MappingType};
-    // use substrait::proto::extensions::{
-    //     SimpleExtensionDeclaration, SimpleExtensionUri, SimpleExtensionUrn,
-    // };
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
     use substrait::proto::rel_common::{Direct, Emit};
@@ -1206,8 +1219,8 @@ Filter[gt($0, 10:i32) => $0, $1]
         }
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        // Expected: Aggregate[_ => sum($1), count($1)] we chose to emit only measures
-        assert!(result.contains("Aggregate[_ => sum($1), count($1)]"));
+        // Expected: Aggregate[(_) => sum($1), count($1)] we chose to emit only measures
+        assert!(result.contains("Aggregate[(_) => sum($1), count($1)]"));
     }
 
     #[test]
@@ -1314,7 +1327,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         .with_function(1, 10, "count");
 
         let agg_fn1 = AggregateFunction {
-            function_reference: 10, // sum
+            function_reference: 10, // count
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
                     rex_type: Some(RexType::Selection(Box::new(
@@ -1520,6 +1533,11 @@ Filter[gt($0, 10:i32) => $0, $1]
                     grouping_expressions: vec![],
                     expression_references: vec![1, 1],
                 },
+                Grouping {
+                    #[allow(deprecated)]
+                    grouping_expressions: vec![],
+                    expression_references: vec![],
+                },
             ],
             measures: vec![aggregate_rel::Measure {
                 measure: Some(agg_fn2),
@@ -1542,7 +1560,9 @@ Filter[gt($0, 10:i32) => $0, $1]
         }
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(
-            result.contains("Aggregate[($0, $1), ($0, $1), ($1), ($1, $1) => $0, $1, count($2)]")
+            result.contains(
+                "Aggregate[($0, $1), ($0, $1), ($1), ($1, $1), (_) => $0, $1, count($2)]"
+            )
         );
     }
 

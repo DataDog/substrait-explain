@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use prost::Message;
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
@@ -438,19 +437,19 @@ impl RelationParsePair for AggregateRel {
             match group_by_item.as_rule() {
                 // rule that matches each group_set inside set list
                 Rule::grouping_set => {
-                    let mut grouping_reference = vec![];
-                    for group_element in group_by_item.into_inner() {
-                        match group_element.as_rule() {
+                    let mut expression_references = vec![];
+                    for group_set in group_by_item.into_inner() {
+                        match group_set.as_rule() {
                             Rule::empty => {
-                                // No grouping expressions to add
+                                // an empty grouping will be pushed at the end of loop
                             }
                             Rule::reference => {
-                                let field_index = FieldIndex::parse_pair(group_element);
-                                grouping_reference.push(field_index.0 as u32);
+                                let field_index = FieldIndex::parse_pair(group_set);
+                                expression_references.push(field_index.0 as u32);
 
-                                // this is necssary to maintain order of output columns defined in emit
-                                let key = field_index.to_field_reference().encode_to_vec();
-                                if !expression_set.contains(&key) {
+                                // this is necessary to maintain order of output columns defined in emit
+                                let index = field_index.0;
+                                if !expression_set.contains(&index) {
                                     grouping_expressions.push(Expression {
                                         rex_type: Some(
                                             substrait::proto::expression::RexType::Selection(
@@ -458,19 +457,16 @@ impl RelationParsePair for AggregateRel {
                                             ),
                                         ),
                                     });
-                                    expression_set.insert(key);
+                                    expression_set.insert(index);
                                 }
                             }
-                            _ => panic!(
-                                "Unexpected group-by item rule: {:?}",
-                                group_element.as_rule()
-                            ),
+                            _ => panic!("Unexpected group-by item rule: {:?}", group_set.as_rule()),
                         }
                     }
-                    #[allow(deprecated)]
                     grouping_sets.push(Grouping {
-                        expression_references: grouping_reference,
-                        grouping_expressions: vec![],
+                        expression_references,
+                        #[allow(deprecated)]
+                        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
                     });
                 }
                 _ => panic!(
@@ -1061,7 +1057,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[($0) => sum($1), count($1)]",
+                "Aggregate[($0), (_) => sum($1), count($1)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
@@ -1070,7 +1066,7 @@ mod tests {
 
         // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
         assert_eq!(aggregate.grouping_expressions.len(), 1);
-        assert_eq!(aggregate.groupings.len(), 1);
+        assert_eq!(aggregate.groupings.len(), 2);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1100,7 +1096,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[_ => sum($0), count($1)]",
+                "Aggregate[(_) => sum($0), count($1)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
@@ -1109,6 +1105,8 @@ mod tests {
 
         // Should have 0 group-by fields and 2 measures
         assert_eq!(aggregate.grouping_expressions.len(), 0);
+        assert_eq!(aggregate.groupings.len(), 1);
+        assert_eq!(aggregate.groupings[0].expression_references.len(), 0);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
