@@ -10,6 +10,26 @@ use super::ExtensionError;
 use crate::textify::expressions::Reference;
 use crate::textify::types::escaped;
 
+/// Placeholder for a future expression implementation.
+/// Holds the raw text of the parsed expression. The inner field is private —
+/// this type will be replaced with a proper expression AST in the future.
+#[derive(Debug, Clone)]
+pub(crate) struct RawExpression {
+    text: String,
+}
+
+impl RawExpression {
+    pub fn new(text: String) -> Self {
+        Self { text }
+    }
+}
+
+impl fmt::Display for RawExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.text)
+    }
+}
+
 /// Represents the arguments and output columns for an extension relation
 #[derive(Debug, Clone)]
 pub struct ExtensionArgs {
@@ -116,8 +136,10 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// Field reference ($0, $1, etc.)
     Reference(i32),
-    // TODO: Function call expression
-    // Expression(…)
+    /// Expression (function call, etc.) — not yet fully supported, hence the
+    /// private interface.
+    #[allow(private_interfaces)]
+    Expression(RawExpression),
 }
 
 impl fmt::Display for ExtensionValue {
@@ -128,6 +150,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Float(n) => write!(f, "Float({})", n),
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
+            ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
     }
 }
@@ -217,8 +240,10 @@ pub enum ExtensionColumn {
     Named { name: String, type_spec: String },
     /// Field reference ($0, $1, etc.)
     Reference(i32),
-    // TODO: Expression (function call, literal, etc.)
-    // Expression(…),
+    /// Expression column — not yet fully supported, hence the private
+    /// interface.
+    #[allow(private_interfaces)]
+    Expression(RawExpression),
 }
 
 /// Extension relation types

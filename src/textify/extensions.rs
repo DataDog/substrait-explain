@@ -13,8 +13,7 @@ use crate::extensions::any::AnyRef;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
 use crate::textify::foundation::{Scope, Textify};
-use crate::textify::rels::Value;
-use crate::textify::types::Name;
+use crate::textify::types::escaped;
 
 /// Decode an extension from an [`AnyRef`], and format it as text
 fn format_extension<S: Scope, W: fmt::Write>(
@@ -57,22 +56,6 @@ fn format_extension<S: Scope, W: fmt::Write>(
     Ok(())
 }
 
-impl<'a> From<&'a ExtensionValue> for Value<'a> {
-    fn from(v: &'a ExtensionValue) -> Value<'a> {
-        match v {
-            ExtensionValue::String(s) => {
-                // For string values, we create a Name
-                Value::Name(Name(s.as_str()))
-            }
-            ExtensionValue::Integer(i) => Value::Integer(*i),
-            ExtensionValue::Float(f) => Value::Float(*f),
-            ExtensionValue::Boolean(b) => Value::Boolean(*b),
-            ExtensionValue::Reference(r) => Value::Reference(*r),
-            // TODO: Expression variant not yet implemented
-        }
-    }
-}
-
 impl Textify for ExtensionValue {
     fn name() -> &'static str {
         "ExtensionValue"
@@ -80,12 +63,12 @@ impl Textify for ExtensionValue {
 
     fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            ExtensionValue::String(s) => write!(w, "'{s}'"),
+            ExtensionValue::String(s) => write!(w, "'{}'", escaped(s)),
             ExtensionValue::Integer(i) => write!(w, "{i}"),
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Reference(r) => write!(w, "${r}"),
-            // TODO: Expression variant not yet implemented
+            ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
     }
 }
@@ -99,7 +82,7 @@ impl Textify for ExtensionColumn {
         match self {
             ExtensionColumn::Named { name, type_spec } => write!(w, "{name}:{type_spec}"),
             ExtensionColumn::Reference(r) => write!(w, "${r}"),
-            // TODO: Expression variant not yet implemented
+            ExtensionColumn::Expression(e) => write!(w, "{e}"),
         }
     }
 }

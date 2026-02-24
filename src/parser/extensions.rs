@@ -7,7 +7,7 @@ use super::{ParsePair, Rule, RuleIter, unwrap_single_pair};
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    SimpleExtensions,
+    RawExpression, SimpleExtensions,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -318,9 +318,7 @@ impl ParsePair for ExtensionValue {
                 ExtensionValue::Boolean(bool_val)
             }
             Rule::expression => {
-                // TODO: Handle expressions properly when ExtensionValue::Expression is implemented
-                // For now, convert to string representation
-                ExtensionValue::String(inner.as_str().to_string())
+                ExtensionValue::Expression(RawExpression::new(inner.as_str().to_string()))
             }
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
         }
@@ -358,8 +356,7 @@ impl ParsePair for ExtensionColumn {
                 ExtensionColumn::Reference(field_index.0)
             }
             Rule::expression => {
-                // TODO: Handle expressions properly when ExtensionColumn::Expression is implemented
-                unimplemented!("Expression handling in ExtensionColumn not yet implemented")
+                ExtensionColumn::Expression(RawExpression::new(inner.as_str().to_string()))
             }
             _ => panic!("Unexpected extension column type: {:?}", inner.as_rule()),
         }

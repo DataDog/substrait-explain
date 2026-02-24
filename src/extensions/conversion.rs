@@ -64,7 +64,7 @@ fn format_extension_value_to_text(value: &ExtensionValue) -> String {
         ExtensionValue::Float(f) => f.to_string(),
         ExtensionValue::Boolean(b) => b.to_string(),
         ExtensionValue::Reference(r) => format!("${r}"),
-        // TODO: Expression variant not yet implemented
+        ExtensionValue::Expression(e) => e.to_string(),
     }
 }
 
@@ -73,7 +73,7 @@ fn format_extension_column_to_text(column: &ExtensionColumn) -> String {
     match column {
         ExtensionColumn::Named { name, type_spec } => format!("{name}:{type_spec}"),
         ExtensionColumn::Reference(r) => format!("${r}"),
-        // TODO: Expression variant not yet implemented
+        ExtensionColumn::Expression(e) => e.to_string(),
     }
 }
 
