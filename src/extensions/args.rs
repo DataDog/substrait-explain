@@ -111,10 +111,12 @@ impl<'a> ArgsExtractor<'a> {
         }
     }
 
-    /// Check that all named arguments in the source have been consumed.
+    /// Check that all named arguments in the source have been consumed,
+    /// returning an error if not.
     ///
-    /// Must be called before the extractor is dropped; in debug builds,
-    /// dropping without calling this method will panic.
+    /// Must be called before the extractor is dropped, to validate that all
+    /// args are correctly handled. In debug builds, dropping without calling
+    /// this method will panic.
     pub fn check_exhausted(&mut self) -> Result<(), ExtensionError> {
         self.checked = true;
 

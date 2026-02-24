@@ -328,3 +328,83 @@ Root[result]
             .contains("Unknown named arguments: invalid_arg")
     );
 }
+
+/// Extension with no arguments — tests empty args (`_`) roundtrip.
+#[derive(Clone, PartialEq, Message)]
+pub struct EmptySource {
+    #[prost(string, tag = "1")]
+    pub marker: String,
+}
+
+impl Name for EmptySource {
+    const NAME: &'static str = "EmptySource";
+    const PACKAGE: &'static str = "test";
+    fn full_name() -> String {
+        "test.EmptySource".to_string()
+    }
+    fn type_url() -> String {
+        "type.googleapis.com/test.EmptySource".to_string()
+    }
+}
+
+impl Explainable for EmptySource {
+    fn name() -> &'static str {
+        "EmptySource"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(EmptySource {
+            marker: "empty".to_string(),
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+    }
+}
+
+#[test]
+fn test_extension_empty_args_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<EmptySource>().unwrap();
+
+    // No args, no output columns — textifies as [_]
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:EmptySource[_]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Failed to parse empty args extension");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_extension_string_escaping_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<UserTableConfig>().unwrap();
+
+    // String with escaped single quote and backslash
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:UserTable[name='it\'s a \"test\\path', version=1, temp=false => col:string]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Failed to parse escaped string extension");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
