@@ -136,9 +136,18 @@ function_call = {
     name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
+if_clause = {
+  expression ~ sp ~ "->" ~ sp ~ expression
+}
+
+// For the form: if_then(true || false -> true, _ -> false)
+if_then = {
+  "if_then(" ~ sp ~ (if_clause  ~ sp ~ "," ~ sp)+ ~ sp ~ "_" ~ sp ~ "->" ~ sp ~ expression ~ ")"
+}
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
-expression = { function_call | reference | literal }
+expression = { if_then | function_call | reference | literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.

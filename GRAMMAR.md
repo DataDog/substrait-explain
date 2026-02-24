@@ -338,7 +338,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / literal`
+`expression := function_call / reference / literal / if_then`
 
 ### Examples
 
@@ -358,17 +358,17 @@ Currently, only references to fields in the Relations' input are supported.
 #### Examples
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+# 
+# let plan_text = r#"
 === Plan
 Root[result]
   Project[$0, $1, $42]
     Read[data => field0:i64, field1:string, field42:boolean]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Function Calls
@@ -400,6 +400,33 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 - `count($1)`
 - `avg($3):fp64`
 - `$0` (field reference to grouping field)
+
+### IfThen
+
+An IfThen expression is a conditional function or logical operator that evaluates to a boolean.
+
+#### Syntax
+
+`if_then := "if_then(" (if_clause ",")+ "_ ->" expression ")"`
+
+`if_clause := expression "->" expression`
+
+#### Examples
+
+```rust
+# use substrait_explain::parser::Parser;
+# 
+# let plan_text = r#"
+=== Plan
+Root[status]
+  Fetch[limit=10, offset=0 => ]
+    Project[if_then(true -> $0, false -> $1, _ -> $2)]
+      Read[events.logs => status:string?]
+#  "#;
+# 
+#  let plan = Parser::parse(plan_text).unwrap();
+#  assert_eq!(plan.relations.len(), 1);
+```
 
 ## Relations
 

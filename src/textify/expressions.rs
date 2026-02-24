@@ -5,7 +5,7 @@ use expr::RexType;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, ReferenceSegment, ScalarFunction, reference_segment,
+    FieldReference, IfThen, ReferenceSegment, ScalarFunction, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
@@ -690,6 +690,26 @@ impl Textify for ArgType {
     }
 }
 
+impl Textify for IfThen {
+    fn name() -> &'static str {
+        "IfThen"
+    }
+
+    // This method writes ifThen using the following convention of a comma separated sequence of 'if_clause -> then_clause, '
+    // followed by the final else clause denoted with '_'
+    // ex: true -> if_then(true || false -> true, _ -> false)
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "if_then(")?;
+        for clause in &self.ifs {
+            let if_expr = ctx.expect(clause.r#if.as_ref());
+            let then_expr = ctx.expect(clause.then.as_ref());
+            write!(w, "{if_expr} -> {then_expr}, ")?;
+        }
+        let else_expr = ctx.expect(self.r#else.as_deref());
+        write!(w, "_ -> {else_expr})")
+    }
+}
+
 impl Textify for RexType {
     fn name() -> &'static str {
         "RexType"
@@ -709,15 +729,7 @@ impl Textify for RexType {
                     "WindowFunction textification not implemented",
                 ))
             ),
-            RexType::IfThen(_i) => write!(
-                w,
-                "{}",
-                ctx.failure(PlanError::unimplemented(
-                    "RexType",
-                    Some("IfThen"),
-                    "IfThen textification not implemented",
-                ))
-            ),
+            RexType::IfThen(i) => i.textify(ctx, w),
             RexType::SwitchExpression(_s) => write!(
                 w,
                 "{}",
@@ -839,10 +851,22 @@ impl Textify for AggregateFunction {
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto::expression::if_then;
+
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
     use crate::textify::foundation::FormatError;
+
+    fn literal_bool(value: bool) -> Expression {
+        Expression {
+            rex_type: Some(RexType::Literal(expr::Literal {
+                nullable: false,
+                type_variation_reference: 0,
+                literal_type: Some(expr::literal::LiteralType::Boolean(value)),
+            })),
+        }
+    }
 
     #[test]
     fn test_literal_textify() {
@@ -940,5 +964,44 @@ mod tests {
         });
         let s = ctx.textify_no_errors(&rex_dup);
         assert_eq!(s, "duplicated#231(true)");
+    }
+
+    #[test]
+    fn test_ifthen_textify() {
+        let ctx = TestContext::new();
+
+        let if_then = IfThen {
+            ifs: vec![
+                if_then::IfClause {
+                    r#if: Some(literal_bool(true)),
+                    then: Some(literal_bool(false)),
+                },
+                if_then::IfClause {
+                    r#if: Some(literal_bool(false)),
+                    then: Some(literal_bool(true)),
+                },
+            ],
+            r#else: Some(Box::new(literal_bool(true))),
+        };
+
+        let s = ctx.textify_no_errors(&if_then);
+        assert_eq!(s, "if_then(true -> false, false -> true, _ -> true)");
+    }
+
+    #[test]
+    fn test_ifthen_textify_missing_else() {
+        let ctx = TestContext::new();
+
+        let if_then = IfThen {
+            ifs: vec![if_then::IfClause {
+                r#if: Some(literal_bool(true)),
+                then: Some(literal_bool(false)),
+            }],
+            r#else: None,
+        };
+
+        let (s, errs) = ctx.textify(&if_then);
+        assert_eq!(s, "if_then(true -> false, _ -> !{Expression})");
+        assert_eq!(errs.0.len(), 1);
     }
 }
