@@ -711,20 +711,7 @@ impl<'a> Parser<'a> {
                 ));
             }
         }
-        if line.1.trim().is_empty() {
-            // Blank line - do nothing
-            return Ok(());
-        }
-
-        if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
-            self.state = State::Extensions;
-            return Ok(());
-        }
-        if line == IndentedLine(0, PLAN_HEADER) {
-            self.state = State::Plan;
-            return Ok(());
-        }
-        todo!()
+        Ok(())
     }
 
     /// Parse a single line from the extensions section of the input, updating

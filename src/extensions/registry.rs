@@ -301,8 +301,7 @@ impl ExtensionRegistry {
 
     /// Register a relation extension type that implements both AnyConvertible and Explainable
     ///
-    /// The canonical textual name comes from `T::name()`. Additional aliases can
-    /// be provided via `T::aliases()`.
+    /// The canonical textual name comes from `T::name()`.
     pub fn register_relation<T>(&mut self)
     where
         T: Extension,
@@ -473,19 +472,14 @@ impl ExtensionRegistry {
 
 impl fmt::Debug for ExtensionRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let relation_names: Vec<_> = self
+        let mut keys: Vec<_> = self
             .handlers
             .keys()
-            .filter_map(|(t, n)| {
-                if *t == ExtensionType::Relation {
-                    Some(n)
-                } else {
-                    None
-                }
-            })
+            .map(|(t, n)| (format!("{t:?}"), n.as_str()))
             .collect();
+        keys.sort();
         f.debug_struct("ExtensionRegistry")
-            .field("relation_handlers", &relation_names)
+            .field("handlers", &keys)
             .finish()
     }
 }
