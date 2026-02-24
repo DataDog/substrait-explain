@@ -108,12 +108,13 @@ mod tests {
     #[test]
     fn test_format_extension_args() {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String("data/*.parquet".to_string()),
         );
-        args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(1024));
-        args.add_output_column(ExtensionColumn::Named {
+        args.named
+            .insert("batch_size".to_string(), ExtensionValue::Integer(1024));
+        args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
             type_spec: "i32".to_string(),
         });

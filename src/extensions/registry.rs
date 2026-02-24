@@ -69,7 +69,7 @@
 //!
 //!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
 //!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-//!         args.add_named_arg(
+//!         args.named.insert(
 //!             "path".to_string(),
 //!             ExtensionValue::String(self.path.clone()),
 //!         );
@@ -200,14 +200,6 @@ pub trait Explainable: Sized {
 
     /// Convert this type to extension arguments
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
-
-    /// Optionally specify the preferred order for named arguments in textification.
-    ///Arguments not in the list appear last, alphabetically.
-    /// Arguments that exist in the list but are not present in the args
-    /// will not be included in the textified output. Return an empty list to always output alphabetically.
-    fn argument_order() -> Vec<String> {
-        Vec::new() // Default: alphabetical order
-    }
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -227,9 +219,6 @@ trait ExtensionConverter: Send + Sync {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError>;
 
     fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError>;
-
-    /// Get the preferred argument order for this extension type
-    fn argument_order(&self) -> Vec<String>;
 }
 
 /// Type adapter that implements ExtensionConverter for any type T that implements
@@ -261,10 +250,6 @@ impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for Exten
         // Create an owned Any from the AnyRef to work with existing T::from_any
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
         T::from_any(owned_any.as_ref())?.to_args()
-    }
-
-    fn argument_order(&self) -> Vec<String> {
-        T::argument_order()
     }
 }
 
@@ -472,10 +457,7 @@ impl ExtensionRegistry {
                 name: extension_name.clone(),
             })?;
 
-        let mut args = handler.textify_detail(detail)?;
-
-        // Populate argument order from the extension handler
-        args.argument_order = handler.argument_order();
+        let args = handler.textify_detail(detail)?;
 
         Ok((extension_name.clone(), args))
     }
@@ -580,11 +562,11 @@ mod tests {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-            args.add_named_arg(
+            args.named.insert(
                 "path".to_string(),
                 ExtensionValue::String(self.path.clone()),
             );
-            args.add_named_arg(
+            args.named.insert(
                 "batch_size".to_string(),
                 ExtensionValue::Integer(self.batch_size),
             );
@@ -609,11 +591,12 @@ mod tests {
 
         // Test parse and textify
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String("data.parquet".to_string()),
         );
-        args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(2048));
+        args.named
+            .insert("batch_size".to_string(), ExtensionValue::Integer(2048));
 
         let any = registry.parse_extension("TestExtension", &args).unwrap();
         assert_eq!(any.type_url, "test.TestExtension");
@@ -632,17 +615,18 @@ mod tests {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named args
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String("data/*.parquet".to_string()),
         );
-        args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(1024));
+        args.named
+            .insert("batch_size".to_string(), ExtensionValue::Integer(1024));
 
         // Add positional args
-        args.add_positional_arg(ExtensionValue::Reference(0));
+        args.positional.push(ExtensionValue::Reference(0));
 
         // Add output columns
-        args.add_output_column(ExtensionColumn::Named {
+        args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
             type_spec: "i32".to_string(),
         });
@@ -681,16 +665,19 @@ mod tests {
         let mut extractor = args.extractor();
         let result = extractor.get_named_arg("missing");
         assert!(result.is_none());
+        assert!(extractor.check_exhausted().is_ok());
 
         // Type check example
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.add_named_arg("test".to_string(), ExtensionValue::Integer(42));
+        args.named
+            .insert("test".to_string(), ExtensionValue::Integer(42));
         let mut extractor = args.extractor();
         let result = extractor.get_named_arg("test");
         match result {
             Some(ExtensionValue::Integer(42)) => {} // Expected
             _ => panic!("Expected Integer(42), got {result:?}"),
         }
+        assert!(extractor.check_exhausted().is_ok());
     }
 
     // Mock enhancement type for testing namespace separation
@@ -736,7 +723,7 @@ mod tests {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-            args.add_named_arg(
+            args.named.insert(
                 "hint".to_string(),
                 ExtensionValue::String(self.hint.clone()),
             );
@@ -763,11 +750,13 @@ mod tests {
 
         // Test that extension namespace works
         let mut ext_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        ext_args.add_named_arg(
+        ext_args.named.insert(
             "path".to_string(),
             ExtensionValue::String("data.parquet".to_string()),
         );
-        ext_args.add_named_arg("batch_size".to_string(), ExtensionValue::Integer(2048));
+        ext_args
+            .named
+            .insert("batch_size".to_string(), ExtensionValue::Integer(2048));
 
         let ext_any = registry
             .parse_extension("TestExtension", &ext_args)
@@ -776,7 +765,7 @@ mod tests {
 
         // Test that enhancement namespace works
         let mut enh_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        enh_args.add_named_arg(
+        enh_args.named.insert(
             "hint".to_string(),
             ExtensionValue::String("optimize".to_string()),
         );
@@ -790,7 +779,7 @@ mod tests {
         let enh_ref = enh_any.as_ref();
         let (name, args) = registry.decode_enhancement(enh_ref).unwrap();
         assert_eq!(name, "TestEnhancement");
-        match args.named().get("hint") {
+        match args.named.get("hint") {
             Some(ExtensionValue::String(s)) => assert_eq!(s, "test_hint"), // Due to test impl
             _ => panic!("Expected String for hint"),
         }

@@ -77,34 +77,26 @@ impl Explainable for UserTableConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments
-        args.add_named_arg(
+        args.named.insert(
             "name".to_string(),
             ExtensionValue::String(self.table_name.clone()),
         );
-        args.add_named_arg("version".to_string(), ExtensionValue::Integer(self.version));
-        args.add_named_arg(
+        args.named
+            .insert("version".to_string(), ExtensionValue::Integer(self.version));
+        args.named.insert(
             "temp".to_string(),
             ExtensionValue::Boolean(self.is_temporary),
         );
 
         // Add output columns
         for column in &self.tracked_columns {
-            args.add_output_column(ExtensionColumn::Named {
+            args.output_columns.push(ExtensionColumn::Named {
                 name: column.clone(),
                 type_spec: "string".to_string(), // Simplified for test
             });
         }
 
         Ok(args)
-    }
-
-    /// Specify preferred argument order
-    fn argument_order() -> Vec<String> {
-        vec![
-            "name".to_string(),
-            "version".to_string(),
-            "temp".to_string(),
-        ]
     }
 }
 
@@ -184,7 +176,7 @@ fn test_multiple_extensions_in_plan() {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
-            args.add_named_arg(
+            args.named.insert(
                 "expr".to_string(),
                 ExtensionValue::String(self.expression.clone()),
             );
@@ -276,27 +268,21 @@ impl Explainable for LiteralConfig {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String(self.path.clone()),
         );
-        args.add_named_arg("big".to_string(), ExtensionValue::Integer(self.big));
-        args.add_named_arg("ratio".to_string(), ExtensionValue::Float(self.ratio));
-        args.add_named_arg("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
-        args.add_output_column(ExtensionColumn::Named {
+        args.named
+            .insert("big".to_string(), ExtensionValue::Integer(self.big));
+        args.named
+            .insert("ratio".to_string(), ExtensionValue::Float(self.ratio));
+        args.named
+            .insert("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
+        args.output_columns.push(ExtensionColumn::Named {
             name: "value".to_string(),
             type_spec: "string".to_string(),
         });
         Ok(args)
-    }
-
-    fn argument_order() -> Vec<String> {
-        vec![
-            "path".to_string(),
-            "big".to_string(),
-            "ratio".to_string(),
-            "enabled".to_string(),
-        ]
     }
 }
 

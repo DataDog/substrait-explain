@@ -409,7 +409,7 @@ impl ParsePair for ExtensionInvocation {
                     for arg_pair in inner_pair.into_inner() {
                         if arg_pair.as_rule() == Rule::extension_argument {
                             let value = ExtensionValue::parse_pair(arg_pair);
-                            args.add_positional_arg(value);
+                            args.positional.push(value);
                         }
                     }
                 }
@@ -423,7 +423,7 @@ impl ParsePair for ExtensionInvocation {
 
                             let name = Name::parse_pair(name_pair).0.to_string();
                             let value = ExtensionValue::parse_pair(value_pair);
-                            args.add_named_arg(name, value);
+                            args.named.insert(name, value);
                         }
                     }
                 }
@@ -432,7 +432,7 @@ impl ParsePair for ExtensionInvocation {
                     for col_pair in inner_pair.into_inner() {
                         if col_pair.as_rule() == Rule::extension_column {
                             let column = ExtensionColumn::parse_pair(col_pair);
-                            args.add_output_column(column);
+                            args.output_columns.push(column);
                         }
                     }
                 }

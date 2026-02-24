@@ -104,8 +104,8 @@ impl Textify for ExtensionArgs {
             has_args = true;
         }
 
-        // Add named arguments using the extension's preferred order
-        for (name, value) in self.ordered_named_args() {
+        // Add named arguments in display order (IndexMap preserves insertion order)
+        for (name, value) in &self.named {
             if has_args {
                 write!(w, ", ")?;
             }
