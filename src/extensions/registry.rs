@@ -43,7 +43,7 @@
 //!     fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
 //!         // Deserialize from Any
 //!         let path = String::from_utf8(any.value.to_vec())
-//!             .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {}", e)))?;
+//!             .map_err(|e| ExtensionError::Custom(format!("Invalid UTF-8: {}", e)))?;
 //!         Ok(CustomScanConfig { path })
 //!     }
 //!
@@ -79,7 +79,7 @@
 //!
 //! // Register the extension type
 //! let mut registry = ExtensionRegistry::new();
-//! registry.register_relation::<CustomScanConfig>();
+//! registry.register_relation::<CustomScanConfig>().unwrap();
 //! ```
 
 use std::collections::HashMap;
@@ -102,29 +102,57 @@ pub enum ExtensionType {
     Optimization,
 }
 
-/// Error types for extension registry operations
+/// Errors during extension registration (setup phase)
+#[derive(Debug, Error, Clone)]
+pub enum RegistrationError {
+    #[error("{ext_type:?} extension '{name}' already registered")]
+    DuplicateName {
+        ext_type: ExtensionType,
+        name: String,
+    },
+
+    #[error("Type URL '{type_url}' already registered to {ext_type:?} extension '{existing_name}'")]
+    ConflictingTypeUrl {
+        type_url: String,
+        ext_type: ExtensionType,
+        existing_name: String,
+    },
+}
+
+/// Errors during extension parsing, formatting, and argument extraction (runtime)
 #[derive(Debug, Error, Clone)]
 pub enum ExtensionError {
-    #[error("Extension '{0}' not found in registry")]
-    ExtensionNotFound(String),
+    /// Extension not found in registry during lookup
+    #[error("Extension '{name}' not found in registry")]
+    NotFound { name: String },
 
-    #[error("Failed to parse extension detail: {0}")]
-    ParseError(String),
+    /// Required argument not present (from ArgsExtractor)
+    #[error("Missing required argument: {name}")]
+    MissingArgument { name: String },
 
-    #[error("Failed to serialize extension detail: {0}")]
-    SerializationError(String),
-
-    #[error("Failed to encode extension detail: {0}")]
-    EncodeError(String),
-
+    /// Invalid argument value (from Explainable impls and ArgsExtractor)
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
-    #[error("Missing required argument: {0}")]
-    MissingArgument(String),
+    /// Type URL mismatch during protobuf Any decode
+    #[error("Type URL mismatch: expected {expected}, got {actual}")]
+    TypeUrlMismatch { expected: String, actual: String },
 
-    #[error("Type mismatch: expected {expected}, got {actual}")]
-    TypeMismatch { expected: String, actual: String },
+    /// Protobuf message decode failure
+    #[error("Failed to decode protobuf message")]
+    DecodeFailed(#[source] prost::DecodeError),
+
+    /// Protobuf message encode failure
+    #[error("Failed to encode protobuf message")]
+    EncodeFailed(#[source] prost::EncodeError),
+
+    /// Extension detail field is missing from the relation
+    #[error("Extension detail is missing")]
+    MissingDetail,
+
+    /// Error from a custom AnyConvertible implementation
+    #[error("{0}")]
+    Custom(String),
 }
 
 /// Trait for types that can be converted to/from protobuf Any messages. Note
@@ -138,11 +166,9 @@ pub trait AnyConvertible: Sized {
     fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError>;
 
     /// Get the protobuf type URL for this type.
-    /// For prost::Message types, this is provided automatically.
-    /// For custom types, override this method.
-    fn type_url() -> String {
-        panic!("type_url() must be implemented for non-prost types")
-    }
+    /// For prost::Message types, this is provided automatically via blanket impl.
+    /// Custom types must implement this method.
+    fn type_url() -> String;
 }
 
 // Blanket implementation for all prost::Message types
@@ -265,7 +291,7 @@ impl ExtensionRegistry {
     }
 
     /// Register an extension type with a specific ExtensionType
-    fn register<T>(&mut self, ext_type: ExtensionType)
+    fn register<T>(&mut self, ext_type: ExtensionType) -> Result<(), RegistrationError>
     where
         T: Extension,
     {
@@ -276,10 +302,10 @@ impl ExtensionRegistry {
 
         let key = (ext_type, canonical_name.to_string());
         if self.handlers.contains_key(&key) {
-            panic!(
-                "{:?} extension '{}' already registered",
-                ext_type, canonical_name
-            );
+            return Err(RegistrationError::DuplicateName {
+                ext_type,
+                name: canonical_name.to_string(),
+            });
         }
 
         self.handlers.insert(key.clone(), Arc::clone(&handler));
@@ -290,19 +316,21 @@ impl ExtensionRegistry {
             .insert(type_url_key.clone(), canonical_name.to_string())
         {
             Some(existing) if existing != canonical_name => {
-                panic!(
-                    "Type URL '{}' already registered to {:?} extension '{}'",
-                    type_url, ext_type, existing
-                );
+                return Err(RegistrationError::ConflictingTypeUrl {
+                    type_url,
+                    ext_type,
+                    existing_name: existing,
+                });
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Register a relation extension type that implements both AnyConvertible and Explainable
     ///
     /// The canonical textual name comes from `T::name()`.
-    pub fn register_relation<T>(&mut self)
+    pub fn register_relation<T>(&mut self) -> Result<(), RegistrationError>
     where
         T: Extension,
     {
@@ -315,7 +343,7 @@ impl ExtensionRegistry {
     /// allowing the same type URL to exist in both namespaces without conflict.
     ///
     /// The canonical textual name comes from `T::name()`.
-    pub fn register_enhancement<T>(&mut self)
+    pub fn register_enhancement<T>(&mut self) -> Result<(), RegistrationError>
     where
         T: Extension,
     {
@@ -328,7 +356,7 @@ impl ExtensionRegistry {
     /// allowing the same type URL to exist in both namespaces without conflict.
     ///
     /// The canonical textual name comes from `T::name()`.
-    pub fn register_optimization<T>(&mut self)
+    pub fn register_optimization<T>(&mut self) -> Result<(), RegistrationError>
     where
         T: Extension,
     {
@@ -379,7 +407,9 @@ impl ExtensionRegistry {
         let handler = self
             .handlers
             .get(&key)
-            .ok_or_else(|| ExtensionError::ExtensionNotFound(name.to_string()))?;
+            .ok_or_else(|| ExtensionError::NotFound {
+                name: name.to_string(),
+            })?;
         handler.parse_detail(args)
     }
 
@@ -426,17 +456,21 @@ impl ExtensionRegistry {
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
         // Find extension name by type URL in the specified namespace
         let type_url_key = (ext_type, detail.type_url.to_string());
-        let extension_name = self
-            .type_urls
-            .get(&type_url_key)
-            .ok_or_else(|| ExtensionError::ExtensionNotFound(detail.type_url.to_string()))?;
+        let extension_name =
+            self.type_urls
+                .get(&type_url_key)
+                .ok_or_else(|| ExtensionError::NotFound {
+                    name: detail.type_url.to_string(),
+                })?;
 
         // Get handler and textify the detail
         let name_key = (ext_type, extension_name.clone());
         let handler = self
             .handlers
             .get(&name_key)
-            .ok_or_else(|| ExtensionError::ExtensionNotFound(extension_name.clone()))?;
+            .ok_or_else(|| ExtensionError::NotFound {
+                name: extension_name.clone(),
+            })?;
 
         let mut args = handler.textify_detail(detail)?;
 
@@ -513,7 +547,7 @@ mod tests {
         fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
             // Simple test implementation - parse from JSON-like bytes
             let json_str = String::from_utf8(any.value.to_vec())
-                .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {e}")))?;
+                .map_err(|e| ExtensionError::Custom(format!("Invalid UTF-8: {e}")))?;
 
             // Simple manual parsing for test
             if json_str.contains("path") && json_str.contains("batch_size") {
@@ -522,7 +556,7 @@ mod tests {
                     batch_size: 1024,
                 })
             } else {
-                Err(ExtensionError::ParseError("Missing fields".to_string()))
+                Err(ExtensionError::Custom("Missing fields".to_string()))
             }
         }
     }
@@ -567,7 +601,7 @@ mod tests {
         assert!(!registry.has_extension(ExtensionType::Relation, "TestExtension"));
 
         // Register extension type
-        registry.register_relation::<TestExtension>();
+        registry.register_relation::<TestExtension>().unwrap();
 
         // Now has extension
         assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 1);
@@ -640,7 +674,7 @@ mod tests {
         // Extension not found
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         let result = registry.parse_extension("NonExistent", &args);
-        assert!(matches!(result, Err(ExtensionError::ExtensionNotFound(_))));
+        assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
 
         // Missing argument
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
@@ -677,13 +711,13 @@ mod tests {
 
         fn from_any<'a>(any: AnyRef<'a>) -> Result<Self, ExtensionError> {
             let json_str = String::from_utf8(any.value.to_vec())
-                .map_err(|e| ExtensionError::ParseError(format!("Invalid UTF-8: {e}")))?;
+                .map_err(|e| ExtensionError::Custom(format!("Invalid UTF-8: {e}")))?;
             if json_str.contains("hint") {
                 Ok(TestEnhancement {
                     hint: "test_hint".to_string(),
                 })
             } else {
-                Err(ExtensionError::ParseError("Missing hint field".to_string()))
+                Err(ExtensionError::Custom("Missing hint field".to_string()))
             }
         }
     }
@@ -715,8 +749,8 @@ mod tests {
         let mut registry = ExtensionRegistry::new();
 
         // Register same type URL in both namespaces - should not conflict
-        registry.register_relation::<TestExtension>();
-        registry.register_enhancement::<TestEnhancement>();
+        registry.register_relation::<TestExtension>().unwrap();
+        registry.register_enhancement::<TestEnhancement>().unwrap();
 
         // Verify both are registered
         assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
@@ -763,11 +797,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Enhancement extension 'TestEnhancement' already registered")]
-    fn test_enhancement_duplicate_registration_panics() {
+    fn test_enhancement_duplicate_registration_returns_error() {
         let mut registry = ExtensionRegistry::new();
-        registry.register_enhancement::<TestEnhancement>();
-        registry.register_enhancement::<TestEnhancement>(); // Should panic
+        registry.register_enhancement::<TestEnhancement>().unwrap();
+        let result = registry.register_enhancement::<TestEnhancement>();
+        assert!(matches!(
+            result,
+            Err(RegistrationError::DuplicateName { .. })
+        ));
     }
 
     #[test]
@@ -775,6 +812,6 @@ mod tests {
         let registry = ExtensionRegistry::new();
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         let result = registry.parse_enhancement("NonExistentEnhancement", &args);
-        assert!(matches!(result, Err(ExtensionError::ExtensionNotFound(_))));
+        assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
     }
 }

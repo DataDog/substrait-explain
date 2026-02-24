@@ -48,7 +48,7 @@ fn format_extension<S: Scope, W: fmt::Write>(
         }
         None => {
             // No detail provided: format with error token
-            let error = ExtensionError::ParseError("Extension detail is missing".to_string());
+            let error = ExtensionError::MissingDetail;
             write!(w, "{}{}[{}]", indent, extension_type, ctx.failure(error))?;
         }
     }

@@ -42,7 +42,7 @@ impl<'a> RelationParsingContext<'a> {
 
         match detail {
             Ok(any) => Ok(Some(any)),
-            Err(ExtensionError::ExtensionNotFound(_)) => Err(ParseError::UnregisteredExtension {
+            Err(ExtensionError::NotFound { .. }) => Err(ParseError::UnregisteredExtension {
                 name: extension_name.to_string(),
                 context: ParseContext::new(self.line_no, self.line.to_string()),
             }),

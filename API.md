@@ -160,11 +160,11 @@ impl Name for MySourceConfig {
 let mut registry = ExtensionRegistry::new();
 
 // Register a relation extension
-registry.register_relation::<MySourceConfig>();
+registry.register_relation::<MySourceConfig>().unwrap();
 
 // Enhancement and optimization extensions use:
-// registry.register_enhancement::<MyEnhancement>();
-// registry.register_optimization::<MyOptimization>();
+// registry.register_enhancement::<MyEnhancement>().unwrap();
+// registry.register_optimization::<MyOptimization>().unwrap();
 
 let parser = Parser::new().with_extension_registry(registry.clone());
 # let plan = parser.parse_plan(r"

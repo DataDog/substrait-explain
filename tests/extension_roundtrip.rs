@@ -111,7 +111,7 @@ impl Explainable for UserTableConfig {
 #[test]
 fn test_extension_leaf_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register_relation::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Test plan with UserTable extension
     let plan_text = r#"
@@ -147,7 +147,7 @@ Root[result]
 #[test]
 fn test_multiple_extensions_in_plan() {
     let mut registry = ExtensionRegistry::new();
-    registry.register_relation::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Also register a second type for variety
     #[derive(Clone, PartialEq, Message)]
@@ -192,7 +192,7 @@ fn test_multiple_extensions_in_plan() {
         }
     }
 
-    registry.register_relation::<FilterConfig>();
+    registry.register_relation::<FilterConfig>().unwrap();
 
     // Plan with multiple extension types
     let plan_text = r#"
@@ -255,7 +255,11 @@ impl Explainable for LiteralConfig {
                     "ratio must be a float, got {v}"
                 )));
             }
-            None => return Err(ExtensionError::MissingArgument("ratio".to_string())),
+            None => {
+                return Err(ExtensionError::MissingArgument {
+                    name: "ratio".to_string(),
+                });
+            }
         };
 
         let enabled: bool = extractor.expect_named_arg("enabled")?;
@@ -299,7 +303,7 @@ impl Explainable for LiteralConfig {
 #[test]
 fn test_extension_literal_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register_relation::<LiteralConfig>();
+    registry.register_relation::<LiteralConfig>().unwrap();
 
     let plan_text = r#"
 === Plan
@@ -318,7 +322,7 @@ Root[result]
 #[test]
 fn test_extension_unknown_arguments() {
     let mut registry = ExtensionRegistry::new();
-    registry.register_relation::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Test plan with unknown argument 'invalid_arg'
     let plan_text = r#"

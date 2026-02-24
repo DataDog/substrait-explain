@@ -31,15 +31,13 @@ impl<'a> AnyRef<'a> {
         M: prost::Message + Name + Default,
     {
         if self.type_url != M::type_url() {
-            return Err(ExtensionError::ParseError(format!(
-                "Type URL mismatch: expected {}, got {}",
-                M::type_url(),
-                self.type_url
-            )));
+            return Err(ExtensionError::TypeUrlMismatch {
+                expected: M::type_url(),
+                actual: self.type_url.to_string(),
+            });
         }
 
-        let message = M::decode(self.value)
-            .map_err(|e| ExtensionError::ParseError(format!("Failed to decode message: {e}")))?;
+        let message = M::decode(self.value).map_err(ExtensionError::DecodeFailed)?;
 
         Ok(message)
     }
@@ -97,7 +95,7 @@ impl Any {
         let mut buf = Vec::new();
         message
             .encode(&mut buf)
-            .map_err(|e| ExtensionError::EncodeError(format!("Failed to encode message: {e}")))?;
+            .map_err(ExtensionError::EncodeFailed)?;
 
         Ok(Any {
             type_url: M::type_url(),

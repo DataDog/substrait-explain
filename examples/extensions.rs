@@ -117,7 +117,7 @@ impl Explainable for ParquetScanConfig {
 
 fn main() -> anyhow::Result<()> {
     let mut registry = ExtensionRegistry::new();
-    registry.register_relation::<ParquetScanConfig>();
+    registry.register_relation::<ParquetScanConfig>()?;
 
     let plan_text = r#"=== Plan
 Root[customer_id, amount]

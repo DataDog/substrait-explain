@@ -84,7 +84,9 @@ impl<'a> ArgsExtractor<'a> {
     {
         match self.get_named_arg(name) {
             Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(ExtensionError::MissingArgument(name.to_string())),
+            None => Err(ExtensionError::MissingArgument {
+                name: name.to_string(),
+            }),
         }
     }
 
