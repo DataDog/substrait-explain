@@ -698,28 +698,44 @@ There are three extension relation types, based on their input cardinality:
 #### Syntax
 
 ```text
-extension_relation := extension_type ":" name "[" arguments "=>" columns "]"
+extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>" extension_columns)? "]"
 extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
-arguments := named_arg ("," named_arg)*
-named_arg := name "=" literal
-columns := named_column ("," named_column)*
-named_column := name ":" type
+extension_args := (positional_args ("," named_args)?) / named_args
+positional_args := extension_arg ("," extension_arg)*
+extension_arg := reference / literal / expression
+named_args := named_arg ("," named_arg)*
+named_arg := name "=" extension_arg
+extension_columns := extension_column ("," extension_column)*
+extension_column := named_column / reference / expression
 ```
 
 #### Components
 
 - **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
 - **`name`** - The extension name (registered with `ExtensionRegistry`)
-- **`arguments`** - Named arguments as `key=value` pairs
-- **`columns`** - Output column names and types
+- **`empty`** (`_`) - Explicitly marks an extension with no arguments
+- **`extension_args`** - Positional arguments (references, literals, expressions) and/or named arguments (`key=value` pairs); both are optional
+- **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
-#### Example
+#### Examples
 
 ```text
 === Plan
 Root[result]
   ExtensionSingle:CustomFilter[threshold=100 => $0, $1]
     ExtensionLeaf:ParquetScan[path='data/users.parquet', batch_size=1024 => id:i64, name:string]
+```
+
+Extension with positional arguments and no output columns:
+
+```text
+ExtensionSingle:VectorNormalize[$0, $1, method='l2']
+```
+
+Extension with no arguments:
+
+```text
+ExtensionLeaf:EmptySource[_]
 ```
 
 #### Custom Extension Types
