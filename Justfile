@@ -16,6 +16,8 @@ fmt:
 # Run the tests.
 test:
     cargo test --all-features
+    cargo run --features cli,protoc -- validate -i example-plans/basic.substrait
+    cargo run --features cli,protoc -- validate -i example-plans/simple.substrait
 
 # Run clippy to check for linting errors.
 check:

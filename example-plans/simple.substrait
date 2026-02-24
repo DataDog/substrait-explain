@@ -17,7 +17,7 @@ Root[c, d]
       Read[schema.table => a:fp64?, b:i64]
 
 Root[c, d, e]
-  Aggregate[$0 => $0, sum($1), count($1)]
+  Aggregate[($0) => $0, sum($1), count($1)]
     Read[schema.table => name:string?, num:fp64?, id:i64]
 
 Root[name, num]
@@ -26,7 +26,7 @@ Root[name, num]
 
 Root[name, parent, sum, count]
   Join[&Inner, eq($0, $4) => $0, $3, $1, $2]
-    Aggregate[$0 => $0, sum($1), count($1)]
+    Aggregate[($0) => $0, sum($1), count($1)]
       Read[schema.table => name:string?, num:fp64?, id:i64]
     Read[schema.table2 => parent:string?, name:string?]
 

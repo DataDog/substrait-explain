@@ -221,11 +221,12 @@ project_argument      = { reference | expression }
 // Aggregate relation: groups by specified fields and applies aggregate functions
 // Format: Aggregate[group_by_fields => output_items]
 // Examples:
-// Aggregate[$0 => sum($1), count($1)]  # Group by field 0, output sum and count of field 1
-// Aggregate[$0, $1 => $0, sum($2)]     # Group by fields 0,1, output field 0 and sum of field 2
-// Aggregate[_ => sum($0), count($1)]   # No grouping (global aggregates)
+// Aggregate[($0) => sum($1), count($1)]  # Group by field 0, output sum and count of field 1
+// Aggregate[($0, $1), ($1) => $0, $1, sum($2)]     # Group by fields 0,1, and field 1, output are fields 0 and 1 and sum on field 2
+// Aggregate[(_) => sum($0), count($1)]   # No grouping (global aggregates)
 aggregate_relation    = { "Aggregate" ~ "[" ~ aggregate_group_by ~ sp ~ "=>" ~ sp ~ aggregate_output ~ "]" }
-aggregate_group_by    = { empty | (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
+aggregate_group_by    = { (grouping_set ~ (sp ~ "," ~ sp ~ grouping_set)*)? }
+grouping_set = { ("(" ~ sp ~ empty  ~ sp ~ ")") | ("(" ~ sp ~ reference ~ (sp ~ "," ~ sp ~ reference)* ~ sp ~ ")") }
 aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
 aggregate_output_item = { reference | aggregate_measure }
 // TODO: Add support for filter, invocation, etc.
