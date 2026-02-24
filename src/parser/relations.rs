@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use pest::iterators::Pair;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
@@ -14,8 +15,44 @@ use substrait::proto::{
 use super::{
     ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
 };
-use crate::extensions::SimpleExtensions;
+use crate::extensions::any::Any;
+use crate::extensions::registry::ExtensionError;
+use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
+use crate::parser::errors::{ParseContext, ParseError};
 use crate::parser::expressions::{FieldIndex, Name};
+
+/// Parsing context for relations that includes extensions, registry, and optional warning collection
+pub struct RelationParsingContext<'a> {
+    pub extensions: &'a SimpleExtensions,
+    pub registry: &'a ExtensionRegistry,
+    pub line_no: i64,
+    pub line: &'a str,
+}
+
+impl<'a> RelationParsingContext<'a> {
+    /// Resolve extension detail using registry. Any failure is treated as a hard parse error.
+    pub fn resolve_extension_detail(
+        &self,
+        extension_name: &str,
+        extension_args: &ExtensionArgs,
+    ) -> Result<Option<Any>, ParseError> {
+        let detail = self
+            .registry
+            .parse_extension(extension_name, extension_args);
+
+        match detail {
+            Ok(any) => Ok(Some(any)),
+            Err(ExtensionError::ExtensionNotFound(_)) => Err(ParseError::UnregisteredExtension {
+                name: extension_name.to_string(),
+                context: ParseContext::new(self.line_no, self.line.to_string()),
+            }),
+            Err(err) => Err(ParseError::ExtensionDetail(
+                ParseContext::new(self.line_no, self.line.to_string()),
+                err,
+            )),
+        }
+    }
+}
 
 /// A trait for parsing relations with full context needed for tree building.
 /// This includes extensions, the parsed pair, input children, and output field count.
@@ -33,9 +70,9 @@ pub trait RelationParsePair: Sized {
     /// - input_field_count: Number of output fields from input children (for output mapping)
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        input_field_count: usize,
+        _input_field_count: usize,
     ) -> Result<Self, MessageParseError>;
 
     fn into_rel(self) -> Rel;
@@ -52,7 +89,7 @@ impl ParsePair for TableName {
         "TableName"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let pairs = pair.into_inner();
         let mut names = Vec::with_capacity(pairs.len());
@@ -82,7 +119,7 @@ impl ScopedParsePair for Column {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut iter = RuleIter::from(pair.into_inner());
@@ -106,7 +143,7 @@ impl ScopedParsePair for NamedColumnList {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut columns = Vec::new();
@@ -124,7 +161,7 @@ impl ScopedParsePair for NamedColumnList {
 #[allow(clippy::vec_box)]
 pub(crate) fn expect_one_child(
     message: &'static str,
-    pair: &pest::iterators::Pair<Rule>,
+    pair: &Pair<Rule>,
     mut input_children: Vec<Box<Rel>>,
 ) -> Result<Box<Rel>, MessageParseError> {
     match input_children.len() {
@@ -143,7 +180,7 @@ pub(crate) fn expect_one_child(
 }
 
 /// Parse a reference list Pair and return an EmitKind::Emit.
-fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
+fn parse_reference_emit(pair: Pair<Rule>) -> EmitKind {
     assert_eq!(pair.as_rule(), Rule::reference_list);
     let output_mapping = pair
         .into_inner()
@@ -158,7 +195,7 @@ fn parse_reference_emit(pair: pest::iterators::Pair<Rule>) -> EmitKind {
 ///
 /// The fluent API ensures all arguments are processed exactly once and none are forgotten.
 pub struct ParsedNamedArgs<'a> {
-    map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
+    map: HashMap<&'a str, Pair<'a, Rule>>,
 }
 
 impl<'a> ParsedNamedArgs<'a> {
@@ -189,11 +226,7 @@ impl<'a> ParsedNamedArgs<'a> {
     // Returns the pair if it exists and matches the rule, otherwise None.
     // Asserts that the rule must match the rule of the pair (and therefore
     // panics in non-release-mode if not)
-    pub fn pop(
-        mut self,
-        name: &str,
-        rule: Rule,
-    ) -> (Self, Option<pest::iterators::Pair<'a, Rule>>) {
+    pub fn pop(mut self, name: &str, rule: Rule) -> (Self, Option<Pair<'a, Rule>>) {
         let pair = self.map.remove(name).inspect(|pair| {
             assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
         });
@@ -231,9 +264,9 @@ impl RelationParsePair for ReadRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        input_field_count: usize,
+        _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         // ReadRel is a leaf node - it should have no input children and 0 input fields
@@ -244,7 +277,7 @@ impl RelationParsePair for ReadRel {
                 "ReadRel should have no input children",
             ));
         }
-        if input_field_count != 0 {
+        if _input_field_count != 0 {
             let error = pest::error::Error::new_from_span(
                 pest::error::ErrorVariant::CustomError {
                     message: "ReadRel should have 0 input fields".to_string(),
@@ -304,7 +337,7 @@ impl RelationParsePair for FilterRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
@@ -351,9 +384,9 @@ impl RelationParsePair for ProjectRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        input_field_count: usize,
+        _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
@@ -366,7 +399,7 @@ impl RelationParsePair for ProjectRel {
 
         // Process each argument (can be either a reference or expression)
         for arg in arguments_pair.into_inner() {
-            let inner_arg = crate::parser::unwrap_single_pair(arg);
+            let inner_arg = unwrap_single_pair(arg);
             match inner_arg.as_rule() {
                 Rule::reference => {
                     // Parse reference like "$0" -> 0
@@ -378,7 +411,7 @@ impl RelationParsePair for ProjectRel {
                     let _expr = Expression::parse_pair(extensions, inner_arg)?;
                     expressions.push(_expr);
                     // Expression: index after all input fields
-                    output_mapping.push(input_field_count as i32 + (expressions.len() as i32 - 1));
+                    output_mapping.push(_input_field_count as i32 + (expressions.len() as i32 - 1));
                 }
                 _ => panic!("Unexpected inner argument rule: {:?}", inner_arg.as_rule()),
             }
@@ -416,7 +449,7 @@ impl RelationParsePair for AggregateRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
@@ -501,7 +534,7 @@ impl ScopedParsePair for SortField {
 
     fn parse_pair(
         _extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut iter = RuleIter::from(pair.into_inner());
@@ -554,7 +587,7 @@ impl RelationParsePair for SortRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
@@ -592,7 +625,7 @@ impl ScopedParsePair for CountMode {
     }
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut arg_inner = RuleIter::from(pair.into_inner());
@@ -651,7 +684,7 @@ impl ScopedParsePair for OffsetMode {
     }
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut arg_inner = RuleIter::from(pair.into_inner());
@@ -708,7 +741,7 @@ impl RelationParsePair for FetchRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
@@ -767,7 +800,7 @@ impl ParsePair for join_rel::JoinType {
         "JoinType"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let join_type_str = pair.as_str().trim_start_matches('&');
         match join_type_str {
@@ -805,7 +838,7 @@ impl RelationParsePair for JoinRel {
 
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
     ) -> Result<Self, MessageParseError> {
@@ -1349,7 +1382,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
+    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();

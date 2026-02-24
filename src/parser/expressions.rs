@@ -482,7 +482,10 @@ impl ScopedParsePair for Expression {
                     extensions, inner,
                 )?))),
             }),
-            _ => unimplemented!("Expression unexpected rule: {:?}", inner.as_rule()),
+            _ => unreachable!(
+                "Grammar guarantees expression can only be literal, function_call, reference, or if_then, got: {:?}",
+                inner.as_rule()
+            ),
         }
     }
 }
@@ -618,7 +621,7 @@ mod tests {
     use super::*;
     use crate::parser::ExpressionParser;
 
-    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
+    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();

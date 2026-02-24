@@ -80,10 +80,7 @@ Root[result]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -145,10 +142,7 @@ Root[result]                   // Level 0 (no indentation)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -265,10 +259,7 @@ Root[result]
     Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -659,12 +650,13 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 **Components**:
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
-- `expression` - Join condition (boolean expression relating left and right inputs)  
+- `expression` - Join condition (boolean expression relating left and right inputs)
 - `reference_list` - Comma-separated list of field references for output columns
 
 **Field Reference Mapping**:
 
 For joins, field references map to the combined schema of left and right inputs:
+
 - `$0`, `$1`, ... refer to left input fields
 - `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
 
@@ -690,6 +682,49 @@ Root[user_orders]
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
+
+### Extension Relations
+
+Extension relations allow custom relation types with user-defined protobuf payloads. They enable integration with custom data sources, optimizations, or specialized operations beyond standard Substrait relations.
+
+#### Types
+
+There are three extension relation types, based on their input cardinality:
+
+- **`ExtensionLeaf`** - No child relations (e.g., custom data sources)
+- **`ExtensionSingle`** - Exactly one child relation (e.g., custom transformations)
+- **`ExtensionMulti`** - Zero or more child relations (e.g., custom joins)
+
+#### Syntax
+
+```text
+extension_relation := extension_type ":" name "[" arguments "=>" columns "]"
+extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
+arguments := named_arg ("," named_arg)*
+named_arg := name "=" literal
+columns := named_column ("," named_column)*
+named_column := name ":" type
+```
+
+#### Components
+
+- **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
+- **`name`** - The extension name (registered with `ExtensionRegistry`)
+- **`arguments`** - Named arguments as `key=value` pairs
+- **`columns`** - Output column names and types
+
+#### Example
+
+```text
+=== Plan
+Root[result]
+  ExtensionSingle:CustomFilter[threshold=100 => $0, $1]
+    ExtensionLeaf:ParquetScan[path='data/users.parquet', batch_size=1024 => id:i64, name:string]
+```
+
+#### Custom Extension Types
+
+To use extension relations with custom protobuf payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
 
 ## Complete Example
 

@@ -3,7 +3,7 @@ use std::fmt;
 use substrait::proto;
 
 use super::Textify;
-use crate::extensions::SimpleExtensions;
+use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::parser::PLAN_HEADER;
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
@@ -14,10 +14,15 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     extensions: SimpleExtensions,
     relations: &'a [proto::PlanRel],
     errors: E,
+    extension_registry: &'a ExtensionRegistry,
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
-    pub fn new(options: &'a OutputOptions, plan: &'a proto::Plan) -> (Self, E) {
+    pub fn new(
+        options: &'a OutputOptions,
+        plan: &'a proto::Plan,
+        extension_registry: &'a ExtensionRegistry,
+    ) -> (Self, E) {
         let (extensions, errs) =
             SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
 
@@ -34,13 +39,19 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
                 extensions,
                 relations,
                 errors: errors.clone(),
+                extension_registry,
             },
             errors,
         )
     }
 
     pub fn scope(&'a self) -> ScopedContext<'a, E> {
-        ScopedContext::new(self.options, &self.errors, &self.extensions)
+        ScopedContext::new(
+            self.options,
+            &self.errors,
+            &self.extensions,
+            self.extension_registry,
+        )
     }
 
     pub fn write_extensions(&self, w: &mut impl fmt::Write) -> fmt::Result {
@@ -189,7 +200,8 @@ mod tests {
         });
 
         let options = OutputOptions::default();
-        let (writer, errors) = PlanWriter::<ErrorQueue>::new(&options, &plan);
+        let extension_registry = ExtensionRegistry::new();
+        let (writer, errors) = PlanWriter::<ErrorQueue>::new(&options, &plan, &extension_registry);
         let mut output = String::new();
         write!(output, "{writer}").unwrap();
 

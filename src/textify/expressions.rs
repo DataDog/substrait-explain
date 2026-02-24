@@ -824,11 +824,8 @@ impl Textify for AggregateFunction {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         // Similar to ScalarFunction textification
-        let name_and_anchor = crate::textify::types::NamedAnchor::lookup(
-            ctx,
-            crate::extensions::simple::ExtensionKind::Function,
-            self.function_reference,
-        );
+        let name_and_anchor =
+            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
         let name_and_anchor = ctx.display(&name_and_anchor);
 
         let args = ctx.separated(&self.arguments, ", ");
@@ -839,7 +836,7 @@ impl Textify for AggregateFunction {
             ", "
         };
 
-        let output = crate::textify::types::OutputType(self.output_type.as_ref());
+        let output = OutputType(self.output_type.as_ref());
         let output_type = ctx.optional(&output, ctx.options().fn_types);
 
         write!(

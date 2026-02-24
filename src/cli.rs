@@ -210,7 +210,7 @@ pub enum Commands {
     ///   If -f/--from or -t/--to are not specified, formats will be auto-detected
     ///   from file extensions:
     ///     .substrait, .txt    -> text format
-    ///     .json               -> json format  
+    ///     .json               -> json format
     ///     .yaml, .yml         -> yaml format
     ///     .pb, .proto, .protobuf -> protobuf format
     ///
