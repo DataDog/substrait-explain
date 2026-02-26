@@ -1,3 +1,18 @@
+//! Expression and literal formatting — everything that appears inside the
+//! `[...]` brackets of a relation line.
+//!
+//! Syntax conventions used in the text format:
+//!
+//! - `(…)` function call, e.g. `add($0, $1)`
+//! - `[…]` relation brackets
+//! - `<…>` type parameters, e.g. `list<i64>`
+//! - `!{…}` missing/error placeholder
+//! - `$…` field reference, e.g. `$0`
+//! - `#…` extension anchor, e.g. `#10`
+//! - `@…` URN anchor, e.g. `@1`
+//! - `…:…` type annotation, e.g. `42:i64`
+//! - `&…` enum value, e.g. `&AscNullsFirst`
+
 use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate};
@@ -17,18 +32,6 @@ use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
-
-// …(…) for function call
-// […] for variant
-// <…> for parameters
-// !{…} for missing value
-
-// $… for field reference
-// #… for anchor
-// @… for URN anchor
-// …::… for cast
-// …:… for specifying type
-// &… for enum
 
 pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W) -> fmt::Result {
     if ctx.options().show_literal_binaries {
@@ -516,6 +519,53 @@ impl Textify for expr::Literal {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if self.nullable
+            && let Some(literal) = self.literal_type.as_ref()
+        {
+            match literal {
+                LiteralType::String(s) => {
+                    let kind = Kind::String(ptype::String {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(s, kind, ctx, w);
+                }
+                LiteralType::Date(days) => {
+                    let kind = Kind::Date(ptype::Date {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(&days_to_date_string(*days), kind, ctx, w);
+                }
+                LiteralType::Time(microseconds) => {
+                    let kind = Kind::Time(ptype::Time {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(
+                        &microseconds_to_time_string(*microseconds),
+                        kind,
+                        ctx,
+                        w,
+                    );
+                }
+                #[allow(deprecated)]
+                LiteralType::Timestamp(microseconds) => {
+                    let kind = Kind::Timestamp(ptype::Timestamp {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(
+                        &microseconds_to_timestamp_string(*microseconds),
+                        kind,
+                        ctx,
+                        w,
+                    );
+                }
+                _ => {}
+            }
+        }
+
         write!(w, "{}", ctx.expect(self.literal_type.as_ref()))
     }
 }

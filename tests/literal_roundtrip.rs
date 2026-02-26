@@ -1,6 +1,11 @@
 //! Test roundtrip functionality for literal parsing and formatting
 
+use substrait::proto::expression::RexType;
+use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::plan_rel::RelType as PlanRelType;
+use substrait::proto::rel::RelType;
 use substrait_explain::fixtures::roundtrip_plan;
+use substrait_explain::parser::Parser;
 
 #[test]
 fn test_float_literal_roundtrip() {
@@ -89,4 +94,66 @@ Root[statusq]
       Read[events.logs => status:string?]
 "#;
     roundtrip_plan(plan);
+}
+
+#[test]
+fn test_nullable_string_typed_literal_sets_nullable() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['hello':string?]
+    Read[data => a:i64]
+"#;
+
+    roundtrip_plan(plan);
+
+    let plan = Parser::parse(plan).expect("parse should succeed");
+    let plan_rel = plan.relations.first().expect("plan relation");
+    let PlanRelType::Root(root) = plan_rel.rel_type.as_ref().expect("plan rel type") else {
+        panic!("expected root relation");
+    };
+    let RelType::Project(project) = root
+        .input
+        .as_ref()
+        .and_then(|r| r.rel_type.as_ref())
+        .expect("project relation")
+    else {
+        panic!("expected project relation");
+    };
+
+    let literal = project
+        .expressions
+        .first()
+        .and_then(|e| e.rex_type.as_ref())
+        .and_then(|rex| match rex {
+            RexType::Literal(lit) => Some(lit),
+            _ => None,
+        })
+        .expect("literal expression");
+
+    assert!(
+        literal.nullable,
+        "typed string nullability should be preserved"
+    );
+    assert!(matches!(
+        literal.literal_type.as_ref(),
+        Some(LiteralType::String(s)) if s == "hello"
+    ));
+}
+
+#[test]
+fn test_unsupported_typed_string_literal_errors() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['abc':uuid]
+    Read[data => a:i64]
+"#;
+
+    let err = Parser::parse(plan).expect_err("parse should fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("Invalid type for string literal"),
+        "unexpected error: {message}"
+    );
 }

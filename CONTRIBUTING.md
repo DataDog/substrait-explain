@@ -90,21 +90,15 @@ This project implements Substrait protobuf plan parsing and formatting. See the 
 
 This project uses different error handling patterns depending on the context:
 
-##### Pest Parser Context
+##### Parser Context
 
-Unwraps are safe where the grammar enforces the invariants. Always assert that the right rule was used to ensure the same invariants:
+Use structured parse and lowering errors with explicit context (line number + source line). Syntax errors should come from LALRPOP parse entrypoints, and semantic validation errors should come from lowering:
 
 ```rust
-// Pest parse functions should assert the rule matches
-fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-    assert_eq!(pair.as_rule(), Self::rule(), "Expected rule {:?}", Self::rule());
-    // Now safe to unwrap based on grammar guarantees
-    let inner = pair.into_inner().next().unwrap();
-    // ... rest of parsing logic
-}
+let relation = lalrpop_line::parse_relation(line).map_err(|e| {
+    ParseError::Plan(ctx, MessageParseError::invalid("relation", e))
+})?;
 ```
-
-_Note: Ideally, `pest_derive` would remove the need for unwraps by providing structural types that encode the invariants, ensuring at compile-time the grammar and code remain in sync._
 
 ##### Other Parsing Context (e.g., lookups)
 
@@ -116,7 +110,7 @@ let value = input.parse::<i32>().map_err(|_| "Invalid integer")?;
 let first = chars.next().ok_or("Expected non-empty input")?;
 ```
 
-_Note: When parsing with pest, use `pest::Span` and `pest::Error` types to provide clearer error messages about where in the input parsing failed. This helps users understand exactly what went wrong and where._
+_Note: Include enough context (line number, offending line, and message category) so users can quickly locate and fix bad input._
 
 ##### Formatting Context
 
@@ -157,22 +151,14 @@ assert!(result.is_ok());
 - Return `Result` types for operations that can legitimately fail
 - Collect and continue for formatting errors, fail-fast for parsing errors
 
-#### RuleIter Consumption Patterns
+#### Parser Pipeline Pattern
 
-`RuleIter` enforces complete consumption via its `Drop` implementation. This can cause assertion failures if validation functions return early before calling `iter.done()`.
+Keep parser internals split into two phases:
 
-**Current workaround:** Extract all data first, then validate:
+1. Parse single lines to AST with LALRPOP (`line_grammar.lalrpop`).
+2. Lower AST nodes to protobuf with relation-specific semantic validation (`parser/lower/`).
 
-```rust
-// Extract data without validation
-let (limit_pair, offset_pair) = /* extract pairs */;
-iter.done(); // Call before any early returns
-
-// Then validate using functional patterns
-let count_mode = limit_pair.map(|pair| CountMode::parse_pair(extensions, pair)).transpose()?;
-```
-
-_Note: The RuleIter interface could be improved to handle this pattern more naturally._
+This separation keeps grammar concerns and semantic checks independent and easier to test.
 
 #### Documentation Formatting
 
@@ -192,7 +178,7 @@ Since markdown files are included in Rustdoc, use `##` for actual `#` characters
 
 When working with [`GRAMMAR.md`](GRAMMAR.md):
 
-- Use PEG format with `rule_name := definition` syntax
+- Keep grammar notation in `GRAMMAR.md` implementation-independent (PEG/EBNF style), while ensuring examples remain accepted by the implemented parser (`line_grammar.lalrpop`)
 - Run `cargo test --doc` to verify all code examples compile
 - Ensure all referenced identifiers are properly defined somewhere in the grammar
 

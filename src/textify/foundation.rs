@@ -91,10 +91,15 @@ impl OutputOptions {
         }
     }
 }
+/// Collects non-fatal formatting errors so that textification can continue
+/// and produce best-effort output. Errors are later returned alongside the
+/// formatted text.
 pub trait ErrorAccumulator: Clone {
     fn push(&self, e: FormatError);
 }
 
+/// Channel-backed [`ErrorAccumulator`]. Cloning shares the same underlying
+/// channel, so errors from any clone are visible to the consumer.
 #[derive(Debug, Clone)]
 pub struct ErrorQueue {
     sender: mpsc::Sender<FormatError>,
@@ -219,6 +224,9 @@ impl<'a> fmt::Display for IndentStack<'a> {
     }
 }
 
+/// Concrete [`Scope`] implementation that carries formatting options,
+/// extension lookups, error accumulation, and the current indentation level
+/// through the textify call tree.
 #[derive(Debug, Copy, Clone)]
 pub struct ScopedContext<'a, Err: ErrorAccumulator> {
     errors: &'a Err,

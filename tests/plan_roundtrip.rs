@@ -82,7 +82,7 @@ Functions:
 === Plan
 Root[name, parent, sum, count]
   Project[$0, $3, $1, $2]
-    Read[schema.table => name:string?, parent:string?, sum:fp64?, count:fp64?]"#;
+    Read[schema."some.table" => name:string?, parent:string?, sum:fp64?, count:fp64?]"#;
 
     roundtrip_plan(plan);
 }
@@ -98,7 +98,7 @@ Functions:
 === Plan
 Root[name, num]
   Project[$1, coalesce($1, $2)]
-    Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
+    Read[schema."db.with.dot".table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
 
     let verbose_plan = r#"=== Extensions
 URNs:
@@ -109,7 +109,7 @@ Functions:
 === Plan
 Root[name, num]
   Project[$1, coalesce#10($1, $2)]
-    Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
+    Read[schema."db.with.dot".table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
 
     roundtrip_plan_with_verbose(simple_plan, verbose_plan);
 }

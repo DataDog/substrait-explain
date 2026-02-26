@@ -57,9 +57,8 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 - **`element*`** - Zero or more repetitions
 - **`element+`** - One or more repetitions
 - **`element1 / element2`** - Choice (try element1 first)
-  - _Implementation Note: Pest uses `|` instead of `/`_
 - **`element1 element2`** - Sequence
-  - _Implementation Note: Pest uses `~` for explicit concatenation_
+- **`// comment`** - Line comment (allowed at line start or after whitespace)
 
 ## Basic Example
 
@@ -199,7 +198,7 @@ A literal can come in the form of an integer, float, boolean, or string, and can
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-All literal types (`integer`, `float`, `boolean`, and `string`) are now supported in the current implementation. Support for typed literals (string literals with non-primitive type annotations like `'2023-01-01':date`) remains to be implemented.
+All literal types (`integer`, `float`, `boolean`, and `string`) are supported in the current implementation. Typed string literals are also supported for currently implemented target types (for example `date`, `time`, and `timestamp`).
 
 ## Types
 
@@ -467,6 +466,7 @@ argument := literal / expression / enum / tuple
 tuple := "(" argument ("," argument)* ")"
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
+comment := "//" (!newline .)*
 ```
 
 #### Examples

@@ -1,3 +1,11 @@
+//! Relation formatting — converts protobuf relation types to the
+//! `Name[args => outputs]` text format.
+//!
+//! Each Substrait relation (Read, Filter, Project, …) is converted to a
+//! [`Relation`] struct containing its name, [`Arguments`], and child
+//! relations. Arguments and outputs are represented as [`Value`] variants,
+//! which bridge between the typed protobuf world and the flat text format.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -90,6 +98,9 @@ pub struct NamedArg<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// A single argument or output value in a relation's `[args => outputs]`
+/// bracket. Covers field references, expressions, literals, enum values,
+/// named columns, and error placeholders ([`Value::Missing`]).
 pub enum Value<'a> {
     Name(Name<'a>),
     TableName(Vec<Name<'a>>),
@@ -973,7 +984,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
-    use crate::parser::expressions::FieldIndex;
+    use crate::textify::expressions::Reference;
 
     #[test]
     fn test_read_rel() {
@@ -1140,11 +1151,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn1 = get_aggregate_func(10, 1);
         let agg_fn2 = get_aggregate_func(11, 1);
 
-        let grouping_expressions = vec![Expression {
-            rex_type: Some(RexType::Selection(Box::new(
-                FieldIndex(0).to_field_reference(),
-            ))),
-        }];
+        let grouping_expressions = vec![Reference(0).into()];
 
         let measures = vec![
             aggregate_rel::Measure {
@@ -1256,16 +1263,8 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn2 = get_aggregate_func(11, 2);
 
         let grouping_expressions = vec![
-            Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    FieldIndex(0).to_field_reference(),
-                ))),
-            },
-            Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    FieldIndex(1).to_field_reference(),
-                ))),
-            },
+            Reference(0).into(),
+            Reference(1).into(),
         ];
 
         let grouping_sets = vec![
@@ -1482,11 +1481,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         AggregateFunction {
             function_reference: func_ref,
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(column_ind).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(column_ind).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1564,10 +1559,6 @@ Filter[gt($0, 10:i32) => $0, $1]
     }
 
     fn create_exp(column_ind: i32) -> Expression {
-        Expression {
-            rex_type: Some(RexType::Selection(Box::new(
-                FieldIndex(column_ind).to_field_reference(),
-            ))),
-        }
+        Reference(column_ind).into()
     }
 }
