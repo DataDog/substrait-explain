@@ -1,6 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use pest_typed::Spanned;
 use thiserror::Error;
 
 use super::common::{MessageParseError, parse_typed, rules, unescape_string};
@@ -10,7 +11,8 @@ use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
     RawExpression, SimpleExtensions,
 };
-use crate::parser::expressions::{parse_field_index_node, parse_name_node};
+use crate::parser::convert::{ExtensionAnchor, Name, UrnAnchor, collect_first_rest};
+use crate::parser::expressions::parse_field_index_node;
 use crate::parser::structural::IndentedLine;
 
 #[derive(Debug, Clone, Error)]
@@ -136,11 +138,6 @@ impl ExtensionParser {
     pub fn extensions(&self) -> &SimpleExtensions {
         &self.extensions
     }
-
-    #[cfg(test)]
-    pub fn state(&self) -> ExtensionParserState {
-        self.state
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,39 +155,21 @@ pub struct SimpleExtensionDeclaration {
 
 fn parse_urn_extension_declaration_node(
     node: &rules::extension_urn_declaration<'_>,
-) -> URNExtensionDeclaration {
-    URNExtensionDeclaration {
-        anchor: node
-            .urn_anchor()
-            .integer()
-            .span
-            .as_str()
-            .parse::<u32>()
-            .unwrap(),
+) -> Result<URNExtensionDeclaration, MessageParseError> {
+    Ok(URNExtensionDeclaration {
+        anchor: u32::from(UrnAnchor::try_from(node.urn_anchor())?),
         urn: node.urn().span.as_str().to_string(),
-    }
+    })
 }
 
 fn parse_simple_extension_declaration_node(
     node: &rules::simple_extension<'_>,
-) -> SimpleExtensionDeclaration {
-    SimpleExtensionDeclaration {
-        anchor: node
-            .anchor()
-            .integer()
-            .span
-            .as_str()
-            .parse::<u32>()
-            .unwrap(),
-        urn_anchor: node
-            .urn_anchor()
-            .integer()
-            .span
-            .as_str()
-            .parse::<u32>()
-            .unwrap(),
-        name: parse_name_node(node.name()).0,
-    }
+) -> Result<SimpleExtensionDeclaration, MessageParseError> {
+    Ok(SimpleExtensionDeclaration {
+        anchor: u32::from(ExtensionAnchor::try_from(node.anchor())?),
+        urn_anchor: u32::from(UrnAnchor::try_from(node.urn_anchor())?),
+        name: Name::from(node.name()).0,
+    })
 }
 
 impl FromStr for URNExtensionDeclaration {
@@ -199,7 +178,7 @@ impl FromStr for URNExtensionDeclaration {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let typed =
             parse_typed::<rules::extension_urn_declaration<'_>>(s, "URNExtensionDeclaration")?;
-        Ok(parse_urn_extension_declaration_node(&typed))
+        parse_urn_extension_declaration_node(&typed)
     }
 }
 
@@ -208,61 +187,94 @@ impl FromStr for SimpleExtensionDeclaration {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let typed = parse_typed::<rules::simple_extension<'_>>(s, "SimpleExtensionDeclaration")?;
-        Ok(parse_simple_extension_declaration_node(&typed))
+        parse_simple_extension_declaration_node(&typed)
     }
 }
 
-fn parse_extension_value_node(node: &rules::extension_argument<'_>) -> ExtensionValue {
+fn parse_extension_value_node(
+    node: &rules::extension_argument<'_>,
+) -> Result<ExtensionValue, MessageParseError> {
     if let Some(reference) = node.reference() {
-        let field_index = parse_field_index_node(reference);
-        return ExtensionValue::Reference(field_index.0);
+        let field_index = parse_field_index_node(reference)?;
+        return Ok(ExtensionValue::Reference(field_index.0));
     }
 
     if let Some(literal) = node.literal() {
         if let Some(string_literal) = literal.string_literal() {
-            return ExtensionValue::String(unescape_string(string_literal.span.as_str(), '\''));
+            return Ok(ExtensionValue::String(unescape_string(
+                string_literal.span.as_str(),
+                '\'',
+            )));
         }
         if let Some(integer) = literal.integer() {
-            return ExtensionValue::Integer(integer.span.as_str().parse::<i64>().unwrap());
+            let value = integer.span.as_str().parse::<i64>().map_err(|error| {
+                MessageParseError::invalid(
+                    "extension_argument",
+                    crate::parser::common::typed_to_pest_span(integer.span()),
+                    format!("Invalid integer extension argument: {error}"),
+                )
+            })?;
+            return Ok(ExtensionValue::Integer(value));
         }
         if let Some(float) = literal.float() {
-            return ExtensionValue::Float(float.span.as_str().parse::<f64>().unwrap());
+            let value = float.span.as_str().parse::<f64>().map_err(|error| {
+                MessageParseError::invalid(
+                    "extension_argument",
+                    crate::parser::common::typed_to_pest_span(float.span()),
+                    format!("Invalid float extension argument: {error}"),
+                )
+            })?;
+            return Ok(ExtensionValue::Float(value));
         }
         if let Some(boolean) = literal.boolean() {
-            return ExtensionValue::Boolean(boolean.span.as_str() == "true");
+            return Ok(ExtensionValue::Boolean(boolean.span.as_str() == "true"));
         }
-        panic!("Unexpected literal value type in extension argument");
-    }
-
-    if let Some(expression) = node.expression() {
-        return ExtensionValue::Expression(RawExpression::new(
-            expression.span.as_str().to_string(),
+        return Err(MessageParseError::invalid(
+            "extension_argument",
+            crate::parser::common::typed_to_pest_span(literal.span()),
+            "Unexpected literal value type in extension argument",
         ));
     }
 
-    panic!("Unexpected extension argument type");
+    if let Some(expression) = node.expression() {
+        return Ok(ExtensionValue::Expression(RawExpression::new(
+            expression.span.as_str().to_string(),
+        )));
+    }
+
+    Err(MessageParseError::invalid(
+        "extension_argument",
+        crate::parser::common::typed_to_pest_span(node.span()),
+        "Unexpected extension argument type",
+    ))
 }
 
-fn parse_extension_column_node(node: &rules::extension_column<'_>) -> ExtensionColumn {
+fn parse_extension_column_node(
+    node: &rules::extension_column<'_>,
+) -> Result<ExtensionColumn, MessageParseError> {
     if let Some(named_column) = node.named_column() {
-        return ExtensionColumn::Named {
-            name: parse_name_node(named_column.name()).0,
+        return Ok(ExtensionColumn::Named {
+            name: Name::from(named_column.name()).0,
             type_spec: named_column.r#type().span.as_str().to_string(),
-        };
+        });
     }
 
     if let Some(reference) = node.reference() {
-        let field_index = parse_field_index_node(reference);
-        return ExtensionColumn::Reference(field_index.0);
+        let field_index = parse_field_index_node(reference)?;
+        return Ok(ExtensionColumn::Reference(field_index.0));
     }
 
     if let Some(expression) = node.expression() {
-        return ExtensionColumn::Expression(RawExpression::new(
+        return Ok(ExtensionColumn::Expression(RawExpression::new(
             expression.span.as_str().to_string(),
-        ));
+        )));
     }
 
-    panic!("Unexpected extension column type");
+    Err(MessageParseError::invalid(
+        "extension_column",
+        crate::parser::common::typed_to_pest_span(node.span()),
+        "Unexpected extension column type",
+    ))
 }
 
 /// Fully parsed extension invocation, including the user-supplied name and the
@@ -273,32 +285,32 @@ pub struct ExtensionInvocation {
     pub args: ExtensionArgs,
 }
 
-fn parse_extension_invocation_node(node: &rules::extension_relation<'_>) -> ExtensionInvocation {
+pub(crate) fn parse_extension_invocation_node(
+    node: &rules::extension_relation<'_>,
+) -> Result<ExtensionInvocation, MessageParseError> {
     let extension_name = node.extension_name();
     let relation_type =
         ExtensionRelationType::from_str(extension_name.extension_type().span.as_str())
             .expect("grammar guarantees known extension relation type");
-    let name = parse_name_node(extension_name.name()).0;
+    let name = Name::from(extension_name.name()).0;
 
     let mut args = ExtensionArgs::new(relation_type);
 
     if let Some(positional) = node.extension_arguments() {
         let (first, rest) = positional.extension_argument();
-        args.add_positional_arg(parse_extension_value_node(first));
+        args.add_positional_arg(parse_extension_value_node(first)?);
         for arg in rest {
-            args.add_positional_arg(parse_extension_value_node(arg));
+            args.add_positional_arg(parse_extension_value_node(arg)?);
         }
     }
 
     if let Some((group_a, group_b)) = node.extension_named_arguments() {
         for group in [group_a, group_b].into_iter().flatten() {
             let (first, rest) = group.extension_named_argument();
-            let mut named_items = Vec::with_capacity(rest.len() + 1);
-            named_items.push(first);
-            named_items.extend(rest);
+            let named_items = collect_first_rest(first, rest);
             for named in named_items {
-                let key = parse_name_node(named.name()).0;
-                let value = parse_extension_value_node(named.extension_argument());
+                let key = Name::from(named.name()).0;
+                let value = parse_extension_value_node(named.extension_argument())?;
                 args.add_named_arg(key, value);
             }
         }
@@ -306,20 +318,21 @@ fn parse_extension_invocation_node(node: &rules::extension_relation<'_>) -> Exte
 
     if let Some(columns) = node.extension_columns() {
         let (first, rest) = columns.extension_column();
-        args.add_output_column(parse_extension_column_node(first));
+        args.add_output_column(parse_extension_column_node(first)?);
         for column in rest {
-            args.add_output_column(parse_extension_column_node(column));
+            args.add_output_column(parse_extension_column_node(column)?);
         }
     }
 
-    ExtensionInvocation { name, args }
+    Ok(ExtensionInvocation { name, args })
 }
 
+#[cfg(test)]
 pub(crate) fn parse_extension_invocation(
     input: &str,
 ) -> Result<ExtensionInvocation, MessageParseError> {
     let typed = parse_typed::<rules::extension_relation<'_>>(input, "ExtensionInvocation")?;
-    Ok(parse_extension_invocation_node(&typed))
+    parse_extension_invocation_node(&typed)
 }
 
 impl ExtensionRelationType {

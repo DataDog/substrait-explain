@@ -1,49 +1,32 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use pest_typed::Spanned;
 use substrait::proto::aggregate_rel::Measure;
-use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::LiteralType;
-use substrait::proto::expression::{
-    FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
-};
+use substrait::proto::expression::{FieldReference, IfThen, Literal, RexType, ScalarFunction};
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
 use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
 
-use super::common::{MessageParseError, parse_typed, rules, typed_to_pest_span, unescape_string};
-use super::types::{get_and_validate_anchor, parse_type_node};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
+use crate::parser::common::{
+    MessageParseError, parse_typed, rules, typed_to_pest_span, unescape_string,
+};
+pub use crate::parser::convert::{FieldIndex, Name};
+use crate::parser::convert::{FunctionAnchor, Lower, ParseCtx, UrnAnchor};
+use crate::parser::types::{get_and_validate_anchor, parse_type_node};
 
-/// A field index (e.g., parsed from "$0" -> 0).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FieldIndex(pub i32);
-
-impl FieldIndex {
-    /// Convert this field index to a FieldReference for use in expressions.
-    pub fn to_field_reference(self) -> FieldReference {
-        FieldReference {
-            reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
-                reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
-                    reference_segment::StructField {
-                        field: self.0,
-                        child: None,
-                    },
-                ))),
-            })),
-            root_type: None,
-        }
-    }
+pub(crate) fn parse_field_index_node(
+    node: &rules::reference<'_>,
+) -> Result<FieldIndex, MessageParseError> {
+    FieldIndex::try_from(node)
 }
 
-pub(crate) fn parse_field_index_node(node: &rules::reference<'_>) -> FieldIndex {
-    let index: i32 = node.integer().span.as_str().parse().unwrap();
-    FieldIndex(index)
-}
-
-pub(crate) fn parse_field_reference_node(node: &rules::reference<'_>) -> FieldReference {
-    parse_field_index_node(node).to_field_reference()
+pub(crate) fn parse_field_reference_node(
+    node: &rules::reference<'_>,
+) -> Result<FieldReference, MessageParseError> {
+    Ok(parse_field_index_node(node)?.to_field_reference())
 }
 
 fn to_int_literal(
@@ -297,19 +280,12 @@ pub(crate) fn parse_literal_node(
         return to_string_literal(string_literal, typ);
     }
 
+    // Grammar guarantees literal value is one of integer, float, boolean, string_literal.
     unreachable!("literal must be integer, float, boolean, or string_literal")
 }
 
-pub struct Name(pub String);
-
 pub(crate) fn parse_name_node(node: &rules::name<'_>) -> Name {
-    if let Some(identifier) = node.identifier() {
-        return Name(identifier.span.as_str().to_string());
-    }
-    let quoted = node
-        .quoted_name()
-        .expect("name must be identifier or quoted_name");
-    Name(unescape_string(quoted.span.as_str(), '"'))
+    Name::from(node)
 }
 
 pub(crate) fn parse_scalar_function_node(
@@ -319,14 +295,10 @@ pub(crate) fn parse_scalar_function_node(
     let span = node.span();
     let name = parse_name_node(node.name());
 
-    let anchor = node
-        .anchor()
-        .map(|anchor| anchor.integer().span.as_str().parse::<u32>().unwrap());
+    let anchor = node.anchor().map(FunctionAnchor::try_from).transpose()?;
 
     // TODO: Handle urn_anchor and validate that it matches anchor where relevant.
-    let _urn_anchor = node
-        .urn_anchor()
-        .map(|anchor| anchor.integer().span.as_str().parse::<u32>().unwrap());
+    let _urn_anchor = node.urn_anchor().map(UrnAnchor::try_from).transpose()?;
 
     let mut arguments = Vec::new();
     if let Some((first, rest)) = node.argument_list().expression() {
@@ -350,7 +322,7 @@ pub(crate) fn parse_scalar_function_node(
     let anchor = get_and_validate_anchor(
         extensions,
         ExtensionKind::Function,
-        anchor,
+        anchor.map(u32::from),
         &name.0,
         typed_to_pest_span(span),
     )?;
@@ -388,7 +360,7 @@ pub(crate) fn parse_expression_node(
         return Ok(Expression {
             rex_type: Some(RexType::Selection(Box::new(parse_field_reference_node(
                 reference,
-            )))),
+            )?))),
         });
     }
 
@@ -400,6 +372,7 @@ pub(crate) fn parse_expression_node(
         });
     }
 
+    // Grammar guarantees expression is one of literal/function_call/reference/if_then.
     unreachable!("expression must be literal, function_call, reference, or if_then")
 }
 
@@ -459,33 +432,60 @@ pub(crate) fn parse_measure_node(
     })
 }
 
+impl Lower for rules::literal<'_> {
+    type Output = Literal;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        parse_literal_node(cx.extensions, self)
+    }
+}
+
+impl Lower for rules::function_call<'_> {
+    type Output = ScalarFunction;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        parse_scalar_function_node(cx.extensions, self)
+    }
+}
+
+impl Lower for rules::expression<'_> {
+    type Output = Expression;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        parse_expression_node(cx.extensions, self)
+    }
+}
+
 pub(crate) fn parse_literal(
     extensions: &SimpleExtensions,
     input: &str,
 ) -> Result<Literal, MessageParseError> {
+    let cx = ParseCtx { extensions };
     let typed = parse_typed::<rules::literal<'_>>(input, "Literal")?;
-    parse_literal_node(extensions, &typed)
+    typed.lower(&cx)
 }
 
 pub(crate) fn parse_scalar_function(
     extensions: &SimpleExtensions,
     input: &str,
 ) -> Result<ScalarFunction, MessageParseError> {
+    let cx = ParseCtx { extensions };
     let typed = parse_typed::<rules::function_call<'_>>(input, "ScalarFunction")?;
-    parse_scalar_function_node(extensions, &typed)
+    typed.lower(&cx)
 }
 
 pub(crate) fn parse_expression(
     extensions: &SimpleExtensions,
     input: &str,
 ) -> Result<Expression, MessageParseError> {
+    let cx = ParseCtx { extensions };
     let typed = parse_typed::<rules::expression<'_>>(input, "Expression")?;
-    parse_expression_node(extensions, &typed)
+    typed.lower(&cx)
 }
 
 pub(crate) fn parse_field_reference(input: &str) -> Result<FieldReference, MessageParseError> {
     let typed = parse_typed::<rules::reference<'_>>(input, "FieldReference")?;
-    Ok(parse_field_reference_node(&typed))
+    parse_field_reference_node(&typed)
 }
 
 #[cfg(test)]

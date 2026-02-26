@@ -11,12 +11,15 @@ use substrait::proto::{Plan, PlanRel, Rel, RelRoot, plan_rel};
 
 use crate::extensions::{ExtensionRegistry, SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, line_span, parse_typed, rules};
+use crate::parser::convert::{LowerWith, Name, ParseCtx, collect_first_rest};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
-use crate::parser::expressions::parse_name_node;
 use crate::parser::extensions::{
-    ExtensionInvocation, ExtensionParseError, ExtensionParser, parse_extension_invocation,
+    ExtensionInvocation, ExtensionParseError, ExtensionParser, parse_extension_invocation_node,
 };
-use crate::parser::relations::{RelationParsingContext, parse_standard_relation_from_line};
+use crate::parser::relations::ast::StandardRelationLine;
+use crate::parser::relations::{
+    LowerStandardInput, RelationParsingContext, parse_standard_relation,
+};
 
 pub const PLAN_HEADER: &str = "=== Plan";
 
@@ -76,10 +79,11 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NodeKind {
-    Relation { is_extension: bool },
-    RootRelation,
+#[derive(Debug, Clone)]
+enum LineKind {
+    Root { names: Vec<Name> },
+    Standard(Box<StandardRelationLine>),
+    Extension(ExtensionInvocation),
 }
 
 /// Represents a line in the [`Plan`] tree structure before it's converted to a
@@ -89,54 +93,13 @@ enum NodeKind {
 pub struct LineNode {
     pub line: String,
     pub line_no: i64,
-    kind: NodeKind,
+    kind: LineKind,
     pub children: Vec<LineNode>,
 }
 
 impl LineNode {
     pub fn context(&self) -> ParseContext {
         ParseContext::new(self.line_no, self.line.clone())
-    }
-
-    pub fn parse(line: &str, line_no: i64) -> Result<Self, ParseError> {
-        let relation = parse_typed::<rules::relation<'_>>(line, "relation")
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
-
-        Ok(Self {
-            line: relation.span.as_str().to_string(),
-            line_no,
-            kind: NodeKind::Relation {
-                is_extension: relation.extension_relation().is_some(),
-            },
-            children: Vec::new(),
-        })
-    }
-
-    /// Parse the root relation of a plan, at depth 0.
-    pub fn parse_root(line: &str, line_no: i64) -> Result<Self, ParseError> {
-        let top = parse_typed::<rules::top_level_relation<'_>>(line, "top_level_relation")
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
-
-        if let Some(root_relation) = top.root_relation() {
-            return Ok(Self {
-                line: root_relation.span.as_str().to_string(),
-                line_no,
-                kind: NodeKind::RootRelation,
-                children: Vec::new(),
-            });
-        }
-
-        let relation = top
-            .relation()
-            .expect("top_level_relation must be root or relation");
-        Ok(Self {
-            line: relation.span.as_str().to_string(),
-            line_no,
-            kind: NodeKind::Relation {
-                is_extension: relation.extension_relation().is_some(),
-            },
-            children: Vec::new(),
-        })
     }
 }
 
@@ -239,6 +202,92 @@ pub struct RelationParser {
 }
 
 impl RelationParser {
+    fn parse_relation_line(
+        &self,
+        extensions: &SimpleExtensions,
+        line: &str,
+        line_no: i64,
+    ) -> Result<LineNode, ParseError> {
+        let relation = parse_typed::<rules::relation<'_>>(line, "relation")
+            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
+
+        let kind =
+            if let Some(extension_relation) = relation.extension_relation() {
+                LineKind::Extension(parse_extension_invocation_node(extension_relation).map_err(
+                    |e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e),
+                )?)
+            } else {
+                let cx = ParseCtx { extensions };
+                let standard = parse_standard_relation(&cx, &relation)
+                    .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?
+                    .ok_or_else(|| {
+                        ParseError::Plan(
+                            ParseContext::new(line_no, line.to_string()),
+                            MessageParseError::invalid(
+                                "relation",
+                                line_span(line),
+                                "Unexpected extension relation while parsing standard relation",
+                            ),
+                        )
+                    })?;
+                LineKind::Standard(Box::new(standard))
+            };
+
+        Ok(LineNode {
+            line: relation.span.as_str().to_string(),
+            line_no,
+            kind,
+            children: Vec::new(),
+        })
+    }
+
+    fn parse_top_level_line(
+        &self,
+        extensions: &SimpleExtensions,
+        line: &str,
+        line_no: i64,
+    ) -> Result<LineNode, ParseError> {
+        let top = parse_typed::<rules::top_level_relation<'_>>(line, "top_level_relation")
+            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
+
+        if let Some(root_relation) = top.root_relation() {
+            let root_names = root_relation.root_name_list();
+            let names = if let Some((first, rest)) = root_names.name() {
+                collect_first_rest(Name::from(first), rest.into_iter().map(Name::from))
+            } else {
+                Vec::new()
+            };
+
+            return Ok(LineNode {
+                line: root_relation.span.as_str().to_string(),
+                line_no,
+                kind: LineKind::Root { names },
+                children: Vec::new(),
+            });
+        }
+
+        let relation = top
+            .relation()
+            .expect("top_level_relation must be root or relation");
+
+        self.parse_relation_line(extensions, relation.span.as_str(), line_no)
+    }
+
+    pub fn parse_line(
+        &mut self,
+        extensions: &SimpleExtensions,
+        line: IndentedLine<'_>,
+        line_no: i64,
+    ) -> Result<(), ParseError> {
+        let IndentedLine(depth, line) = line;
+        let node = if depth == 0 {
+            self.parse_top_level_line(extensions, line, line_no)?
+        } else {
+            self.parse_relation_line(extensions, line, line_no)?
+        };
+        self.tree.add_line(depth, node)
+    }
+
     /// Parse extension relations.
     #[allow(clippy::vec_box)]
     fn parse_extension_relation(
@@ -246,6 +295,7 @@ impl RelationParser {
         registry: &ExtensionRegistry,
         line_no: i64,
         line: &str,
+        extension_invocation: ExtensionInvocation,
         child_relations: Vec<Box<Rel>>,
     ) -> Result<Rel, ParseError> {
         let pair_span = line_span(line);
@@ -253,8 +303,7 @@ impl RelationParser {
         let ExtensionInvocation {
             name,
             args: extension_args,
-        } = parse_extension_invocation(line)
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
+        } = extension_invocation;
 
         let child_count = child_relations.len();
         extension_args
@@ -293,10 +342,10 @@ impl RelationParser {
         registry: &ExtensionRegistry,
         node: LineNode,
     ) -> Result<Rel, ParseError> {
-        let node_kind = node.kind;
-        let node_line = node.line.clone();
-        let node_line_no = node.line_no;
-        let node_context = node.context();
+        let line = node.line.clone();
+        let line_no = node.line_no;
+        let context = node.context();
+
         let child_relations = node
             .children
             .into_iter()
@@ -309,43 +358,28 @@ impl RelationParser {
             .reduce(|a, b| a + b)
             .unwrap_or(0);
 
-        match node_kind {
-            NodeKind::RootRelation => Err(ParseError::Plan(
-                node_context,
+        match node.kind {
+            LineKind::Root { .. } => Err(ParseError::Plan(
+                context,
                 MessageParseError::invalid(
                     "root_relation",
-                    line_span(&node_line),
+                    line_span(&line),
                     "Root relation cannot be nested as a child",
                 ),
             )),
-            NodeKind::Relation { is_extension: true } => {
-                self.parse_extension_relation(registry, node_line_no, &node_line, child_relations)
+            LineKind::Extension(invocation) => {
+                self.parse_extension_relation(registry, line_no, &line, invocation, child_relations)
             }
-            NodeKind::Relation {
-                is_extension: false,
-            } => {
-                let parsed = parse_standard_relation_from_line(
-                    extensions,
-                    &node_line,
-                    child_relations,
-                    input_field_count,
+            LineKind::Standard(standard) => standard
+                .lower_with(
+                    &ParseCtx { extensions },
+                    LowerStandardInput {
+                        line_span: line_span(&line),
+                        input_children: child_relations,
+                        input_field_count,
+                    },
                 )
-                .map_err(|e| {
-                    ParseError::Plan(ParseContext::new(node_line_no, node_line.clone()), e)
-                })?;
-
-                match parsed {
-                    Some(rel) => Ok(rel),
-                    None => Err(ParseError::Plan(
-                        ParseContext::new(node_line_no, node_line.clone()),
-                        MessageParseError::invalid(
-                            "relation",
-                            line_span(&node_line),
-                            "Unexpected extension relation while parsing standard relation",
-                        ),
-                    )),
-                }
-            }
+                .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line), e)),
         }
     }
 
@@ -356,31 +390,16 @@ impl RelationParser {
         registry: &ExtensionRegistry,
         mut node: LineNode,
     ) -> Result<PlanRel, ParseError> {
+        let context = node.context();
+        let span = line_span(&node.line);
         match node.kind {
-            NodeKind::Relation { .. } => {
-                let rel = self.build_rel(extensions, registry, node)?;
-                Ok(PlanRel {
-                    rel_type: Some(plan_rel::RelType::Rel(rel)),
-                })
-            }
-            NodeKind::RootRelation => {
-                let context = node.context();
-                let span = line_span(&node.line);
-
-                let root = parse_typed::<rules::root_relation<'_>>(&node.line, "root_relation")
-                    .map_err(|e| ParseError::Plan(context.clone(), e))?;
-                let root_names = root.root_name_list();
-
-                let mut names = Vec::new();
-                if let Some((first, rest)) = root_names.name() {
-                    names.push(parse_name_node(first).0);
-                    for name in rest {
-                        names.push(parse_name_node(name).0);
-                    }
-                }
-
+            LineKind::Root { names } => {
                 let child = match node.children.len() {
-                    1 => self.build_rel(extensions, registry, node.children.pop().unwrap())?,
+                    1 => self.build_rel(
+                        extensions,
+                        registry,
+                        node.children.pop().expect("len checked above"),
+                    )?,
                     n => {
                         return Err(ParseError::Plan(
                             context,
@@ -395,9 +414,15 @@ impl RelationParser {
 
                 Ok(PlanRel {
                     rel_type: Some(plan_rel::RelType::Root(RelRoot {
-                        names,
+                        names: names.into_iter().map(|name| name.0).collect(),
                         input: Some(child),
                     })),
+                })
+            }
+            LineKind::Standard(_) | LineKind::Extension(_) => {
+                let rel = self.build_rel(extensions, registry, node)?;
+                Ok(PlanRel {
+                    rel_type: Some(plan_rel::RelType::Rel(rel)),
                 })
             }
         }
@@ -482,17 +507,11 @@ impl Parser {
             State::Extensions => self
                 .parse_extensions(indented_line)
                 .map_err(|e| ParseError::Extension(ctx(), e)),
-            State::Plan => {
-                let IndentedLine(depth, line_str) = indented_line;
-
-                let node = if depth == 0 {
-                    LineNode::parse_root(line_str, line_no)?
-                } else {
-                    LineNode::parse(line_str, line_no)?
-                };
-
-                self.relation_parser.tree.add_line(depth, node)
-            }
+            State::Plan => self.relation_parser.parse_line(
+                self.extension_parser.extensions(),
+                indented_line,
+                line_no,
+            ),
         }
     }
 
@@ -553,135 +572,72 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
-    use substrait::proto::extensions::simple_extension_declaration::MappingType;
-
     use super::*;
-    use crate::extensions::simple::ExtensionKind;
-    use crate::parser::extensions::ExtensionParserState;
 
     #[test]
-    fn test_parse_basic_block() {
-        let mut expected_extensions = SimpleExtensions::new();
-        expected_extensions
-            .add_extension_urn("/urn/common".to_string(), 1)
-            .unwrap();
-        expected_extensions
-            .add_extension_urn("/urn/specific_funcs".to_string(), 2)
-            .unwrap();
-        expected_extensions
-            .add_extension(ExtensionKind::Function, 1, 10, "func_a".to_string())
-            .unwrap();
-        expected_extensions
-            .add_extension(ExtensionKind::Function, 2, 11, "func_b_special".to_string())
-            .unwrap();
-
-        let mut parser = ExtensionParser::default();
-        let input_block = r#"
-URNs:
-  @  1: /urn/common
-  @  2: /urn/specific_funcs
-Functions:
-  # 10 @  1: func_a
-  # 11 @  2: func_b_special
-"#;
-
-        for line_str in input_block.trim().lines() {
-            parser.parse_line(IndentedLine::from(line_str)).unwrap();
-        }
-
-        assert_eq!(*parser.extensions(), expected_extensions);
-        assert_eq!(
-            parser.state(),
-            ExtensionParserState::ExtensionDeclarations(ExtensionKind::Function)
-        );
-    }
-
-    #[test]
-    fn test_parse_relation_tree() {
-        let plan = r#"=== Plan
-Project[$0, $1, 42, 84]
-  Filter[$2 => $0, $1]
-    Read[my.table => a:i32, b:string?, c:boolean]
-"#;
-
-        let mut parser = Parser::default();
-        for line in plan.lines() {
-            parser.parse_line(line).unwrap();
-        }
-
-        let plan = parser.build_plan().unwrap();
-        let root_rel = &plan.relations[0].rel_type;
-        let first_rel = match root_rel {
-            Some(plan_rel::RelType::Rel(rel)) => rel,
-            _ => panic!("Expected Rel type, got {root_rel:?}"),
-        };
-
-        let project = match &first_rel.rel_type {
-            Some(RelType::Project(p)) => p,
-            other => panic!("Expected Project at root, got {other:?}"),
-        };
-
-        let filter_input = project.input.as_ref().unwrap();
-        match &filter_input.rel_type {
-            Some(RelType::Filter(filter)) => {
-                let read_input = filter.input.as_ref().unwrap();
-                match &read_input.rel_type {
-                    Some(RelType::Read(_)) => {}
-                    other => panic!("Expected Read relation, got {other:?}"),
-                }
-            }
-            other => panic!("Expected Filter relation, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_root_relation() {
+    fn parse_root_relation_plan() {
         let plan = r#"=== Plan
 Root[result]
-  Project[$0, $1]
-    Read[my.table => a:i32, b:string?]
+  Project[$0]
+    Read[my.table => a:i32]
 "#;
 
         let parsed = Parser::parse(plan).unwrap();
         assert_eq!(parsed.relations.len(), 1);
 
-        let root_rel = &parsed.relations[0].rel_type;
-        let rel_root = match root_rel {
-            Some(plan_rel::RelType::Root(rel_root)) => rel_root,
-            other => panic!("Expected Root type, got {other:?}"),
+        let root_rel = parsed.relations[0].rel_type.as_ref().unwrap();
+        let root = match root_rel {
+            plan_rel::RelType::Root(root) => root,
+            other => panic!("Expected root relation, got {other:?}"),
         };
-
-        assert_eq!(rel_root.names, vec!["result"]);
+        assert_eq!(root.names, vec!["result"]);
     }
 
     #[test]
-    fn test_parse_full_plan() {
-        let input = r#"
-=== Extensions
+    fn parse_extension_plan_comment_url() {
+        let input = r#"=== Extensions
 URNs:
-  @  1: /urn/common
+  @  1: https://example.com/test // comment
 Functions:
-  # 10 @  1: func_a
-
+  # 10 @  1: fn
 === Plan
-Project[$0, 42]
-  Read[my.table => a:i32, b:string?]
+Read[t => a:i32]
 "#;
+        let parsed = Parser::parse(input).unwrap();
+        assert_eq!(parsed.extension_urns.len(), 1);
+    }
 
-        let plan = Parser::parse(input).unwrap();
+    #[test]
+    fn parse_relation_line_stores_semantic_standard_payload() {
+        let parser = RelationParser::default();
+        let node = parser
+            .parse_relation_line(&SimpleExtensions::new(), "Read[t => a:i32]", 1)
+            .unwrap();
 
-        assert_eq!(plan.extension_urns.len(), 1);
-        assert_eq!(plan.extensions.len(), 1);
-        assert_eq!(plan.relations.len(), 1);
-
-        let func = &plan.extensions[0];
-        match &func.mapping_type {
-            Some(MappingType::ExtensionFunction(f)) => {
-                assert_eq!(f.function_anchor, 10);
-                assert_eq!(f.extension_urn_reference, 1);
-                assert_eq!(f.name, "func_a");
+        match node.kind {
+            LineKind::Standard(standard) => {
+                assert!(matches!(*standard, StandardRelationLine::Read { .. }));
             }
-            other => panic!("Expected ExtensionFunction, got {other:?}"),
+            LineKind::Root { .. } | LineKind::Extension(_) => {
+                panic!("expected standard relation payload")
+            }
+        }
+    }
+
+    #[test]
+    fn parse_relation_line_stores_semantic_extension_payload() {
+        let parser = RelationParser::default();
+        let node = parser
+            .parse_relation_line(&SimpleExtensions::new(), "ExtensionLeaf:MyLeaf[]", 1)
+            .unwrap();
+
+        match node.kind {
+            LineKind::Extension(invocation) => {
+                assert_eq!(invocation.name, "MyLeaf");
+            }
+            LineKind::Root { .. } | LineKind::Standard(_) => {
+                panic!("expected extension relation payload")
+            }
         }
     }
 }

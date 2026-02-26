@@ -2,9 +2,8 @@ use pest_typed::Spanned;
 use substrait::proto::r#type::{Kind, Nullability, Parameter};
 use substrait::proto::{self, Type};
 
-use super::common::{
-    ErrorKind, MessageParseError, parse_typed, rules, typed_to_pest_span, unescape_string,
-};
+use super::common::{ErrorKind, MessageParseError, parse_typed, rules, typed_to_pest_span};
+use super::convert::{Lower, Name, ParseCtx, TypeAnchor, UrnAnchor};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 
@@ -52,13 +51,7 @@ pub(crate) fn get_and_validate_anchor(
 }
 
 fn parse_name_text(node: &rules::name<'_>) -> String {
-    if let Some(identifier) = node.identifier() {
-        return identifier.span.as_str().to_string();
-    }
-    let quoted = node
-        .quoted_name()
-        .expect("name must be identifier or quoted_name");
-    unescape_string(quoted.span.as_str(), '"')
+    Name::from(node).0
 }
 
 fn parse_nullability(node: &rules::nullability<'_>) -> Nullability {
@@ -66,16 +59,8 @@ fn parse_nullability(node: &rules::nullability<'_>) -> Nullability {
         "?" => Nullability::Nullable,
         "" => Nullability::Required,
         "⁉" => Nullability::Unspecified,
-        other => panic!("Invalid nullability: {other}"),
+        other => unreachable!("grammar guarantees nullability token, got: {other}"),
     }
-}
-
-fn parse_anchor_value(anchor: &rules::anchor<'_>) -> u32 {
-    anchor.integer().span.as_str().parse::<u32>().unwrap()
-}
-
-fn parse_urn_anchor_value(anchor: &rules::urn_anchor<'_>) -> u32 {
-    anchor.integer().span.as_str().parse::<u32>().unwrap()
 }
 
 fn parse_parameter_node(
@@ -91,20 +76,32 @@ fn parse_parameter_node(
     }
 
     if let Some(integer) = node.integer() {
-        unimplemented!(
-            "integer parameter not implemented: {}",
-            integer.span.as_str()
-        );
+        return Err(MessageParseError::invalid(
+            "parameter",
+            typed_to_pest_span(integer.span()),
+            format!(
+                "Integer parameters are not currently supported: {}",
+                integer.span.as_str()
+            ),
+        ));
     }
 
     if let Some(name) = node.name() {
-        unimplemented!("name parameter not implemented: {}", name.span.as_str());
+        return Err(MessageParseError::invalid(
+            "parameter",
+            typed_to_pest_span(name.span()),
+            format!(
+                "Named parameters are not currently supported: {}",
+                name.span.as_str()
+            ),
+        ));
     }
 
+    // Grammar guarantees parameter is one of: type, integer, or name.
     unreachable!("parameter must be type, integer, or name");
 }
 
-fn parse_simple_type_node(node: &rules::simple_type<'_>) -> Type {
+fn parse_simple_type_node(node: &rules::simple_type<'_>) -> Result<Type, MessageParseError> {
     let name = node.simple_type_name().span.as_str();
     let nullability = parse_nullability(node.nullability());
 
@@ -171,10 +168,16 @@ fn parse_simple_type_node(node: &rules::simple_type<'_>) -> Type {
             nullability: nullability as i32,
             type_variation_reference: 0,
         }),
-        _ => unreachable!("Type {name} exists in parser but not implemented in code"),
+        _ => {
+            return Err(MessageParseError::invalid(
+                "Type",
+                typed_to_pest_span(node.simple_type_name().span()),
+                format!("Type '{name}' is not currently supported"),
+            ));
+        }
     };
 
-    Type { kind: Some(kind) }
+    Ok(Type { kind: Some(kind) })
 }
 
 fn parse_compound_type_node(
@@ -185,11 +188,20 @@ fn parse_compound_type_node(
         return parse_list_type_node(extensions, list_type);
     }
     if node.map_type().is_some() {
-        unimplemented!("map types are not implemented");
+        return Err(MessageParseError::invalid(
+            "Type",
+            typed_to_pest_span(node.span()),
+            "Map types are not currently supported",
+        ));
     }
     if node.struct_type().is_some() {
-        unimplemented!("struct types are not implemented");
+        return Err(MessageParseError::invalid(
+            "Type",
+            typed_to_pest_span(node.span()),
+            "Struct types are not currently supported",
+        ));
     }
+    // Grammar guarantees compound_type is one of: list_type, map_type, struct_type.
     unreachable!("compound_type must be list_type, map_type, or struct_type")
 }
 
@@ -229,10 +241,10 @@ fn parse_user_defined_type_node(
 ) -> Result<Type, MessageParseError> {
     let span = typed_to_pest_span(node.span());
     let name = parse_name_text(node.name());
-    let anchor = node.anchor().map(parse_anchor_value);
+    let anchor = node.anchor().map(TypeAnchor::try_from).transpose()?;
 
     // TODO: Handle urn_anchor; validate that it matches the anchor
-    let _urn_anchor = node.urn_anchor().map(parse_urn_anchor_value);
+    let _urn_anchor = node.urn_anchor().map(UrnAnchor::try_from).transpose()?;
 
     let nullability = parse_nullability(node.nullability());
     let parameters = match node.parameters() {
@@ -240,7 +252,13 @@ fn parse_user_defined_type_node(
         None => Vec::new(),
     };
 
-    let anchor = get_and_validate_anchor(extensions, ExtensionKind::Type, anchor, &name, span)?;
+    let anchor = get_and_validate_anchor(
+        extensions,
+        ExtensionKind::Type,
+        anchor.map(u32::from),
+        &name,
+        span,
+    )?;
 
     Ok(Type {
         kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
@@ -257,7 +275,7 @@ pub(crate) fn parse_type_node(
     node: &rules::r#type<'_>,
 ) -> Result<Type, MessageParseError> {
     if let Some(simple_type) = node.simple_type() {
-        return Ok(parse_simple_type_node(simple_type));
+        return parse_simple_type_node(simple_type);
     }
     if let Some(compound_type) = node.compound_type() {
         return parse_compound_type_node(extensions, compound_type);
@@ -266,15 +284,25 @@ pub(crate) fn parse_type_node(
         return parse_user_defined_type_node(extensions, user_defined);
     }
 
+    // Grammar guarantees type is one of: simple_type, compound_type, user_defined_type.
     unreachable!("type must be simple_type, compound_type, or user_defined_type")
+}
+
+impl Lower for rules::r#type<'_> {
+    type Output = Type;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        parse_type_node(cx.extensions, self)
+    }
 }
 
 pub(crate) fn parse_type(
     extensions: &SimpleExtensions,
     input: &str,
 ) -> Result<Type, MessageParseError> {
+    let cx = ParseCtx { extensions };
     let typed = parse_typed::<rules::r#type<'_>>(input, "Type")?;
-    parse_type_node(extensions, &typed)
+    typed.lower(&cx)
 }
 
 #[cfg(test)]
@@ -286,7 +314,7 @@ mod tests {
     #[test]
     fn test_parse_simple_type() {
         let typed = parse_typed::<rules::simple_type<'_>>("i64", "simple_type").unwrap();
-        let t = parse_simple_type_node(&typed);
+        let t = parse_simple_type_node(&typed).unwrap();
         assert_eq!(
             t,
             Type {
@@ -298,7 +326,7 @@ mod tests {
         );
 
         let typed = parse_typed::<rules::simple_type<'_>>("string?", "simple_type").unwrap();
-        let t = parse_simple_type_node(&typed);
+        let t = parse_simple_type_node(&typed).unwrap();
         assert_eq!(
             t,
             Type {
