@@ -5,6 +5,38 @@
 
 use std::fmt;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionUrnDeclaration {
+    pub anchor: u32,
+    pub urn: String,
+}
+
+impl ExtensionUrnDeclaration {
+    pub fn new(anchor: u32, urn: impl Into<String>) -> Self {
+        Self {
+            anchor,
+            urn: urn.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionDeclaration {
+    pub anchor: u32,
+    pub urn_anchor: u32,
+    pub name: String,
+}
+
+impl ExtensionDeclaration {
+    pub fn new(anchor: u32, urn_anchor: u32, name: impl Into<String>) -> Self {
+        Self {
+            anchor,
+            urn_anchor,
+            name: name.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relation {
     pub name: RelationName,

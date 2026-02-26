@@ -28,6 +28,22 @@ pub fn parse_root_names(input: &str) -> Result<Vec<String>, SyntaxErrorDetail> {
         .map_err(|e| map_syntax_error(input, e))
 }
 
+pub fn parse_extension_urn_declaration(
+    input: &str,
+) -> Result<ast::ExtensionUrnDeclaration, SyntaxErrorDetail> {
+    line_grammar::ExtensionUrnDeclParser::new()
+        .parse(input)
+        .map_err(|e| map_syntax_error(input, e))
+}
+
+pub fn parse_extension_declaration(
+    input: &str,
+) -> Result<ast::ExtensionDeclaration, SyntaxErrorDetail> {
+    line_grammar::ExtensionDeclParser::new()
+        .parse(input)
+        .map_err(|e| map_syntax_error(input, e))
+}
+
 fn map_syntax_error(
     input: &str,
     error: LalrpopError<usize, Token<'_>, &'static str>,
@@ -134,5 +150,21 @@ mod tests {
                 }
             )
         ));
+    }
+
+    #[test]
+    fn parses_extension_urn_declaration() {
+        let decl = parse_extension_urn_declaration("@ 1: https://example.com/functions.yaml")
+            .expect("parse urn declaration");
+        assert_eq!(decl.anchor, 1);
+        assert_eq!(decl.urn, "https://example.com/functions.yaml");
+    }
+
+    #[test]
+    fn parses_extension_declaration() {
+        let decl = parse_extension_declaration("# 10 @ 1: my_function").expect("parse declaration");
+        assert_eq!(decl.anchor, 10);
+        assert_eq!(decl.urn_anchor, 1);
+        assert_eq!(decl.name, "my_function");
     }
 }
