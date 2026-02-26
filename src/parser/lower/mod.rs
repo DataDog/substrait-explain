@@ -4,8 +4,8 @@
 //! that is assembled during the `parse` stage.
 //!
 //! Relation lowering is explicit (per relation type), while leaf AST nodes
-//! ([`ast::Expr`], [`ast::Literal`], [`ast::TypeExpr`]) use the [`Lower`] trait
-//! for uniform conversion.
+//! ([`ast::Expr`], [`ast::Literal`], [`ast::TypeExpr`]) use the internal
+//! `Lower` trait for uniform conversion.
 
 mod expr;
 mod extensions;
@@ -20,9 +20,11 @@ use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::parser::ast;
 use crate::parser::errors::{MessageParseError, ParseContext, ParseError};
 
-pub(crate) trait Lower {
+trait Lower {
+    /// Protobuf type that this trait converts into
     type Output;
 
+    /// Convert Self into that protobuf type
     fn lower(&self, ctx: &LowerCtx<'_>, message: &'static str) -> Result<Self::Output, ParseError>;
 }
 

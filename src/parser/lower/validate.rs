@@ -7,12 +7,13 @@ use substrait::proto::{Rel, join_rel};
 
 use super::LowerCtx;
 use crate::parser::ast;
+use crate::parser::errors::ParseError;
 
 pub(crate) fn ensure_no_named_args(
     ctx: &LowerCtx<'_>,
     relation: &ast::Relation,
     message: &'static str,
-) -> Result<(), crate::parser::errors::ParseError> {
+) -> Result<(), ParseError> {
     if relation.args.named.is_empty() {
         return Ok(());
     }
@@ -23,7 +24,7 @@ pub(crate) fn ensure_no_children(
     ctx: &LowerCtx<'_>,
     child_count: usize,
     message: &'static str,
-) -> Result<(), crate::parser::errors::ParseError> {
+) -> Result<(), ParseError> {
     if child_count == 0 {
         return Ok(());
     }
@@ -38,7 +39,7 @@ pub(crate) fn ensure_exact_child_count(
     child_count: usize,
     expected: usize,
     message: &'static str,
-) -> Result<(), crate::parser::errors::ParseError> {
+) -> Result<(), ParseError> {
     if child_count == expected {
         return Ok(());
     }
@@ -57,7 +58,7 @@ pub(crate) fn expect_one_child(
     ctx: &LowerCtx<'_>,
     child_relations: &mut Vec<Box<Rel>>,
     message: &'static str,
-) -> Result<Box<Rel>, crate::parser::errors::ParseError> {
+) -> Result<Box<Rel>, ParseError> {
     match child_relations.len() {
         1 => Ok(child_relations.remove(0)),
         n => ctx.invalid(
@@ -73,7 +74,7 @@ pub(crate) fn ensure_exact_positional_count(
     expected: usize,
     message: &'static str,
     detail: &'static str,
-) -> Result<(), crate::parser::errors::ParseError> {
+) -> Result<(), ParseError> {
     if positional_count == expected {
         return Ok(());
     }
@@ -85,7 +86,7 @@ pub(crate) fn ensure_unique_named_arg(
     seen: &mut HashSet<String>,
     name: &str,
     message: &'static str,
-) -> Result<(), crate::parser::errors::ParseError> {
+) -> Result<(), ParseError> {
     if seen.insert(name.to_string()) {
         return Ok(());
     }
@@ -97,7 +98,7 @@ pub(crate) fn output_mapping_from_args(
     ctx: &LowerCtx<'_>,
     args: &[ast::Arg],
     message: &'static str,
-) -> Result<Vec<i32>, crate::parser::errors::ParseError> {
+) -> Result<Vec<i32>, ParseError> {
     // Output mappings are index-only in the text format and refer to field
     // positions after relation-specific projection/aggregation semantics.
     let mut mapping = Vec::with_capacity(args.len());
@@ -118,7 +119,7 @@ pub(crate) fn output_mapping_from_args(
 pub(crate) fn parse_sort_direction(
     ctx: &LowerCtx<'_>,
     value: &str,
-) -> Result<SortDirection, crate::parser::errors::ParseError> {
+) -> Result<SortDirection, ParseError> {
     let direction = match value {
         "AscNullsFirst" => SortDirection::AscNullsFirst,
         "AscNullsLast" => SortDirection::AscNullsLast,
@@ -134,7 +135,7 @@ pub(crate) fn parse_sort_direction(
 pub(crate) fn parse_join_type(
     ctx: &LowerCtx<'_>,
     value: &str,
-) -> Result<join_rel::JoinType, crate::parser::errors::ParseError> {
+) -> Result<join_rel::JoinType, ParseError> {
     let join_type = match value {
         "Inner" => join_rel::JoinType::Inner,
         "Left" => join_rel::JoinType::Left,
