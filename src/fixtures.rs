@@ -3,7 +3,7 @@
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;
-use crate::parser::{MessageParseError, Parser, ScopedParse};
+use crate::parser::Parser;
 use crate::textify::foundation::{ErrorAccumulator, ErrorList};
 use crate::textify::plan::PlanWriter;
 use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
@@ -89,10 +89,6 @@ impl TestContext {
         let (s, errs) = self.textify(t);
         assert!(errs.is_empty(), "{} Errors: {}", errs.0.len(), errs.0[0]);
         s
-    }
-
-    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<T, MessageParseError> {
-        T::parse(&self.extensions, input)
     }
 }
 
