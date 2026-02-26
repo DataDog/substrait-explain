@@ -15,6 +15,16 @@ use crate::parser::ast;
 use crate::parser::errors::{MessageParseError, ParseError};
 use crate::parser::extensions::resolve_extension_detail;
 
+impl From<ast::ExtensionType> for ExtensionRelationType {
+    fn from(value: ast::ExtensionType) -> Self {
+        match value {
+            ast::ExtensionType::Leaf => ExtensionRelationType::Leaf,
+            ast::ExtensionType::Single => ExtensionRelationType::Single,
+            ast::ExtensionType::Multi => ExtensionRelationType::Multi,
+        }
+    }
+}
+
 #[allow(clippy::vec_box)]
 pub(crate) fn lower_extension(
     ctx: &LowerCtx<'_>,
@@ -23,37 +33,21 @@ pub(crate) fn lower_extension(
     extension_name: &str,
     child_relations: Vec<Box<Rel>>,
 ) -> Result<Rel, ParseError> {
-    let relation_type = relation_type_from_extension_kind(extension_type);
+    let relation_type: ExtensionRelationType = extension_type.into();
     let args = build_extension_args_from_relation(ctx, relation, relation_type)?;
 
     relation_type
         .validate_child_count(child_relations.len())
-        .map_err(|e| {
-            ParseError::Plan(
-                ctx.parse_context(),
-                MessageParseError::invalid("extension_relation", e),
-            )
-        })?;
+        .map_err(|e| plan_error(ctx, MessageParseError::invalid("extension_relation", e)))?;
 
     let detail =
         resolve_extension_detail(ctx.registry, ctx.line_no, ctx.line, extension_name, &args)?;
 
-    build_extension_relation(relation_type, detail, child_relations).map_err(|e| {
-        ParseError::Plan(
-            ctx.parse_context(),
-            MessageParseError::invalid("extension_relation", e),
-        )
-    })
-}
-
-pub(crate) fn relation_type_from_extension_kind(
-    extension_type: ast::ExtensionType,
-) -> ExtensionRelationType {
-    match extension_type {
-        ast::ExtensionType::Leaf => ExtensionRelationType::Leaf,
-        ast::ExtensionType::Single => ExtensionRelationType::Single,
-        ast::ExtensionType::Multi => ExtensionRelationType::Multi,
-    }
+    Ok(build_extension_relation(
+        relation_type,
+        detail,
+        child_relations,
+    ))
 }
 
 pub(crate) fn build_extension_args_from_relation(
@@ -65,24 +59,19 @@ pub(crate) fn build_extension_args_from_relation(
     let mut seen_named = HashSet::new();
 
     for arg in &relation.args.positional {
-        args.add_positional_arg(
-            extension_value_from_arg(arg).map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
-        );
+        args.add_positional_arg(extension_value_from_arg(arg).map_err(|e| plan_error(ctx, e))?);
     }
 
     for named in &relation.args.named {
         ensure_unique_named_arg(ctx, &mut seen_named, &named.name, "extension_relation")?;
         args.add_named_arg(
             named.name.clone(),
-            extension_value_from_arg(&named.value)
-                .map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
+            extension_value_from_arg(&named.value).map_err(|e| plan_error(ctx, e))?,
         );
     }
 
     for arg in &relation.outputs {
-        args.add_output_column(
-            extension_column_from_arg(arg).map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
-        );
+        args.add_output_column(extension_column_from_arg(arg).map_err(|e| plan_error(ctx, e))?);
     }
 
     Ok(args)
@@ -137,7 +126,12 @@ fn build_extension_relation(
     relation_type: ExtensionRelationType,
     detail: Option<Any>,
     children: Vec<Box<Rel>>,
-) -> Result<Rel, String> {
+) -> Rel {
+    debug_assert!(
+        relation_type.validate_child_count(children.len()).is_ok(),
+        "child count should be validated before relation construction"
+    );
+
     let rel_type = match relation_type {
         ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
             common: None,
@@ -161,7 +155,11 @@ fn build_extension_relation(
         }
     };
 
-    Ok(Rel {
+    Rel {
         rel_type: Some(rel_type),
-    })
+    }
+}
+
+fn plan_error(ctx: &LowerCtx<'_>, error: MessageParseError) -> ParseError {
+    ParseError::Plan(ctx.parse_context(), error)
 }
