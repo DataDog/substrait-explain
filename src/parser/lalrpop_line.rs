@@ -1,5 +1,7 @@
 //! Thin wrappers around LALRPOP entry points for single-line parsing.
 
+use std::str::FromStr;
+
 use lalrpop_util::ParseError as LalrpopError;
 use lalrpop_util::lexer::Token;
 
@@ -42,6 +44,22 @@ pub fn parse_extension_declaration(
     line_grammar::ExtensionDeclParser::new()
         .parse(input)
         .map_err(|e| map_syntax_error(input, e))
+}
+
+impl FromStr for ast::ExtensionUrnDeclaration {
+    type Err = SyntaxErrorDetail;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_extension_urn_declaration(s)
+    }
+}
+
+impl FromStr for ast::ExtensionDeclaration {
+    type Err = SyntaxErrorDetail;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_extension_declaration(s)
+    }
 }
 
 fn map_syntax_error(
@@ -166,5 +184,32 @@ mod tests {
         assert_eq!(decl.anchor, 10);
         assert_eq!(decl.urn_anchor, 1);
         assert_eq!(decl.name, "my_function");
+    }
+
+    #[test]
+    fn from_str_parses_extension_urn_declaration() {
+        let decl: ast::ExtensionUrnDeclaration = "@ 1: https://example.com/functions.yaml"
+            .parse()
+            .expect("parse urn declaration");
+        assert_eq!(decl.anchor, 1);
+        assert_eq!(decl.urn, "https://example.com/functions.yaml");
+    }
+
+    #[test]
+    fn from_str_parses_extension_declaration() {
+        let decl: ast::ExtensionDeclaration =
+            "# 10 @ 1: my_function".parse().expect("parse declaration");
+        assert_eq!(decl.anchor, 10);
+        assert_eq!(decl.urn_anchor, 1);
+        assert_eq!(decl.name, "my_function");
+    }
+
+    #[test]
+    fn from_str_reports_syntax_details() {
+        let err = "@ nope: urn"
+            .parse::<ast::ExtensionUrnDeclaration>()
+            .expect_err("should fail");
+        assert!(matches!(err.kind, SyntaxErrorKind::UnexpectedToken { .. }));
+        assert!(!err.expected.is_empty());
     }
 }
