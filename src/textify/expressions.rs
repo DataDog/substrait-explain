@@ -1,3 +1,18 @@
+//! Expression and literal formatting — everything that appears inside the
+//! `[...]` brackets of a relation line.
+//!
+//! Syntax conventions used in the text format:
+//!
+//! - `(…)` function call, e.g. `add($0, $1)`
+//! - `[…]` relation brackets
+//! - `<…>` type parameters, e.g. `list<i64>`
+//! - `!{…}` missing/error placeholder
+//! - `$…` field reference, e.g. `$0`
+//! - `#…` extension anchor, e.g. `#10`
+//! - `@…` URN anchor, e.g. `@1`
+//! - `…:…` type annotation, e.g. `42:i64`
+//! - `&…` enum value, e.g. `&AscNullsFirst`
+
 use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate};
@@ -17,18 +32,6 @@ use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
-
-// …(…) for function call
-// […] for variant
-// <…> for parameters
-// !{…} for missing value
-
-// $… for field reference
-// #… for anchor
-// @… for URN anchor
-// …::… for cast
-// …:… for specifying type
-// &… for enum
 
 pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W) -> fmt::Result {
     if ctx.options().show_literal_binaries {

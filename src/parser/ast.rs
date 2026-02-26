@@ -1,4 +1,13 @@
-//! AST used by the parser pipeline (`line_grammar.lalrpop` -> lowering).
+//! AST for the text representation of `substrait-explain`, used by the
+//! [`crate::parser`] module.
+//!
+//! Parsing happens in two steps:
+//!
+//! 1. Conversion from text to the AST in the [`crate::parser`] module via
+//!    LALRPOP, with syntactical validation.
+//! 2. Conversion from the AST to a Protobuf [`substrait::proto::Plan`], via the
+//!    [`crate::parser::lower`] module, with semantic validation, e.g. function
+//!    references, anchors, column references, argument types/shapes match.
 //!
 //! This AST is intentionally close to the text syntax and does not encode all
 //! semantic constraints; semantic validation happens in lowering.

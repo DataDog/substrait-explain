@@ -1,3 +1,10 @@
+//! Unified wrapper for the protobuf `Any` type.
+//!
+//! Substrait extension relations carry opaque payloads as protobuf `Any`
+//! messages. The Rust ecosystem has two incompatible `Any` types
+//! (`prost_types::Any` and `pbjson_types::Any`); this module provides [`Any`]
+//! and [`AnyRef`] to convert between them transparently.
+
 use prost::{Message, Name};
 
 use crate::extensions::registry::ExtensionError;
@@ -11,8 +18,8 @@ pub struct Any {
 }
 
 /// A reference to a protobuf `Any` type. Can be created from references to
-/// [`prost_types::Any`](prost_types::Any),
-/// [`pbjson_types::Any`](pbjson_types::Any), or our own [`Any`](Any) type.
+/// [`prost_types::Any`],
+/// [`pbjson_types::Any`], or our own [`Any`] type.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct AnyRef<'a> {
     pub type_url: &'a str,

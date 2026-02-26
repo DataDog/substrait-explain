@@ -1,3 +1,10 @@
+//! Incremental parser for the `=== Extensions` section.
+//!
+//! The structural parser feeds lines one at a time to [`ExtensionParser`],
+//! which uses a state machine ([`ExtensionParserState`]) to track which
+//! subsection it's in (URNs, Functions, Types, or Type Variations) and
+//! dispatches each line to the appropriate LALRPOP entry point.
+
 use std::fmt;
 
 use thiserror::Error;
