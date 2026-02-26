@@ -13,16 +13,13 @@ use substrait::proto::{
 
 use super::expr::{fetch_value_expression, field_ref_expression, lower_arg_as_expression};
 use super::validate::{
-    ensure_no_children, ensure_no_named_args, expect_one_child, output_mapping_from_args,
-    parse_join_type, parse_sort_direction,
+    ensure_exact_child_count, ensure_exact_positional_count, ensure_no_children,
+    ensure_no_named_args, expect_one_child, output_mapping_from_args, parse_join_type,
+    parse_sort_direction,
 };
 use super::{Lower, LowerCtx};
-use crate::extensions::{ExtensionArgs, ExtensionRelationType};
 use crate::parser::ast;
-use crate::parser::errors::{MessageParseError, ParseError};
-use crate::parser::extensions::{
-    extension_column_from_arg, extension_value_from_arg, resolve_extension_detail,
-};
+use crate::parser::errors::ParseError;
 
 #[allow(clippy::vec_box)]
 pub(crate) fn lower_standard(
@@ -56,12 +53,13 @@ fn lower_read(
     ensure_no_named_args(ctx, relation, "Read")?;
     ensure_no_children(ctx, child_relations.len(), "Read")?;
 
-    if relation.args.positional.len() != 1 {
-        return ctx.invalid(
-            "Read",
-            "Read expects exactly one positional argument (table name)",
-        );
-    }
+    ensure_exact_positional_count(
+        ctx,
+        relation.args.positional.len(),
+        1,
+        "Read",
+        "Read expects exactly one positional argument (table name)",
+    )?;
 
     let table_name = match &relation.args.positional[0] {
         ast::Arg::Expr(ast::Expr::Identifier(name)) => name,
@@ -124,9 +122,13 @@ fn lower_filter(
     ensure_no_named_args(ctx, relation, "Filter")?;
     let input = expect_one_child(ctx, &mut child_relations, "Filter")?;
 
-    if relation.args.positional.len() != 1 {
-        return ctx.invalid("Filter", "Filter expects one positional condition argument");
-    }
+    ensure_exact_positional_count(
+        ctx,
+        relation.args.positional.len(),
+        1,
+        "Filter",
+        "Filter expects one positional condition argument",
+    )?;
 
     let condition = lower_arg_as_expression(ctx, &relation.args.positional[0], "Filter")?;
 
@@ -409,22 +411,15 @@ fn lower_join(
 ) -> Result<Rel, ParseError> {
     ensure_no_named_args(ctx, relation, "Join")?;
 
-    if child_relations.len() != 2 {
-        return ctx.invalid(
-            "Join",
-            format!(
-                "Join expects exactly 2 input children, found {}",
-                child_relations.len()
-            ),
-        );
-    }
+    ensure_exact_child_count(ctx, child_relations.len(), 2, "Join")?;
 
-    if relation.args.positional.len() != 2 {
-        return ctx.invalid(
-            "Join",
-            "Join expects two positional args: join type and condition",
-        );
-    }
+    ensure_exact_positional_count(
+        ctx,
+        relation.args.positional.len(),
+        2,
+        "Join",
+        "Join expects two positional args: join type and condition",
+    )?;
 
     let join_type = match &relation.args.positional[0] {
         ast::Arg::Enum(value) => parse_join_type(ctx, value)?,
@@ -455,69 +450,4 @@ fn lower_join(
             advanced_extension: None,
         }))),
     })
-}
-
-#[allow(clippy::vec_box)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_extension(
-    ctx: &LowerCtx<'_>,
-    relation: &ast::Relation,
-    extension_type: ast::ExtensionType,
-    extension_name: &str,
-    child_relations: Vec<Box<Rel>>,
-) -> Result<Rel, ParseError> {
-    let relation_type = match extension_type {
-        ast::ExtensionType::Leaf => ExtensionRelationType::Leaf,
-        ast::ExtensionType::Single => ExtensionRelationType::Single,
-        ast::ExtensionType::Multi => ExtensionRelationType::Multi,
-    };
-
-    let mut args = ExtensionArgs::new(relation_type);
-
-    for arg in &relation.args.positional {
-        args.add_positional_arg(
-            extension_value_from_arg(arg).map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
-        );
-    }
-
-    for named in &relation.args.named {
-        if args.named.contains_key(&named.name) {
-            return ctx.invalid(
-                "extension_relation",
-                format!("duplicate named argument '{}'", named.name),
-            );
-        }
-        args.add_named_arg(
-            named.name.clone(),
-            extension_value_from_arg(&named.value)
-                .map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
-        );
-    }
-
-    for arg in &relation.outputs {
-        args.add_output_column(
-            extension_column_from_arg(arg).map_err(|e| ParseError::Plan(ctx.parse_context(), e))?,
-        );
-    }
-
-    relation_type
-        .validate_child_count(child_relations.len())
-        .map_err(|e| {
-            ParseError::Plan(
-                ctx.parse_context(),
-                MessageParseError::invalid("extension_relation", e),
-            )
-        })?;
-
-    let detail =
-        resolve_extension_detail(ctx.registry, ctx.line_no, ctx.line, extension_name, &args)?;
-
-    relation_type
-        .create_rel(detail, child_relations)
-        .map_err(|e| {
-            ParseError::Plan(
-                ctx.parse_context(),
-                MessageParseError::invalid("extension_relation", e),
-            )
-        })
 }

@@ -309,8 +309,8 @@ impl ExtensionRelationType {
     }
 }
 
-// Note: create_rel is implemented in parser/extensions.rs to avoid
-// pulling in protobuf dependencies in the core args module
+// Note: relation construction lives in parser/lower/extensions.rs so this
+// core args module stays parser- and protobuf-agnostic.
 
 impl ExtensionArgs {
     /// Create a new empty ExtensionArgs

@@ -4,10 +4,7 @@ use thiserror::Error;
 
 use crate::extensions::any::Any;
 use crate::extensions::simple::{self, ExtensionKind};
-use crate::extensions::{
-    ExtensionArgs, ExtensionColumn, ExtensionRegistry, ExtensionRelationType, ExtensionValue,
-    InsertError, RawExpression, SimpleExtensions,
-};
+use crate::extensions::{ExtensionArgs, ExtensionRegistry, InsertError, SimpleExtensions};
 use crate::parser::errors::{MessageParseError, ParseContext, ParseError};
 use crate::parser::structural::IndentedLine;
 use crate::parser::{ast, lalrpop_line};
@@ -184,86 +181,6 @@ pub fn resolve_extension_detail(
             ParseContext::new(line_no, line.to_string()),
             err,
         )),
-    }
-}
-
-pub fn extension_value_from_arg(arg: &ast::Arg) -> Result<ExtensionValue, MessageParseError> {
-    match arg {
-        ast::Arg::Expr(ast::Expr::FieldRef(idx)) => Ok(ExtensionValue::Reference(*idx)),
-        ast::Arg::Expr(ast::Expr::Literal(lit)) => match (&lit.value, &lit.typ) {
-            (ast::LiteralValue::String(value), None) => Ok(ExtensionValue::String(value.clone())),
-            (ast::LiteralValue::Integer(value), None) => Ok(ExtensionValue::Integer(*value)),
-            (ast::LiteralValue::Float(value), None) => Ok(ExtensionValue::Float(*value)),
-            (ast::LiteralValue::Boolean(value), None) => Ok(ExtensionValue::Boolean(*value)),
-            _ => Ok(ExtensionValue::Expression(RawExpression::new(
-                lit.to_string(),
-            ))),
-        },
-        ast::Arg::Expr(expr) => Ok(ExtensionValue::Expression(RawExpression::new(
-            expr.to_string(),
-        ))),
-        ast::Arg::NamedColumn(_, _)
-        | ast::Arg::Enum(_)
-        | ast::Arg::Tuple(_)
-        | ast::Arg::Wildcard => Ok(ExtensionValue::Expression(RawExpression::new(
-            arg.to_string(),
-        ))),
-    }
-}
-
-pub fn extension_column_from_arg(arg: &ast::Arg) -> Result<ExtensionColumn, MessageParseError> {
-    match arg {
-        ast::Arg::NamedColumn(name, typ) => Ok(ExtensionColumn::Named {
-            name: name.clone(),
-            type_spec: typ.to_string(),
-        }),
-        ast::Arg::Expr(ast::Expr::FieldRef(idx)) => Ok(ExtensionColumn::Reference(*idx)),
-        ast::Arg::Expr(expr) => Ok(ExtensionColumn::Expression(RawExpression::new(
-            expr.to_string(),
-        ))),
-        ast::Arg::Enum(_) | ast::Arg::Tuple(_) | ast::Arg::Wildcard => Ok(
-            ExtensionColumn::Expression(RawExpression::new(arg.to_string())),
-        ),
-    }
-}
-
-impl ExtensionRelationType {
-    pub fn create_rel(
-        self,
-        detail: Option<Any>,
-        children: Vec<Box<substrait::proto::Rel>>,
-    ) -> Result<substrait::proto::Rel, String> {
-        use substrait::proto::rel::RelType;
-        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
-
-        self.validate_child_count(children.len())?;
-
-        let rel_type = match self {
-            ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common: None,
-                detail: detail.map(Into::into),
-            }),
-            ExtensionRelationType::Single => {
-                let input = children.into_iter().next().map(|child| *child);
-                RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common: None,
-                    detail: detail.map(Into::into),
-                    input: input.map(Box::new),
-                }))
-            }
-            ExtensionRelationType::Multi => {
-                let inputs = children.into_iter().map(|child| *child).collect();
-                RelType::ExtensionMulti(ExtensionMultiRel {
-                    common: None,
-                    detail: detail.map(Into::into),
-                    inputs,
-                })
-            }
-        };
-
-        Ok(substrait::proto::Rel {
-            rel_type: Some(rel_type),
-        })
     }
 }
 

@@ -4,6 +4,7 @@
 //! (`Expr`, `Literal`, `TypeExpr`) use the `Lower` trait for uniform conversion.
 
 mod expr;
+mod extensions;
 mod literals;
 mod relations;
 mod types;
@@ -85,7 +86,7 @@ pub fn lower_relation(
             relations::lower_standard(&ctx, relation, name, child_relations, input_field_count)
         }
         ast::RelationName::Extension(kind, name) => {
-            relations::lower_extension(&ctx, relation, *kind, name, child_relations)
+            extensions::lower_extension(&ctx, relation, *kind, name, child_relations)
         }
     }
 }
