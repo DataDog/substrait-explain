@@ -6,15 +6,17 @@
 //! dispatches each line to the appropriate LALRPOP entry point.
 
 use std::fmt;
+use std::str::FromStr;
 
 use thiserror::Error;
 
 use crate::extensions::any::Any;
+use crate::extensions::registry::ExtensionError;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{ExtensionArgs, ExtensionRegistry, InsertError, SimpleExtensions};
-use crate::parser::errors::{MessageParseError, ParseContext, ParseError};
+use crate::parser::ast;
+use crate::parser::errors::{MessageParseError, ParseContext, ParseError, SyntaxErrorDetail};
 use crate::parser::structural::IndentedLine;
-use crate::parser::{ast, lalrpop_line};
 
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
@@ -142,9 +144,8 @@ impl ExtensionParser {
 }
 
 fn parse_urn_declaration(input: &str) -> Result<ast::ExtensionUrnDeclaration, MessageParseError> {
-    let parsed = lalrpop_line::parse_extension_urn_declaration(input).map_err(|e| {
-        MessageParseError::syntax("URNExtensionDeclaration", e.describe_with_line(input))
-    })?;
+    let parsed: ast::ExtensionUrnDeclaration =
+        parse_declaration_line(input, "URNExtensionDeclaration")?;
     if parsed.urn.trim().is_empty() {
         return Err(MessageParseError::invalid(
             "URNExtensionDeclaration",
@@ -155,9 +156,8 @@ fn parse_urn_declaration(input: &str) -> Result<ast::ExtensionUrnDeclaration, Me
 }
 
 fn parse_simple_declaration(input: &str) -> Result<ast::ExtensionDeclaration, MessageParseError> {
-    let parsed = lalrpop_line::parse_extension_declaration(input).map_err(|e| {
-        MessageParseError::syntax("SimpleExtensionDeclaration", e.describe_with_line(input))
-    })?;
+    let parsed: ast::ExtensionDeclaration =
+        parse_declaration_line(input, "SimpleExtensionDeclaration")?;
     if parsed.name.trim().is_empty() {
         return Err(MessageParseError::invalid(
             "SimpleExtensionDeclaration",
@@ -165,6 +165,15 @@ fn parse_simple_declaration(input: &str) -> Result<ast::ExtensionDeclaration, Me
         ));
     }
     Ok(parsed)
+}
+
+fn parse_declaration_line<T>(input: &str, target: &'static str) -> Result<T, MessageParseError>
+where
+    T: FromStr<Err = SyntaxErrorDetail>,
+{
+    input
+        .parse::<T>()
+        .map_err(|e| MessageParseError::syntax(target, e.describe_with_line(input)))
 }
 
 pub fn resolve_extension_detail(
@@ -178,12 +187,10 @@ pub fn resolve_extension_detail(
 
     match detail {
         Ok(any) => Ok(Some(any)),
-        Err(crate::extensions::registry::ExtensionError::ExtensionNotFound(_)) => {
-            Err(ParseError::UnregisteredExtension {
-                name: extension_name.to_string(),
-                context: ParseContext::new(line_no, line.to_string()),
-            })
-        }
+        Err(ExtensionError::ExtensionNotFound(_)) => Err(ParseError::UnregisteredExtension {
+            name: extension_name.to_string(),
+            context: ParseContext::new(line_no, line.to_string()),
+        }),
         Err(err) => Err(ParseError::ExtensionDetail(
             ParseContext::new(line_no, line.to_string()),
             err,
