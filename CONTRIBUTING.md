@@ -55,6 +55,7 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 - Run `cargo clippy` to catch common issues (enforced by pre-commit hooks)
 - Add documentation for public APIs, and review them with `cargo doc --open`
 - Include tests for new functionality
+- Prefer module-level `use` imports over repeated fully-qualified inline paths when practical
 
 ### Project-Specific Guidelines
 
@@ -70,6 +71,14 @@ This project implements Substrait protobuf plan parsing and formatting. See the 
 #### Error Handling Patterns
 
 This project uses different error handling patterns depending on the context:
+
+##### Repository-wide error expectation
+
+Error messages should include enough context to act on quickly:
+
+- Include location/context where relevant (for parser paths: line number and source line)
+- Include a clear category or target (what failed)
+- Keep syntax and semantic errors distinct when both layers exist
 
 ##### Parser Context
 
@@ -174,6 +183,12 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 - Keep grammar notation in `GRAMMAR.md` implementation-independent (PEG/EBNF style), while ensuring examples remain accepted by the implemented parser (`line_grammar.lalrpop`)
 - Run `cargo test --doc` to verify all code examples compile
 - Ensure all referenced identifiers are properly defined somewhere in the grammar
+- Keep implementation, grammar, and docs aligned: behavior changes that affect syntax/grammar must be an explicit goal of the change and must be documented in both grammar/docs and implementation notes
+
+#### Readability and Rustic Conventions
+
+- Prefer standard Rust conversion traits where appropriate (`From`, `TryFrom`, `FromStr`) instead of ad hoc converter functions
+- Extract helper functions when there are 2+ call sites and the extraction meaningfully reduces duplication or clarifies intent
 
 #### Testing Guidelines
 
