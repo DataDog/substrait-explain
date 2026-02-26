@@ -79,26 +79,15 @@ fn format_extension_column_to_text(column: &ExtensionColumn) -> String {
 
 #[cfg(test)]
 mod tests {
-    use pest::Parser as PestParser;
-
     use super::*;
     use crate::extensions::ExtensionRelationType;
-    use crate::parser::common::ParsePair;
-    use crate::parser::{ExpressionParser, ParseError, Parser, Rule};
+    use crate::parser::extensions::parse_extension_invocation;
+    use crate::parser::{ParseError, Parser};
 
     #[test]
     fn test_parse_extension_value_reference() {
-        let input = "$42";
-        let pairs = ExpressionParser::parse(Rule::reference, input).unwrap();
-        let _pair = pairs.into_iter().next().unwrap();
-
-        // Wrap in extension_argument rule for the parser
-        let extension_arg_input = "$42";
-        let extension_pairs =
-            ExpressionParser::parse(Rule::extension_argument, extension_arg_input).unwrap();
-        let extension_pair = extension_pairs.into_iter().next().unwrap();
-
-        let value = ExtensionValue::parse_pair(extension_pair);
+        let invocation = parse_extension_invocation("ExtensionLeaf:Demo[$42]").unwrap();
+        let value = invocation.args.positional.first().cloned().unwrap();
         match value {
             ExtensionValue::Reference(42) => {} // Expected
             other => panic!("Expected Reference(42), got {other:?}"),

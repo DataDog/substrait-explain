@@ -3,7 +3,7 @@ use substrait::proto::{Expression, Type};
 use substrait_explain::extensions::SimpleExtensions;
 use substrait_explain::extensions::simple::ExtensionKind;
 use substrait_explain::fixtures::TestContext;
-use substrait_explain::parser::{Parse, ScopedParse};
+use substrait_explain::parser::MessageParseError;
 use substrait_explain::textify::{ErrorQueue, OutputOptions, Textify};
 
 /// Helper function to parse and check for errors, panicking if either fails
@@ -20,32 +20,44 @@ fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {
     t
 }
 
-fn roundtrip_parse<T: Parse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
-    let t = must_parse(T::parse(input), input);
+fn roundtrip_parse<T, F>(ctx: &TestContext, input: &str, parse: F)
+where
+    T: Textify + std::fmt::Debug,
+    F: FnOnce(&TestContext, &str) -> Result<T, MessageParseError>,
+{
+    let t = must_parse(parse(ctx, input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
 }
 
-fn assert_roundtrip<T: ScopedParse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
-    let t = must_parse(T::parse(&ctx.extensions, input), input);
+fn assert_roundtrip<T, F>(ctx: &TestContext, input: &str, parse: F)
+where
+    T: Textify + std::fmt::Debug,
+    F: FnOnce(&TestContext, &str) -> Result<T, MessageParseError>,
+{
+    let t = must_parse(parse(ctx, input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
 }
 
-fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
+fn roundtrip_with_simple_output<T, F>(
     extensions: SimpleExtensions,
     verbose: &str,
     simple: &str,
-) {
+    parse: F,
+) where
+    T: Textify + std::fmt::Debug,
+    F: Fn(&TestContext, &str) -> Result<T, MessageParseError>,
+{
     let ctx1 = TestContext {
         options: OutputOptions::verbose(),
         extensions,
         extension_registry: Default::default(),
     };
 
-    let t = must_parse(T::parse(&ctx1.extensions, verbose), verbose);
+    let t = must_parse(parse(&ctx1, verbose), verbose);
 
     let actual = ctx1.textify_no_errors(&t);
     assert_eq!(
@@ -83,32 +95,32 @@ fn test_types() {
         extension_registry: Default::default(),
     };
 
-    assert_roundtrip::<Type>(&ctx, "i32");
-    assert_roundtrip::<Type>(&ctx, "i32?");
+    assert_roundtrip::<Type, _>(&ctx, "i32", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "i32?", TestContext::parse_type);
 
     // Test new simple types added in issue #20
-    assert_roundtrip::<Type>(&ctx, "binary");
-    assert_roundtrip::<Type>(&ctx, "binary?");
-    assert_roundtrip::<Type>(&ctx, "timestamp");
-    assert_roundtrip::<Type>(&ctx, "timestamp?");
-    assert_roundtrip::<Type>(&ctx, "timestamp_tz");
-    assert_roundtrip::<Type>(&ctx, "timestamp_tz?");
-    assert_roundtrip::<Type>(&ctx, "date");
-    assert_roundtrip::<Type>(&ctx, "date?");
-    assert_roundtrip::<Type>(&ctx, "time");
-    assert_roundtrip::<Type>(&ctx, "time?");
-    assert_roundtrip::<Type>(&ctx, "interval_year");
-    assert_roundtrip::<Type>(&ctx, "interval_year?");
-    assert_roundtrip::<Type>(&ctx, "uuid");
-    assert_roundtrip::<Type>(&ctx, "uuid?");
+    assert_roundtrip::<Type, _>(&ctx, "binary", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "binary?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "timestamp", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "timestamp?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "timestamp_tz", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "timestamp_tz?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "date", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "date?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "time", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "time?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "interval_year", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "interval_year?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "uuid", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "uuid?", TestContext::parse_type);
 
-    assert_roundtrip::<Type>(&ctx, "MyType#12");
-    assert_roundtrip::<Type>(&ctx, "MyType#12?");
-    assert_roundtrip::<Type>(&ctx, "MyType#12<i32>");
-    assert_roundtrip::<Type>(&ctx, "MyType#12<i32?>");
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12?", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12<i32>", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12<i32?>", TestContext::parse_type);
 
-    assert_roundtrip::<Type>(&ctx, "MyType#12<i32, string?>");
-    assert_roundtrip::<Type>(&ctx, "MyType#12?<i32, string?>");
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12<i32, string?>", TestContext::parse_type);
+    assert_roundtrip::<Type, _>(&ctx, "MyType#12?<i32, string?>", TestContext::parse_type);
 }
 
 #[test]
@@ -131,13 +143,21 @@ fn test_expression() {
         extension_registry: Default::default(),
     };
 
-    assert_roundtrip::<Literal>(&ctx, "12");
-    assert_roundtrip::<Literal>(&ctx, "12:i32");
-    roundtrip_parse::<FieldReference>(&ctx, "$1");
-    assert_roundtrip::<ScalarFunction>(&ctx, "foo()");
-    assert_roundtrip::<Expression>(&ctx, "bar(12)");
-    assert_roundtrip::<Expression>(&ctx, "foo(bar(12:i16, 18), -4:i16)");
-    assert_roundtrip::<Expression>(&ctx, "foo($2, bar($5, 18), -4:i16)");
+    assert_roundtrip::<Literal, _>(&ctx, "12", TestContext::parse_literal);
+    assert_roundtrip::<Literal, _>(&ctx, "12:i32", TestContext::parse_literal);
+    roundtrip_parse::<FieldReference, _>(&ctx, "$1", TestContext::parse_field_reference);
+    assert_roundtrip::<ScalarFunction, _>(&ctx, "foo()", TestContext::parse_scalar_function);
+    assert_roundtrip::<Expression, _>(&ctx, "bar(12)", TestContext::parse_expression);
+    assert_roundtrip::<Expression, _>(
+        &ctx,
+        "foo(bar(12:i16, 18), -4:i16)",
+        TestContext::parse_expression,
+    );
+    assert_roundtrip::<Expression, _>(
+        &ctx,
+        "foo($2, bar($5, 18), -4:i16)",
+        TestContext::parse_expression,
+    );
 }
 
 #[test]
@@ -153,16 +173,23 @@ fn test_verbose_and_simple_output() {
         .add_extension(ExtensionKind::Function, 4, 14, "bar".to_string())
         .unwrap();
 
-    roundtrip_with_simple_output::<ScalarFunction>(extensions.clone(), "foo#12():i64", "foo()");
+    roundtrip_with_simple_output::<ScalarFunction, _>(
+        extensions.clone(),
+        "foo#12():i64",
+        "foo()",
+        TestContext::parse_scalar_function,
+    );
     // Check type is included in verbose output
-    roundtrip_with_simple_output::<ScalarFunction>(
+    roundtrip_with_simple_output::<ScalarFunction, _>(
         extensions.clone(),
         "foo#12(3:i32, 5:i64):i64",
         "foo(3:i32, 5)",
+        TestContext::parse_scalar_function,
     );
-    roundtrip_with_simple_output::<ScalarFunction>(
+    roundtrip_with_simple_output::<ScalarFunction, _>(
         extensions.clone(),
         "foo#12(bar#14(5:i64, $2)):i64",
         "foo(bar(5, $2))",
+        TestContext::parse_scalar_function,
     );
 }

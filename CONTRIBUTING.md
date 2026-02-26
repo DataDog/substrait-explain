@@ -71,21 +71,23 @@ This project implements Substrait protobuf plan parsing and formatting. See the 
 
 This project uses different error handling patterns depending on the context:
 
-##### Pest Parser Context
+##### Parser Context
 
 Unwraps are safe where the grammar enforces the invariants. Always assert that the right rule was used to ensure the same invariants:
 
 ```rust
-// Pest parse functions should assert the rule matches
-fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-    assert_eq!(pair.as_rule(), Self::rule(), "Expected rule {:?}", Self::rule());
-    // Now safe to unwrap based on grammar guarantees
-    let inner = pair.into_inner().next().unwrap();
-    // ... rest of parsing logic
+// Parser helpers should consume generated typed nodes directly.
+fn parse_expression(node: &rules::expression<'_>) -> Result<Expression, MessageParseError> {
+    if let Some(literal) = node.literal() {
+        return Ok(Expression {
+            rex_type: Some(RexType::Literal(parse_literal(literal)?)),
+        });
+    }
+    unreachable!("grammar guarantees expression shape");
 }
 ```
 
-_Note: Ideally, `pest_derive` would remove the need for unwraps by providing structural types that encode the invariants, ensuring at compile-time the grammar and code remain in sync._
+_Note: parser internals use `pest_typed` and generated typed rules. Keep grammar and parser logic aligned so invariants remain compile-time checked wherever possible._
 
 ##### Other Parsing Context (e.g., lookups)
 
@@ -97,7 +99,7 @@ let value = input.parse::<i32>().map_err(|_| "Invalid integer")?;
 let first = chars.next().ok_or("Expected non-empty input")?;
 ```
 
-_Note: When parsing with pest, use `pest::Span` and `pest::Error` types to provide clearer error messages about where in the input parsing failed. This helps users understand exactly what went wrong and where._
+_Note: use `pest::Span` and `pest::Error` types to provide clearer error messages about where in the input parsing failed. This helps users understand exactly what went wrong and where._
 
 ##### Formatting Context
 
@@ -138,22 +140,9 @@ assert!(result.is_ok());
 - Return `Result` types for operations that can legitimately fail
 - Collect and continue for formatting errors, fail-fast for parsing errors
 
-#### RuleIter Consumption Patterns
+#### Parser Internals
 
-`RuleIter` enforces complete consumption via its `Drop` implementation. This can cause assertion failures if validation functions return early before calling `iter.done()`.
-
-**Current workaround:** Extract all data first, then validate:
-
-```rust
-// Extract data without validation
-let (limit_pair, offset_pair) = /* extract pairs */;
-iter.done(); // Call before any early returns
-
-// Then validate using functional patterns
-let count_mode = limit_pair.map(|pair| CountMode::parse_pair(extensions, pair)).transpose()?;
-```
-
-_Note: The RuleIter interface could be improved to handle this pattern more naturally._
+Parser internals are intentionally not part of the stable public API. Avoid introducing new public parser-internal surfaces (low-level rule enums, pair iterators, or parser glue types) unless there is a clear external use case.
 
 #### Documentation Formatting
 

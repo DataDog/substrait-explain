@@ -112,6 +112,28 @@ Because this project is alpha, we explicitly allow breaking internal structures 
 - Parser output remains byte-for-byte equivalent where existing tests assert canonical formatting.
 - CI build time impact is measured and accepted by maintainers.
 
+## Post-Implementation Compile-Time Comparison
+
+Date measured: 2026-02-26
+
+Method:
+
+- Compared baseline revision (`routksqw 040734a0`) vs migrated revision in current workspace.
+- Used identical command for timed trials: `/usr/bin/time -p cargo check --all-features`.
+- To avoid full dependency rebuild noise, prebuilt dependencies once per revision (`cargo check --all-features`), then for each trial ran `cargo clean -p substrait-explain` before timing.
+- Ran 3 trials per revision and compared medians of `real`.
+
+Results (`real`, seconds):
+
+- Baseline: `0.98`, `0.98`, `1.06` -> median `0.98s`
+- Migrated: `2.17`, `2.07`, `2.20` -> median `2.17s`
+- Delta: `+1.19s` (`+121.4%`)
+
+Interpretation:
+
+- The migration increased this crate's check-time under `--all-features` in this environment.
+- This result is informational (non-blocking), consistent with expected `pest_typed` compile-time tradeoff.
+
 ## References
 
 - Current parser grammar: `src/parser/expression_grammar.pest`

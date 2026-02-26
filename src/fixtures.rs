@@ -1,9 +1,12 @@
 //! Test fixtures for working with Substrait plans and substrait_explain
 
+use substrait::proto::expression::{FieldReference, Literal, ScalarFunction};
+use substrait::proto::{Expression, Type};
+
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;
-use crate::parser::{MessageParseError, Parser, ScopedParse};
+use crate::parser::{MessageParseError, Parser, expressions, types};
 use crate::textify::foundation::{ErrorAccumulator, ErrorList};
 use crate::textify::plan::PlanWriter;
 use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
@@ -91,8 +94,24 @@ impl TestContext {
         s
     }
 
-    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<T, MessageParseError> {
-        T::parse(&self.extensions, input)
+    pub fn parse_type(&self, input: &str) -> Result<Type, MessageParseError> {
+        types::parse_type(&self.extensions, input)
+    }
+
+    pub fn parse_literal(&self, input: &str) -> Result<Literal, MessageParseError> {
+        expressions::parse_literal(&self.extensions, input)
+    }
+
+    pub fn parse_scalar_function(&self, input: &str) -> Result<ScalarFunction, MessageParseError> {
+        expressions::parse_scalar_function(&self.extensions, input)
+    }
+
+    pub fn parse_expression(&self, input: &str) -> Result<Expression, MessageParseError> {
+        expressions::parse_expression(&self.extensions, input)
+    }
+
+    pub fn parse_field_reference(&self, input: &str) -> Result<FieldReference, MessageParseError> {
+        expressions::parse_field_reference(input)
     }
 }
 
