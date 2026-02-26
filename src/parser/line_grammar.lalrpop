@@ -1,8 +1,9 @@
 grammar;
 
 use crate::parser::ast::{
-    unescape_quoted, Arg, ArgEntry, ArgList, Expr, ExtensionType, FunctionCall, IfThenExpr,
-    Literal, Nullability, Relation, RelationName, TypeExpr,
+    ExtensionDeclaration, ExtensionUrnDeclaration, unescape_quoted, Arg, ArgEntry, ArgList, Expr,
+    ExtensionType, FunctionCall, IfThenExpr, Literal, Nullability, Relation, RelationName,
+    TypeExpr,
 };
 
 // --------------------
@@ -13,6 +14,7 @@ match {
     r"\s*" => { },
     r"-?[0-9]+\.[0-9]+" => FLOAT,
     r"-?[0-9]+" => INT,
+    r"([A-Za-z][A-Za-z0-9+.\-]*://[^\s]+)|(/[^\s]+)" => URN_VALUE,
     r"\$[0-9]+" => FIELD,
     r#""([^"\\]|\\.)*""# => QUOTED_NAME,
     r"'([^'\\]|\\.)*'" => STRING,
@@ -28,9 +30,24 @@ pub RootNames: Vec<String> = {
     "Root" "[" <names:NameListOpt> "]" => names,
 };
 
+pub ExtensionUrnDecl: ExtensionUrnDeclaration = {
+    <anchor:UrnAnchor> ":" <urn:UrnValue> => ExtensionUrnDeclaration::new(anchor, urn),
+};
+
+pub ExtensionDecl: ExtensionDeclaration = {
+    <anchor:Anchor> <urn_anchor:UrnAnchor> ":" <name:Name>
+        => ExtensionDeclaration::new(anchor, urn_anchor, name),
+};
+
 NameListOpt: Vec<String> = {
     => vec![],
     <names:CommaSep1<Name>> => names,
+};
+
+UrnValue: String = {
+    <value:URN_VALUE> => value.to_string(),
+    <value:IDENT> => value.to_string(),
+    <value:QUOTED_NAME> => unescape_quoted(value),
 };
 
 pub Relation: Relation = {

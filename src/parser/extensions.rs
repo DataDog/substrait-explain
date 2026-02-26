@@ -1,5 +1,4 @@
 use std::fmt;
-use std::str::FromStr;
 
 use thiserror::Error;
 
@@ -9,9 +8,9 @@ use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRegistry, ExtensionRelationType, ExtensionValue,
     InsertError, RawExpression, SimpleExtensions,
 };
-use crate::parser::ast;
 use crate::parser::errors::{MessageParseError, ParseContext, ParseError};
 use crate::parser::structural::IndentedLine;
+use crate::parser::{ast, lalrpop_line};
 
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
@@ -100,7 +99,7 @@ impl ExtensionParser {
         match line {
             IndentedLine(0, _s) => self.parse_subsection(line),
             IndentedLine(1, s) => {
-                let urn = URNExtensionDeclaration::from_str(s)?;
+                let urn = parse_urn_declaration(s)?;
                 self.extensions.add_extension_urn(urn.urn, urn.anchor)?;
                 Ok(())
             }
@@ -116,7 +115,7 @@ impl ExtensionParser {
         match line {
             IndentedLine(0, _s) => self.parse_subsection(line),
             IndentedLine(1, s) => {
-                let decl = SimpleExtensionDeclaration::from_str(s)?;
+                let decl = parse_simple_declaration(s)?;
                 self.extensions.add_extension(
                     extension_kind,
                     decl.urn_anchor,
@@ -138,133 +137,30 @@ impl ExtensionParser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct URNExtensionDeclaration {
-    pub anchor: u32,
-    pub urn: String,
-}
-
-impl FromStr for URNExtensionDeclaration {
-    type Err = MessageParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        let Some(after_at) = trimmed.strip_prefix('@') else {
-            return Err(MessageParseError::syntax(
-                "URNExtensionDeclaration",
-                format!("expected '@<anchor>: <urn>', got '{trimmed}'"),
-            ));
-        };
-
-        let Some((anchor, urn)) = after_at.split_once(':') else {
-            return Err(MessageParseError::syntax(
-                "URNExtensionDeclaration",
-                format!("missing ':' in '{trimmed}'"),
-            ));
-        };
-
-        let anchor = anchor
-            .trim()
-            .parse::<u32>()
-            .map_err(|e| MessageParseError::invalid("URNExtensionDeclaration", e))?;
-        let urn = urn.trim();
-        if urn.is_empty() {
-            return Err(MessageParseError::invalid(
-                "URNExtensionDeclaration",
-                "URN cannot be empty",
-            ));
-        }
-
-        Ok(Self {
-            anchor,
-            urn: urn.to_string(),
-        })
+fn parse_urn_declaration(input: &str) -> Result<ast::ExtensionUrnDeclaration, MessageParseError> {
+    let parsed = lalrpop_line::parse_extension_urn_declaration(input).map_err(|e| {
+        MessageParseError::syntax("URNExtensionDeclaration", e.describe_with_line(input))
+    })?;
+    if parsed.urn.trim().is_empty() {
+        return Err(MessageParseError::invalid(
+            "URNExtensionDeclaration",
+            "URN cannot be empty",
+        ));
     }
+    Ok(parsed)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SimpleExtensionDeclaration {
-    pub anchor: u32,
-    pub urn_anchor: u32,
-    pub name: String,
-}
-
-impl FromStr for SimpleExtensionDeclaration {
-    type Err = MessageParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        let Some(mut rest) = trimmed.strip_prefix('#') else {
-            return Err(MessageParseError::syntax(
-                "SimpleExtensionDeclaration",
-                format!("expected '#<anchor> @<urn_anchor>: <name>', got '{trimmed}'"),
-            ));
-        };
-
-        rest = rest.trim_start();
-        // Accept both compact and padded forms:
-        // `#5@2:name` and `# 5 @ 2: name`.
-        let anchor_end = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        if anchor_end == 0 {
-            return Err(MessageParseError::syntax(
-                "SimpleExtensionDeclaration",
-                format!("missing anchor in '{trimmed}'"),
-            ));
-        }
-        let anchor = rest[..anchor_end]
-            .parse::<u32>()
-            .map_err(|e| MessageParseError::invalid("SimpleExtensionDeclaration", e))?;
-        rest = rest[anchor_end..].trim_start();
-
-        let Some(after_at) = rest.strip_prefix('@') else {
-            return Err(MessageParseError::syntax(
-                "SimpleExtensionDeclaration",
-                format!("expected '@<urn_anchor>' in '{trimmed}'"),
-            ));
-        };
-        rest = after_at.trim_start();
-        let urn_end = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        if urn_end == 0 {
-            return Err(MessageParseError::syntax(
-                "SimpleExtensionDeclaration",
-                format!("missing urn anchor in '{trimmed}'"),
-            ));
-        }
-        let urn_anchor = rest[..urn_end]
-            .parse::<u32>()
-            .map_err(|e| MessageParseError::invalid("SimpleExtensionDeclaration", e))?;
-        rest = rest[urn_end..].trim_start();
-
-        let Some(after_colon) = rest.strip_prefix(':') else {
-            return Err(MessageParseError::syntax(
-                "SimpleExtensionDeclaration",
-                format!("missing ':' in '{trimmed}'"),
-            ));
-        };
-        let raw_name = after_colon.trim();
-        if raw_name.is_empty() {
-            return Err(MessageParseError::invalid(
-                "SimpleExtensionDeclaration",
-                "name cannot be empty",
-            ));
-        }
-
-        let name = if raw_name.starts_with('"') && raw_name.ends_with('"') && raw_name.len() >= 2 {
-            ast::unescape_quoted(raw_name)
-        } else {
-            raw_name.to_string()
-        };
-
-        Ok(Self {
-            anchor,
-            urn_anchor,
-            name,
-        })
+fn parse_simple_declaration(input: &str) -> Result<ast::ExtensionDeclaration, MessageParseError> {
+    let parsed = lalrpop_line::parse_extension_declaration(input).map_err(|e| {
+        MessageParseError::syntax("SimpleExtensionDeclaration", e.describe_with_line(input))
+    })?;
+    if parsed.name.trim().is_empty() {
+        return Err(MessageParseError::invalid(
+            "SimpleExtensionDeclaration",
+            "name cannot be empty",
+        ));
     }
+    Ok(parsed)
 }
 
 pub fn resolve_extension_detail(
@@ -379,7 +275,7 @@ mod tests {
     #[test]
     fn test_parse_urn_extension_declaration() {
         let line = "@1: /my/urn1";
-        let urn = URNExtensionDeclaration::from_str(line).unwrap();
+        let urn = parse_urn_declaration(line).unwrap();
         assert_eq!(urn.anchor, 1);
         assert_eq!(urn.urn, "/my/urn1");
     }
@@ -387,13 +283,13 @@ mod tests {
     #[test]
     fn test_parse_simple_extension_declaration() {
         let line = "#5@2: my_function_name";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        let decl = parse_simple_declaration(line).unwrap();
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "my_function_name");
 
         let line2 = "#10  @200: another_ext_123";
-        let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
+        let decl = parse_simple_declaration(line2).unwrap();
         assert_eq!(decl.anchor, 10);
         assert_eq!(decl.urn_anchor, 200);
         assert_eq!(decl.name, "another_ext_123");
