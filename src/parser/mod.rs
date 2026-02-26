@@ -1,7 +1,7 @@
 pub mod ast;
 pub mod errors;
 pub mod extensions;
-pub mod lalrpop_line;
+pub(crate) mod lalrpop_line;
 pub mod lower;
 pub mod structural;
 

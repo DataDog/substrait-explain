@@ -89,7 +89,7 @@ fn single_char_span(input: &str, start: usize) -> TextSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{Arg, Expr, RelationName};
+    use crate::parser::ast::{Arg, Expr, Nullability, RelationName, TypeExpr};
 
     #[test]
     fn parses_generic_relation_with_named_args() {
@@ -118,6 +118,21 @@ mod tests {
         assert!(matches!(
             relation.args.positional[0],
             Arg::Expr(Expr::FieldRef(0))
+        ));
+    }
+
+    #[test]
+    fn parses_unspecified_nullability_suffix() {
+        let relation = parse_relation("Read[t => c:i32⁉]").unwrap();
+        assert!(matches!(
+            &relation.outputs[0],
+            Arg::NamedColumn(
+                _,
+                TypeExpr::Simple {
+                    nullability: Nullability::Unspecified,
+                    ..
+                }
+            )
         ));
     }
 }

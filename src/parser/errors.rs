@@ -202,23 +202,11 @@ pub enum ParseError {
     #[error("Error parsing plan on {0}: {1}")]
     Plan(ParseContext, #[source] MessageParseError),
 
-    #[error("Expected '{expected}' on {context}")]
-    Expected {
-        expected: &'static str,
-        context: ParseContext,
-    },
-
-    #[error("No relation found in plan")]
-    NoRelationFound,
-
     #[error("Unregistered extension '{name}' on {context}")]
     UnregisteredExtension { name: String, context: ParseContext },
 
     #[error("Failed to parse relation on {0}: {1}")]
     RelationParse(ParseContext, String),
-
-    #[error("Unknown extension relation type: {0}")]
-    UnknownExtensionRelationType(String),
 
     #[error("Error parsing section header on {0}: {1}")]
     Initial(ParseContext, #[source] MessageParseError),

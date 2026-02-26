@@ -84,6 +84,8 @@ Arg: Arg = {
 Expr: Expr = {
     <if_then:IfThenExprRule> => Expr::if_then(if_then),
     <call:FunctionCallExpr> => Expr::function_call(call),
+    // TODO(parser-hardening): `FIELD` can lex values larger than i32; avoid
+    // panicking parse here and surface a structured syntax/validation error.
     <field:FIELD> => Expr::field_ref(field[1..].parse::<i32>().expect("field index")),
     <literal:LiteralExpr> => Expr::literal(literal),
     <name:Name> => Expr::identifier(name),
@@ -126,6 +128,8 @@ IfClause: (Expr, Expr) = {
 
 LiteralExpr: Literal = {
     <value:FLOAT> <typ:TypeOpt> => Literal::float(value.parse::<f64>().expect("float"), typ),
+    // TODO(parser-hardening): `INT` accepts arbitrary length digits; overflow
+    // in parse::<i64>() currently panics instead of returning a parse error.
     <value:INT> <typ:TypeOpt> => Literal::integer(value.parse::<i64>().expect("integer"), typ),
     <value:BooleanLiteral> <typ:TypeOpt> => Literal::boolean(value, typ),
     <value:STRING> <typ:TypeOpt> => Literal::string(unescape_quoted(value), typ),
@@ -178,6 +182,7 @@ AnchorRefs: (Option<u32>, Option<u32>) = {
 NullabilitySuffix: Nullability = {
     => Nullability::Required,
     "?" => Nullability::Nullable,
+    "⁉" => Nullability::Unspecified,
 };
 
 TypeParamsOpt: Vec<TypeExpr> = {
@@ -191,10 +196,6 @@ SimpleTypeName: &'input str = {
     "i16",
     "i32",
     "i64",
-    "u8",
-    "u16",
-    "u32",
-    "u64",
     "fp32",
     "fp64",
     "string",
@@ -208,10 +209,14 @@ SimpleTypeName: &'input str = {
 };
 
 Anchor: u32 = {
+    // TODO(parser-hardening): large anchors can panic parse::<u32>() on
+    // overflow; prefer returning a structured parse error.
     "#" <value:INT> => value.parse::<u32>().expect("anchor"),
 };
 
 UrnAnchor: u32 = {
+    // TODO(parser-hardening): large URN anchors can panic parse::<u32>() on
+    // overflow; prefer returning a structured parse error.
     "@" <value:INT> => value.parse::<u32>().expect("urn anchor"),
 };
 

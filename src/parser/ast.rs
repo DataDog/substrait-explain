@@ -329,8 +329,11 @@ impl ArgList {
 /// Unescape a quoted identifier or string literal.
 ///
 /// The input is expected to include surrounding quotes.
-pub fn unescape_quoted(input: &str) -> String {
-    debug_assert!(input.len() >= 2);
+pub(crate) fn unescape_quoted(input: &str) -> String {
+    if input.len() < 2 {
+        return input.to_string();
+    }
+
     let mut out = String::with_capacity(input.len().saturating_sub(2));
     let mut chars = input[1..input.len() - 1].chars();
     while let Some(c) = chars.next() {

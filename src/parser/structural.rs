@@ -115,13 +115,19 @@ impl LineNode {
     }
 
     pub fn parse_root(line: &str, line_no: i64) -> Result<Self, ParseError> {
-        if let Ok(names) = lalrpop_line::parse_root_names(line) {
-            return Ok(Self {
-                data: LineData::Root(names),
-                line_no,
-                line: line.to_string(),
-                children: Vec::new(),
-            });
+        match lalrpop_line::parse_root_names(line) {
+            Ok(names) => {
+                return Ok(Self {
+                    data: LineData::Root(names),
+                    line_no,
+                    line: line.to_string(),
+                    children: Vec::new(),
+                });
+            }
+            Err(root_error) if starts_with_root_keyword(line) => {
+                return Err(parse_syntax_error("root_names", line_no, line, root_error));
+            }
+            Err(_) => {}
         }
 
         let relation = lalrpop_line::parse_relation(line)
@@ -134,6 +140,14 @@ impl LineNode {
             children: Vec::new(),
         })
     }
+}
+
+fn starts_with_root_keyword(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("Root") else {
+        return false;
+    };
+    rest.starts_with('[') || rest.starts_with(char::is_whitespace)
 }
 
 fn parse_syntax_error(
@@ -599,5 +613,26 @@ Root[a]
         assert_eq!(plan.extension_urns.len(), 1);
         assert_eq!(plan.extensions.len(), 1);
         assert_eq!(plan.relations.len(), 1);
+    }
+
+    #[test]
+    fn parse_root_reports_root_names_errors() {
+        let input = r#"
+=== Plan
+Root[42]
+  Read[t => a:i32]
+"#;
+
+        let err = Parser::parse(input).expect_err("parse should fail");
+        match err {
+            ParseError::Syntax {
+                target, context, ..
+            } => {
+                assert_eq!(target, "root_names");
+                assert_eq!(context.line_no, 3);
+                assert_eq!(context.line, "Root[42]");
+            }
+            other => panic!("expected ParseError::Syntax, got {other:?}"),
+        }
     }
 }
