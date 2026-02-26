@@ -90,6 +90,14 @@ This project implements Substrait protobuf plan parsing and formatting. See the 
 
 This project uses different error handling patterns depending on the context:
 
+##### Repository-wide error expectation
+
+Error messages should include enough context to act on quickly:
+
+- Include location/context where relevant (for parser paths: line number and source line)
+- Include a clear category or target (what failed)
+- Keep syntax and semantic errors distinct when both layers exist
+
 ##### Parser Context
 
 Use structured parse and lowering errors with explicit context (line number + source line). Syntax errors should come from LALRPOP parse entrypoints, and semantic validation errors should come from lowering:
@@ -160,6 +168,18 @@ Keep parser internals split into two phases:
 
 This separation keeps grammar concerns and semantic checks independent and easier to test.
 
+For extension declaration lines, use parser-layer entrypoints in
+`parser/lalrpop_line.rs`:
+
+- Prefer explicit helpers (`parse_extension_urn_declaration`,
+  `parse_extension_declaration`) at parser call sites.
+- `FromStr` is also available on parser AST declaration types
+  (`ExtensionUrnDeclaration`, `ExtensionDeclaration`) for ergonomic tests and
+  small adapters.
+
+Keep extension handlers parser-independent: lowering converts parser AST
+relation arguments into `ExtensionArgs` before invoking extension resolution.
+
 #### Documentation Formatting
 
 ##### Rustdoc Markdown Formatting
@@ -181,6 +201,12 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 - Keep grammar notation in `GRAMMAR.md` implementation-independent (PEG/EBNF style), while ensuring examples remain accepted by the implemented parser (`line_grammar.lalrpop`)
 - Run `cargo test --doc` to verify all code examples compile
 - Ensure all referenced identifiers are properly defined somewhere in the grammar
+- Keep implementation, grammar, and docs aligned: behavior changes that affect syntax/grammar must be an explicit goal of the change and must be documented in both grammar/docs and implementation notes
+
+#### Readability and Rustic Conventions
+
+- Prefer standard Rust conversion traits where appropriate (`From`, `TryFrom`, `FromStr`) instead of ad hoc converter functions
+- Extract helper functions when there are 2+ call sites and the extraction meaningfully reduces duplication or clarifies intent
 
 #### Testing Guidelines
 
