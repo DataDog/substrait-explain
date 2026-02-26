@@ -1,3 +1,11 @@
+//! Relation formatting — converts protobuf relation types to the
+//! `Name[args => outputs]` text format.
+//!
+//! Each Substrait relation (Read, Filter, Project, …) is converted to a
+//! [`Relation`] struct containing its name, [`Arguments`], and child
+//! relations. Arguments and outputs are represented as [`Value`] variants,
+//! which bridge between the typed protobuf world and the flat text format.
+
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::fmt;
@@ -89,6 +97,9 @@ pub struct NamedArg<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// A single argument or output value in a relation's `[args => outputs]`
+/// bracket. Covers field references, expressions, literals, enum values,
+/// named columns, and error placeholders ([`Value::Missing`]).
 pub enum Value<'a> {
     Name(Name<'a>),
     TableName(Vec<Name<'a>>),

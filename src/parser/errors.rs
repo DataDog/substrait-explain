@@ -1,3 +1,14 @@
+//! Error types for the parser.
+//!
+//! Three layers of errors, matching the parsing phases:
+//!
+//! - [`SyntaxErrorDetail`] — LALRPOP parse failures with span and expected-token
+//!   info, for rendering caret diagnostics on a single line.
+//! - [`MessageParseError`] — semantic errors during lowering (invalid values,
+//!   missing references), categorised by [`ErrorKind`].
+//! - [`ParseError`] — top-level error that attaches [`ParseContext`] (line
+//!   number + source text) to any of the above.
+
 use std::fmt;
 
 use thiserror::Error;

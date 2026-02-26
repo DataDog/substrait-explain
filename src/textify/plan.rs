@@ -1,3 +1,10 @@
+//! Top-level plan formatting — orchestrates the conversion of a full
+//! [`proto::Plan`] into its text representation.
+//!
+//! [`PlanWriter`] is the entry point: it extracts extensions from the plan,
+//! creates a [`ScopedContext`] that carries options, error accumulation, and
+//! extension lookups, then delegates to the relation and expression formatters.
+
 use std::fmt;
 
 use substrait::proto;
@@ -8,6 +15,10 @@ use crate::parser::PLAN_HEADER;
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
+/// Formats a [`proto::Plan`] to its text representation.
+///
+/// Use [`Display`](std::fmt::Display) or call [`write_extensions`](Self::write_extensions) and
+/// [`write_relations`](Self::write_relations) separately for more control.
 #[derive(Debug, Clone)]
 pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
@@ -18,6 +29,10 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
+    /// Create a writer for the given plan. Returns the [`PlanWriter`] and an
+    /// output channel for accumulated errors, an [`ErrorAccumulator`] — output
+    /// is best-effort and will run to completion, despite incomplete plans,
+    /// unresolved extensions or references, or other issues.
     pub fn new(
         options: &'a OutputOptions,
         plan: &'a proto::Plan,

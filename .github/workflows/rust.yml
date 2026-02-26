@@ -48,6 +48,11 @@ jobs:
       - name: Lint with Clippy (All features)
         run: cargo clippy --all-features -- -D warnings
 
+      - name: Check documentation
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
       - name: Build
         run: cargo build --features protoc --verbose
 

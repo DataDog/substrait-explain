@@ -1,7 +1,11 @@
 //! AST -> protobuf lowering.
 //!
-//! Relation lowering stays explicit (per relation type), while leaf AST nodes
-//! (`Expr`, `Literal`, `TypeExpr`) use the `Lower` trait for uniform conversion.
+//! The AST is the representation of the syntax / semantics in a Rustic form;
+//! that is assembled during the `parse` stage.
+//!
+//! Relation lowering is explicit (per relation type), while leaf AST nodes
+//! ([`ast::Expr`], [`ast::Literal`], [`ast::TypeExpr`]) use the [`Lower`] trait
+//! for uniform conversion.
 
 mod expr;
 mod extensions;
