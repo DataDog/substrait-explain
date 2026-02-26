@@ -73,6 +73,8 @@ Relation-specific validation (e.g., "Filter expects an expression before `=>` an
 
 **Argument ordering:** The grammar enforces that named arguments (`name=value`) always follow positional arguments — they cannot be intermingled. Tuples can only contain positional arguments. This is a structural constraint that belongs in the grammar, not the lowering pass, since it applies uniformly to all relations.
 
+**Implementation note (2026-02-26):** The current implementation parses argument entries as a single ordered list and records whether named/positional ordering is invalid, then reports that as a lowering validation error. This was chosen to keep the grammar conflict-free while preserving the same user-visible constraint.
+
 **Benefits:**
 - Smaller grammar with fewer LR conflict risks.
 - Adding new relation types (Window, Set, HashJoin) requires only lowering code, no grammar recompilation.

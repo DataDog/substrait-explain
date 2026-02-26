@@ -259,6 +259,8 @@ fn lower_aggregate(
         rel_type: Some(RelType::Aggregate(Box::new(AggregateRel {
             input: Some(input),
             grouping_expressions,
+            // We use `grouping_expressions` (newer API) and leave legacy
+            // `groupings` empty for compatibility with current text format.
             groupings: vec![],
             measures,
             common: Some(RelCommon {
