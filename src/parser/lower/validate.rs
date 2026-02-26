@@ -1,5 +1,7 @@
 //! Shared relation-level validation helpers used by lowering.
 
+use std::collections::HashSet;
+
 use substrait::proto::sort_field::SortDirection;
 use substrait::proto::{Rel, join_rel};
 
@@ -31,6 +33,25 @@ pub(crate) fn ensure_no_children(
     )
 }
 
+pub(crate) fn ensure_exact_child_count(
+    ctx: &LowerCtx<'_>,
+    child_count: usize,
+    expected: usize,
+    message: &'static str,
+) -> Result<(), crate::parser::errors::ParseError> {
+    if child_count == expected {
+        return Ok(());
+    }
+
+    let suffix = if expected == 1 { "" } else { "ren" };
+    ctx.invalid(
+        message,
+        format!(
+            "{message} should have exactly {expected} input child{suffix}, found {child_count}"
+        ),
+    )
+}
+
 #[allow(clippy::vec_box)]
 pub(crate) fn expect_one_child(
     ctx: &LowerCtx<'_>,
@@ -44,6 +65,32 @@ pub(crate) fn expect_one_child(
             format!("{message} should have exactly one input child, found {n}"),
         ),
     }
+}
+
+pub(crate) fn ensure_exact_positional_count(
+    ctx: &LowerCtx<'_>,
+    positional_count: usize,
+    expected: usize,
+    message: &'static str,
+    detail: &'static str,
+) -> Result<(), crate::parser::errors::ParseError> {
+    if positional_count == expected {
+        return Ok(());
+    }
+    ctx.invalid(message, detail)
+}
+
+pub(crate) fn ensure_unique_named_arg(
+    ctx: &LowerCtx<'_>,
+    seen: &mut HashSet<String>,
+    name: &str,
+    message: &'static str,
+) -> Result<(), crate::parser::errors::ParseError> {
+    if seen.insert(name.to_string()) {
+        return Ok(());
+    }
+
+    ctx.invalid(message, format!("duplicate named argument '{name}'"))
 }
 
 pub(crate) fn output_mapping_from_args(
