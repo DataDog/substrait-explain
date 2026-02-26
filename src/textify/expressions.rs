@@ -516,6 +516,53 @@ impl Textify for expr::Literal {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if self.nullable
+            && let Some(literal) = self.literal_type.as_ref()
+        {
+            match literal {
+                LiteralType::String(s) => {
+                    let kind = Kind::String(ptype::String {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(s, kind, ctx, w);
+                }
+                LiteralType::Date(days) => {
+                    let kind = Kind::Date(ptype::Date {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(&days_to_date_string(*days), kind, ctx, w);
+                }
+                LiteralType::Time(microseconds) => {
+                    let kind = Kind::Time(ptype::Time {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(
+                        &microseconds_to_time_string(*microseconds),
+                        kind,
+                        ctx,
+                        w,
+                    );
+                }
+                #[allow(deprecated)]
+                LiteralType::Timestamp(microseconds) => {
+                    let kind = Kind::Timestamp(ptype::Timestamp {
+                        type_variation_reference: self.type_variation_reference,
+                        nullability: Nullability::Nullable.into(),
+                    });
+                    return textify_literal_from_string(
+                        &microseconds_to_timestamp_string(*microseconds),
+                        kind,
+                        ctx,
+                        w,
+                    );
+                }
+                _ => {}
+            }
+        }
+
         write!(w, "{}", ctx.expect(self.literal_type.as_ref()))
     }
 }

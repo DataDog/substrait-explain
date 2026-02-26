@@ -48,6 +48,8 @@ fn lower_int_literal(
     };
 
     let (lit, nullability, tvar) = match kind {
+        // TODO(parser-hardening): validate numeric bounds before narrowing.
+        // Values like `1000:i8` currently cast via `as` and silently truncate.
         Kind::I8(i) => (
             LiteralType::I8(parsed_value as i32),
             i.nullability,
@@ -139,6 +141,11 @@ fn lower_string_literal(
 
     let kind = lower_type_kind_no_box(ctx, typ, message)?;
     match kind {
+        Kind::String(s) => Ok(Literal {
+            literal_type: Some(LiteralType::String(string_value.to_string())),
+            nullable: s.nullability != Nullability::Required as i32,
+            type_variation_reference: s.type_variation_reference,
+        }),
         Kind::Date(d) => {
             let date_days = parse_date_to_days(ctx, string_value, message)?;
             Ok(Literal {
@@ -164,12 +171,10 @@ fn lower_string_literal(
                 type_variation_reference: ts.type_variation_reference,
             })
         }
-        // Non-temporal typed string literals round-trip as plain strings.
-        _ => Ok(Literal {
-            literal_type: Some(LiteralType::String(string_value.to_string())),
-            nullable: false,
-            type_variation_reference: 0,
-        }),
+        other => ctx.invalid(
+            message,
+            format!("Invalid type for string literal: {other:?}"),
+        ),
     }
 }
 
