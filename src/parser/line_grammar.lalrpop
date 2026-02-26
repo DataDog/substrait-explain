@@ -1,0 +1,257 @@
+grammar;
+
+use crate::parser::ast::{
+    ExtensionDeclaration, ExtensionUrnDeclaration, unescape_quoted, Arg, ArgEntry, ArgList, Expr,
+    ExtensionType, FunctionCall, IfThenExpr, Literal, Nullability, Relation, RelationName,
+    TypeExpr,
+};
+
+// --------------------
+// Lexer
+// --------------------
+
+match {
+    r"\s*" => { },
+    r"-?[0-9]+\.[0-9]+" => FLOAT,
+    r"-?[0-9]+" => INT,
+    r"([A-Za-z][A-Za-z0-9+.\-]*://[^\s]+)|(/[^\s]+)" => URN_VALUE,
+    r"\$[0-9]+" => FIELD,
+    r#""([^"\\]|\\.)*""# => QUOTED_NAME,
+    r"'([^'\\]|\\.)*'" => STRING,
+    r"[A-Za-z_][A-Za-z0-9_\.]*" => IDENT,
+    _
+}
+
+// --------------------
+// Root / Relation Lines
+// --------------------
+
+pub RootNames: Vec<String> = {
+    "Root" "[" <names:NameListOpt> "]" => names,
+};
+
+pub ExtensionUrnDecl: ExtensionUrnDeclaration = {
+    <anchor:UrnAnchor> ":" <urn:UrnValue> => ExtensionUrnDeclaration::new(anchor, urn),
+};
+
+pub ExtensionDecl: ExtensionDeclaration = {
+    <anchor:Anchor> <urn_anchor:UrnAnchor> ":" <name:Name>
+        => ExtensionDeclaration::new(anchor, urn_anchor, name),
+};
+
+NameListOpt: Vec<String> = {
+    => vec![],
+    <names:CommaSep1<Name>> => names,
+};
+
+UrnValue: String = {
+    <value:URN_VALUE> => value.to_string(),
+    <value:IDENT> => value.to_string(),
+    <value:QUOTED_NAME> => unescape_quoted(value),
+};
+
+pub Relation: Relation = {
+    <name:RelationName> "[" <body:RelationBody> "]" => Relation::new(name, body.0, body.1),
+};
+
+RelationBody: (ArgList, Vec<Arg>) = {
+    => (ArgList::default(), vec![]),
+    "=>" <outputs:ArgListOpt> => (ArgList::default(), outputs),
+    <entries:CommaSep1<ArgEntry>> => (ArgList::from_entries(entries), vec![]),
+    <entries:CommaSep1<ArgEntry>> "=>" <outputs:ArgListOpt> => {
+        (ArgList::from_entries(entries), outputs)
+    },
+};
+
+ArgListOpt: Vec<Arg> = {
+    => vec![],
+    <args:CommaSep1<Arg>> => args,
+};
+
+RelationName: RelationName = {
+    "ExtensionLeaf" ":" <name:Name> => RelationName::extension(ExtensionType::Leaf, name),
+    "ExtensionSingle" ":" <name:Name> => RelationName::extension(ExtensionType::Single, name),
+    "ExtensionMulti" ":" <name:Name> => RelationName::extension(ExtensionType::Multi, name),
+    <name:IDENT> => RelationName::standard(name),
+};
+
+// --------------------
+// Arguments
+// --------------------
+
+ArgEntry: ArgEntry = {
+    <name:IDENT> "=" <value:Arg> => ArgEntry::named(name, value),
+    <value:Arg> => ArgEntry::positional(value),
+};
+
+Arg: Arg = {
+    <name:Name> ":" <typ:Type> => Arg::named_column(name, typ),
+    "&" <value:IDENT> => Arg::enum_variant(value),
+    "(" <values:ArgListOpt> ")" => Arg::tuple(values),
+    "_" => Arg::wildcard(),
+    <expr:Expr> => Arg::expr(expr),
+};
+
+// --------------------
+// Expressions
+// --------------------
+
+// Keep `if_then` and function-call productions ahead of `Name` so bare
+// identifiers do not greedily consume expression starts.
+Expr: Expr = {
+    <if_then:IfThenExprRule> => Expr::if_then(if_then),
+    <call:FunctionCallExpr> => Expr::function_call(call),
+    // TODO(parser-hardening): `FIELD` can lex values larger than i32; avoid
+    // panicking parse here and surface a structured syntax/validation error.
+    <field:FIELD> => Expr::field_ref(field[1..].parse::<i32>().expect("field index")),
+    <literal:LiteralExpr> => Expr::literal(literal),
+    <name:Name> => Expr::identifier(name),
+};
+
+FunctionCallExpr: FunctionCall = {
+    <header:FunctionHeader> "(" <args:ExprListOpt> ")" <output_type:OutputTypeOpt>
+        => FunctionCall::new(header.0, header.1, header.2, args, output_type),
+};
+
+FunctionHeader: (String, Option<u32>, Option<u32>) = {
+    <name:Name> => (name, None, None),
+    <name:Name> <anchor:Anchor> => (name, Some(anchor), None),
+    <name:Name> <urn_anchor:UrnAnchor> => (name, None, Some(urn_anchor)),
+    <name:Name> <anchor:Anchor> <urn_anchor:UrnAnchor> => (name, Some(anchor), Some(urn_anchor)),
+};
+
+ExprListOpt: Vec<Expr> = {
+    => vec![],
+    <values:CommaSep1<Expr>> => values,
+};
+
+OutputTypeOpt: Option<TypeExpr> = {
+    => None,
+    ":" <typ:Type> => Some(typ),
+};
+
+IfThenExprRule: IfThenExpr = {
+    "if_then" "(" <clauses:CommaSep1<IfClause>> "," "_" "->" <else_expr:Expr> ")"
+        => IfThenExpr::new(clauses, else_expr),
+};
+
+IfClause: (Expr, Expr) = {
+    <condition:Expr> "->" <result:Expr> => (condition, result),
+};
+
+// --------------------
+// Literals
+// --------------------
+
+LiteralExpr: Literal = {
+    <value:FLOAT> <typ:TypeOpt> => Literal::float(value.parse::<f64>().expect("float"), typ),
+    // TODO(parser-hardening): `INT` accepts arbitrary length digits; overflow
+    // in parse::<i64>() currently panics instead of returning a parse error.
+    <value:INT> <typ:TypeOpt> => Literal::integer(value.parse::<i64>().expect("integer"), typ),
+    <value:BooleanLiteral> <typ:TypeOpt> => Literal::boolean(value, typ),
+    <value:STRING> <typ:TypeOpt> => Literal::string(unescape_quoted(value), typ),
+};
+
+BooleanLiteral: bool = {
+    "true" => true,
+    "false" => false,
+};
+
+TypeOpt: Option<TypeExpr> = {
+    => None,
+    ":" <typ:Type> => Some(typ),
+};
+
+// --------------------
+// Types
+// --------------------
+
+Type: TypeExpr = {
+    <simple:SimpleType> => simple,
+    <list:ListType> => list,
+    <user_defined:UserDefinedType> => user_defined,
+};
+
+SimpleType: TypeExpr = {
+    <name:SimpleTypeName> <nullability:NullabilitySuffix> => TypeExpr::simple(name, nullability),
+};
+
+ListType: TypeExpr = {
+    "list" <nullability:NullabilitySuffix> "<" <inner:Type> ">" => TypeExpr::list(nullability, inner),
+};
+
+UserDefinedType: TypeExpr = {
+    <base:UserTypeBase> <nullability:NullabilitySuffix> <params:TypeParamsOpt>
+        => TypeExpr::user_defined(base.0, base.1, base.2, nullability, params),
+};
+
+UserTypeBase: (String, Option<u32>, Option<u32>) = {
+    <_prefix:"u!"?> <name:Name> <refs:AnchorRefs> => (name, refs.0, refs.1),
+};
+
+AnchorRefs: (Option<u32>, Option<u32>) = {
+    => (None, None),
+    <anchor:Anchor> => (Some(anchor), None),
+    <urn_anchor:UrnAnchor> => (None, Some(urn_anchor)),
+    <anchor:Anchor> <urn_anchor:UrnAnchor> => (Some(anchor), Some(urn_anchor)),
+};
+
+NullabilitySuffix: Nullability = {
+    => Nullability::Required,
+    "?" => Nullability::Nullable,
+    "⁉" => Nullability::Unspecified,
+};
+
+TypeParamsOpt: Vec<TypeExpr> = {
+    => vec![],
+    "<" <params:CommaSep1<Type>> ">" => params,
+};
+
+SimpleTypeName: &'input str = {
+    "boolean",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "fp32",
+    "fp64",
+    "string",
+    "binary",
+    "timestamp_tz",
+    "timestamp",
+    "date",
+    "time",
+    "interval_year",
+    "uuid",
+};
+
+Anchor: u32 = {
+    // TODO(parser-hardening): large anchors can panic parse::<u32>() on
+    // overflow; prefer returning a structured parse error.
+    "#" <value:INT> => value.parse::<u32>().expect("anchor"),
+};
+
+UrnAnchor: u32 = {
+    // TODO(parser-hardening): large URN anchors can panic parse::<u32>() on
+    // overflow; prefer returning a structured parse error.
+    "@" <value:INT> => value.parse::<u32>().expect("urn anchor"),
+};
+
+Name: String = {
+    <value:IDENT> => value.to_string(),
+    <value:QUOTED_NAME> => unescape_quoted(value),
+};
+
+// --------------------
+// Generic List Helpers
+// --------------------
+
+// A non-empty comma-separated list.
+CommaSep1<T>: Vec<T> = {
+    <left:CommaSep1<T>> "," <right:T> => {
+        let mut values = left;
+        values.push(right);
+        values
+    },
+    <value:T> => vec![value],
+};

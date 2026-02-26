@@ -1,3 +1,10 @@
+//! Anchor-to-name lookup table for Substrait simple extensions.
+//!
+//! [`SimpleExtensions`] maps extension anchors (`#10`, `@1`) to URNs and
+//! function/type names. It is the shared data structure used by both the
+//! parser (to resolve references while lowering) and the textifier (to
+//! display human-readable names instead of numeric anchors).
+
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::fmt;

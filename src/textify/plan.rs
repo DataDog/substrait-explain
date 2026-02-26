@@ -1,3 +1,10 @@
+//! Top-level plan formatting — orchestrates the conversion of a full
+//! [`proto::Plan`] into its text representation.
+//!
+//! [`PlanWriter`] is the entry point: it extracts extensions from the plan,
+//! creates a [`ScopedContext`] that carries options, error accumulation, and
+//! extension lookups, then delegates to the relation and expression formatters.
+
 use std::fmt;
 
 use substrait::proto;
@@ -8,6 +15,10 @@ use crate::parser::PLAN_HEADER;
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
+/// Formats a [`proto::Plan`] to its text representation.
+///
+/// Use [`Display`](std::fmt::Display) or call [`write_extensions`](Self::write_extensions) and
+/// [`write_relations`](Self::write_relations) separately for more control.
 #[derive(Debug, Clone)]
 pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
@@ -18,6 +29,10 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
+    /// Create a writer for the given plan. Returns the [`PlanWriter`] and an
+    /// output channel for accumulated errors, an [`ErrorAccumulator`] — output
+    /// is best-effort and will run to completion, despite incomplete plans,
+    /// unresolved extensions or references, or other issues.
     pub fn new(
         options: &'a OutputOptions,
         plan: &'a proto::Plan,
@@ -99,8 +114,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::parser::expressions::FieldIndex;
     use crate::textify::ErrorQueue;
+    use crate::textify::expressions::Reference;
 
     /// Test a fairly basic plan with an extension, read, and project.
     ///
@@ -161,18 +176,10 @@ mod tests {
             function_reference: 10,
             arguments: vec![
                 FunctionArgument {
-                    arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(
-                            FieldIndex(0).to_field_reference(),
-                        ))),
-                    })),
+                    arg_type: Some(ArgType::Value(Reference(0).into())),
                 },
                 FunctionArgument {
-                    arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(
-                            FieldIndex(1).to_field_reference(),
-                        ))),
-                    })),
+                    arg_type: Some(ArgType::Value(Reference(1).into())),
                 },
             ],
             options: vec![],

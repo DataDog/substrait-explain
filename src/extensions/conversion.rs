@@ -1,8 +1,7 @@
-//! Conversion utilities between Pest grammar and extension registry types
+//! Conversion utilities between parsed extension arguments and registry types.
 //!
-//! This module provides functions to convert between the parsed Pest grammar
-//! elements (from the text format) and the structured types used by the
-//! extension registry system.
+//! This module provides helpers to convert between structured extension values
+//! and text format fragments used by the formatter.
 
 use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
 
@@ -79,35 +78,14 @@ fn format_extension_column_to_text(column: &ExtensionColumn) -> String {
 
 #[cfg(test)]
 mod tests {
-    use pest::Parser as PestParser;
-
     use super::*;
     use crate::extensions::ExtensionRelationType;
-    use crate::parser::common::ParsePair;
-    use crate::parser::{ExpressionParser, ParseError, Parser, Rule};
-
-    #[test]
-    fn test_parse_extension_value_reference() {
-        let input = "$42";
-        let pairs = ExpressionParser::parse(Rule::reference, input).unwrap();
-        let _pair = pairs.into_iter().next().unwrap();
-
-        // Wrap in extension_argument rule for the parser
-        let extension_arg_input = "$42";
-        let extension_pairs =
-            ExpressionParser::parse(Rule::extension_argument, extension_arg_input).unwrap();
-        let extension_pair = extension_pairs.into_iter().next().unwrap();
-
-        let value = ExtensionValue::parse_pair(extension_pair);
-        match value {
-            ExtensionValue::Reference(42) => {} // Expected
-            other => panic!("Expected Reference(42), got {other:?}"),
-        }
-    }
+    use crate::parser::{ParseError, Parser};
 
     #[test]
     fn test_format_extension_args() {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        args.add_positional_arg(ExtensionValue::Reference(42));
         args.add_named_arg(
             "path".to_string(),
             ExtensionValue::String("data/*.parquet".to_string()),
@@ -119,6 +97,7 @@ mod tests {
         });
 
         let text = format_extension_args_to_text(&args, "ExtensionLeaf:ParquetScan");
+        assert!(text.contains("$42"));
         assert!(text.contains("path='data/*.parquet'"));
         assert!(text.contains("batch_size=1024"));
         assert!(text.contains("=> col1:i32"));

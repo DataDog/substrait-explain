@@ -1,3 +1,11 @@
+//! Relation formatting — converts protobuf relation types to the
+//! `Name[args => outputs]` text format.
+//!
+//! Each Substrait relation (Read, Filter, Project, …) is converted to a
+//! [`Relation`] struct containing its name, [`Arguments`], and child
+//! relations. Arguments and outputs are represented as [`Value`] variants,
+//! which bridge between the typed protobuf world and the flat text format.
+
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::fmt;
@@ -89,6 +97,9 @@ pub struct NamedArg<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// A single argument or output value in a relation's `[args => outputs]`
+/// bracket. Covers field references, expressions, literals, enum values,
+/// named columns, and error placeholders ([`Value::Missing`]).
 pub enum Value<'a> {
     Name(Name<'a>),
     TableName(Vec<Name<'a>>),
@@ -904,7 +915,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
-    use crate::parser::expressions::FieldIndex;
+    use crate::textify::expressions::Reference;
 
     #[test]
     fn test_read_rel() {
@@ -1054,11 +1065,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn = AggregateFunction {
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1087,11 +1094,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn1 = AggregateFunction {
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1105,11 +1108,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn2 = AggregateFunction {
             function_reference: 11, // count
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1156,9 +1155,7 @@ Filter[gt($0, 10:i32) => $0, $1]
                 }))),
             })),
             grouping_expressions: vec![Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    FieldIndex(0).to_field_reference(),
-                ))),
+                rex_type: Expression::from(Reference(0)).rex_type,
             }],
             groupings: vec![],
             measures: vec![

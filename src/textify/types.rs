@@ -1,3 +1,7 @@
+//! Type formatting — nullability suffixes, parameterized types, user-defined
+//! types, and the [`Name`]/[`Anchor`] helpers used by relation and expression
+//! formatting.
+
 use std::fmt;
 use std::ops::Deref;
 
@@ -91,9 +95,14 @@ impl<'a> Textify for Name<'a> {
     }
 }
 
+/// An extension anchor (e.g. `#10`) that may be shown or hidden based on
+/// [`OutputOptions::show_simple_extension_anchors`](super::OutputOptions::show_simple_extension_anchors).
 #[derive(Debug, Copy, Clone)]
 pub struct Anchor {
     reference: u32,
+    /// When `true`, the anchor is shown even at `Visibility::Required`
+    /// (i.e. it's needed for disambiguation). When `false`, it's only
+    /// shown at `Visibility::Always`.
     required: bool,
 }
 
