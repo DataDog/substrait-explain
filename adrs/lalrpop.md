@@ -75,6 +75,10 @@ Relation-specific validation (e.g., "Filter expects an expression before `=>` an
 
 **Implementation note (2026-02-26):** The current implementation parses argument entries as a single ordered list and records whether named/positional ordering is invalid, then reports that as a lowering validation error. This was chosen to keep the grammar conflict-free while preserving the same user-visible constraint.
 
+**Implementation note (2026-02-26):** Extension declaration lines in the
+`=== Extensions` section (`@...` URNs and `#...` declarations) are parsed via
+the same LALRPOP -> AST pipeline and then validated in parser/lowering code.
+
 **Benefits:**
 - Smaller grammar with fewer LR conflict risks.
 - Adding new relation types (Window, Set, HashJoin) requires only lowering code, no grammar recompilation.

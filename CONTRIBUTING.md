@@ -141,6 +141,18 @@ Keep parser internals split into two phases:
 
 This separation keeps grammar concerns and semantic checks independent and easier to test.
 
+For extension declaration lines, use parser-layer entrypoints in
+`parser/lalrpop_line.rs`:
+
+- Prefer explicit helpers (`parse_extension_urn_declaration`,
+  `parse_extension_declaration`) at parser call sites.
+- `FromStr` is also available on parser AST declaration types
+  (`ExtensionUrnDeclaration`, `ExtensionDeclaration`) for ergonomic tests and
+  small adapters.
+
+Keep extension handlers parser-independent: lowering converts parser AST
+relation arguments into `ExtensionArgs` before invoking extension resolution.
+
 #### Documentation Formatting
 
 ##### Rustdoc Markdown Formatting
