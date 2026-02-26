@@ -3,12 +3,14 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
-use super::{ParsePair, Rule, RuleIter, unwrap_single_pair};
+use crate::extensions::any::Any;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
-    ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    RawExpression, SimpleExtensions,
+    ExtensionArgs, ExtensionColumn, ExtensionRegistry, ExtensionRelationType, ExtensionValue,
+    InsertError, RawExpression, SimpleExtensions,
 };
+use crate::parser::ast;
+use crate::parser::errors::{MessageParseError, ParseContext, ParseError};
 use crate::parser::structural::IndentedLine;
 
 #[derive(Debug, Clone, Error)]
@@ -18,21 +20,13 @@ pub enum ExtensionParseError {
     #[error("Error adding extension: {0}")]
     ExtensionError(#[from] InsertError),
     #[error("Error parsing message: {0}")]
-    Message(#[from] super::MessageParseError),
+    Message(#[from] MessageParseError),
 }
 
-/// The state of the extension parser - tracking what section of extension
-/// parsing we are in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtensionParserState {
-    // The extensions section, after parsing the 'Extensions:' header, before
-    // parsing any subsection headers.
     Extensions,
-    // The extension URNs section, after parsing the 'URNs:' subsection header,
-    // and any URNs so far.
     ExtensionUrns,
-    // In a subsection, after parsing the subsection header, and any
-    // declarations so far.
     ExtensionDeclarations(ExtensionKind),
 }
 
@@ -48,12 +42,6 @@ impl fmt::Display for ExtensionParserState {
     }
 }
 
-/// The parser for the extension section of the Substrait file format.
-///
-/// This is responsible for parsing the extension section of the file, which
-/// contains the extension URNs and declarations. Note that this parser does not
-/// parse the header; otherwise, this is symmetric with the
-/// SimpleExtensions::write method.
 #[derive(Debug)]
 pub struct ExtensionParser {
     state: ExtensionParserState,
@@ -70,10 +58,8 @@ impl Default for ExtensionParser {
 }
 
 impl ExtensionParser {
-    pub fn parse_line(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+    pub fn parse_line(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
         if line.1.is_empty() {
-            // Blank lines are allowed between subsections, so if we see
-            // one, we revert out of the subsection.
             self.state = ExtensionParserState::Extensions;
             return Ok(());
         }
@@ -87,7 +73,7 @@ impl ExtensionParser {
         }
     }
 
-    fn parse_subsection(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+    fn parse_subsection(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
         match line {
             IndentedLine(0, simple::EXTENSION_URNS_HEADER) => {
                 self.state = ExtensionParserState::ExtensionUrns;
@@ -110,12 +96,11 @@ impl ExtensionParser {
         }
     }
 
-    fn parse_extension_urns(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
+    fn parse_extension_urns(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
         match line {
-            IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
+            IndentedLine(0, _s) => self.parse_subsection(line),
             IndentedLine(1, s) => {
-                let urn =
-                    URNExtensionDeclaration::from_str(s).map_err(ExtensionParseError::Message)?;
+                let urn = URNExtensionDeclaration::from_str(s)?;
                 self.extensions.add_extension_urn(urn.urn, urn.anchor)?;
                 Ok(())
             }
@@ -125,11 +110,11 @@ impl ExtensionParser {
 
     fn parse_declarations(
         &mut self,
-        line: IndentedLine,
+        line: IndentedLine<'_>,
         extension_kind: ExtensionKind,
     ) -> Result<(), ExtensionParseError> {
         match line {
-            IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
+            IndentedLine(0, _s) => self.parse_subsection(line),
             IndentedLine(1, s) => {
                 let decl = SimpleExtensionDeclaration::from_str(s)?;
                 self.extensions.add_extension(
@@ -159,6 +144,44 @@ pub struct URNExtensionDeclaration {
     pub urn: String,
 }
 
+impl FromStr for URNExtensionDeclaration {
+    type Err = MessageParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        let Some(after_at) = trimmed.strip_prefix('@') else {
+            return Err(MessageParseError::syntax(
+                "URNExtensionDeclaration",
+                format!("expected '@<anchor>: <urn>', got '{trimmed}'"),
+            ));
+        };
+
+        let Some((anchor, urn)) = after_at.split_once(':') else {
+            return Err(MessageParseError::syntax(
+                "URNExtensionDeclaration",
+                format!("missing ':' in '{trimmed}'"),
+            ));
+        };
+
+        let anchor = anchor
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| MessageParseError::invalid("URNExtensionDeclaration", e))?;
+        let urn = urn.trim();
+        if urn.is_empty() {
+            return Err(MessageParseError::invalid(
+                "URNExtensionDeclaration",
+                "URN cannot be empty",
+            ));
+        }
+
+        Ok(Self {
+            anchor,
+            urn: urn.to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimpleExtensionDeclaration {
     pub anchor: u32,
@@ -166,290 +189,149 @@ pub struct SimpleExtensionDeclaration {
     pub name: String,
 }
 
-impl ParsePair for URNExtensionDeclaration {
-    fn rule() -> Rule {
-        Rule::extension_urn_declaration
-    }
-
-    fn message() -> &'static str {
-        "URNExtensionDeclaration"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
-
-        let mut iter = RuleIter::from(pair.into_inner());
-        let anchor_pair = iter.pop(Rule::urn_anchor);
-        let anchor = unwrap_single_pair(anchor_pair)
-            .as_str()
-            .parse::<u32>()
-            .unwrap();
-        let urn = iter.pop(Rule::urn).as_str().to_string();
-        iter.done();
-
-        URNExtensionDeclaration { anchor, urn }
-    }
-}
-
-impl FromStr for URNExtensionDeclaration {
-    type Err = super::MessageParseError;
+impl FromStr for SimpleExtensionDeclaration {
+    type Err = MessageParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_str(s)
-    }
-}
+        let trimmed = s.trim();
+        let Some(mut rest) = trimmed.strip_prefix('#') else {
+            return Err(MessageParseError::syntax(
+                "SimpleExtensionDeclaration",
+                format!("expected '#<anchor> @<urn_anchor>: <name>', got '{trimmed}'"),
+            ));
+        };
 
-impl ParsePair for SimpleExtensionDeclaration {
-    fn rule() -> Rule {
-        Rule::simple_extension
-    }
-
-    fn message() -> &'static str {
-        "SimpleExtensionDeclaration"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
-        let mut iter = RuleIter::from(pair.into_inner());
-        let anchor_pair = iter.pop(Rule::anchor);
-        let anchor = unwrap_single_pair(anchor_pair)
-            .as_str()
+        rest = rest.trim_start();
+        // Accept both compact and padded forms:
+        // `#5@2:name` and `# 5 @ 2: name`.
+        let anchor_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if anchor_end == 0 {
+            return Err(MessageParseError::syntax(
+                "SimpleExtensionDeclaration",
+                format!("missing anchor in '{trimmed}'"),
+            ));
+        }
+        let anchor = rest[..anchor_end]
             .parse::<u32>()
-            .unwrap();
-        let urn_anchor_pair = iter.pop(Rule::urn_anchor);
-        let urn_anchor = unwrap_single_pair(urn_anchor_pair)
-            .as_str()
-            .parse::<u32>()
-            .unwrap();
-        let name_pair = iter.pop(Rule::name);
-        let name = unwrap_single_pair(name_pair).as_str().to_string();
-        iter.done();
+            .map_err(|e| MessageParseError::invalid("SimpleExtensionDeclaration", e))?;
+        rest = rest[anchor_end..].trim_start();
 
-        SimpleExtensionDeclaration {
+        let Some(after_at) = rest.strip_prefix('@') else {
+            return Err(MessageParseError::syntax(
+                "SimpleExtensionDeclaration",
+                format!("expected '@<urn_anchor>' in '{trimmed}'"),
+            ));
+        };
+        rest = after_at.trim_start();
+        let urn_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if urn_end == 0 {
+            return Err(MessageParseError::syntax(
+                "SimpleExtensionDeclaration",
+                format!("missing urn anchor in '{trimmed}'"),
+            ));
+        }
+        let urn_anchor = rest[..urn_end]
+            .parse::<u32>()
+            .map_err(|e| MessageParseError::invalid("SimpleExtensionDeclaration", e))?;
+        rest = rest[urn_end..].trim_start();
+
+        let Some(after_colon) = rest.strip_prefix(':') else {
+            return Err(MessageParseError::syntax(
+                "SimpleExtensionDeclaration",
+                format!("missing ':' in '{trimmed}'"),
+            ));
+        };
+        let raw_name = after_colon.trim();
+        if raw_name.is_empty() {
+            return Err(MessageParseError::invalid(
+                "SimpleExtensionDeclaration",
+                "name cannot be empty",
+            ));
+        }
+
+        let name = if raw_name.starts_with('"') && raw_name.ends_with('"') && raw_name.len() >= 2 {
+            ast::unescape_quoted(raw_name)
+        } else {
+            raw_name.to_string()
+        };
+
+        Ok(Self {
             anchor,
             urn_anchor,
             name,
-        }
+        })
     }
 }
 
-impl FromStr for SimpleExtensionDeclaration {
-    type Err = super::MessageParseError;
+pub fn resolve_extension_detail(
+    registry: &ExtensionRegistry,
+    line_no: i64,
+    line: &str,
+    extension_name: &str,
+    extension_args: &ExtensionArgs,
+) -> Result<Option<Any>, ParseError> {
+    let detail = registry.parse_extension(extension_name, extension_args);
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_str(s)
+    match detail {
+        Ok(any) => Ok(Some(any)),
+        Err(crate::extensions::registry::ExtensionError::ExtensionNotFound(_)) => {
+            Err(ParseError::UnregisteredExtension {
+                name: extension_name.to_string(),
+                context: ParseContext::new(line_no, line.to_string()),
+            })
+        }
+        Err(err) => Err(ParseError::ExtensionDetail(
+            ParseContext::new(line_no, line.to_string()),
+            err,
+        )),
     }
 }
 
-// Extension relation parsing implementations
-// These were moved from extensions/registry.rs to maintain clean architecture
-
-use crate::extensions::any::Any;
-use crate::parser::expressions::{FieldIndex, Name};
-
-impl ParsePair for ExtensionValue {
-    fn rule() -> Rule {
-        Rule::extension_argument
-    }
-
-    fn message() -> &'static str {
-        "ExtensionValue"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
-
-        let inner = unwrap_single_pair(pair); // Extract the actual content
-
-        match inner.as_rule() {
-            Rule::reference => {
-                // Reuse the existing FieldIndex parser, then extract the i32
-                let field_index = FieldIndex::parse_pair(inner);
-                ExtensionValue::Reference(field_index.0)
-            }
-            Rule::literal => {
-                // Literal can contain integer, float, boolean, or string_literal
-                let mut literal_inner = inner.into_inner();
-                let value_pair = literal_inner.next().unwrap();
-                match value_pair.as_rule() {
-                    Rule::string_literal => {
-                        let string_content = value_pair.as_str();
-                        // Remove quotes and unescape
-                        let unquoted = &string_content[1..string_content.len() - 1];
-                        // TODO: Implement proper unescaping
-                        ExtensionValue::String(unquoted.to_string())
-                    }
-                    Rule::integer => {
-                        let int_val = value_pair.as_str().parse::<i64>().unwrap();
-                        ExtensionValue::Integer(int_val)
-                    }
-                    Rule::float => {
-                        let float_val = value_pair.as_str().parse::<f64>().unwrap();
-                        ExtensionValue::Float(float_val)
-                    }
-                    Rule::boolean => {
-                        let bool_val = value_pair.as_str() == "true";
-                        ExtensionValue::Boolean(bool_val)
-                    }
-                    _ => panic!("Unexpected literal value type: {:?}", value_pair.as_rule()),
-                }
-            }
-            Rule::string_literal => {
-                // Direct string literal (not wrapped in literal rule)
-                let string_content = inner.as_str();
-                // Remove quotes and unescape
-                let unquoted = &string_content[1..string_content.len() - 1];
-                // TODO: Implement proper unescaping
-                ExtensionValue::String(unquoted.to_string())
-            }
-            Rule::integer => {
-                // Direct integer (not wrapped in literal rule)
-                let int_val = inner.as_str().parse::<i64>().unwrap();
-                ExtensionValue::Integer(int_val)
-            }
-            Rule::float => {
-                // Direct float (not wrapped in literal rule)
-                let float_val = inner.as_str().parse::<f64>().unwrap();
-                ExtensionValue::Float(float_val)
-            }
-            Rule::boolean => {
-                // Direct boolean (not wrapped in literal rule)
-                let bool_val = inner.as_str() == "true";
-                ExtensionValue::Boolean(bool_val)
-            }
-            Rule::expression => {
-                ExtensionValue::Expression(RawExpression::new(inner.as_str().to_string()))
-            }
-            _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
-        }
+pub fn extension_value_from_arg(arg: &ast::Arg) -> Result<ExtensionValue, MessageParseError> {
+    match arg {
+        ast::Arg::Expr(ast::Expr::FieldRef(idx)) => Ok(ExtensionValue::Reference(*idx)),
+        ast::Arg::Expr(ast::Expr::Literal(lit)) => match (&lit.value, &lit.typ) {
+            (ast::LiteralValue::String(value), None) => Ok(ExtensionValue::String(value.clone())),
+            (ast::LiteralValue::Integer(value), None) => Ok(ExtensionValue::Integer(*value)),
+            (ast::LiteralValue::Float(value), None) => Ok(ExtensionValue::Float(*value)),
+            (ast::LiteralValue::Boolean(value), None) => Ok(ExtensionValue::Boolean(*value)),
+            _ => Ok(ExtensionValue::Expression(RawExpression::new(
+                lit.to_string(),
+            ))),
+        },
+        ast::Arg::Expr(expr) => Ok(ExtensionValue::Expression(RawExpression::new(
+            expr.to_string(),
+        ))),
+        ast::Arg::NamedColumn(_, _)
+        | ast::Arg::Enum(_)
+        | ast::Arg::Tuple(_)
+        | ast::Arg::Wildcard => Ok(ExtensionValue::Expression(RawExpression::new(
+            arg.to_string(),
+        ))),
     }
 }
 
-impl ParsePair for ExtensionColumn {
-    fn rule() -> Rule {
-        Rule::extension_column
-    }
-
-    fn message() -> &'static str {
-        "ExtensionColumn"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
-
-        let inner = unwrap_single_pair(pair); // Extract the actual content
-
-        match inner.as_rule() {
-            Rule::named_column => {
-                let mut iter = inner.into_inner();
-                let name_pair = iter.next().unwrap(); // Grammar guarantees name exists
-                let type_pair = iter.next().unwrap(); // Grammar guarantees type exists
-
-                let name = Name::parse_pair(name_pair).0.to_string(); // Reuse existing Name parser
-                let type_spec = type_pair.as_str().to_string(); // Types are complex, store as string for now
-
-                ExtensionColumn::Named { name, type_spec }
-            }
-            Rule::reference => {
-                // Reuse the existing FieldIndex parser, then extract the i32
-                let field_index = FieldIndex::parse_pair(inner);
-                ExtensionColumn::Reference(field_index.0)
-            }
-            Rule::expression => {
-                ExtensionColumn::Expression(RawExpression::new(inner.as_str().to_string()))
-            }
-            _ => panic!("Unexpected extension column type: {:?}", inner.as_rule()),
-        }
-    }
-}
-
-/// Fully parsed extension invocation, including the user-supplied name and the
-/// structured argument payload.
-#[derive(Debug, Clone)]
-pub struct ExtensionInvocation {
-    pub name: String,
-    pub args: ExtensionArgs,
-}
-
-impl ParsePair for ExtensionInvocation {
-    fn rule() -> Rule {
-        Rule::extension_relation
-    }
-
-    fn message() -> &'static str {
-        "ExtensionInvocation"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
-
-        let mut iter = pair.into_inner();
-
-        // Parse extension name to determine relation type and custom name
-        let extension_name_pair = iter.next().unwrap(); // Grammar guarantees extension_name exists
-        let full_extension_name = extension_name_pair.as_str();
-
-        // Extract the relation type and custom name from the extension name
-        // (e.g., "ExtensionLeaf:ParquetScan" -> "ExtensionLeaf" and "ParquetScan")
-        let (relation_type_str, custom_name) = if full_extension_name.contains(':') {
-            let parts: Vec<&str> = full_extension_name.splitn(2, ':').collect();
-            (parts[0], parts[1].to_string())
-        } else {
-            (full_extension_name, "UnknownExtension".to_string())
-        };
-
-        let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
-        let mut args = ExtensionArgs::new(relation_type);
-
-        // Parse optional arguments and columns
-        for inner_pair in iter {
-            match inner_pair.as_rule() {
-                Rule::extension_arguments => {
-                    // Parse positional arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_argument {
-                            let value = ExtensionValue::parse_pair(arg_pair);
-                            args.add_positional_arg(value);
-                        }
-                    }
-                }
-                Rule::extension_named_arguments => {
-                    // Parse named arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_named_argument {
-                            let mut arg_iter = arg_pair.into_inner();
-                            let name_pair = arg_iter.next().unwrap();
-                            let value_pair = arg_iter.next().unwrap();
-
-                            let name = Name::parse_pair(name_pair).0.to_string();
-                            let value = ExtensionValue::parse_pair(value_pair);
-                            args.add_named_arg(name, value);
-                        }
-                    }
-                }
-                Rule::extension_columns => {
-                    // Parse output columns
-                    for col_pair in inner_pair.into_inner() {
-                        if col_pair.as_rule() == Rule::extension_column {
-                            let column = ExtensionColumn::parse_pair(col_pair);
-                            args.add_output_column(column);
-                        }
-                    }
-                }
-                r => panic!("Unexpected rule in ExtensionArgs: {:?}", r),
-            }
-        }
-
-        ExtensionInvocation {
-            name: custom_name,
-            args,
-        }
+pub fn extension_column_from_arg(arg: &ast::Arg) -> Result<ExtensionColumn, MessageParseError> {
+    match arg {
+        ast::Arg::NamedColumn(name, typ) => Ok(ExtensionColumn::Named {
+            name: name.clone(),
+            type_spec: typ.to_string(),
+        }),
+        ast::Arg::Expr(ast::Expr::FieldRef(idx)) => Ok(ExtensionColumn::Reference(*idx)),
+        ast::Arg::Expr(expr) => Ok(ExtensionColumn::Expression(RawExpression::new(
+            expr.to_string(),
+        ))),
+        ast::Arg::Enum(_) | ast::Arg::Tuple(_) | ast::Arg::Wildcard => Ok(
+            ExtensionColumn::Expression(RawExpression::new(arg.to_string())),
+        ),
     }
 }
 
 impl ExtensionRelationType {
-    /// Create appropriate relation structure from extension detail and children.
-    /// This method handles the structural logic for creating different extension relation types.
     pub fn create_rel(
         self,
         detail: Option<Any>,
@@ -458,7 +340,6 @@ impl ExtensionRelationType {
         use substrait::proto::rel::RelType;
         use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
 
-        // Validate child count matches relation type
         self.validate_child_count(children.len())?;
 
         let rel_type = match self {
@@ -498,34 +379,24 @@ mod tests {
     #[test]
     fn test_parse_urn_extension_declaration() {
         let line = "@1: /my/urn1";
-        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
+        let urn = URNExtensionDeclaration::from_str(line).unwrap();
         assert_eq!(urn.anchor, 1);
         assert_eq!(urn.urn, "/my/urn1");
     }
 
     #[test]
     fn test_parse_simple_extension_declaration() {
-        // Assumes a format like "@anchor: urn_anchor:name"
         let line = "#5@2: my_function_name";
         let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "my_function_name");
 
-        // Test with a different name format, e.g. with underscores and numbers
         let line2 = "#10  @200: another_ext_123";
         let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
         assert_eq!(decl.anchor, 10);
         assert_eq!(decl.urn_anchor, 200);
         assert_eq!(decl.name, "another_ext_123");
-    }
-
-    #[test]
-    fn test_parse_urn_extension_declaration_str() {
-        let line = "@1: /my/urn1";
-        let urn = URNExtensionDeclaration::parse_str(line).unwrap();
-        assert_eq!(urn.anchor, 1);
-        assert_eq!(urn.urn, "/my/urn1");
     }
 
     #[test]
@@ -545,22 +416,17 @@ Type Variations:
 "#
         .trim_start();
 
-        // Parse the input using the structural parser
         let plan = Parser::parse(input).unwrap();
 
-        // Verify the plan has the expected extensions
         assert_eq!(plan.extension_urns.len(), 2);
         assert_eq!(plan.extensions.len(), 4);
 
-        // Convert the plan extensions back to SimpleExtensions
         let (extensions, errors) =
             SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
 
         assert!(errors.is_empty());
-        // Convert back to string
         let output = extensions.to_string("  ");
 
-        // The output should match the input
         assert_eq!(output, input);
     }
 }

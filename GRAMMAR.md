@@ -57,9 +57,8 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 - **`element*`** - Zero or more repetitions
 - **`element+`** - One or more repetitions
 - **`element1 / element2`** - Choice (try element1 first)
-  - _Implementation Note: Pest uses `|` instead of `/`_
 - **`element1 element2`** - Sequence
-  - _Implementation Note: Pest uses `~` for explicit concatenation_
+- **`// comment`** - Line comment (allowed at line start or after whitespace)
 
 ## Basic Example
 
@@ -467,6 +466,7 @@ argument := literal / expression / enum / tuple
 tuple := "(" argument ("," argument)* ")"
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
+comment := "//" (!newline .)*
 ```
 
 #### Examples

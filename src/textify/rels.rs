@@ -904,7 +904,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
-    use crate::parser::expressions::FieldIndex;
+    use crate::textify::expressions::Reference;
 
     #[test]
     fn test_read_rel() {
@@ -1054,11 +1054,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn = AggregateFunction {
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1087,11 +1083,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn1 = AggregateFunction {
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1105,11 +1097,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let agg_fn2 = AggregateFunction {
             function_reference: 11, // count
             arguments: vec![FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
-                })),
+                arg_type: Some(ArgType::Value(Reference(1).into())),
             }],
             options: vec![],
             output_type: None,
@@ -1156,9 +1144,7 @@ Filter[gt($0, 10:i32) => $0, $1]
                 }))),
             })),
             grouping_expressions: vec![Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    FieldIndex(0).to_field_reference(),
-                ))),
+                rex_type: Expression::from(Reference(0)).rex_type,
             }],
             groupings: vec![],
             measures: vec![
