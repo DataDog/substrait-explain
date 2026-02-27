@@ -44,6 +44,8 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
    just fix                      # Format code, auto-fix clippy errors
    cargo test                    # Run all tests
    cargo test -- --nocapture     # Run tests with output
+   cargo test --doc              # Run doctests
+   cargo doc --no-deps --all-features
    cargo run --example basic_usage
    cargo doc --open              # View documentation
    ```
@@ -53,7 +55,7 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 - Follow Rust conventions and idioms
 - Use `cargo fmt` for formatting (enforced by pre-commit hooks)
 - Run `cargo clippy` to catch common issues (enforced by pre-commit hooks)
-- Add documentation for public APIs, and review them with `cargo doc --open`
+- Add documentation for public APIs and non-obvious internal types/modules
 - Include tests for new functionality
 
 ### Project-Specific Guidelines
@@ -67,27 +69,40 @@ This project implements Substrait protobuf plan parsing and formatting. See the 
 - **Enum textification**: All Substrait enums use `&` prefix in text format (e.g., `&Inner`, `&AscNullsFirst`)
 - **Unknown enum handling**: For invalid/unknown enum values, use `Value::Missing(PlanError)` and fallback to reasonable default enum value (usually `UNSPECIFIED`) for processing
 
+#### Architecture and API Principles
+
+These principles apply across the whole repository:
+
+- Prefer a single canonical code path for a behavior.
+- Avoid facade/free-function wrappers that only forward to another API.
+- Prefer direct conversions with standard traits (`From`, `TryFrom`, `Into`) over one-line helper functions.
+- Use traits to describe behavior and extension points, not to hide simple call chains.
+- Keep wrappers/newtypes when they provide semantic clarity and validation boundaries.
+- Avoid type explosion: if multiple wrappers differ only by context, prefer one typed value plus a kind/tag when that keeps clarity.
+- Keep parsing, semantic conversion, and formatting responsibilities clearly separated.
+
 #### Error Handling Patterns
 
 This project uses different error handling patterns depending on the context:
 
 ##### Parser Context
 
-Unwraps are safe where the grammar enforces the invariants. Always assert that the right rule was used to ensure the same invariants:
+When parsing user input, return structured errors with context. Prefer explicit parse errors over panics:
 
 ```rust
-// Parser helpers should consume generated typed nodes directly.
-fn parse_expression(node: &rules::expression<'_>) -> Result<Expression, MessageParseError> {
-    if let Some(literal) = node.literal() {
-        return Ok(Expression {
-            rex_type: Some(RexType::Literal(parse_literal(literal)?)),
-        });
-    }
-    unreachable!("grammar guarantees expression shape");
-}
+return Err(MessageParseError::invalid(
+    "SomeMessage",
+    span,
+    "Description of invalid user input",
+));
 ```
 
-_Note: parser internals use `pest_typed` and generated typed rules. Keep grammar and parser logic aligned so invariants remain compile-time checked wherever possible._
+Parser-specific rules:
+
+- Use typed parse nodes from `pest_typed` directly.
+- Do not add user-triggerable `panic!`, `todo!`, or `unimplemented!`.
+- Use `unreachable!` only for true grammar invariants, with a short invariant comment.
+- Keep grammar and parser logic aligned so invariants remain compile-time checked where possible.
 
 ##### Other Parsing Context (e.g., lookups)
 
@@ -140,15 +155,40 @@ assert!(result.is_ok());
 - Return `Result` types for operations that can legitimately fail
 - Collect and continue for formatting errors, fail-fast for parsing errors
 
-#### Parser Internals
+#### Internal Design Guidelines
 
-Parser internals are intentionally not part of the stable public API. Avoid introducing new public parser-internal surfaces (low-level rule enums, pair iterators, or parser glue types) unless there is a clear external use case.
+Prefer clear, layered code paths over ad hoc transformations.
+
+Prefer idiomatic Rust structure and standard traits where they improve clarity:
+
+- Use `From`/`TryFrom` for explicit value conversions.
+- Use iterator adapters and collection utilities (`Iterator`, `collect`, etc.) when they make intent clearer than manual loops.
+- Use small focused traits to encode repeatable patterns shared by multiple modules.
+- Remove pass-through helper functions that add indirection without behavior.
+- Keep APIs in core modules and avoid parallel duplicate surfaces.
+
+For parse and formatting error handling:
+
+- Return `<ErrorType>::invalid(...)` style errors for user-input-reachable failures.
+- Keep `unreachable!` only for true grammar invariants, with a short invariant comment.
+- Do not add user-triggerable `panic!`, `todo!`, or `unimplemented!` paths.
 
 #### Documentation Formatting
 
 ##### Rustdoc Markdown Formatting
 
-Since markdown files are included in Rustdoc, use `##` for actual `#` characters in code examples (especially important for Substrait extension syntax). Lines starting with `# ` are hidden in documentation but included for compilation. Run `cargo test --doc` to verify examples compile correctly.
+Write docs for what is not obvious from code:
+
+- Module docs should describe purpose and boundaries.
+- Type/trait docs should describe semantics and intended use.
+- Avoid redundant comments that restate code.
+
+Use Rustdoc links and keep docs warning-free:
+
+- Prefer intra-doc links: [`TypeName`] instead of plain `TypeName`.
+- Avoid redundant explicit link targets (for example, use [`prost_types::Any`] instead of [`prost_types::Any`](prost_types::Any)).
+
+Since markdown files are included in Rustdoc, use `##` for actual `#` characters in code examples (especially important for Substrait extension syntax). Lines starting with `# ` are hidden in documentation but included for compilation.
 
 ```rust
 // Correct: ## becomes # in Substrait syntax
@@ -157,6 +197,12 @@ Since markdown files are included in Rustdoc, use `##` for actual `#` characters
 // Incorrect: # becomes a markdown header
 # 10 @  1: add
 ```
+
+Documentation validation commands:
+
+- `cargo test --doc`
+- `cargo doc --no-deps --all-features`
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`
 
 ##### Grammar Documentation Best Practices
 
@@ -170,7 +216,11 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 
 **Roundtrip testing**: The most effective validation is parse→format→parse comparison. Parse text to protobuf, format back to text, and verify the output matches the input. See `tests/plan_roundtrip.rs` for examples.
 
-**TODO**: Add comprehensive edge case testing for invalid enum values, unknown relation types, malformed input, and boundary conditions to ensure graceful error handling.
+Also include focused tests for:
+
+- Error-path behavior (including message/context quality)
+- Boundary values and malformed input
+- Any new conversion/wrapper traits or parsing branches introduced in a change
 
 ### Pull Request Process
 
@@ -187,7 +237,7 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 
 - Keep changes focused and atomic
 - Include tests for new functionality
-- Update documentation if needed
+- Update documentation when APIs or behavior change
 - Ensure all CI checks pass
   - You may wish to leave it in 'Draft' form until you validate this
 - Provide a clear description of what the PR does
