@@ -1,3 +1,9 @@
+//! Core typed-node lowering for Substrait expressions.
+//!
+//! Relation parsing delegates expression fragments to this module. The same
+//! lowering path is also exposed via `ParseFragment` impls for expression-level
+//! protobuf messages.
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use pest_typed::Spanned;
 use substrait::proto::aggregate_rel::Measure;
@@ -10,24 +16,10 @@ use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
 
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
-use crate::parser::common::{
-    MessageParseError, parse_typed, rules, typed_to_pest_span, unescape_string,
-};
-pub use crate::parser::convert::{FieldIndex, Name};
-use crate::parser::convert::{FunctionAnchor, Lower, ParseCtx, UrnAnchor};
-use crate::parser::types::{get_and_validate_anchor, parse_type_node};
-
-pub(crate) fn parse_field_index_node(
-    node: &rules::reference<'_>,
-) -> Result<FieldIndex, MessageParseError> {
-    FieldIndex::try_from(node)
-}
-
-pub(crate) fn parse_field_reference_node(
-    node: &rules::reference<'_>,
-) -> Result<FieldReference, MessageParseError> {
-    Ok(parse_field_index_node(node)?.to_field_reference())
-}
+use crate::parser::ParseFragment;
+use crate::parser::common::{MessageParseError, parse_typed, rules, unescape_string};
+use crate::parser::convert::{Anchor, AnchorKind, Lower, Name, ParseCtx, UrnAnchor};
+use crate::parser::types::get_and_validate_anchor;
 
 fn to_int_literal(
     value: &rules::integer<'_>,
@@ -66,7 +58,7 @@ fn to_int_literal(
         k => {
             return Err(MessageParseError::invalid(
                 "int_literal_type",
-                typed_to_pest_span(value.span()),
+                value.span(),
                 format!("Invalid type for integer literal: {k:?}"),
             ));
         }
@@ -106,7 +98,7 @@ fn to_float_literal(
         k => {
             return Err(MessageParseError::invalid(
                 "float_literal_type",
-                typed_to_pest_span(value.span()),
+                value.span(),
                 format!("Invalid type for float literal: {k:?}"),
             ));
         }
@@ -153,7 +145,7 @@ fn to_string_literal(
 
     match &kind {
         Kind::Date(d) => {
-            let date_days = parse_date_to_days(&string_value, typed_to_pest_span(value.span()))?;
+            let date_days = parse_date_to_days(&string_value, value.span())?;
             Ok(Literal {
                 literal_type: Some(LiteralType::Date(date_days)),
                 nullable: d.nullability != Nullability::Required as i32,
@@ -161,8 +153,7 @@ fn to_string_literal(
             })
         }
         Kind::Time(t) => {
-            let time_microseconds =
-                parse_time_to_microseconds(&string_value, typed_to_pest_span(value.span()))?;
+            let time_microseconds = parse_time_to_microseconds(&string_value, value.span())?;
             Ok(Literal {
                 literal_type: Some(LiteralType::Time(time_microseconds)),
                 nullable: t.nullability != Nullability::Required as i32,
@@ -172,7 +163,7 @@ fn to_string_literal(
         #[allow(deprecated)]
         Kind::Timestamp(ts) => {
             let timestamp_microseconds =
-                parse_timestamp_to_microseconds(&string_value, typed_to_pest_span(value.span()))?;
+                parse_timestamp_to_microseconds(&string_value, value.span())?;
             Ok(Literal {
                 literal_type: Some(LiteralType::Timestamp(timestamp_microseconds)),
                 nullable: ts.nullability != Nullability::Required as i32,
@@ -188,7 +179,10 @@ fn to_string_literal(
 }
 
 /// Parse a date string using chrono to days since Unix epoch
-fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessageParseError> {
+fn parse_date_to_days(
+    date_str: &str,
+    span: pest_typed::Span<'_>,
+) -> Result<i32, MessageParseError> {
     let formats = ["%Y-%m-%d", "%Y/%m/%d"];
 
     for format in &formats {
@@ -207,7 +201,10 @@ fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessagePa
 }
 
 /// Parse a time string using chrono to microseconds since midnight
-fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, MessageParseError> {
+fn parse_time_to_microseconds(
+    time_str: &str,
+    span: pest_typed::Span<'_>,
+) -> Result<i64, MessageParseError> {
     let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
 
     for format in &formats {
@@ -228,7 +225,7 @@ fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, M
 /// Parse a timestamp string using chrono to microseconds since Unix epoch
 fn parse_timestamp_to_microseconds(
     timestamp_str: &str,
-    span: pest::Span,
+    span: pest_typed::Span<'_>,
 ) -> Result<i64, MessageParseError> {
     let formats = [
         "%Y-%m-%dT%H:%M:%S%.f",
@@ -258,185 +255,27 @@ fn parse_timestamp_to_microseconds(
     ))
 }
 
-pub(crate) fn parse_literal_node(
-    extensions: &SimpleExtensions,
-    node: &rules::literal<'_>,
-) -> Result<Literal, MessageParseError> {
-    let typ = match node.r#type() {
-        Some(t) => Some(parse_type_node(extensions, t)?),
-        None => None,
-    };
-
-    if let Some(integer) = node.integer() {
-        return to_int_literal(integer, typ);
-    }
-    if let Some(float) = node.float() {
-        return to_float_literal(float, typ);
-    }
-    if let Some(boolean) = node.boolean() {
-        return Ok(to_boolean_literal(boolean));
-    }
-    if let Some(string_literal) = node.string_literal() {
-        return to_string_literal(string_literal, typ);
-    }
-
-    // Grammar guarantees literal value is one of integer, float, boolean, string_literal.
-    unreachable!("literal must be integer, float, boolean, or string_literal")
-}
-
-pub(crate) fn parse_name_node(node: &rules::name<'_>) -> Name {
-    Name::from(node)
-}
-
-pub(crate) fn parse_scalar_function_node(
-    extensions: &SimpleExtensions,
-    node: &rules::function_call<'_>,
-) -> Result<ScalarFunction, MessageParseError> {
-    let span = node.span();
-    let name = parse_name_node(node.name());
-
-    let anchor = node.anchor().map(FunctionAnchor::try_from).transpose()?;
-
-    // TODO: Handle urn_anchor and validate that it matches anchor where relevant.
-    let _urn_anchor = node.urn_anchor().map(UrnAnchor::try_from).transpose()?;
-
-    let mut arguments = Vec::new();
-    if let Some((first, rest)) = node.argument_list().expression() {
-        let mut values = Vec::with_capacity(rest.len() + 1);
-        values.push(first);
-        values.extend(rest);
-        for expression in values {
-            arguments.push(FunctionArgument {
-                arg_type: Some(ArgType::Value(parse_expression_node(
-                    extensions, expression,
-                )?)),
-            });
-        }
-    }
-
-    let output_type = match node.r#type() {
-        Some(t) => Some(parse_type_node(extensions, t)?),
-        None => None,
-    };
-
-    let anchor = get_and_validate_anchor(
-        extensions,
-        ExtensionKind::Function,
-        anchor.map(u32::from),
-        &name.0,
-        typed_to_pest_span(span),
-    )?;
-
-    Ok(ScalarFunction {
-        function_reference: anchor,
-        arguments,
-        options: vec![],
-        output_type,
-        #[allow(deprecated)]
-        args: vec![],
-    })
-}
-
-pub(crate) fn parse_expression_node(
-    extensions: &SimpleExtensions,
-    node: &rules::expression<'_>,
-) -> Result<Expression, MessageParseError> {
-    if let Some(literal) = node.literal() {
-        return Ok(Expression {
-            rex_type: Some(RexType::Literal(parse_literal_node(extensions, literal)?)),
-        });
-    }
-
-    if let Some(function_call) = node.function_call() {
-        return Ok(Expression {
-            rex_type: Some(RexType::ScalarFunction(parse_scalar_function_node(
-                extensions,
-                function_call,
-            )?)),
-        });
-    }
-
-    if let Some(reference) = node.reference() {
-        return Ok(Expression {
-            rex_type: Some(RexType::Selection(Box::new(parse_field_reference_node(
-                reference,
-            )?))),
-        });
-    }
-
-    if let Some(if_then) = node.if_then() {
-        return Ok(Expression {
-            rex_type: Some(RexType::IfThen(Box::new(parse_if_then_node(
-                extensions, if_then,
-            )?))),
-        });
-    }
-
-    // Grammar guarantees expression is one of literal/function_call/reference/if_then.
-    unreachable!("expression must be literal, function_call, reference, or if_then")
-}
-
-pub(crate) fn parse_if_clause_node(
-    extensions: &SimpleExtensions,
-    node: &rules::if_clause<'_>,
-) -> Result<IfClause, MessageParseError> {
-    let (condition, result) = node.expression();
-
-    Ok(IfClause {
-        r#if: Some(parse_expression_node(extensions, condition)?),
-        then: Some(parse_expression_node(extensions, result)?),
-    })
-}
-
-pub(crate) fn parse_if_then_node(
-    extensions: &SimpleExtensions,
-    node: &rules::if_then<'_>,
-) -> Result<IfThen, MessageParseError> {
-    let (first_clause, rest_clauses) = node.if_clause();
-    let mut ifs = Vec::with_capacity(rest_clauses.len() + 1);
-
-    ifs.push(parse_if_clause_node(extensions, first_clause)?);
-    for clause in rest_clauses {
-        ifs.push(parse_if_clause_node(extensions, clause)?);
-    }
-
-    let else_clause = Some(Box::new(parse_expression_node(
-        extensions,
-        node.expression(),
-    )?));
-
-    Ok(IfThen {
-        ifs,
-        r#else: else_clause,
-    })
-}
-
-pub(crate) fn parse_measure_node(
-    extensions: &SimpleExtensions,
-    node: &rules::aggregate_measure<'_>,
-) -> Result<Measure, MessageParseError> {
-    let scalar = parse_scalar_function_node(extensions, node.function_call())?;
-    Ok(Measure {
-        measure: Some(AggregateFunction {
-            function_reference: scalar.function_reference,
-            arguments: scalar.arguments,
-            options: scalar.options,
-            output_type: scalar.output_type,
-            invocation: 0,
-            phase: 0,
-            sorts: vec![],
-            #[allow(deprecated)]
-            args: scalar.args,
-        }),
-        filter: None,
-    })
-}
-
 impl Lower for rules::literal<'_> {
     type Output = Literal;
 
     fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
-        parse_literal_node(cx.extensions, self)
+        let typ = self.r#type().map(|t| t.lower(cx)).transpose()?;
+
+        if let Some(integer) = self.integer() {
+            return to_int_literal(integer, typ);
+        }
+        if let Some(float) = self.float() {
+            return to_float_literal(float, typ);
+        }
+        if let Some(boolean) = self.boolean() {
+            return Ok(to_boolean_literal(boolean));
+        }
+        if let Some(string_literal) = self.string_literal() {
+            return to_string_literal(string_literal, typ);
+        }
+
+        // Grammar guarantees literal value is one of integer, float, boolean, string_literal.
+        unreachable!("literal must be integer, float, boolean, or string_literal")
     }
 }
 
@@ -444,7 +283,47 @@ impl Lower for rules::function_call<'_> {
     type Output = ScalarFunction;
 
     fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
-        parse_scalar_function_node(cx.extensions, self)
+        let span = self.span();
+        let name = Name::from(self.name());
+
+        let anchor = self
+            .anchor()
+            .map(|a| Anchor::parse(a, AnchorKind::Function))
+            .transpose()?;
+
+        // TODO: Handle urn_anchor and validate that it matches anchor where relevant.
+        let _urn_anchor = self.urn_anchor().map(UrnAnchor::try_from).transpose()?;
+
+        let mut arguments = Vec::new();
+        if let Some((first, rest)) = self.argument_list().expression() {
+            let mut values = Vec::with_capacity(rest.len() + 1);
+            values.push(first);
+            values.extend(rest);
+            for expression in values {
+                arguments.push(FunctionArgument {
+                    arg_type: Some(ArgType::Value(expression.lower(cx)?)),
+                });
+            }
+        }
+
+        let output_type = self.r#type().map(|t| t.lower(cx)).transpose()?;
+
+        let anchor = get_and_validate_anchor(
+            cx.extensions,
+            ExtensionKind::Function,
+            anchor.map(u32::from),
+            &name.0,
+            span,
+        )?;
+
+        Ok(ScalarFunction {
+            function_reference: anchor,
+            arguments,
+            options: vec![],
+            output_type,
+            #[allow(deprecated)]
+            args: vec![],
+        })
     }
 }
 
@@ -452,46 +331,135 @@ impl Lower for rules::expression<'_> {
     type Output = Expression;
 
     fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
-        parse_expression_node(cx.extensions, self)
+        if let Some(literal) = self.literal() {
+            return Ok(Expression {
+                rex_type: Some(RexType::Literal(literal.lower(cx)?)),
+            });
+        }
+        if let Some(function_call) = self.function_call() {
+            return Ok(Expression {
+                rex_type: Some(RexType::ScalarFunction(function_call.lower(cx)?)),
+            });
+        }
+        if let Some(reference) = self.reference() {
+            return Ok(Expression {
+                rex_type: Some(RexType::Selection(Box::new(FieldReference::try_from(
+                    reference,
+                )?))),
+            });
+        }
+        if let Some(if_then) = self.if_then() {
+            return Ok(Expression {
+                rex_type: Some(RexType::IfThen(Box::new(if_then.lower(cx)?))),
+            });
+        }
+
+        // Grammar guarantees expression is one of literal/function_call/reference/if_then.
+        unreachable!("expression must be literal, function_call, reference, or if_then")
     }
 }
 
-pub(crate) fn parse_literal(
-    extensions: &SimpleExtensions,
-    input: &str,
-) -> Result<Literal, MessageParseError> {
-    let cx = ParseCtx { extensions };
-    let typed = parse_typed::<rules::literal<'_>>(input, "Literal")?;
-    typed.lower(&cx)
+impl Lower for rules::if_clause<'_> {
+    type Output = IfClause;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        let (condition, result) = self.expression();
+        Ok(IfClause {
+            r#if: Some(condition.lower(cx)?),
+            then: Some(result.lower(cx)?),
+        })
+    }
 }
 
-pub(crate) fn parse_scalar_function(
-    extensions: &SimpleExtensions,
-    input: &str,
-) -> Result<ScalarFunction, MessageParseError> {
-    let cx = ParseCtx { extensions };
-    let typed = parse_typed::<rules::function_call<'_>>(input, "ScalarFunction")?;
-    typed.lower(&cx)
+impl Lower for rules::if_then<'_> {
+    type Output = IfThen;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        let (first_clause, rest_clauses) = self.if_clause();
+        let mut ifs = Vec::with_capacity(rest_clauses.len() + 1);
+
+        ifs.push(first_clause.lower(cx)?);
+        for clause in rest_clauses {
+            ifs.push(clause.lower(cx)?);
+        }
+
+        Ok(IfThen {
+            ifs,
+            r#else: Some(Box::new(self.expression().lower(cx)?)),
+        })
+    }
 }
 
-pub(crate) fn parse_expression(
-    extensions: &SimpleExtensions,
-    input: &str,
-) -> Result<Expression, MessageParseError> {
-    let cx = ParseCtx { extensions };
-    let typed = parse_typed::<rules::expression<'_>>(input, "Expression")?;
-    typed.lower(&cx)
+impl Lower for rules::aggregate_measure<'_> {
+    type Output = Measure;
+
+    fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError> {
+        let scalar = self.function_call().lower(cx)?;
+        Ok(Measure {
+            measure: Some(AggregateFunction {
+                function_reference: scalar.function_reference,
+                arguments: scalar.arguments,
+                options: scalar.options,
+                output_type: scalar.output_type,
+                invocation: 0,
+                phase: 0,
+                sorts: vec![],
+                #[allow(deprecated)]
+                args: scalar.args,
+            }),
+            filter: None,
+        })
+    }
 }
 
-pub(crate) fn parse_field_reference(input: &str) -> Result<FieldReference, MessageParseError> {
-    let typed = parse_typed::<rules::reference<'_>>(input, "FieldReference")?;
-    parse_field_reference_node(&typed)
+impl ParseFragment for Literal {
+    fn parse_fragment(
+        extensions: &SimpleExtensions,
+        input: &str,
+    ) -> Result<Self, MessageParseError> {
+        let cx = ParseCtx { extensions };
+        let typed = parse_typed::<rules::literal<'_>>(input, "Literal")?;
+        typed.lower(&cx)
+    }
+}
+
+impl ParseFragment for ScalarFunction {
+    fn parse_fragment(
+        extensions: &SimpleExtensions,
+        input: &str,
+    ) -> Result<Self, MessageParseError> {
+        let cx = ParseCtx { extensions };
+        let typed = parse_typed::<rules::function_call<'_>>(input, "ScalarFunction")?;
+        typed.lower(&cx)
+    }
+}
+
+impl ParseFragment for Expression {
+    fn parse_fragment(
+        extensions: &SimpleExtensions,
+        input: &str,
+    ) -> Result<Self, MessageParseError> {
+        let cx = ParseCtx { extensions };
+        let typed = parse_typed::<rules::expression<'_>>(input, "Expression")?;
+        typed.lower(&cx)
+    }
+}
+
+impl ParseFragment for FieldReference {
+    fn parse_fragment(
+        _extensions: &SimpleExtensions,
+        input: &str,
+    ) -> Result<Self, MessageParseError> {
+        let typed = parse_typed::<rules::reference<'_>>(input, "FieldReference")?;
+        FieldReference::try_from(&typed)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixtures::TestContext;
+    use crate::parser::convert::FieldIndex;
 
     fn make_literal_bool(value: bool) -> Expression {
         Expression {
@@ -506,8 +474,8 @@ mod tests {
     #[test]
     fn test_parse_field_reference() {
         assert_eq!(
-            parse_field_reference("$1").unwrap(),
-            FieldIndex(1).to_field_reference()
+            FieldReference::parse_fragment(&SimpleExtensions::default(), "$1").unwrap(),
+            FieldReference::from(FieldIndex(1))
         );
     }
 
@@ -519,7 +487,7 @@ mod tests {
             nullable: false,
             type_variation_reference: 0,
         };
-        assert_eq!(parse_literal(&extensions, "1").unwrap(), expected);
+        assert_eq!(Literal::parse_fragment(&extensions, "1").unwrap(), expected);
     }
 
     #[test]
@@ -530,7 +498,10 @@ mod tests {
             nullable: false,
             type_variation_reference: 0,
         };
-        assert_eq!(parse_literal(&extensions, "3.82").unwrap(), expected);
+        assert_eq!(
+            Literal::parse_fragment(&extensions, "3.82").unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -541,14 +512,17 @@ mod tests {
             nullable: false,
             type_variation_reference: 0,
         };
-        assert_eq!(parse_literal(&extensions, "-2.5").unwrap(), expected);
+        assert_eq!(
+            Literal::parse_fragment(&extensions, "-2.5").unwrap(),
+            expected
+        );
     }
 
     #[test]
     fn test_parse_boolean_literals() {
         let extensions = SimpleExtensions::default();
         assert_eq!(
-            parse_literal(&extensions, "true").unwrap(),
+            Literal::parse_fragment(&extensions, "true").unwrap(),
             Literal {
                 literal_type: Some(LiteralType::Boolean(true)),
                 nullable: false,
@@ -556,7 +530,7 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_literal(&extensions, "false").unwrap(),
+            Literal::parse_fragment(&extensions, "false").unwrap(),
             Literal {
                 literal_type: Some(LiteralType::Boolean(false)),
                 nullable: false,
@@ -568,7 +542,7 @@ mod tests {
     #[test]
     fn test_parse_float_literal_with_fp32_type() {
         let extensions = SimpleExtensions::default();
-        let result = parse_literal(&extensions, "3.82:fp32").unwrap();
+        let result = Literal::parse_fragment(&extensions, "3.82:fp32").unwrap();
 
         match result.literal_type {
             Some(LiteralType::Fp32(val)) => assert!((val - 3.82).abs() < f32::EPSILON),
@@ -579,7 +553,7 @@ mod tests {
     #[test]
     fn test_parse_date_literal() {
         let extensions = SimpleExtensions::default();
-        let result = parse_literal(&extensions, "'2023-12-25':date").unwrap();
+        let result = Literal::parse_fragment(&extensions, "'2023-12-25':date").unwrap();
 
         match result.literal_type {
             Some(LiteralType::Date(days)) => assert!(days > 0, "Expected positive days"),
@@ -590,7 +564,7 @@ mod tests {
     #[test]
     fn test_parse_time_literal() {
         let extensions = SimpleExtensions::default();
-        let result = parse_literal(&extensions, "'14:30:45':time").unwrap();
+        let result = Literal::parse_fragment(&extensions, "'14:30:45':time").unwrap();
 
         match result.literal_type {
             Some(LiteralType::Time(microseconds)) => {
@@ -604,7 +578,8 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_t() {
         let extensions = SimpleExtensions::default();
-        let result = parse_literal(&extensions, "'2023-01-01T12:00:00':timestamp").unwrap();
+        let result =
+            Literal::parse_fragment(&extensions, "'2023-01-01T12:00:00':timestamp").unwrap();
 
         match result.literal_type {
             #[allow(deprecated)]
@@ -624,7 +599,8 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_space() {
         let extensions = SimpleExtensions::default();
-        let result = parse_literal(&extensions, "'2023-01-01 12:00:00':timestamp").unwrap();
+        let result =
+            Literal::parse_fragment(&extensions, "'2023-01-01 12:00:00':timestamp").unwrap();
 
         match result.literal_type {
             #[allow(deprecated)]
@@ -644,9 +620,12 @@ mod tests {
     #[test]
     fn test_parse_if_then_single_clause() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let typed =
             parse_typed::<rules::if_then<'_>>("if_then(true -> 42, _ -> 0)", "IfThen").unwrap();
-        let result = parse_if_then_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         assert_eq!(result.ifs.len(), 1);
         assert!(result.r#else.is_some());
@@ -655,10 +634,13 @@ mod tests {
     #[test]
     fn test_parse_if_then_with_typed_literals() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let typed =
             parse_typed::<rules::if_then<'_>>("if_then(true -> 100:i32, _ -> -100:i32)", "IfThen")
                 .unwrap();
-        let result = parse_if_then_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         assert_eq!(result.ifs.len(), 1);
         assert!(result.r#else.is_some());
@@ -667,11 +649,14 @@ mod tests {
     #[test]
     fn test_parse_if_clause_with_whitespace_variations() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let inputs = vec!["true->false", "true -> false", "true  ->  false"];
 
         for input in inputs {
             let typed = parse_typed::<rules::if_clause<'_>>(input, "IfClause").unwrap();
-            let result = parse_if_clause_node(&extensions, &typed).unwrap();
+            let result = typed.lower(&cx).unwrap();
             assert!(result.r#if.is_some());
             assert!(result.then.is_some());
         }
@@ -680,8 +665,11 @@ mod tests {
     #[test]
     fn test_if_clause_structure() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let typed = parse_typed::<rules::if_clause<'_>>("42 -> 100", "IfClause").unwrap();
-        let result = parse_if_clause_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         let if_expr = result.r#if.as_ref().unwrap();
         let then_expr = result.then.as_ref().unwrap();
@@ -695,10 +683,13 @@ mod tests {
     #[test]
     fn test_if_then_structure() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let typed =
             parse_typed::<rules::if_then<'_>>("if_then(true -> 1, false -> 2, _ -> 0)", "IfThen")
                 .unwrap();
-        let result = parse_if_then_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         assert_eq!(result.ifs.len(), 2);
         for clause in &result.ifs {
@@ -711,9 +702,12 @@ mod tests {
     #[test]
     fn test_parse_if_then_mixed_types_in_conditions() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let input = "if_then(true -> 1, true -> 'yes', 'yes' -> true, 42 -> 2, $0 -> 3, _ -> 0)";
         let typed = parse_typed::<rules::if_then<'_>>(input, "IfThen").unwrap();
-        let result = parse_if_then_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         assert_eq!(result.ifs.len(), 5);
         assert!(result.r#else.is_some());
@@ -722,9 +716,12 @@ mod tests {
     #[test]
     fn test_if_then_preserves_clause_order() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
         let input = "if_then(1 -> 10, 2 -> 20, 3 -> 30, _ -> 0)";
         let typed = parse_typed::<rules::if_then<'_>>(input, "IfThen").unwrap();
-        let result = parse_if_then_node(&extensions, &typed).unwrap();
+        let result = typed.lower(&cx).unwrap();
 
         assert_eq!(result.ifs.len(), 3);
 
@@ -732,17 +729,18 @@ mod tests {
             if let Some(Expression {
                 rex_type: Some(RexType::Literal(lit)),
             }) = &clause.r#if
-            {
-                if let Some(LiteralType::I64(val)) = &lit.literal_type {
+                && let Some(LiteralType::I64(val)) = &lit.literal_type {
                     assert_eq!(*val, (i as i64) + 1);
                 }
-            }
         }
     }
 
     #[test]
     fn test_parse_if_then() {
         let extensions = SimpleExtensions::default();
+        let cx = ParseCtx {
+            extensions: &extensions,
+        };
 
         let c1 = IfClause {
             r#if: Some(make_literal_bool(true)),
@@ -764,7 +762,7 @@ mod tests {
             "IfThen",
         )
         .unwrap();
-        let actual = parse_if_then_node(&extensions, &typed).unwrap();
+        let actual = typed.lower(&cx).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -775,7 +773,7 @@ mod tests {
             .with_function(4, 12, "foo")
             .with_function(4, 14, "bar");
 
-        assert!(ctx.parse_scalar_function("foo()").is_ok());
-        assert!(ctx.parse_expression("bar(12)").is_ok());
+        assert!(ScalarFunction::parse_fragment(&ctx.extensions, "foo()").is_ok());
+        assert!(Expression::parse_fragment(&ctx.extensions, "bar(12)").is_ok());
     }
 }

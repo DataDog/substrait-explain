@@ -1,3 +1,5 @@
+//! Textification helpers for Substrait type messages and related wrappers.
+
 use std::fmt;
 use std::ops::Deref;
 

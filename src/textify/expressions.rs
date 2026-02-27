@@ -1,3 +1,7 @@
+//! Textification for expression protobuf messages.
+//!
+//! Relation and plan writers delegate expression rendering to this module.
+
 use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate};

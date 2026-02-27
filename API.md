@@ -73,6 +73,27 @@ let custom = OutputOptions {
 let (text, _) = format_with_options(&plan, &custom);
 ```
 
+### Parse and Format Fragments
+
+In addition to full plans, you can parse and format fragment values like
+`Type`, `Literal`, `Expression`, and `ScalarFunction`:
+
+```rust
+use substrait::proto::Expression;
+use substrait_explain::extensions::SimpleExtensions;
+use substrait_explain::parser::Parser;
+use substrait_explain::textify::Writer;
+
+let extensions = SimpleExtensions::default();
+let parser = Parser::new().with_simple_extensions(extensions.clone());
+let writer = Writer::new(&extensions);
+
+let expression: Expression = parser.parse_fragment("12").unwrap();
+let (text, errors) = writer.write(&expression);
+assert!(errors.is_empty());
+assert_eq!(text, "12");
+```
+
 ### Error Handling
 
 The library provides graceful error handling for formatting, producing best-effort output even if there are errors:

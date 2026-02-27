@@ -1,3 +1,12 @@
+//! Shared conversion and lowering infrastructure for parser internals.
+//!
+//! This module provides:
+//! - [`ParseCtx`]: shared context passed to lowerers
+//! - [`Lower`] / [`LowerWith`]: common lowering traits for typed nodes
+//! - typed wrapper values like [`Name`], [`FieldIndex`], [`UrnAnchor`], and
+//!   [`Anchor`]
+//! - helper utilities for consistent list parsing patterns
+
 use std::convert::TryFrom;
 
 use pest_typed::Spanned;
@@ -5,37 +14,29 @@ use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::{FieldReference, ReferenceSegment, reference_segment};
 
 use crate::extensions::SimpleExtensions;
-use crate::parser::common::{MessageParseError, Rule, rules, typed_to_pest_span, unescape_string};
+use crate::parser::common::{MessageParseError, Rule, rules, unescape_string};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParseCtx<'a> {
+    /// Extension declarations available while lowering typed parse nodes.
     pub extensions: &'a SimpleExtensions,
 }
 
-impl<'a> ParseCtx<'a> {
-    pub fn invalid_typed(
-        &self,
-        message: &'static str,
-        span: pest_typed::Span<'_>,
-        description: impl ToString,
-    ) -> MessageParseError {
-        let _ = self;
-        MessageParseError::invalid(message, typed_to_pest_span(span), description)
-    }
-}
-
+/// Lower a parsed typed node into a semantic/protobuf value.
 pub(crate) trait Lower {
     type Output;
 
     fn lower(&self, cx: &ParseCtx<'_>) -> Result<Self::Output, MessageParseError>;
 }
 
+/// Lower a parsed typed node with additional caller-provided input.
 pub(crate) trait LowerWith<I> {
     type Output;
 
     fn lower_with(&self, cx: &ParseCtx<'_>, input: I) -> Result<Self::Output, MessageParseError>;
 }
 
+/// Collect values exposed by `(first, rest)` grammar accessors into one `Vec`.
 pub(crate) fn collect_first_rest<T, I>(first: T, rest: I) -> Vec<T>
 where
     I: IntoIterator<Item = T>,
@@ -45,6 +46,7 @@ where
     values
 }
 
+/// Parsed identifier or quoted name with escaping already resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Name(pub String);
 
@@ -61,14 +63,9 @@ impl From<&rules::name<'_>> for Name {
     }
 }
 
+/// Zero-based field index from `$<n>` references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldIndex(pub i32);
-
-impl FieldIndex {
-    pub fn to_field_reference(self) -> FieldReference {
-        self.into()
-    }
-}
 
 impl TryFrom<&rules::reference<'_>> for FieldIndex {
     type Error = MessageParseError;
@@ -82,7 +79,7 @@ impl TryFrom<&rules::reference<'_>> for FieldIndex {
             .map_err(|error| {
                 MessageParseError::invalid(
                     "FieldIndex",
-                    typed_to_pest_span(node.span()),
+                    node.span(),
                     format!("Invalid reference index: {error}"),
                 )
             })?;
@@ -106,34 +103,67 @@ impl From<FieldIndex> for FieldReference {
     }
 }
 
+impl TryFrom<&rules::reference<'_>> for FieldReference {
+    type Error = MessageParseError;
+
+    fn try_from(node: &rules::reference<'_>) -> Result<Self, Self::Error> {
+        Ok(FieldIndex::try_from(node)?.into())
+    }
+}
+
+/// Parsed URN anchor (`@ <n>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UrnAnchor(pub u32);
 
+/// Semantic context for `# <n>` anchors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FunctionAnchor(pub u32);
+pub enum AnchorKind {
+    Function,
+    Type,
+    TypeVariation,
+    Extension,
+}
 
+impl AnchorKind {
+    fn parse_message(self) -> &'static str {
+        match self {
+            AnchorKind::Function => "FunctionAnchor",
+            AnchorKind::Type => "TypeAnchor",
+            AnchorKind::TypeVariation => "TypeVariationAnchor",
+            AnchorKind::Extension => "ExtensionAnchor",
+        }
+    }
+}
+
+/// Parsed `# <n>` anchor tagged with semantic kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeAnchor(pub u32);
+pub struct Anchor {
+    value: u32,
+    kind: AnchorKind,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeVariationAnchor(pub u32);
+impl Anchor {
+    pub fn parse(node: &rules::anchor<'_>, kind: AnchorKind) -> Result<Self, MessageParseError> {
+        let integer = node.integer();
+        Ok(Self {
+            value: integer.span.as_str().parse::<u32>().map_err(|error| {
+                MessageParseError::invalid(
+                    kind.parse_message(),
+                    integer.span(),
+                    format!(
+                        "Invalid {:?} value '{}': {error}",
+                        Rule::anchor,
+                        integer.span.as_str()
+                    ),
+                )
+            })?,
+            kind,
+        })
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtensionAnchor(pub u32);
-
-fn parse_anchor_value(
-    message: &'static str,
-    rule: Rule,
-    span: pest_typed::Span<'_>,
-    value: &str,
-) -> Result<u32, MessageParseError> {
-    value.parse::<u32>().map_err(|error| {
-        MessageParseError::invalid(
-            message,
-            typed_to_pest_span(span),
-            format!("Invalid {rule:?} value '{value}': {error}"),
-        )
-    })
+    pub fn kind(self) -> AnchorKind {
+        self.kind
+    }
 }
 
 impl TryFrom<&rules::urn_anchor<'_>> for UrnAnchor {
@@ -141,80 +171,19 @@ impl TryFrom<&rules::urn_anchor<'_>> for UrnAnchor {
 
     fn try_from(value: &rules::urn_anchor<'_>) -> Result<Self, Self::Error> {
         let integer = value.integer();
-        Ok(Self(parse_anchor_value(
-            "UrnAnchor",
-            Rule::urn_anchor,
-            integer.span(),
-            integer.span.as_str(),
+        Ok(Self(integer.span.as_str().parse::<u32>().map_err(
+            |error| {
+                MessageParseError::invalid(
+                    "UrnAnchor",
+                    integer.span(),
+                    format!(
+                        "Invalid {:?} value '{}': {error}",
+                        Rule::urn_anchor,
+                        integer.span.as_str()
+                    ),
+                )
+            },
         )?))
-    }
-}
-
-impl TryFrom<&rules::anchor<'_>> for FunctionAnchor {
-    type Error = MessageParseError;
-
-    fn try_from(value: &rules::anchor<'_>) -> Result<Self, Self::Error> {
-        let integer = value.integer();
-        Ok(Self(parse_anchor_value(
-            "FunctionAnchor",
-            Rule::anchor,
-            integer.span(),
-            integer.span.as_str(),
-        )?))
-    }
-}
-
-impl TryFrom<&rules::anchor<'_>> for TypeAnchor {
-    type Error = MessageParseError;
-
-    fn try_from(value: &rules::anchor<'_>) -> Result<Self, Self::Error> {
-        let integer = value.integer();
-        Ok(Self(parse_anchor_value(
-            "TypeAnchor",
-            Rule::anchor,
-            integer.span(),
-            integer.span.as_str(),
-        )?))
-    }
-}
-
-impl TryFrom<&rules::anchor<'_>> for TypeVariationAnchor {
-    type Error = MessageParseError;
-
-    fn try_from(value: &rules::anchor<'_>) -> Result<Self, Self::Error> {
-        let integer = value.integer();
-        Ok(Self(parse_anchor_value(
-            "TypeVariationAnchor",
-            Rule::anchor,
-            integer.span(),
-            integer.span.as_str(),
-        )?))
-    }
-}
-
-impl TryFrom<&rules::anchor<'_>> for ExtensionAnchor {
-    type Error = MessageParseError;
-
-    fn try_from(value: &rules::anchor<'_>) -> Result<Self, Self::Error> {
-        let integer = value.integer();
-        Ok(Self(parse_anchor_value(
-            "ExtensionAnchor",
-            Rule::anchor,
-            integer.span(),
-            integer.span.as_str(),
-        )?))
-    }
-}
-
-impl From<FunctionAnchor> for u32 {
-    fn from(value: FunctionAnchor) -> Self {
-        value.0
-    }
-}
-
-impl From<TypeAnchor> for u32 {
-    fn from(value: TypeAnchor) -> Self {
-        value.0
     }
 }
 
@@ -224,18 +193,13 @@ impl From<UrnAnchor> for u32 {
     }
 }
 
-impl From<TypeVariationAnchor> for u32 {
-    fn from(value: TypeVariationAnchor) -> Self {
-        value.0
+impl From<Anchor> for u32 {
+    fn from(value: Anchor) -> Self {
+        value.value
     }
 }
 
-impl From<ExtensionAnchor> for u32 {
-    fn from(value: ExtensionAnchor) -> Self {
-        value.0
-    }
-}
-
+/// Output mapping index used for relation `emit` handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RelationOutputIndex(pub i32);
 
@@ -251,6 +215,7 @@ impl From<RelationOutputIndex> for i32 {
     }
 }
 
+/// Parsed table path from dotted table names (`a.b.c`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TablePath(pub Vec<Name>);
 
@@ -299,13 +264,16 @@ mod tests {
     #[test]
     fn anchor_wrappers_parse_and_roundtrip() {
         let anchor = parse_typed::<rules::anchor<'_>>("# 42", "anchor").unwrap();
-        assert_eq!(u32::from(FunctionAnchor::try_from(&anchor).unwrap()), 42);
-        assert_eq!(u32::from(TypeAnchor::try_from(&anchor).unwrap()), 42);
-        assert_eq!(
-            u32::from(TypeVariationAnchor::try_from(&anchor).unwrap()),
-            42
-        );
-        assert_eq!(u32::from(ExtensionAnchor::try_from(&anchor).unwrap()), 42);
+        for kind in [
+            AnchorKind::Function,
+            AnchorKind::Type,
+            AnchorKind::TypeVariation,
+            AnchorKind::Extension,
+        ] {
+            let parsed = Anchor::parse(&anchor, kind).unwrap();
+            assert_eq!(parsed.kind(), kind);
+            assert_eq!(u32::from(parsed), 42);
+        }
     }
 
     #[test]

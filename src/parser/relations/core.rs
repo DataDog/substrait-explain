@@ -1,3 +1,8 @@
+//! Parsing and lowering logic for standard (non-extension) relations.
+//!
+//! The parser first converts typed relation nodes into [`StandardRelationLine`]
+//! semantic values, then lowers those values into Substrait `Rel` messages.
+
 use std::collections::HashMap;
 
 use pest_typed::Spanned;
@@ -17,20 +22,19 @@ use super::ast::{
 use crate::extensions::any::Any;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{ExtensionArgs, ExtensionRegistry};
-use crate::parser::common::{MessageParseError, rules, typed_to_pest_span};
+use crate::parser::common::{MessageParseError, rules};
 use crate::parser::convert::{
-    LowerWith, ParseCtx, RelationOutputIndex, TablePath, collect_first_rest,
+    FieldIndex, Lower, LowerWith, ParseCtx, RelationOutputIndex, TablePath, collect_first_rest,
 };
 use crate::parser::errors::{ParseContext, ParseError};
-use crate::parser::expressions::{
-    parse_expression_node, parse_field_index_node, parse_measure_node,
-};
-use crate::parser::types::parse_type_node;
 
 /// Parsing context for relations that includes extension registry and line context.
 pub(crate) struct RelationParsingContext<'a> {
+    /// Registry used to resolve extension relation detail payloads.
     pub registry: &'a ExtensionRegistry,
+    /// 1-based source line number for error context.
     pub line_no: i64,
+    /// Original source line text for error context.
     pub line: &'a str,
 }
 
@@ -59,38 +63,14 @@ impl<'a> RelationParsingContext<'a> {
     }
 }
 
-fn parse_named_column(
-    cx: &ParseCtx<'_>,
-    node: &rules::named_column<'_>,
-) -> Result<Column, MessageParseError> {
-    Ok(Column {
-        name: node.name().into(),
-        typ: parse_type_node(cx.extensions, node.r#type())?,
-    })
-}
-
-fn parse_named_column_list(
-    cx: &ParseCtx<'_>,
-    node: &rules::named_column_list<'_>,
-) -> Result<Vec<Column>, MessageParseError> {
-    let mut columns = Vec::new();
-    if let Some((first, rest)) = node.named_column() {
-        columns.push(parse_named_column(cx, first)?);
-        for col in rest {
-            columns.push(parse_named_column(cx, col)?);
-        }
-    }
-    Ok(columns)
-}
-
 fn parse_reference_emit(
     node: &rules::reference_list<'_>,
 ) -> Result<Vec<RelationOutputIndex>, MessageParseError> {
     let mut output_mapping = Vec::new();
     if let Some((first, rest)) = node.reference() {
-        output_mapping.push(parse_field_index_node(first)?.into());
+        output_mapping.push(FieldIndex::try_from(first)?.into());
         for reference in rest {
-            output_mapping.push(parse_field_index_node(reference)?.into());
+            output_mapping.push(FieldIndex::try_from(reference)?.into());
         }
     }
     Ok(output_mapping)
@@ -100,9 +80,20 @@ fn parse_read_line(
     cx: &ParseCtx<'_>,
     node: &rules::read_relation<'_>,
 ) -> Result<StandardRelationLine, MessageParseError> {
+    let mut columns = Vec::new();
+    if let Some((first, rest)) = node.named_column_list().named_column() {
+        let named_columns = collect_first_rest(first, rest);
+        for named in named_columns {
+            columns.push(Column {
+                name: named.name().into(),
+                typ: named.r#type().lower(cx)?,
+            });
+        }
+    }
+
     Ok(StandardRelationLine::Read {
         table: TablePath::from(node.table_name()),
-        columns: parse_named_column_list(cx, node.named_column_list())?,
+        columns,
     })
 }
 
@@ -111,7 +102,7 @@ fn parse_filter_line(
     node: &rules::filter_relation<'_>,
 ) -> Result<StandardRelationLine, MessageParseError> {
     Ok(StandardRelationLine::Filter {
-        condition: parse_expression_node(cx.extensions, node.expression())?,
+        condition: node.expression().lower(cx)?,
         emit: parse_reference_emit(node.reference_list())?,
     })
 }
@@ -125,15 +116,11 @@ fn parse_project_line(
         let values = collect_first_rest(first, rest);
         for arg in values {
             if let Some(reference) = arg.reference() {
-                args.push(ProjectArgument::Reference(parse_field_index_node(
-                    reference,
-                )?));
+                args.push(ProjectArgument::Reference(FieldIndex::try_from(reference)?));
                 continue;
             }
             if let Some(expression) = arg.expression() {
-                args.push(ProjectArgument::Expression(Box::new(
-                    parse_expression_node(cx.extensions, expression)?,
-                )));
+                args.push(ProjectArgument::Expression(Box::new(expression.lower(cx)?)));
                 continue;
             }
             // Grammar guarantees project_argument is either reference or expression.
@@ -152,7 +139,7 @@ fn parse_aggregate_line(
     if let Some((first, rest)) = node.aggregate_group_by().reference() {
         let refs = collect_first_rest(first, rest);
         for reference in refs {
-            group_by.push(parse_field_index_node(reference)?);
+            group_by.push(FieldIndex::try_from(reference)?);
         }
     }
 
@@ -161,17 +148,17 @@ fn parse_aggregate_line(
         let items = collect_first_rest(first, rest);
         for item in items {
             if let Some(reference) = item.reference() {
-                outputs.push(AggregateOutputItem::Reference(parse_field_index_node(
+                outputs.push(AggregateOutputItem::Reference(FieldIndex::try_from(
                     reference,
                 )?));
                 continue;
             }
             if let Some(aggregate_measure) = item.aggregate_measure() {
-                let measure = parse_measure_node(cx.extensions, aggregate_measure)?;
+                let measure = aggregate_measure.lower(cx)?;
                 let aggregate = measure.measure.ok_or_else(|| {
                     MessageParseError::invalid(
                         "AggregateRel",
-                        typed_to_pest_span(item.span()),
+                        item.span(),
                         "Aggregate measure is missing function payload",
                     )
                 })?;
@@ -196,7 +183,7 @@ fn parse_sort_direction(
         "DescNullsLast" => Ok(SortDirection::DescNullsLast),
         other => Err(MessageParseError::invalid(
             "SortDirection",
-            typed_to_pest_span(node.span()),
+            node.span(),
             format!("Unknown sort direction: {other}"),
         )),
     }
@@ -211,7 +198,7 @@ fn parse_sort_line(
         let items = collect_first_rest(first, rest);
         for item in items {
             fields.push(SortFieldSpec {
-                field: parse_field_index_node(item.reference())?,
+                field: FieldIndex::try_from(item.reference())?,
                 direction: parse_sort_direction(item.sort_direction())?,
             });
         }
@@ -229,7 +216,7 @@ fn parse_fetch_value(
 ) -> Result<FetchValue, MessageParseError> {
     if let Some(integer) = node.integer() {
         let value = integer.span.as_str().parse::<i64>().map_err(|error| {
-            cx.invalid_typed(
+            MessageParseError::invalid(
                 "FetchValue",
                 integer.span(),
                 format!("Invalid integer: {error}"),
@@ -239,13 +226,10 @@ fn parse_fetch_value(
     }
 
     if let Some(expression) = node.expression() {
-        return Ok(FetchValue::Expression(Box::new(parse_expression_node(
-            cx.extensions,
-            expression,
-        )?)));
+        return Ok(FetchValue::Expression(Box::new(expression.lower(cx)?)));
     }
 
-    Err(cx.invalid_typed(
+    Err(MessageParseError::invalid(
         "FetchValue",
         node.span(),
         "Unexpected value for Fetch argument",
@@ -266,7 +250,7 @@ fn parse_fetch_line(
         for arg in args {
             let key = arg.fetch_arg_name().span.as_str().to_string();
             if named_values.contains_key(&key) {
-                return Err(cx.invalid_typed(
+                return Err(MessageParseError::invalid(
                     "FetchRel",
                     arg.fetch_arg_name().span(),
                     format!("Duplicate argument: {}", arg.fetch_arg_name().span.as_str()),
@@ -281,7 +265,7 @@ fn parse_fetch_line(
             let parsed = parse_fetch_value(cx, value)?;
             if let FetchValue::Integer(v) = parsed {
                 if v < 0 {
-                    return Err(cx.invalid_typed(
+                    return Err(MessageParseError::invalid(
                         "CountMode",
                         span,
                         format!("Fetch limit must be non-negative, got: {v}"),
@@ -300,7 +284,7 @@ fn parse_fetch_line(
             let parsed = parse_fetch_value(cx, value)?;
             if let FetchValue::Integer(v) = parsed {
                 if v < 0 {
-                    return Err(cx.invalid_typed(
+                    return Err(MessageParseError::invalid(
                         "OffsetMode",
                         span,
                         format!("Fetch offset must be non-negative, got: {v}"),
@@ -315,7 +299,7 @@ fn parse_fetch_line(
     };
 
     if let Some((unknown_name, (_, span))) = named_values.into_iter().next() {
-        return Err(cx.invalid_typed(
+        return Err(MessageParseError::invalid(
             "FetchRel",
             span,
             format!("Unknown argument: {unknown_name}"),
@@ -345,7 +329,7 @@ fn parse_join_type(node: &rules::join_type<'_>) -> Result<join_rel::JoinType, Me
         "RightMark" => Ok(join_rel::JoinType::RightMark),
         other => Err(MessageParseError::invalid(
             "JoinType",
-            typed_to_pest_span(node.span()),
+            node.span(),
             format!("Unknown join type: {other}"),
         )),
     }
@@ -357,51 +341,50 @@ fn parse_join_line(
 ) -> Result<StandardRelationLine, MessageParseError> {
     Ok(StandardRelationLine::Join {
         join_type: parse_join_type(node.join_type())?,
-        expression: Box::new(parse_expression_node(cx.extensions, node.expression())?),
+        expression: Box::new(node.expression().lower(cx)?),
         emit: parse_reference_emit(node.reference_list())?,
     })
 }
 
-/// Parse a non-extension relation line. Returns `Ok(None)` for extension relation lines.
 pub(crate) fn parse_standard_relation(
     cx: &ParseCtx<'_>,
     relation: &rules::relation<'_>,
-) -> Result<Option<StandardRelationLine>, MessageParseError> {
+) -> Result<StandardRelationLine, MessageParseError> {
     if let Some(read_relation) = relation.read_relation() {
-        return Ok(Some(parse_read_line(cx, read_relation)?));
+        return parse_read_line(cx, read_relation);
     }
     if let Some(filter_relation) = relation.filter_relation() {
-        return Ok(Some(parse_filter_line(cx, filter_relation)?));
+        return parse_filter_line(cx, filter_relation);
     }
     if let Some(project_relation) = relation.project_relation() {
-        return Ok(Some(parse_project_line(cx, project_relation)?));
+        return parse_project_line(cx, project_relation);
     }
     if let Some(aggregate_relation) = relation.aggregate_relation() {
-        return Ok(Some(parse_aggregate_line(cx, aggregate_relation)?));
+        return parse_aggregate_line(cx, aggregate_relation);
     }
     if let Some(sort_relation) = relation.sort_relation() {
-        return Ok(Some(parse_sort_line(cx, sort_relation)?));
+        return parse_sort_line(cx, sort_relation);
     }
     if let Some(fetch_relation) = relation.fetch_relation() {
-        return Ok(Some(parse_fetch_line(cx, fetch_relation)?));
+        return parse_fetch_line(cx, fetch_relation);
     }
     if let Some(join_relation) = relation.join_relation() {
-        return Ok(Some(parse_join_line(cx, join_relation)?));
+        return parse_join_line(cx, join_relation);
     }
     if relation.extension_relation().is_some() {
-        return Ok(None);
+        // Structural parsing routes extension relations before calling this helper.
+        unreachable!("parse_standard_relation called with extension relation")
     }
 
     // Grammar guarantees relation matches one known relation variant.
     unreachable!("relation must be a known relation type")
 }
 
-/// Parse a non-extension relation line. Returns `Ok(None)` for extension relation lines.
 #[cfg(test)]
 pub(crate) fn parse_standard_relation_line(
     cx: &ParseCtx<'_>,
     line: &str,
-) -> Result<Option<StandardRelationLine>, MessageParseError> {
+) -> Result<StandardRelationLine, MessageParseError> {
     let relation = crate::parser::common::parse_typed::<rules::relation<'_>>(line, "relation")?;
     parse_standard_relation(cx, &relation)
 }
@@ -415,19 +398,19 @@ fn emit_from(indices: Vec<RelationOutputIndex>) -> EmitKind {
 #[allow(clippy::vec_box)]
 fn expect_one_child(
     message: &'static str,
-    span: pest::Span<'_>,
+    line: &str,
     mut input_children: Vec<Box<Rel>>,
 ) -> Result<Box<Rel>, MessageParseError> {
     match input_children.len() {
-        0 => Err(MessageParseError::invalid(
+        0 => Err(MessageParseError::invalid_line(
             message,
-            span,
+            line,
             format!("{message} missing child"),
         )),
         1 => Ok(input_children.pop().expect("length checked above")),
-        n => Err(MessageParseError::invalid(
+        n => Err(MessageParseError::invalid_line(
             message,
-            span,
+            line,
             format!("{message} should have 1 input child, got {n}"),
         )),
     }
@@ -436,23 +419,23 @@ fn expect_one_child(
 #[allow(clippy::vec_box)]
 pub(crate) fn lower_standard_relation_line(
     line: StandardRelationLine,
-    line_span: pest::Span<'_>,
+    line_text: &str,
     input_children: Vec<Box<Rel>>,
     input_field_count: usize,
 ) -> Result<Rel, MessageParseError> {
     match line {
         StandardRelationLine::Read { table, columns } => {
             if !input_children.is_empty() {
-                return Err(MessageParseError::invalid(
+                return Err(MessageParseError::invalid_line(
                     "ReadRel",
-                    line_span,
+                    line_text,
                     "ReadRel should have no input children",
                 ));
             }
             if input_field_count != 0 {
-                return Err(MessageParseError::invalid(
+                return Err(MessageParseError::invalid_line(
                     "ReadRel",
-                    line_span,
+                    line_text,
                     "ReadRel should have 0 input fields",
                 ));
             }
@@ -481,7 +464,7 @@ pub(crate) fn lower_standard_relation_line(
             })
         }
         StandardRelationLine::Filter { condition, emit } => {
-            let input = expect_one_child("FilterRel", line_span, input_children)?;
+            let input = expect_one_child("FilterRel", line_text, input_children)?;
             Ok(Rel {
                 rel_type: Some(RelType::Filter(Box::new(FilterRel {
                     input: Some(input),
@@ -495,7 +478,7 @@ pub(crate) fn lower_standard_relation_line(
             })
         }
         StandardRelationLine::Project { args } => {
-            let input = expect_one_child("ProjectRel", line_span, input_children)?;
+            let input = expect_one_child("ProjectRel", line_text, input_children)?;
 
             let mut expressions = Vec::new();
             let mut output_mapping = Vec::new();
@@ -523,12 +506,12 @@ pub(crate) fn lower_standard_relation_line(
             })
         }
         StandardRelationLine::Aggregate { group_by, outputs } => {
-            let input = expect_one_child("AggregateRel", line_span, input_children)?;
+            let input = expect_one_child("AggregateRel", line_text, input_children)?;
 
             let mut grouping_expressions = Vec::new();
             for field in group_by {
                 grouping_expressions.push(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(field.to_field_reference()))),
+                    rex_type: Some(RexType::Selection(Box::new(field.into()))),
                 });
             }
 
@@ -566,14 +549,12 @@ pub(crate) fn lower_standard_relation_line(
             })
         }
         StandardRelationLine::Sort { fields, emit } => {
-            let input = expect_one_child("SortRel", line_span, input_children)?;
+            let input = expect_one_child("SortRel", line_text, input_children)?;
             let sorts = fields
                 .into_iter()
                 .map(|field| SortField {
                     expr: Some(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(
-                            field.field.to_field_reference(),
-                        ))),
+                        rex_type: Some(RexType::Selection(Box::new(field.field.into()))),
                     }),
                     sort_kind: Some(substrait::proto::sort_field::SortKind::Direction(
                         field.direction as i32,
@@ -598,7 +579,7 @@ pub(crate) fn lower_standard_relation_line(
             offset,
             emit,
         } => {
-            let input = expect_one_child("FetchRel", line_span, input_children)?;
+            let input = expect_one_child("FetchRel", line_text, input_children)?;
             let count_mode: Option<CountMode> = limit.map(FetchValue::into_count_mode);
             let offset_mode: Option<OffsetMode> = offset.map(FetchValue::into_offset_mode);
 
@@ -621,9 +602,9 @@ pub(crate) fn lower_standard_relation_line(
             emit,
         } => {
             if input_children.len() != 2 {
-                return Err(MessageParseError::invalid(
+                return Err(MessageParseError::invalid_line(
                     "JoinRel",
-                    line_span,
+                    line_text,
                     format!(
                         "JoinRel should have exactly 2 input children, got {}",
                         input_children.len()
@@ -655,8 +636,11 @@ pub(crate) fn lower_standard_relation_line(
 
 #[allow(clippy::vec_box)]
 pub(crate) struct LowerStandardInput<'a> {
-    pub line_span: pest::Span<'a>,
+    /// Source relation line being lowered.
+    pub line_text: &'a str,
+    /// Already-lowered input children for this relation.
     pub input_children: Vec<Box<Rel>>,
+    /// Total input field count visible to this relation.
     pub input_field_count: usize,
 }
 
@@ -670,7 +654,7 @@ impl<'a> LowerWith<LowerStandardInput<'a>> for StandardRelationLine {
     ) -> Result<Self::Output, MessageParseError> {
         lower_standard_relation_line(
             self.clone(),
-            input.line_span,
+            input.line_text,
             input.input_children,
             input.input_field_count,
         )
@@ -693,7 +677,7 @@ mod tests {
     #[test]
     fn parse_read_line() {
         let line = "Read[ab.cd.ef => a:i32, b:string?]";
-        let parsed = parse_standard_relation_line(&cx(), line).unwrap().unwrap();
+        let parsed = parse_standard_relation_line(&cx(), line).unwrap();
         match parsed {
             StandardRelationLine::Read { table, columns } => {
                 assert_eq!(table.0.len(), 3);
@@ -712,16 +696,9 @@ mod tests {
 
     #[test]
     fn lower_join_requires_two_children() {
-        let parsed = parse_standard_relation_line(&cx(), "Join[&Inner, true => $0]")
-            .unwrap()
-            .unwrap();
-        let span = pest::Span::new(
-            "Join[&Inner, true => $0]",
-            0,
-            "Join[&Inner, true => $0]".len(),
-        )
-        .unwrap();
-        let err = lower_standard_relation_line(parsed, span, vec![], 0).unwrap_err();
+        let parsed = parse_standard_relation_line(&cx(), "Join[&Inner, true => $0]").unwrap();
+        let line = "Join[&Inner, true => $0]";
+        let err = lower_standard_relation_line(parsed, line, vec![], 0).unwrap_err();
         assert!(err.to_string().contains("exactly 2 input children"));
     }
 }

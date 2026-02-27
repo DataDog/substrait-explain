@@ -3,6 +3,9 @@
 //! This is the overall parser for parsing the text format. It is responsible
 //! for tracking which section of the file we are currently parsing, and parsing
 //! each line separately.
+//!
+//! It delegates typed relation parsing to `parser::relations` and extension
+//! line parsing to `parser::extensions`.
 
 use std::fmt;
 
@@ -10,7 +13,8 @@ use substrait::proto::rel::RelType;
 use substrait::proto::{Plan, PlanRel, Rel, RelRoot, plan_rel};
 
 use crate::extensions::{ExtensionRegistry, SimpleExtensions, simple};
-use crate::parser::common::{MessageParseError, line_span, parse_typed, rules};
+use crate::parser::ParseFragment;
+use crate::parser::common::{MessageParseError, parse_typed, rules};
 use crate::parser::convert::{LowerWith, Name, ParseCtx, collect_first_rest};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::extensions::{
@@ -86,6 +90,15 @@ enum LineKind {
     Extension(ExtensionInvocation),
 }
 
+/// Parse-only representation of one line before tree construction.
+#[derive(Debug, Clone)]
+struct ParsedLine {
+    depth: usize,
+    line_no: i64,
+    line: String,
+    kind: LineKind,
+}
+
 /// Represents a line in the [`Plan`] tree structure before it's converted to a
 /// relation. This allows us to build the tree structure first, then convert to
 /// relations with proper parent-child relationships.
@@ -157,7 +170,20 @@ impl TreeBuilder {
         Some(node)
     }
 
-    pub fn add_line(&mut self, depth: usize, node: LineNode) -> Result<(), ParseError> {
+    fn push(&mut self, parsed: ParsedLine) -> Result<(), ParseError> {
+        let ParsedLine {
+            depth,
+            line_no,
+            line,
+            kind,
+        } = parsed;
+        let node = LineNode {
+            line,
+            line_no,
+            kind,
+            children: Vec::new(),
+        };
+
         if depth == 0 {
             if let Some(prev) = self.current.take() {
                 self.completed.push(prev)
@@ -170,9 +196,9 @@ impl TreeBuilder {
             None => {
                 return Err(ParseError::Plan(
                     node.context(),
-                    MessageParseError::invalid(
+                    MessageParseError::invalid_line(
                         "relation",
-                        line_span(&node.line),
+                        &node.line,
                         format!("No parent found for depth {depth}"),
                     ),
                 ));
@@ -195,58 +221,59 @@ impl TreeBuilder {
     }
 }
 
-// Relation parsing component - handles converting LineNodes to Relations
+/// Parse-only phase: ingest plan lines into semantic [`LineNode`] trees.
 #[derive(Debug, Clone, Default)]
-pub struct RelationParser {
+pub struct LineIngestor {
     tree: TreeBuilder,
 }
 
-impl RelationParser {
+impl LineIngestor {
+    fn relation_to_kind(
+        &self,
+        extensions: &SimpleExtensions,
+        relation: &rules::relation<'_>,
+        context: &ParseContext,
+    ) -> Result<LineKind, ParseError> {
+        if let Some(extension_relation) = relation.extension_relation() {
+            return Ok(LineKind::Extension(
+                parse_extension_invocation_node(extension_relation)
+                    .map_err(|e| ParseError::Plan(context.clone(), e))?,
+            ));
+        }
+
+        let cx = ParseCtx { extensions };
+        let standard = parse_standard_relation(&cx, relation)
+            .map_err(|e| ParseError::Plan(context.clone(), e))?;
+        Ok(LineKind::Standard(Box::new(standard)))
+    }
+
     fn parse_relation_line(
         &self,
         extensions: &SimpleExtensions,
+        depth: usize,
         line: &str,
         line_no: i64,
-    ) -> Result<LineNode, ParseError> {
+    ) -> Result<ParsedLine, ParseError> {
+        let context = ParseContext::new(line_no, line.to_string());
         let relation = parse_typed::<rules::relation<'_>>(line, "relation")
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
+            .map_err(|e| ParseError::Plan(context.clone(), e))?;
+        let kind = self.relation_to_kind(extensions, &relation, &context)?;
 
-        let kind =
-            if let Some(extension_relation) = relation.extension_relation() {
-                LineKind::Extension(parse_extension_invocation_node(extension_relation).map_err(
-                    |e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e),
-                )?)
-            } else {
-                let cx = ParseCtx { extensions };
-                let standard = parse_standard_relation(&cx, &relation)
-                    .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?
-                    .ok_or_else(|| {
-                        ParseError::Plan(
-                            ParseContext::new(line_no, line.to_string()),
-                            MessageParseError::invalid(
-                                "relation",
-                                line_span(line),
-                                "Unexpected extension relation while parsing standard relation",
-                            ),
-                        )
-                    })?;
-                LineKind::Standard(Box::new(standard))
-            };
-
-        Ok(LineNode {
+        Ok(ParsedLine {
+            depth,
             line: relation.span.as_str().to_string(),
             line_no,
             kind,
-            children: Vec::new(),
         })
     }
 
     fn parse_top_level_line(
         &self,
         extensions: &SimpleExtensions,
+        depth: usize,
         line: &str,
         line_no: i64,
-    ) -> Result<LineNode, ParseError> {
+    ) -> Result<ParsedLine, ParseError> {
         let top = parse_typed::<rules::top_level_relation<'_>>(line, "top_level_relation")
             .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
 
@@ -258,11 +285,11 @@ impl RelationParser {
                 Vec::new()
             };
 
-            return Ok(LineNode {
+            return Ok(ParsedLine {
+                depth,
                 line: root_relation.span.as_str().to_string(),
                 line_no,
                 kind: LineKind::Root { names },
-                children: Vec::new(),
             });
         }
 
@@ -270,36 +297,69 @@ impl RelationParser {
             .relation()
             .expect("top_level_relation must be root or relation");
 
-        self.parse_relation_line(extensions, relation.span.as_str(), line_no)
+        let context = ParseContext::new(line_no, line.to_string());
+        let kind = self.relation_to_kind(extensions, relation, &context)?;
+        Ok(ParsedLine {
+            depth,
+            line: relation.span.as_str().to_string(),
+            line_no,
+            kind,
+        })
     }
 
-    pub fn parse_line(
+    fn parse_indented_line(
+        &self,
+        extensions: &SimpleExtensions,
+        line: IndentedLine<'_>,
+        line_no: i64,
+    ) -> Result<ParsedLine, ParseError> {
+        let IndentedLine(depth, line) = line;
+        if depth == 0 {
+            self.parse_top_level_line(extensions, depth, line, line_no)
+        } else {
+            self.parse_relation_line(extensions, depth, line, line_no)
+        }
+    }
+
+    pub fn ingest(
         &mut self,
         extensions: &SimpleExtensions,
         line: IndentedLine<'_>,
         line_no: i64,
     ) -> Result<(), ParseError> {
-        let IndentedLine(depth, line) = line;
-        let node = if depth == 0 {
-            self.parse_top_level_line(extensions, line, line_no)?
-        } else {
-            self.parse_relation_line(extensions, line, line_no)?
-        };
-        self.tree.add_line(depth, node)
+        let parsed = self.parse_indented_line(extensions, line, line_no)?;
+        self.tree.push(parsed)
+    }
+
+    fn finish(mut self) -> Vec<LineNode> {
+        self.tree.finish()
+    }
+}
+
+/// Lowering phase: convert semantic [`LineNode`] trees into protobuf plan relations.
+#[derive(Debug, Clone, Copy)]
+struct PlanLowerer<'a> {
+    extensions: &'a SimpleExtensions,
+    registry: &'a ExtensionRegistry,
+}
+
+impl<'a> PlanLowerer<'a> {
+    fn new(extensions: &'a SimpleExtensions, registry: &'a ExtensionRegistry) -> Self {
+        Self {
+            extensions,
+            registry,
+        }
     }
 
     /// Parse extension relations.
     #[allow(clippy::vec_box)]
-    fn parse_extension_relation(
+    fn lower_extension_relation(
         &self,
-        registry: &ExtensionRegistry,
         line_no: i64,
         line: &str,
         extension_invocation: ExtensionInvocation,
         child_relations: Vec<Box<Rel>>,
     ) -> Result<Rel, ParseError> {
-        let pair_span = line_span(line);
-
         let ExtensionInvocation {
             name,
             args: extension_args,
@@ -312,12 +372,12 @@ impl RelationParser {
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
-                    MessageParseError::invalid("extension_relation", pair_span, e),
+                    MessageParseError::invalid_line("extension_relation", line, e),
                 )
             })?;
 
         let context = RelationParsingContext {
-            registry,
+            registry: self.registry,
             line_no,
             line,
         };
@@ -330,18 +390,13 @@ impl RelationParser {
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
-                    MessageParseError::invalid("extension_relation", pair_span, e),
+                    MessageParseError::invalid_line("extension_relation", line, e),
                 )
             })
     }
 
     /// Convert a LineNode into a Substrait Rel.
-    fn build_rel(
-        &self,
-        extensions: &SimpleExtensions,
-        registry: &ExtensionRegistry,
-        node: LineNode,
-    ) -> Result<Rel, ParseError> {
+    fn build_rel(&self, node: LineNode) -> Result<Rel, ParseError> {
         let line = node.line.clone();
         let line_no = node.line_no;
         let context = node.context();
@@ -349,7 +404,7 @@ impl RelationParser {
         let child_relations = node
             .children
             .into_iter()
-            .map(|c| self.build_rel(extensions, registry, c).map(Box::new))
+            .map(|c| self.build_rel(c).map(Box::new))
             .collect::<Result<Vec<Box<Rel>>, ParseError>>()?;
 
         let input_field_count = child_relations
@@ -361,20 +416,22 @@ impl RelationParser {
         match node.kind {
             LineKind::Root { .. } => Err(ParseError::Plan(
                 context,
-                MessageParseError::invalid(
+                MessageParseError::invalid_line(
                     "root_relation",
-                    line_span(&line),
+                    &line,
                     "Root relation cannot be nested as a child",
                 ),
             )),
             LineKind::Extension(invocation) => {
-                self.parse_extension_relation(registry, line_no, &line, invocation, child_relations)
+                self.lower_extension_relation(line_no, &line, invocation, child_relations)
             }
             LineKind::Standard(standard) => standard
                 .lower_with(
-                    &ParseCtx { extensions },
+                    &ParseCtx {
+                        extensions: self.extensions,
+                    },
                     LowerStandardInput {
-                        line_span: line_span(&line),
+                        line_text: &line,
                         input_children: child_relations,
                         input_field_count,
                     },
@@ -384,28 +441,18 @@ impl RelationParser {
     }
 
     /// Build a tree of relations.
-    fn build_plan_rel(
-        &self,
-        extensions: &SimpleExtensions,
-        registry: &ExtensionRegistry,
-        mut node: LineNode,
-    ) -> Result<PlanRel, ParseError> {
+    fn build_plan_rel(&self, mut node: LineNode) -> Result<PlanRel, ParseError> {
         let context = node.context();
-        let span = line_span(&node.line);
         match node.kind {
             LineKind::Root { names } => {
                 let child = match node.children.len() {
-                    1 => self.build_rel(
-                        extensions,
-                        registry,
-                        node.children.pop().expect("len checked above"),
-                    )?,
+                    1 => self.build_rel(node.children.pop().expect("len checked above"))?,
                     n => {
                         return Err(ParseError::Plan(
                             context,
-                            MessageParseError::invalid(
+                            MessageParseError::invalid_line(
                                 "root_relation",
-                                span,
+                                &node.line,
                                 format!("Root relation must have exactly one child, found {n}"),
                             ),
                         ));
@@ -420,7 +467,7 @@ impl RelationParser {
                 })
             }
             LineKind::Standard(_) | LineKind::Extension(_) => {
-                let rel = self.build_rel(extensions, registry, node)?;
+                let rel = self.build_rel(node)?;
                 Ok(PlanRel {
                     rel_type: Some(plan_rel::RelType::Rel(rel)),
                 })
@@ -429,15 +476,10 @@ impl RelationParser {
     }
 
     /// Build all the trees.
-    fn build(
-        mut self,
-        extensions: &SimpleExtensions,
-        registry: &ExtensionRegistry,
-    ) -> Result<Vec<PlanRel>, ParseError> {
-        let nodes = self.tree.finish();
+    fn build(self, nodes: Vec<LineNode>) -> Result<Vec<PlanRel>, ParseError> {
         nodes
             .into_iter()
-            .map(|n| self.build_plan_rel(extensions, registry, n))
+            .map(|n| self.build_plan_rel(n))
             .collect::<Result<Vec<PlanRel>, ParseError>>()
     }
 }
@@ -449,7 +491,8 @@ pub struct Parser {
     state: State,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
-    relation_parser: RelationParser,
+    fragment_extensions: SimpleExtensions,
+    line_ingestor: LineIngestor,
 }
 
 impl Default for Parser {
@@ -471,7 +514,8 @@ impl Parser {
             state: State::Initial,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
-            relation_parser: RelationParser::default(),
+            fragment_extensions: SimpleExtensions::new(),
+            line_ingestor: LineIngestor::default(),
         }
     }
 
@@ -479,6 +523,17 @@ impl Parser {
     pub fn with_extension_registry(mut self, registry: ExtensionRegistry) -> Self {
         self.extension_registry = registry;
         self
+    }
+
+    /// Configure simple extensions used by [`Self::parse_fragment`].
+    pub fn with_simple_extensions(mut self, extensions: SimpleExtensions) -> Self {
+        self.fragment_extensions = extensions;
+        self
+    }
+
+    /// Parse a non-plan Substrait fragment value from text.
+    pub fn parse_fragment<T: ParseFragment>(&self, input: &str) -> Result<T, MessageParseError> {
+        T::parse_fragment(&self.fragment_extensions, input)
     }
 
     /// Parse a Substrait plan with the current parser configuration.
@@ -507,7 +562,7 @@ impl Parser {
             State::Extensions => self
                 .parse_extensions(indented_line)
                 .map_err(|e| ParseError::Extension(ctx(), e)),
-            State::Plan => self.relation_parser.parse_line(
+            State::Plan => self.line_ingestor.ingest(
                 self.extension_parser.extensions(),
                 indented_line,
                 line_no,
@@ -530,9 +585,9 @@ impl Parser {
             }
             IndentedLine(_, l) => Err(ParseError::Initial(
                 ParseContext::new(self.line_no, l.to_string()),
-                MessageParseError::invalid(
+                MessageParseError::invalid_line(
                     "initial",
-                    line_span(l),
+                    l,
                     format!("Unknown initial line: {l:?}"),
                 ),
             )),
@@ -552,14 +607,15 @@ impl Parser {
     /// Build the plan from the parser state with warning collection.
     fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
-            relation_parser,
+            line_ingestor,
             extension_parser,
             extension_registry,
             ..
         } = self;
 
         let extensions = extension_parser.extensions();
-        let root_relations = relation_parser.build(extensions, &extension_registry)?;
+        let nodes = line_ingestor.finish();
+        let root_relations = PlanLowerer::new(extensions, &extension_registry).build(nodes)?;
 
         Ok(Plan {
             extension_urns: extensions.to_extension_urns(),
@@ -609,9 +665,13 @@ Read[t => a:i32]
 
     #[test]
     fn parse_relation_line_stores_semantic_standard_payload() {
-        let parser = RelationParser::default();
-        let node = parser
-            .parse_relation_line(&SimpleExtensions::new(), "Read[t => a:i32]", 1)
+        let ingestor = LineIngestor::default();
+        let node = ingestor
+            .parse_indented_line(
+                &SimpleExtensions::new(),
+                IndentedLine::from("Read[t => a:i32]"),
+                1,
+            )
             .unwrap();
 
         match node.kind {
@@ -626,9 +686,13 @@ Read[t => a:i32]
 
     #[test]
     fn parse_relation_line_stores_semantic_extension_payload() {
-        let parser = RelationParser::default();
-        let node = parser
-            .parse_relation_line(&SimpleExtensions::new(), "ExtensionLeaf:MyLeaf[]", 1)
+        let ingestor = LineIngestor::default();
+        let node = ingestor
+            .parse_indented_line(
+                &SimpleExtensions::new(),
+                IndentedLine::from("ExtensionLeaf:MyLeaf[]"),
+                1,
+            )
             .unwrap();
 
         match node.kind {

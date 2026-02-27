@@ -1,3 +1,8 @@
+//! Public parser error types.
+//!
+//! `ParseError` wraps phase-specific parser failures (`initial`, `extensions`,
+//! `plan`) while preserving line-level context for diagnostics.
+
 use thiserror::Error;
 
 use super::MessageParseError;
@@ -7,7 +12,9 @@ use crate::extensions::registry::ExtensionError;
 /// Context for parse errors and warnings
 #[derive(Debug, Clone)]
 pub struct ParseContext {
+    /// 1-based input line number.
     pub line_no: i64,
+    /// Original input line text.
     pub line: String,
 }
 

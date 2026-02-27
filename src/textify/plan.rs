@@ -1,3 +1,8 @@
+//! Plan-specific writer.
+//!
+//! Unlike [`crate::textify::Writer`], this writer reconstructs extension
+//! sections from a `Plan` and then renders the relation tree.
+
 use std::fmt;
 
 use substrait::proto;
@@ -8,6 +13,7 @@ use crate::parser::PLAN_HEADER;
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
+/// Formats a full `Plan`, including extension headers and plan relations.
 #[derive(Debug, Clone)]
 pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
@@ -18,6 +24,7 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
+    /// Construct a plan writer and the error accumulator used during rendering.
     pub fn new(
         options: &'a OutputOptions,
         plan: &'a proto::Plan,
@@ -58,6 +65,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         self.extensions.write(w, &self.options.indent)
     }
 
+    /// Write the `=== Plan` section and relation bodies.
     pub fn write_relations(&self, w: &mut impl fmt::Write) -> fmt::Result {
         // We always write the plan header, even if there are no relations.
         writeln!(w, "{PLAN_HEADER}")?;
@@ -99,7 +107,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::parser::expressions::FieldIndex;
+    use crate::parser::convert::FieldIndex;
     use crate::textify::ErrorQueue;
 
     /// Test a fairly basic plan with an extension, read, and project.
@@ -162,16 +170,12 @@ mod tests {
             arguments: vec![
                 FunctionArgument {
                     arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(
-                            FieldIndex(0).to_field_reference(),
-                        ))),
+                        rex_type: Some(RexType::Selection(Box::new(FieldIndex(0).into()))),
                     })),
                 },
                 FunctionArgument {
                     arg_type: Some(ArgType::Value(Expression {
-                        rex_type: Some(RexType::Selection(Box::new(
-                            FieldIndex(1).to_field_reference(),
-                        ))),
+                        rex_type: Some(RexType::Selection(Box::new(FieldIndex(1).into()))),
                     })),
                 },
             ],

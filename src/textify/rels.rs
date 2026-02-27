@@ -1,3 +1,7 @@
+//! Textification for Substrait relation messages.
+//!
+//! This module is consumed by `PlanWriter` when rendering the plan body.
+
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::fmt;
@@ -904,7 +908,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures::TestContext;
-    use crate::parser::expressions::FieldIndex;
+    use crate::parser::convert::FieldIndex;
 
     #[test]
     fn test_read_rel() {
@@ -1055,9 +1059,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
+                    rex_type: Some(RexType::Selection(Box::new(FieldIndex(1).into()))),
                 })),
             }],
             options: vec![],
@@ -1088,9 +1090,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             function_reference: 10, // sum
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
+                    rex_type: Some(RexType::Selection(Box::new(FieldIndex(1).into()))),
                 })),
             }],
             options: vec![],
@@ -1106,9 +1106,7 @@ Filter[gt($0, 10:i32) => $0, $1]
             function_reference: 11, // count
             arguments: vec![FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression {
-                    rex_type: Some(RexType::Selection(Box::new(
-                        FieldIndex(1).to_field_reference(),
-                    ))),
+                    rex_type: Some(RexType::Selection(Box::new(FieldIndex(1).into()))),
                 })),
             }],
             options: vec![],
@@ -1156,9 +1154,7 @@ Filter[gt($0, 10:i32) => $0, $1]
                 }))),
             })),
             grouping_expressions: vec![Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    FieldIndex(0).to_field_reference(),
-                ))),
+                rex_type: Some(RexType::Selection(Box::new(FieldIndex(0).into()))),
             }],
             groupings: vec![],
             measures: vec![

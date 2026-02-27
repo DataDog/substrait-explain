@@ -1,15 +1,12 @@
 //! Test fixtures for working with Substrait plans and substrait_explain
 
-use substrait::proto::expression::{FieldReference, Literal, ScalarFunction};
-use substrait::proto::{Expression, Type};
-
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;
-use crate::parser::{MessageParseError, Parser, expressions, types};
-use crate::textify::foundation::{ErrorAccumulator, ErrorList};
+use crate::parser::Parser;
+use crate::textify::foundation::ErrorList;
 use crate::textify::plan::PlanWriter;
-use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
+use crate::textify::{ErrorQueue, OutputOptions, Textify, Writer};
 
 pub struct TestContext {
     pub options: OutputOptions,
@@ -68,23 +65,11 @@ impl TestContext {
         self
     }
 
-    pub fn scope<'e, E: ErrorAccumulator>(&'e self, errors: &'e E) -> impl Scope + 'e {
-        ScopedContext::new(
-            &self.options,
-            errors,
-            &self.extensions,
-            &self.extension_registry,
-        )
-    }
-
     pub fn textify<T: Textify>(&self, t: &T) -> (String, ErrorList) {
-        let errors = ErrorQueue::default();
-        let mut output = String::new();
-
-        let scope = self.scope(&errors);
-        t.textify(&scope, &mut output).unwrap();
-
-        let evec = errors.into_iter().collect();
+        let (output, evec) = Writer::new(&self.extensions)
+            .with_options(&self.options)
+            .with_extension_registry(&self.extension_registry)
+            .write(t);
         (output, ErrorList(evec))
     }
 
@@ -92,26 +77,6 @@ impl TestContext {
         let (s, errs) = self.textify(t);
         assert!(errs.is_empty(), "{} Errors: {}", errs.0.len(), errs.0[0]);
         s
-    }
-
-    pub fn parse_type(&self, input: &str) -> Result<Type, MessageParseError> {
-        types::parse_type(&self.extensions, input)
-    }
-
-    pub fn parse_literal(&self, input: &str) -> Result<Literal, MessageParseError> {
-        expressions::parse_literal(&self.extensions, input)
-    }
-
-    pub fn parse_scalar_function(&self, input: &str) -> Result<ScalarFunction, MessageParseError> {
-        expressions::parse_scalar_function(&self.extensions, input)
-    }
-
-    pub fn parse_expression(&self, input: &str) -> Result<Expression, MessageParseError> {
-        expressions::parse_expression(&self.extensions, input)
-    }
-
-    pub fn parse_field_reference(&self, input: &str) -> Result<FieldReference, MessageParseError> {
-        expressions::parse_field_reference(input)
     }
 }
 

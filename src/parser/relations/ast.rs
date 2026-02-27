@@ -1,3 +1,8 @@
+//! Semantic relation-line payloads used between parse and lower phases.
+//!
+//! These types decouple "parse typed syntax" from "build protobuf relation",
+//! so structural parsing can store parsed relation semantics without reparsing.
+
 use substrait::proto::expression::Literal;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
@@ -8,31 +13,41 @@ use crate::parser::convert::{FieldIndex, Name, RelationOutputIndex, TablePath};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Column {
+    /// Output column name.
     pub name: Name,
+    /// Output column type.
     pub typ: Type,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum ProjectArgument {
+    /// Passthrough field reference.
     Reference(FieldIndex),
+    /// Computed expression.
     Expression(Box<Expression>),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum AggregateOutputItem {
+    /// Grouping reference in aggregate output.
     Reference(FieldIndex),
+    /// Aggregate measure output.
     Measure(AggregateFunction),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct SortFieldSpec {
+    /// Referenced field.
     pub field: FieldIndex,
+    /// Parsed sort direction.
     pub direction: SortDirection,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum FetchValue {
+    /// Integer fetch value from text.
     Integer(i64),
+    /// Expression fetch value from text.
     Expression(Box<Expression>),
 }
 
@@ -62,6 +77,7 @@ fn i64_literal_expr(value: i64) -> Box<Expression> {
     })
 }
 
+/// Parsed representation of one non-extension relation line.
 #[derive(Debug, Clone)]
 pub(crate) enum StandardRelationLine {
     Read {
