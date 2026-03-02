@@ -262,6 +262,11 @@ impl ParsePair for ExtensionValue {
         let inner = unwrap_single_pair(pair); // Extract the actual content
 
         match inner.as_rule() {
+            Rule::enum_value => {
+                // Strip leading '&' and store the identifier
+                let s = inner.as_str().trim_start_matches('&').to_string();
+                ExtensionValue::Enum(s)
+            }
             Rule::reference => {
                 // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
@@ -430,6 +435,87 @@ impl ParsePair for ExtensionInvocation {
 
         ExtensionInvocation {
             name: custom_name,
+            args,
+        }
+    }
+}
+
+/// Whether an advanced-extension line is an enhancement or an optimization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvExtType {
+    /// `+ Enh:Name[args]` — alters plan semantics, cannot be ignored
+    Enhancement,
+    /// `+ Opt:Name[args]` — hints, can be ignored by the executor
+    Optimization,
+}
+
+/// A parsed `+ Enh:Name[args]` or `+ Opt:Name[args]` line.
+#[derive(Debug, Clone)]
+pub struct AdvExtInvocation {
+    pub ext_type: AdvExtType,
+    pub name: String,
+    pub args: ExtensionArgs,
+}
+
+impl ParsePair for AdvExtInvocation {
+    fn rule() -> Rule {
+        Rule::adv_extension
+    }
+
+    fn message() -> &'static str {
+        "AdvExtInvocation"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let mut iter = pair.into_inner();
+
+        // First token: adv_ext_type ("Enh" or "Opt")
+        let type_pair = iter.next().unwrap();
+        let ext_type = match type_pair.as_str() {
+            "Enh" => AdvExtType::Enhancement,
+            "Opt" => AdvExtType::Optimization,
+            other => panic!("Unexpected adv_ext_type: {other}"),
+        };
+
+        // Second token: name
+        let name_pair = iter.next().unwrap();
+        let name = Name::parse_pair(name_pair).0.to_string();
+
+        // Remaining tokens: optional arguments (same structure as extension_relation)
+        // Use Leaf as the relation_type placeholder — adv_extensions don't have children
+        let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
+
+        for inner_pair in iter {
+            match inner_pair.as_rule() {
+                Rule::extension_arguments => {
+                    for arg_pair in inner_pair.into_inner() {
+                        if arg_pair.as_rule() == Rule::extension_argument {
+                            args.positional.push(ExtensionValue::parse_pair(arg_pair));
+                        }
+                    }
+                }
+                Rule::extension_named_arguments => {
+                    for arg_pair in inner_pair.into_inner() {
+                        if arg_pair.as_rule() == Rule::extension_named_argument {
+                            let mut arg_iter = arg_pair.into_inner();
+                            let name_p = arg_iter.next().unwrap();
+                            let value_p = arg_iter.next().unwrap();
+                            let key = Name::parse_pair(name_p).0.to_string();
+                            let val = ExtensionValue::parse_pair(value_p);
+                            args.named.insert(key, val);
+                        }
+                    }
+                }
+                Rule::empty => {}
+                r => panic!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+            }
+        }
+
+        AdvExtInvocation {
+            ext_type,
+            name,
             args,
         }
     }

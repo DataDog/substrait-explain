@@ -17,6 +17,7 @@ use substrait::proto::{
 };
 
 use super::expressions::Reference;
+use super::extensions::textify_advanced_extension;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
 
@@ -68,9 +69,32 @@ impl Textify for Rel {
             _ => {
                 // For non-extension relations, use the old Relation conversion
                 let relation = Relation::from(self);
-                relation.textify(ctx, w)
+                relation.textify(ctx, w)?;
+                // Emit + Enh: / + Opt: lines at child-indent level after the
+                // relation and its children have been written.
+                if let Some(adv_ext) = get_advanced_extension(self) {
+                    let child_scope = ctx.push_indent();
+                    textify_advanced_extension(&child_scope, w, adv_ext)?;
+                }
+                Ok(())
             }
         }
+    }
+}
+
+/// Return a reference to the `AdvancedExtension` on the given [`Rel`], if any.
+///
+/// Covers all standard relation types that carry `advanced_extension` directly.
+fn get_advanced_extension(rel: &Rel) -> Option<&substrait::proto::extensions::AdvancedExtension> {
+    match &rel.rel_type {
+        Some(RelType::Read(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Filter(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Project(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Aggregate(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Sort(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Fetch(r)) => r.advanced_extension.as_ref(),
+        Some(RelType::Join(r)) => r.advanced_extension.as_ref(),
+        _ => None,
     }
 }
 

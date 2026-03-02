@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::rel::RelType;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
@@ -16,7 +17,9 @@ use crate::extensions::{ExtensionRegistry, SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, ParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
-use crate::parser::extensions::{ExtensionInvocation, ExtensionParseError, ExtensionParser};
+use crate::parser::extensions::{
+    AdvExtInvocation, AdvExtType, ExtensionInvocation, ExtensionParseError, ExtensionParser,
+};
 use crate::parser::relations::RelationParsingContext;
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
@@ -147,6 +150,21 @@ fn get_input_field_count(rel: &Rel) -> usize {
                 .unwrap_or(0)
         }
         _ => 0,
+    }
+}
+
+/// Set the `advanced_extension` field on a [`Rel`], covering all standard
+/// relation variants that carry the field directly.
+fn set_advanced_extension(rel: &mut Rel, adv_ext: AdvancedExtension) {
+    match &mut rel.rel_type {
+        Some(RelType::Read(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Filter(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Project(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Aggregate(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Sort(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Fetch(r)) => r.advanced_extension = Some(adv_ext),
+        Some(RelType::Join(r)) => r.advanced_extension = Some(adv_ext),
+        _ => {} // Extension relations and other types do not carry this field directly
     }
 }
 
@@ -376,9 +394,21 @@ impl<'a> RelationParser<'a> {
         registry: &ExtensionRegistry,
         node: LineNode,
     ) -> Result<substrait::proto::Rel, ParseError> {
-        // Parse children first to get their output schemas
-        let child_relations = node
-            .children
+        // Separate adv_extension annotation nodes from regular child relations.
+        // adv_extension nodes have an inner pair of rule `adv_extension`; all
+        // others are regular relation children.
+        let (adv_ext_nodes, rel_children): (Vec<_>, Vec<_>) =
+            node.children.into_iter().partition(|c| {
+                c.pair
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_rule() == Rule::adv_extension)
+                    .unwrap_or(false)
+            });
+
+        // Build regular input children first to get their output schemas
+        let child_relations = rel_children
             .into_iter()
             .map(|c| self.build_rel(extensions, registry, c).map(Box::new))
             .collect::<Result<Vec<Box<Rel>>, ParseError>>()?;
@@ -390,15 +420,67 @@ impl<'a> RelationParser<'a> {
             .reduce(|a, b| a + b)
             .unwrap_or(0);
 
-        // Parse this node using the stored pair
-        self.parse_relation(
+        // Build the relation itself
+        let mut rel = self.parse_relation(
             extensions,
             registry,
             node.line_no,
             node.pair,
             child_relations,
             input_field_count,
-        )
+        )?;
+
+        // Parse adv_extension annotations and attach them to the relation
+        if !adv_ext_nodes.is_empty() {
+            let adv_ext = self.build_advanced_extension(extensions, registry, adv_ext_nodes)?;
+            set_advanced_extension(&mut rel, adv_ext);
+        }
+
+        Ok(rel)
+    }
+
+    /// Parse a list of adv_extension LineNodes into an [`AdvancedExtension`] proto.
+    fn build_advanced_extension(
+        &self,
+        extensions: &SimpleExtensions,
+        registry: &ExtensionRegistry,
+        nodes: Vec<LineNode>,
+    ) -> Result<AdvancedExtension, ParseError> {
+        let mut enhancement = None;
+        let mut optimizations = Vec::new();
+
+        for node in nodes {
+            let line_no = node.line_no;
+            let line = node.pair.as_str().to_string();
+            // The outer pair is `relation`; unwrap to get `adv_extension`
+            let adv_ext_pair = unwrap_single_pair(node.pair);
+            let invocation = AdvExtInvocation::parse_pair(adv_ext_pair);
+
+            let context = RelationParsingContext {
+                extensions,
+                registry,
+                line_no,
+                line: &line,
+            };
+
+            match invocation.ext_type {
+                AdvExtType::Enhancement => {
+                    let detail =
+                        context.resolve_enhancement_detail(&invocation.name, &invocation.args)?;
+                    enhancement = Some(detail.into());
+                }
+                AdvExtType::Optimization => {
+                    let detail =
+                        context.resolve_optimization_detail(&invocation.name, &invocation.args)?;
+                    optimizations.push(detail.into());
+                }
+            }
+        }
+
+        Ok(AdvancedExtension {
+            enhancement,
+            optimization: optimizations,
+        })
     }
 
     /// Build a tree of relations.
