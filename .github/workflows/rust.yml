@@ -16,43 +16,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Build & Test
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Cache cargo dependencies / build outputs. See
-      # https://github.com/actions/cache/blob/main/examples.md#rust---cargo
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Check formatting
         run: cargo fmt -- --check --config imports_granularity=Module,group_imports=StdExternalCrate
 
-      # Also downloads dependencies etc.
-      - name: Basic check
-        run: cargo check --features protoc
-
-      # Use protoc feature to build the project with a pre-built protoc binary
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # Uses rust cache action, stnadard in Rust community.
+        # Added to allowlist here:
+        # https://github.com/DataDog/substrait-explain/settings/actions
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # 2.8.1
       - name: Lint with Clippy
         run: cargo clippy --features protoc -- -D warnings
-
       - name: Lint with Clippy (All features)
         run: cargo clippy --all-features -- -D warnings
 
-      - name: Build
-        run: cargo build --features protoc --verbose
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # 2.8.1
 
       - name: Run tests
-        run: cargo test --features protoc --verbose
+        run: cargo test --all-features --verbose
 
       - name: Run basic_usage example
         run: cargo run --example basic_usage --features protoc --verbose
