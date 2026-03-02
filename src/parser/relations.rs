@@ -1382,7 +1382,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<'_, Rule> {
+    fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();
