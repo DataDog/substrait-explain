@@ -166,6 +166,8 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// Field reference ($0, $1, etc.)
     Reference(i32),
+    /// Enum value (e.g. &CORE, &Inner) — the string holds the identifier without the `&` prefix
+    Enum(String),
     /// Expression (function call, etc.) — not yet fully supported, hence the
     /// private interface.
     #[allow(private_interfaces)]
@@ -180,6 +182,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Float(n) => write!(f, "Float({})", n),
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
+            ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
             ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
     }
@@ -206,6 +209,22 @@ impl TryFrom<ExtensionValue> for String {
             ExtensionValue::String(s) => Ok(s),
             v => Err(ExtensionError::InvalidArgument(format!(
                 "Expected string, got {v}",
+            ))),
+        }
+    }
+}
+
+/// Helper for extracting the identifier from an [`ExtensionValue::Enum`].
+pub struct EnumValue(pub String);
+
+impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
+    type Error = ExtensionError;
+
+    fn try_from(value: &'a ExtensionValue) -> Result<EnumValue, Self::Error> {
+        match value {
+            ExtensionValue::Enum(s) => Ok(EnumValue(s.clone())),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected enum, got {v}",
             ))),
         }
     }

@@ -742,6 +742,96 @@ ExtensionLeaf:EmptySource[_]
 
 To use extension relations with custom protobuf payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
 
+## Advanced Extensions
+
+Advanced extensions allow attaching enhancement and optimization metadata to any standard relation via the Substrait `AdvancedExtension` protobuf field.
+
+### Overview
+
+Each relation can carry:
+
+- **At most one** enhancement (`+ Enh:`) — extra semantic metadata (e.g. `ddsqlizer.ReadRelEnhancement`)
+- **Zero or more** optimizations (`+ Opt:`) — hints for the query planner
+
+### Syntax
+
+```text
+adv_extension := "+" sp adv_ext_type ":" name "[" (empty | extension_args)? "]"
+adv_ext_type  := "Enh" | "Opt"
+```
+
+Where:
+
+- **`+`** — prefix that distinguishes annotation lines from child relations
+- **`adv_ext_type`** — `Enh` for an enhancement, `Opt` for an optimization
+- **`name`** — the registered type name (e.g. `ReadRelEnhancement`)
+- **`extension_args`** — positional and/or named arguments; use `_` for empty
+
+Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. In the textified output, enhancement and optimization lines appear **after** any child relations.
+
+### Argument Syntax
+
+Extension arguments follow the same rules as extension-relation arguments.  Enum values are written with a `&` prefix:
+
+```text
+enum_value := "&" identifier
+```
+
+#### Examples
+
+- `&CORE`, `&CUSTOM`, `&TAG` — [`Namespace`] variants for `ReadRelEnhancement`
+- `&AscNullsFirst` — sort direction enum in a relation argument
+
+### Example: Enhancement on a Read Relation
+
+```rust
+# use substrait_explain::extensions::{ExtensionRegistry, ReadRelEnhancement};
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let mut registry = ExtensionRegistry::new();
+# registry.register_enhancement::<ReadRelEnhancement>().unwrap();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
+=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:ReadRelEnhancement[&CORE, &CUSTOM]
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
+```
+
+### Example: Enhancement and Multiple Optimizations
+
+```text
+=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:ReadRelEnhancement[&CORE]
+    + Opt:PlanHint[hint='use_index']
+    + Opt:PlanHint[hint='parallel']
+```
+
+### Custom Extension Types
+
+To parse or textify advanced extensions with custom protobuf payloads, register them with an `ExtensionRegistry`:
+
+- **Enhancements**: `registry.register_enhancement::<MyEnhancement>()`
+- **Optimizations**: `registry.register_optimization::<MyOptimization>()`
+
+Both require implementing the `Explainable` trait, which provides `from_args` / `to_args` for text-format conversion, and `prost::Message + prost::Name` for protobuf serialization.
+
+#### Parse failure behaviour
+
+If a `+ Enh:` or `+ Opt:` name is **not registered** in the registry at parse time, the parser returns a hard error.
+
+If the registry does not know the type URL at **textify** time (e.g. when formatting a plan received from an external source), the line is still emitted with a failure token and a `FormatError` is collected — the rest of the plan is unaffected.
+
 ## Complete Example
 
 A complete query that joins users and orders tables, calculates total order value, filters for high-value orders, and groups by user to show total revenue per customer:

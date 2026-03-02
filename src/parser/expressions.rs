@@ -945,10 +945,9 @@ mod tests {
             if let Some(Expression {
                 rex_type: Some(RexType::Literal(lit)),
             }) = &clause.r#if
+                && let Some(LiteralType::I64(val)) = &lit.literal_type
             {
-                if let Some(LiteralType::I64(val)) = &lit.literal_type {
-                    assert_eq!(*val, (i as i64) + 1);
-                }
+                assert_eq!(*val, (i as i64) + 1);
             }
         }
     }

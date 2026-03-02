@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
 
 use crate::extensions::any::AnyRef;
@@ -68,6 +69,7 @@ impl Textify for ExtensionValue {
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Reference(r) => write!(w, "${r}"),
+            ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
     }
@@ -125,6 +127,49 @@ impl Textify for ExtensionArgs {
 
         Ok(())
     }
+}
+
+/// Textify a single enhancement or optimization line.
+///
+/// Emits one of:
+/// - `{indent}+ Enh:Name[args]`
+/// - `{indent}+ Opt:Name[args]`
+fn format_adv_ext_line<S: Scope, W: fmt::Write>(
+    ctx: &S,
+    w: &mut W,
+    prefix: &str,
+    detail: AnyRef<'_>,
+) -> fmt::Result {
+    let indent = ctx.indent();
+    let registry = ctx.extension_registry();
+    match registry.decode_with_ext_type_str(prefix, detail) {
+        Ok((name, args)) => {
+            write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
+        }
+        Err(error) => {
+            write!(w, "{indent}+ {prefix}[{}]", ctx.failure(error))
+        }
+    }
+}
+
+/// Textify all enhancement and optimization lines for an [`AdvancedExtension`].
+///
+/// Writes one `+ Enh:` line (if an enhancement is present) followed by zero
+/// or more `+ Opt:` lines, each preceded by a newline.
+pub fn textify_advanced_extension<S: Scope, W: fmt::Write>(
+    ctx: &S,
+    w: &mut W,
+    adv_ext: &AdvancedExtension,
+) -> fmt::Result {
+    if let Some(enhancement) = &adv_ext.enhancement {
+        writeln!(w)?;
+        format_adv_ext_line(ctx, w, "Enh", AnyRef::from(enhancement))?;
+    }
+    for optimization in &adv_ext.optimization {
+        writeln!(w)?;
+        format_adv_ext_line(ctx, w, "Opt", AnyRef::from(optimization))?;
+    }
+    Ok(())
 }
 
 /// Textify children relations with proper indentation

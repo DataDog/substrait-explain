@@ -52,6 +52,46 @@ impl<'a> RelationParsingContext<'a> {
             )),
         }
     }
+
+    /// Resolve enhancement detail using registry. Any failure is treated as a hard parse error.
+    pub fn resolve_enhancement_detail(
+        &self,
+        name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ParseError> {
+        self.registry
+            .parse_enhancement(name, args)
+            .map_err(|err| match err {
+                ExtensionError::NotFound { .. } => ParseError::UnregisteredExtension {
+                    name: name.to_string(),
+                    context: ParseContext::new(self.line_no, self.line.to_string()),
+                },
+                err => ParseError::ExtensionDetail(
+                    ParseContext::new(self.line_no, self.line.to_string()),
+                    err,
+                ),
+            })
+    }
+
+    /// Resolve optimization detail using registry. Any failure is treated as a hard parse error.
+    pub fn resolve_optimization_detail(
+        &self,
+        name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ParseError> {
+        self.registry
+            .parse_optimization(name, args)
+            .map_err(|err| match err {
+                ExtensionError::NotFound { .. } => ParseError::UnregisteredExtension {
+                    name: name.to_string(),
+                    context: ParseContext::new(self.line_no, self.line.to_string()),
+                },
+                err => ParseError::ExtensionDetail(
+                    ParseContext::new(self.line_no, self.line.to_string()),
+                    err,
+                ),
+            })
+    }
 }
 
 /// A trait for parsing relations with full context needed for tree building.
