@@ -293,22 +293,22 @@ impl ExtensionRegistry {
             });
         }
 
-        self.handlers.insert(key.clone(), Arc::clone(&handler));
-
+        // Check for type URL conflicts before mutating any state
         let type_url_key = (ext_type, type_url.clone());
-        match self
-            .type_urls
-            .insert(type_url_key.clone(), canonical_name.to_string())
+        if let Some(existing) = self.type_urls.get(&type_url_key)
+            && existing != canonical_name
         {
-            Some(existing) if existing != canonical_name => {
-                return Err(RegistrationError::ConflictingTypeUrl {
-                    type_url,
-                    ext_type,
-                    existing_name: existing,
-                });
-            }
-            _ => {}
+            return Err(RegistrationError::ConflictingTypeUrl {
+                type_url,
+                ext_type,
+                existing_name: existing.clone(),
+            });
         }
+
+        // All checks passed — safe to mutate
+        self.handlers.insert(key, Arc::clone(&handler));
+        self.type_urls
+            .insert(type_url_key, canonical_name.to_string());
         Ok(())
     }
 
@@ -802,5 +802,59 @@ mod tests {
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         let result = registry.parse_enhancement("NonExistentEnhancement", &args);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
+    }
+
+    // Extension with same type URL as TestExtension but different name,
+    // used to test that conflicting type URLs don't leave stale state.
+    struct ConflictingExtension;
+
+    impl AnyConvertible for ConflictingExtension {
+        fn to_any(&self) -> Result<Any, ExtensionError> {
+            Ok(Any::new(Self::type_url(), vec![]))
+        }
+
+        fn type_url() -> String {
+            // Same type URL as TestExtension — will conflict in the same namespace
+            "test.TestExtension".to_string()
+        }
+
+        fn from_any<'a>(_any: AnyRef<'a>) -> Result<Self, ExtensionError> {
+            Ok(ConflictingExtension)
+        }
+    }
+
+    impl Explainable for ConflictingExtension {
+        fn name() -> &'static str {
+            "ConflictingExtension"
+        }
+
+        fn from_args(_args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            Ok(ConflictingExtension)
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+        }
+    }
+
+    #[test]
+    fn test_conflicting_type_url_leaves_registry_unchanged() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        // Attempt to register a different extension with the same type URL
+        let result = registry.register_relation::<ConflictingExtension>();
+        assert!(matches!(
+            result,
+            Err(RegistrationError::ConflictingTypeUrl { .. })
+        ));
+
+        // Registry should still only know about the original extension
+        assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
+        assert!(!registry.has_extension(ExtensionType::Relation, "ConflictingExtension"));
+        assert_eq!(
+            registry.extension_names(ExtensionType::Relation),
+            vec!["TestExtension"]
+        );
     }
 }
