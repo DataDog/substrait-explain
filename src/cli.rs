@@ -869,7 +869,7 @@ Root[result]
     /// Creates a plan with an invalid function reference that will cause formatting errors.
     fn make_plan_with_invalid_function_ref() -> substrait::proto::Plan {
         const VALID_PLAN: &str = r#"=== Extensions
-URIs:
+URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
 Functions:
   # 10 @  1: equal

@@ -42,6 +42,7 @@ fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
     let ctx1 = TestContext {
         options: OutputOptions::verbose(),
         extensions,
+        extension_registry: Default::default(),
     };
 
     let t = must_parse(T::parse(&ctx1.extensions, verbose), verbose);
@@ -55,6 +56,7 @@ fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
     let ctx2 = TestContext {
         options: OutputOptions::default(),
         extensions: ctx1.extensions,
+        extension_registry: Default::default(),
     };
 
     let actual = ctx2.textify_no_errors(&t);
@@ -78,6 +80,7 @@ fn test_types() {
     let ctx = TestContext {
         options,
         extensions,
+        extension_registry: Default::default(),
     };
 
     assert_roundtrip::<Type>(&ctx, "i32");
@@ -125,6 +128,7 @@ fn test_expression() {
     let ctx = TestContext {
         options,
         extensions,
+        extension_registry: Default::default(),
     };
 
     assert_roundtrip::<Literal>(&ctx, "12");

@@ -80,10 +80,7 @@ Root[result]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -145,10 +142,7 @@ Root[result]                   // Level 0 (no indentation)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -265,10 +259,7 @@ Root[result]
     Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
-# let plan = match Parser::parse(plan_text) {
-#     Ok(plan) => plan,
-#     Err(e) => panic!("{}", e),
-# };
+# let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
 
@@ -338,7 +329,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / literal`
+`expression := function_call / reference / literal / if_then`
 
 ### Examples
 
@@ -358,17 +349,17 @@ Currently, only references to fields in the Relations' input are supported.
 #### Examples
 
 ```rust
-use substrait_explain::parser::Parser;
-
-let plan_text = r#"
+# use substrait_explain::parser::Parser;
+# 
+# let plan_text = r#"
 === Plan
 Root[result]
   Project[$0, $1, $42]
     Read[data => field0:i64, field1:string, field42:boolean]
-"#;
-
-let plan = Parser::parse(plan_text).unwrap();
-assert_eq!(plan.relations.len(), 1);
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### Function Calls
@@ -400,6 +391,33 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 - `count($1)`
 - `avg($3):fp64`
 - `$0` (field reference to grouping field)
+
+### IfThen
+
+An IfThen expression is a conditional function or logical operator that evaluates to a boolean.
+
+#### Syntax
+
+`if_then := "if_then(" (if_clause ",")+ "_ ->" expression ")"`
+
+`if_clause := expression "->" expression`
+
+#### Examples
+
+```rust
+# use substrait_explain::parser::Parser;
+# 
+# let plan_text = r#"
+=== Plan
+Root[status]
+  Fetch[limit=10, offset=0 => ]
+    Project[if_then(true -> $0, false -> $1, _ -> $2)]
+      Read[events.logs => status:string?]
+#  "#;
+# 
+#  let plan = Parser::parse(plan_text).unwrap();
+#  assert_eq!(plan.relations.len(), 1);
+```
 
 ## Relations
 
@@ -632,12 +650,13 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 **Components**:
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
-- `expression` - Join condition (boolean expression relating left and right inputs)  
+- `expression` - Join condition (boolean expression relating left and right inputs)
 - `reference_list` - Comma-separated list of field references for output columns
 
 **Field Reference Mapping**:
 
 For joins, field references map to the combined schema of left and right inputs:
+
 - `$0`, `$1`, ... refer to left input fields
 - `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
 
@@ -663,6 +682,65 @@ Root[user_orders]
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
 ```
+
+### Extension Relations
+
+Extension relations allow custom relation types with user-defined protobuf payloads. They enable integration with custom data sources, optimizations, or specialized operations beyond standard Substrait relations.
+
+#### Types
+
+There are three extension relation types, based on their input cardinality:
+
+- **`ExtensionLeaf`** - No child relations (e.g., custom data sources)
+- **`ExtensionSingle`** - Exactly one child relation (e.g., custom transformations)
+- **`ExtensionMulti`** - Zero or more child relations (e.g., custom joins)
+
+#### Syntax
+
+```text
+extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>" extension_columns)? "]"
+extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
+extension_args := (positional_args ("," named_args)?) / named_args
+positional_args := extension_arg ("," extension_arg)*
+extension_arg := reference / literal / expression
+named_args := named_arg ("," named_arg)*
+named_arg := name "=" extension_arg
+extension_columns := extension_column ("," extension_column)*
+extension_column := named_column / reference / expression
+```
+
+#### Components
+
+- **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
+- **`name`** - The extension name (registered with `ExtensionRegistry`)
+- **`empty`** (`_`) - Explicitly marks an extension with no arguments
+- **`extension_args`** - Positional arguments (references, literals, expressions) and/or named arguments (`key=value` pairs); both are optional
+- **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
+
+#### Examples
+
+```text
+=== Plan
+Root[result]
+  ExtensionSingle:CustomFilter[threshold=100 => $0, $1]
+    ExtensionLeaf:ParquetScan[path='data/users.parquet', batch_size=1024 => id:i64, name:string]
+```
+
+Extension with positional arguments and no output columns:
+
+```text
+ExtensionSingle:VectorNormalize[$0, $1, method='l2']
+```
+
+Extension with no arguments:
+
+```text
+ExtensionLeaf:EmptySource[_]
+```
+
+#### Custom Extension Types
+
+To use extension relations with custom protobuf payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
 
 ## Complete Example
 

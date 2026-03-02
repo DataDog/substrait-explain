@@ -60,6 +60,9 @@ jobs:
       - name: Run advanced_usage example
         run: cargo run --example advanced_usage --features serde,protoc --verbose
 
+      - name: Run extensions example
+        run: cargo run --example extensions --features cli,protoc --verbose
+
       - name: Test CLI with example plans
         run: |
           # Test validate command with example plans

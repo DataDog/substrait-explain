@@ -273,7 +273,10 @@ impl ScopedParsePair for Type {
             Rule::simple_type => Ok(parse_simple_type(inner)),
             Rule::compound_type => parse_compound_type(extensions, inner),
             Rule::user_defined_type => parse_user_defined_type(extensions, inner),
-            _ => unimplemented!("{:?}", inner.as_rule()),
+            _ => unreachable!(
+                "Grammar guarantees type can only be simple_type, compound_type, or user_defined_type, got: {:?}",
+                inner.as_rule()
+            ),
         }
     }
 }
