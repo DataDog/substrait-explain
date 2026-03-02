@@ -145,6 +145,9 @@ if_then = {
   "if_then(" ~ sp ~ (if_clause  ~ sp ~ "," ~ sp)+ ~ sp ~ "_" ~ sp ~ "->" ~ sp ~ expression ~ ")"
 }
 
+// Enum value, e.g. &Inner, &CORE, &AscNullsFirst
+enum_value = @{ "&" ~ identifier }
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
 expression = { if_then | function_call | reference | literal }
@@ -199,6 +202,7 @@ relation = {
   | fetch_relation
   | join_relation
   | extension_relation
+  | adv_extension
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -268,10 +272,9 @@ extension_relation = { extension_name ~ "[" ~ (empty | (extension_arguments ~ (s
 extension_name = { extension_type ~ ":" ~ name }
 extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 
-// Positional arguments (expressions, literals, references)
-// TODO: May want to add tuples, enums, …?
+// Positional arguments (expressions, literals, references, enums)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
-extension_argument = {reference | literal | expression }
+extension_argument = { enum_value | reference | literal | expression }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }
@@ -280,3 +283,11 @@ extension_named_argument = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 // Output columns - can mix named columns, references, and expressions
 extension_columns = { extension_column ~ (sp ~ "," ~ sp ~ extension_column)* }
 extension_column = { named_column | reference | expression }
+
+// Advanced extensions: enhancements and optimizations attached to relations
+// Format: + Enh:Name[args] or + Opt:Name[args]
+// Examples:
+// - + Enh:ReadRelEnhancement[&CORE, &CUSTOM]
+// - + Opt:SomeOptimization[threshold=100, mode='fast']
+adv_extension      = { "+" ~ sp ~ adv_ext_type ~ ":" ~ name ~ "[" ~ (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? ~ "]" }
+adv_ext_type       = { "Enh" | "Opt" }
