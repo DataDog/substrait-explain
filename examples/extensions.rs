@@ -90,22 +90,22 @@ impl Explainable for ParquetScanConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments from the message
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String(self.path.clone()),
         );
-        args.add_named_arg(
+        args.named.insert(
             "batch_size".to_string(),
             ExtensionValue::Integer(self.batch_size),
         );
-        args.add_named_arg(
+        args.named.insert(
             "use_dictionary".to_string(),
             ExtensionValue::Boolean(self.use_dictionary),
         );
 
         // Add output columns from selected columns
         for column_name in &self.selected_columns {
-            args.add_output_column(ExtensionColumn::Named {
+            args.output_columns.push(ExtensionColumn::Named {
                 name: column_name.clone(),
                 type_spec: "string?".to_string(), // Default type for this example
             });
@@ -117,7 +117,7 @@ impl Explainable for ParquetScanConfig {
 
 fn main() -> anyhow::Result<()> {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<ParquetScanConfig>();
+    registry.register_relation::<ParquetScanConfig>()?;
 
     let plan_text = r#"=== Plan
 Root[customer_id, amount]

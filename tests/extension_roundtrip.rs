@@ -77,19 +77,20 @@ impl Explainable for UserTableConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments
-        args.add_named_arg(
+        args.named.insert(
             "name".to_string(),
             ExtensionValue::String(self.table_name.clone()),
         );
-        args.add_named_arg("version".to_string(), ExtensionValue::Integer(self.version));
-        args.add_named_arg(
+        args.named
+            .insert("version".to_string(), ExtensionValue::Integer(self.version));
+        args.named.insert(
             "temp".to_string(),
             ExtensionValue::Boolean(self.is_temporary),
         );
 
         // Add output columns
         for column in &self.tracked_columns {
-            args.add_output_column(ExtensionColumn::Named {
+            args.output_columns.push(ExtensionColumn::Named {
                 name: column.clone(),
                 type_spec: "string".to_string(), // Simplified for test
             });
@@ -97,21 +98,12 @@ impl Explainable for UserTableConfig {
 
         Ok(args)
     }
-
-    /// Specify preferred argument order
-    fn argument_order() -> Vec<String> {
-        vec![
-            "name".to_string(),
-            "version".to_string(),
-            "temp".to_string(),
-        ]
-    }
 }
 
 #[test]
 fn test_extension_leaf_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Test plan with UserTable extension
     let plan_text = r#"
@@ -147,7 +139,7 @@ Root[result]
 #[test]
 fn test_multiple_extensions_in_plan() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Also register a second type for variety
     #[derive(Clone, PartialEq, Message)]
@@ -184,7 +176,7 @@ fn test_multiple_extensions_in_plan() {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
-            args.add_named_arg(
+            args.named.insert(
                 "expr".to_string(),
                 ExtensionValue::String(self.expression.clone()),
             );
@@ -192,7 +184,7 @@ fn test_multiple_extensions_in_plan() {
         }
     }
 
-    registry.register::<FilterConfig>();
+    registry.register_relation::<FilterConfig>().unwrap();
 
     // Plan with multiple extension types
     let plan_text = r#"
@@ -255,7 +247,11 @@ impl Explainable for LiteralConfig {
                     "ratio must be a float, got {v}"
                 )));
             }
-            None => return Err(ExtensionError::MissingArgument("ratio".to_string())),
+            None => {
+                return Err(ExtensionError::MissingArgument {
+                    name: "ratio".to_string(),
+                });
+            }
         };
 
         let enabled: bool = extractor.expect_named_arg("enabled")?;
@@ -272,34 +268,28 @@ impl Explainable for LiteralConfig {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.add_named_arg(
+        args.named.insert(
             "path".to_string(),
             ExtensionValue::String(self.path.clone()),
         );
-        args.add_named_arg("big".to_string(), ExtensionValue::Integer(self.big));
-        args.add_named_arg("ratio".to_string(), ExtensionValue::Float(self.ratio));
-        args.add_named_arg("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
-        args.add_output_column(ExtensionColumn::Named {
+        args.named
+            .insert("big".to_string(), ExtensionValue::Integer(self.big));
+        args.named
+            .insert("ratio".to_string(), ExtensionValue::Float(self.ratio));
+        args.named
+            .insert("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
+        args.output_columns.push(ExtensionColumn::Named {
             name: "value".to_string(),
             type_spec: "string".to_string(),
         });
         Ok(args)
-    }
-
-    fn argument_order() -> Vec<String> {
-        vec![
-            "path".to_string(),
-            "big".to_string(),
-            "ratio".to_string(),
-            "enabled".to_string(),
-        ]
     }
 }
 
 #[test]
 fn test_extension_literal_roundtrip() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<LiteralConfig>();
+    registry.register_relation::<LiteralConfig>().unwrap();
 
     let plan_text = r#"
 === Plan
@@ -318,7 +308,7 @@ Root[result]
 #[test]
 fn test_extension_unknown_arguments() {
     let mut registry = ExtensionRegistry::new();
-    registry.register::<UserTableConfig>();
+    registry.register_relation::<UserTableConfig>().unwrap();
 
     // Test plan with unknown argument 'invalid_arg'
     let plan_text = r#"
@@ -337,4 +327,84 @@ Root[result]
         err.to_string()
             .contains("Unknown named arguments: invalid_arg")
     );
+}
+
+/// Extension with no arguments — tests empty args (`_`) roundtrip.
+#[derive(Clone, PartialEq, Message)]
+pub struct EmptySource {
+    #[prost(string, tag = "1")]
+    pub marker: String,
+}
+
+impl Name for EmptySource {
+    const NAME: &'static str = "EmptySource";
+    const PACKAGE: &'static str = "test";
+    fn full_name() -> String {
+        "test.EmptySource".to_string()
+    }
+    fn type_url() -> String {
+        "type.googleapis.com/test.EmptySource".to_string()
+    }
+}
+
+impl Explainable for EmptySource {
+    fn name() -> &'static str {
+        "EmptySource"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(EmptySource {
+            marker: "empty".to_string(),
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+    }
+}
+
+#[test]
+fn test_extension_empty_args_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<EmptySource>().unwrap();
+
+    // No args, no output columns — textifies as [_]
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:EmptySource[_]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Failed to parse empty args extension");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_extension_string_escaping_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<UserTableConfig>().unwrap();
+
+    // String with escaped single quote and backslash
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:UserTable[name='it\'s a \"test\\path', version=1, temp=false => col:string]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Failed to parse escaped string extension");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
 }

@@ -3,8 +3,10 @@
 //! This module contains the core data structures for extension arguments,
 //! values, and columns without any parser or textify dependencies.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
+
+use indexmap::IndexMap;
 
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
@@ -30,29 +32,34 @@ impl fmt::Display for RawExpression {
     }
 }
 
-/// Represents the arguments and output columns for an extension relation
+/// Represents the arguments and output columns for an extension relation.
+///
+/// Named arguments are stored in an [`IndexMap`] whose iteration order
+/// determines display order. Extension [`Explainable::to_args()`]
+/// implementations should insert named arguments in the order they should
+/// appear in the text format.
 #[derive(Debug, Clone)]
 pub struct ExtensionArgs {
     /// Positional arguments (expressions, literals, references)
     pub positional: Vec<ExtensionValue>,
-    /// Named arguments (key=value pairs)
-    pub named: HashMap<String, ExtensionValue>,
-    /// Output columns (can be named columns, references, or expressions)
+    /// Named arguments, displayed in the order they were inserted
+    pub named: IndexMap<String, ExtensionValue>,
+    /// Output columns (named columns, references, or expressions)
     pub output_columns: Vec<ExtensionColumn>,
     /// The type of extension relation (Leaf/Single/Multi)
     pub relation_type: ExtensionRelationType,
-    /// Preferred argument order for textification. Unmentioned arguments will
-    /// be sorted alphabetically (so a partial or empy vector is valid). NOTE:
-    /// This is a _preferred_ order for display; order should not be relied on
-    /// for semantic meaning.
-    pub argument_order: Vec<String>,
 }
 
-/// Helper struct for extracting named arguments with validation
+/// Helper struct for extracting named arguments with validation.
+///
+/// Tracks which arguments have been consumed. Callers **must** call
+/// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
+/// verify no unexpected arguments remain. In debug builds, dropping without
+/// calling `check_exhausted` will panic (matching the [`RuleIter`] pattern).
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
-    // Track keys that have been successfully requested/accessed
     consumed: HashSet<&'a str>,
+    checked: bool,
 }
 
 impl<'a> ArgsExtractor<'a> {
@@ -61,6 +68,7 @@ impl<'a> ArgsExtractor<'a> {
         Self {
             args,
             consumed: HashSet::new(),
+            checked: false,
         }
     }
 
@@ -84,7 +92,9 @@ impl<'a> ArgsExtractor<'a> {
     {
         match self.get_named_arg(name) {
             Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(ExtensionError::MissingArgument(name.to_string())),
+            None => Err(ExtensionError::MissingArgument {
+                name: name.to_string(),
+            }),
         }
     }
 
@@ -101,8 +111,15 @@ impl<'a> ArgsExtractor<'a> {
         }
     }
 
-    /// Check that all named arguments in the source have been consumed
-    pub fn check_exhausted(&self) -> Result<(), ExtensionError> {
+    /// Check that all named arguments in the source have been consumed,
+    /// returning an error if not.
+    ///
+    /// Must be called before the extractor is dropped, to validate that all
+    /// args are correctly handled. In debug builds, dropping without calling
+    /// this method will panic.
+    pub fn check_exhausted(&mut self) -> Result<(), ExtensionError> {
+        self.checked = true;
+
         let mut unknown_args = Vec::new();
         for name in self.args.named.keys() {
             if !self.consumed.contains(name.as_str()) {
@@ -120,6 +137,19 @@ impl<'a> ArgsExtractor<'a> {
                 unknown_args.join(", ")
             )))
         }
+    }
+}
+
+impl Drop for ArgsExtractor<'_> {
+    fn drop(&mut self) {
+        if self.checked || std::thread::panicking() {
+            return;
+        }
+        // If we get here, the caller forgot to call check_exhausted().
+        debug_assert!(
+            false,
+            "ArgsExtractor dropped without calling check_exhausted()"
+        );
     }
 }
 
@@ -317,69 +347,15 @@ impl ExtensionArgs {
     pub fn new(relation_type: ExtensionRelationType) -> Self {
         Self {
             positional: Vec::new(),
-            named: HashMap::new(),
+            named: IndexMap::new(),
             output_columns: Vec::new(),
             relation_type,
-            argument_order: Vec::new(),
         }
     }
 
-    /// Create an extractor for these arguments
+    /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
-    }
-
-    /// Add a named argument
-    pub fn add_named_arg(&mut self, name: String, value: ExtensionValue) {
-        self.named.insert(name, value);
-    }
-
-    /// Add a positional argument
-    pub fn add_positional_arg(&mut self, value: ExtensionValue) {
-        self.positional.push(value);
-    }
-
-    /// Add an output column
-    pub fn add_output_column(&mut self, column: ExtensionColumn) {
-        self.output_columns.push(column);
-    }
-
-    /// Get a vector of named arguments in the specified order.
-    /// Returns arguments in the specified order first, then remaining arguments alphabetically.
-    /// Uses the argument_order field from the extension type (empty vec means alphabetical order).
-    pub fn ordered_named_args(&self) -> Vec<(&str, &ExtensionValue)> {
-        let mut result = Vec::new();
-
-        if self.argument_order.is_empty() {
-            // Default: alphabetical order
-            let mut args: Vec<_> = self.named.iter().collect();
-            args.sort_by_key(|(name, _)| name.as_str());
-            for (name, value) in args {
-                result.push((name.as_str(), value));
-            }
-            return result;
-        }
-        // First, add arguments in the specified order
-        for arg_name in &self.argument_order {
-            if let Some(value) = self.named.get(arg_name) {
-                result.push((arg_name.as_str(), value));
-            }
-        }
-
-        // Then add any remaining arguments alphabetically
-        let mut remaining_args: Vec<_> = self
-            .named
-            .iter()
-            // Filter out arguments that are in the argument_order - already included above
-            .filter(|(name, _)| !self.argument_order.contains(name))
-            .collect();
-        remaining_args.sort_by_key(|(name, _)| name.as_str());
-
-        for (name, value) in remaining_args {
-            result.push((name.as_str(), value));
-        }
-
-        result
     }
 }
 

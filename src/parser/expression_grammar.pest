@@ -262,7 +262,7 @@ join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ "
 // - ExtensionLeaf:ParquetScan[path='data/*.parquet', schema='auto' => col1:i32, col2:string]
 // - ExtensionSingle:VectorNormalize[method='l2', dimensions=128 => $0, $1] 
 // - ExtensionMulti:FuzzyJoin[algorithm='lsh', threshold=0.8 => $0, $1, $2, $3]
-extension_relation = { extension_name ~ "[" ~ ((extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
+extension_relation = { extension_name ~ "[" ~ (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
 
 // Extension name format: ExtensionType:CustomExtensionName
 extension_name = { extension_type ~ ":" ~ name }

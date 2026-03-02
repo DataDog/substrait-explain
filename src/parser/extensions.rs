@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
-use super::{ParsePair, Rule, RuleIter, unwrap_single_pair};
+use super::{ParsePair, Rule, RuleIter, unescape_string, unwrap_single_pair};
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
@@ -272,13 +272,7 @@ impl ParsePair for ExtensionValue {
                 let mut literal_inner = inner.into_inner();
                 let value_pair = literal_inner.next().unwrap();
                 match value_pair.as_rule() {
-                    Rule::string_literal => {
-                        let string_content = value_pair.as_str();
-                        // Remove quotes and unescape
-                        let unquoted = &string_content[1..string_content.len() - 1];
-                        // TODO: Implement proper unescaping
-                        ExtensionValue::String(unquoted.to_string())
-                    }
+                    Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
                     Rule::integer => {
                         let int_val = value_pair.as_str().parse::<i64>().unwrap();
                         ExtensionValue::Integer(int_val)
@@ -294,14 +288,7 @@ impl ParsePair for ExtensionValue {
                     _ => panic!("Unexpected literal value type: {:?}", value_pair.as_rule()),
                 }
             }
-            Rule::string_literal => {
-                // Direct string literal (not wrapped in literal rule)
-                let string_content = inner.as_str();
-                // Remove quotes and unescape
-                let unquoted = &string_content[1..string_content.len() - 1];
-                // TODO: Implement proper unescaping
-                ExtensionValue::String(unquoted.to_string())
-            }
+            Rule::string_literal => ExtensionValue::String(unescape_string(inner)),
             Rule::integer => {
                 // Direct integer (not wrapped in literal rule)
                 let int_val = inner.as_str().parse::<i64>().unwrap();
@@ -409,7 +396,7 @@ impl ParsePair for ExtensionInvocation {
                     for arg_pair in inner_pair.into_inner() {
                         if arg_pair.as_rule() == Rule::extension_argument {
                             let value = ExtensionValue::parse_pair(arg_pair);
-                            args.add_positional_arg(value);
+                            args.positional.push(value);
                         }
                     }
                 }
@@ -423,7 +410,7 @@ impl ParsePair for ExtensionInvocation {
 
                             let name = Name::parse_pair(name_pair).0.to_string();
                             let value = ExtensionValue::parse_pair(value_pair);
-                            args.add_named_arg(name, value);
+                            args.named.insert(name, value);
                         }
                     }
                 }
@@ -432,10 +419,11 @@ impl ParsePair for ExtensionInvocation {
                     for col_pair in inner_pair.into_inner() {
                         if col_pair.as_rule() == Rule::extension_column {
                             let column = ExtensionColumn::parse_pair(col_pair);
-                            args.add_output_column(column);
+                            args.output_columns.push(column);
                         }
                     }
                 }
+                Rule::empty => {} // "_" — no arguments
                 r => panic!("Unexpected rule in ExtensionArgs: {:?}", r),
             }
         }

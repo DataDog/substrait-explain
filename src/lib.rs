@@ -154,7 +154,7 @@ pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec
 /// // Register custom extensions...
 ///
 /// let plan = parse("...").unwrap();
-/// let (text, errors) = format_with_registry(&plan, &OutputOptions::default(), Some(&registry));
+/// let (text, errors) = format_with_registry(&plan, &OutputOptions::default(), &registry);
 /// ```
 pub fn format_with_registry(
     plan: &Plan,
