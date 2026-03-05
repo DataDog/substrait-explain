@@ -577,8 +577,9 @@ Root[result]
 
 #### Components
 
-- `grouping_sets :=  (grouping_set ~ (sp ~ "," ~ sp ~ grouping_set)*)?` - comma-separated list of group by lists
-- `grouping_set := reference_list | "_"` - comma-separated list of field references for a grouping, or `_`, for an empty group(global aggregation)
+- `grouping_sets := grouping_set_list / expression_list` - can be a list of grouping sets (each parenthesized), or a single unparenthesized list for the common, single-set case
+- `grouping_set_list := grouping_set ("," grouping_set)*`
+- `grouping_set := "(" expression_list ")" / "_"` - a grouping set can be (1) a list of expressions, or (2) `_`, the standard we use for empty lists
 - `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
 - `aggregate_measure` - field references or aggregate function calls. See [Aggregate Measures section](#aggregate-measures)
 

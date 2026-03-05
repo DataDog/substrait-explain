@@ -212,12 +212,17 @@ project_argument      = { reference | expression }
 // Aggregate relation: groups by specified fields and applies aggregate functions
 // Format: Aggregate[group_by_fields => output_items]
 // Examples:
-// Aggregate[($0) => sum($1), count($1)]  # Group by field 0, output sum and count of field 1
-// Aggregate[($0, $1), ($1) => $0, $1, sum($2)]     # Group by fields 0,1, and field 1, output are fields 0 and 1 and sum on field 2
-// Aggregate[(_) => sum($0), count($1)]   # No grouping (global aggregates)
+// Aggregate[$0 => $0, sum($1), count($1)]  # common case, 1 group, grouping on field 0, output is measure expressions and expressions used in group by
+// Aggregate[$0, $1 => $0, $1, sum($2), count($2)]  # common case, 1 group, grouping on fields 0 and 1, output sum, count and group by expressions
+// Aggregate[($0, $1), ($1) => $0, $1, sum($2)]     # multiple grouping sets. group by fields 0,1, and field 1, output are fields 0 and 1 and sum on field 2
+// Aggregate[_ => sum($0), count($1)]   # No grouping (global aggregates)
 aggregate_relation    = { "Aggregate" ~ "[" ~ aggregate_group_by ~ sp ~ "=>" ~ sp ~ aggregate_output ~ "]" }
-aggregate_group_by    = { (grouping_set ~ (sp ~ "," ~ sp ~ grouping_set)*)? }
-grouping_set = { ("(" ~ sp ~ empty  ~ sp ~ ")") | ("(" ~ sp ~ reference ~ (sp ~ "," ~ sp ~ reference)* ~ sp ~ ")") }
+
+aggregate_group_by = { grouping_set_list | expression_list}
+grouping_set_list = {grouping_set ~ sp ~ (", " ~ sp ~ grouping_set)* }
+grouping_set = { ("(" ~ sp ~ expression_list ~ sp ~ ")" ) | empty }
+expression_list = { expression ~ sp ~ ( "," ~ sp ~ expression)* }
+
 aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
 aggregate_output_item = { reference | aggregate_measure }
 // TODO: Add support for filter, invocation, etc.
