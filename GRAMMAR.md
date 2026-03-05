@@ -687,7 +687,7 @@ Functions:
 
 === Plan
 Root[customer_revenue]
-  Aggregate[($0, $1) => $0, $1, sum($3)]
+  Aggregate[$0, $1 => $0, $1, sum($3)]
     Filter[gt($3, 100) => $0, $1, $2, $3]
       Project[$0, $1, $2, multiply($4, $5)]
         Join[&Inner, eq($0, $3) => $0, $1, $2, $3, $4, $5]
