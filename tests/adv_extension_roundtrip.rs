@@ -1,16 +1,17 @@
 //! Integration tests for advanced extension (Enh/Opt) round-trip.
 //!
 //! Tests parse → textify round-trips for `+ Enh:` and `+ Opt:` annotations
-//! on standard relations, using [`ReadRelEnhancement`] as the concrete example.
+//! on standard relations, using [`PartitionHint`] as the concrete example.
 
-use substrait_explain::extensions::{ExtensionRegistry, ReadRelEnhancement};
+use substrait_explain::extensions::ExtensionRegistry;
+use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
 
 fn make_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
     registry
-        .register_enhancement::<ReadRelEnhancement>()
+        .register_enhancement::<PartitionHint>()
         .expect("register_enhancement");
     registry
 }
@@ -20,13 +21,13 @@ fn make_registry() -> ExtensionRegistry {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_read_rel_enhancement_roundtrip() {
+fn test_partition_hint_roundtrip() {
     let registry = make_registry();
 
     let plan_text = r#"=== Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE, &CUSTOM]"#;
+    + Enh:PartitionHint[&HASH, &RANGE]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -37,13 +38,13 @@ Root[result]
 }
 
 #[test]
-fn test_read_rel_enhancement_all_namespaces() {
+fn test_partition_hint_with_count() {
     let registry = make_registry();
 
     let plan_text = r#"=== Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&UNKNOWN, &CORE, &CUSTOM, &TAG]"#;
+    + Enh:PartitionHint[&HASH, count=8]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -54,14 +55,31 @@ Root[result]
 }
 
 #[test]
-fn test_read_rel_enhancement_empty_namespaces() {
+fn test_partition_hint_all_strategies() {
     let registry = make_registry();
 
-    // Zero namespaces → args render as `_`
     let plan_text = r#"=== Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[_]"#;
+    + Enh:PartitionHint[&UNSPECIFIED, &HASH, &RANGE, &BROADCAST]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_partition_hint_empty() {
+    let registry = make_registry();
+
+    // Zero strategies, no count → args render as `_`
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:PartitionHint[_]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -83,7 +101,7 @@ fn test_enhancement_with_child_relation() {
 Root[result]
   Filter[$0 => $0]
     Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE]"#;
+    + Enh:PartitionHint[&BROADCAST]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -101,7 +119,7 @@ Root[result]
 mod opt_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType,
+        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType, ExtensionValue,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -137,10 +155,8 @@ mod opt_fixture {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-            args.named.insert(
-                "hint".to_owned(),
-                substrait_explain::extensions::ExtensionValue::String(self.hint.clone()),
-            );
+            args.named
+                .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
             Ok(args)
         }
     }
@@ -174,11 +190,10 @@ fn test_enhancement_and_optimization_on_same_relation() {
         .register_optimization::<opt_fixture::PlanHint>()
         .expect("register_optimization");
 
-    // Enhancement comes before optimizations in textified output
     let plan_text = r#"=== Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE]
+    + Enh:PartitionHint[&HASH]
     + Opt:PlanHint[hint='use_index']"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
@@ -196,14 +211,13 @@ Root[result]
 /// Parsing a plan with an enhancement fails when the type is not registered.
 #[test]
 fn test_unregistered_enhancement_fails_to_parse() {
-    // Empty registry — ReadRelEnhancement is unknown
     let registry = ExtensionRegistry::new();
 
     let plan_text = r#"
 === Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE, &CUSTOM]
+    + Enh:PartitionHint[&HASH, count=4]
 "#;
 
     let parser = Parser::new().with_extension_registry(registry);
@@ -218,14 +232,14 @@ Root[result]
 /// warning rather than panicking or dropping the line entirely.
 #[test]
 fn test_unknown_enhancement_url_textify_is_lenient() {
-    // Parse with a registry that knows ReadRelEnhancement
+    // Parse with a registry that knows PartitionHint
     let registry = make_registry();
     let parser = Parser::new().with_extension_registry(registry.clone());
 
     let plan_text = r#"=== Plan
 Root[result]
   Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE]"#;
+    + Enh:PartitionHint[&HASH]"#;
 
     let plan = parser.parse_plan(plan_text).expect("parse failed");
 
@@ -233,7 +247,6 @@ Root[result]
     let empty_registry = ExtensionRegistry::new();
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &empty_registry);
 
-    // Output is still produced (lenient) but contains at least one error
     assert!(
         !formatted.is_empty(),
         "expected non-empty output even on decode error"
@@ -242,9 +255,26 @@ Root[result]
         !errors.is_empty(),
         "expected at least one format error for unknown enhancement type URL"
     );
-    // The enhancement line should still appear in some form
     assert!(
         formatted.contains("+ Enh["),
         "expected enhancement prefix in output, got:\n{formatted}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// PartitionStrategy unit tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_partition_strategy_str_names_roundtrip() {
+    let strategies = [
+        PartitionStrategy::Unspecified,
+        PartitionStrategy::Hash,
+        PartitionStrategy::Range,
+        PartitionStrategy::Broadcast,
+    ];
+    for s in strategies {
+        let name = s.as_str_name();
+        assert_eq!(PartitionStrategy::from_str_name(name), Some(s));
+    }
 }

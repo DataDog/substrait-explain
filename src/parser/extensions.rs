@@ -393,43 +393,28 @@ impl ParsePair for ExtensionInvocation {
         let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
         let mut args = ExtensionArgs::new(relation_type);
 
-        // Parse optional arguments and columns
-        for inner_pair in iter {
-            match inner_pair.as_rule() {
-                Rule::extension_arguments => {
-                    // Parse positional arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_argument {
-                            let value = ExtensionValue::parse_pair(arg_pair);
-                            args.positional.push(value);
-                        }
-                    }
-                }
-                Rule::extension_named_arguments => {
-                    // Parse named arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_named_argument {
-                            let mut arg_iter = arg_pair.into_inner();
-                            let name_pair = arg_iter.next().unwrap();
-                            let value_pair = arg_iter.next().unwrap();
+        // Parse optional arguments
+        let ext_arguments = iter.next().unwrap();
+        match ext_arguments.as_rule() {
+            Rule::arguments => {
+                arguments_rule_parsing(ext_arguments, &mut args);
+            }
+            r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
+        }
 
-                            let name = Name::parse_pair(name_pair).0.to_string();
-                            let value = ExtensionValue::parse_pair(value_pair);
-                            args.named.insert(name, value);
-                        }
-                    }
-                }
+        // parse optional output columns
+        let extension_columns = iter.next();
+        if let Some(value) = extension_columns {
+            match value.as_rule() {
                 Rule::extension_columns => {
-                    // Parse output columns
-                    for col_pair in inner_pair.into_inner() {
+                    for col_pair in value.into_inner() {
                         if col_pair.as_rule() == Rule::extension_column {
                             let column = ExtensionColumn::parse_pair(col_pair);
                             args.output_columns.push(column);
                         }
                     }
                 }
-                Rule::empty => {} // "_" — no arguments
-                r => panic!("Unexpected rule in ExtensionArgs: {:?}", r),
+                r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
             }
         }
 
@@ -489,27 +474,10 @@ impl ParsePair for AdvExtInvocation {
 
         for inner_pair in iter {
             match inner_pair.as_rule() {
-                Rule::extension_arguments => {
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_argument {
-                            args.positional.push(ExtensionValue::parse_pair(arg_pair));
-                        }
-                    }
+                Rule::arguments => {
+                    arguments_rule_parsing(inner_pair, &mut args);
                 }
-                Rule::extension_named_arguments => {
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_named_argument {
-                            let mut arg_iter = arg_pair.into_inner();
-                            let name_p = arg_iter.next().unwrap();
-                            let value_p = arg_iter.next().unwrap();
-                            let key = Name::parse_pair(name_p).0.to_string();
-                            let val = ExtensionValue::parse_pair(value_p);
-                            args.named.insert(key, val);
-                        }
-                    }
-                }
-                Rule::empty => {}
-                r => panic!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+                r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
             }
         }
 
@@ -517,6 +485,35 @@ impl ParsePair for AdvExtInvocation {
             ext_type,
             name,
             args,
+        }
+    }
+}
+
+fn arguments_rule_parsing(inner_pair: pest::iterators::Pair<'_, Rule>, args: &mut ExtensionArgs) {
+    for arg in inner_pair.into_inner() {
+        match arg.as_rule() {
+            Rule::extension_arguments => {
+                // Parse positional arguments
+                for arg_pair in arg.into_inner() {
+                    if arg_pair.as_rule() == Rule::extension_argument {
+                        args.positional.push(ExtensionValue::parse_pair(arg_pair));
+                    }
+                }
+            }
+            Rule::extension_named_arguments => {
+                for arg_pair in arg.into_inner() {
+                    if arg_pair.as_rule() == Rule::extension_named_argument {
+                        let mut arg_iter = arg_pair.into_inner();
+                        let name_p = arg_iter.next().unwrap();
+                        let value_p = arg_iter.next().unwrap();
+                        let key = Name::parse_pair(name_p).0.to_string();
+                        let val = ExtensionValue::parse_pair(value_p);
+                        args.named.insert(key, val);
+                    }
+                }
+            }
+            Rule::empty => {}
+            r => unreachable!("Unexpected rule in extension args: {r:?}"),
         }
     }
 }

@@ -752,7 +752,7 @@ Advanced extensions allow attaching enhancement and optimization metadata to any
 
 Each relation can carry:
 
-- **At most one** enhancement (`+ Enh:`) — extra semantic metadata (e.g. `ddsqlizer.ReadRelEnhancement`)
+- **At most one** enhancement (`+ Enh:`) — extra semantic metadata attached to a relation
 - **Zero or more** optimizations (`+ Opt:`) — hints for the query planner
 
 ### Syntax
@@ -766,7 +766,7 @@ Where:
 
 - **`+`** — prefix that distinguishes annotation lines from child relations
 - **`adv_ext_type`** — `Enh` for an enhancement, `Opt` for an optimization
-- **`name`** — the registered type name (e.g. `ReadRelEnhancement`)
+- **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty
 
 Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. In the textified output, enhancement and optimization lines appear **after** any child relations.
@@ -781,25 +781,26 @@ enum_value := "&" identifier
 
 #### Examples
 
-- `&CORE`, `&CUSTOM`, `&TAG` — [`Namespace`] variants for `ReadRelEnhancement`
+- `&HASH`, `&RANGE`, `&BROADCAST` — [`PartitionStrategy`] variants for `PartitionHint`
 - `&AscNullsFirst` — sort direction enum in a relation argument
 
 ### Example: Enhancement on a Read Relation
 
 ```rust
-# use substrait_explain::extensions::{ExtensionRegistry, ReadRelEnhancement};
+# use substrait_explain::extensions::ExtensionRegistry;
+# use substrait_explain::extensions::examples::PartitionHint;
 # use substrait_explain::format_with_registry;
 # use substrait_explain::parser::Parser;
 #
 # let mut registry = ExtensionRegistry::new();
-# registry.register_enhancement::<ReadRelEnhancement>().unwrap();
+# registry.register_enhancement::<PartitionHint>().unwrap();
 # let parser = Parser::new().with_extension_registry(registry.clone());
 #
 # let plan_text = r#"
 === Plan
 Root[result]
-  Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE, &CUSTOM]
+  Read[data => col:i64]
+    + Enh:PartitionHint[&HASH, count=8]
 # "#;
 #
 # let plan = parser.parse_plan(plan_text).unwrap();
@@ -813,8 +814,8 @@ Root[result]
 ```text
 === Plan
 Root[result]
-  Read[my.table => col:i64]
-    + Enh:ReadRelEnhancement[&CORE]
+  Read[data => col:i64]
+    + Enh:PartitionHint[&HASH, count=4]
     + Opt:PlanHint[hint='use_index']
     + Opt:PlanHint[hint='parallel']
 ```

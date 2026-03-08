@@ -71,13 +71,13 @@ impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
         // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
-            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::relation, line).map_err(|e| {
+            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::planNode, line).map_err(|e| {
                 ParseError::Plan(
                     ParseContext {
                         line_no,
                         line: line.to_string(),
                     },
-                    MessageParseError::new("relation", ErrorKind::InvalidValue, Box::new(e)),
+                    MessageParseError::new("planNode", ErrorKind::InvalidValue, Box::new(e)),
                 )
             })?;
 
@@ -278,7 +278,7 @@ impl<'a> RelationParser<'a> {
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
     ) -> Result<substrait::proto::Rel, ParseError> {
-        assert_eq!(pair.as_rule(), Rule::relation);
+        assert_eq!(pair.as_rule(), Rule::planNode);
         let p = unwrap_single_pair(pair);
 
         let (e, r, l, p_inner, cr, ic) = (
@@ -491,7 +491,7 @@ impl<'a> RelationParser<'a> {
         mut node: LineNode,
     ) -> Result<PlanRel, ParseError> {
         // Plain relations are allowed as root relations, they just don't have names.
-        if node.pair.as_rule() == Rule::relation {
+        if node.pair.as_rule() == Rule::planNode {
             let rel = self.build_rel(extensions, registry, node)?;
             return Ok(PlanRel {
                 rel_type: Some(plan_rel::RelType::Rel(rel)),
