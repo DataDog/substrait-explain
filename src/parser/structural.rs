@@ -467,6 +467,11 @@ impl<'a> RelationParser<'a> {
                 AdvExtType::Enhancement => {
                     let detail =
                         context.resolve_enhancement_detail(&invocation.name, &invocation.args)?;
+                    if enhancement.is_some() {
+                        eprintln!(
+                            "Enhancement overwritten substrait proto semantics allows only 1 enhancement per relation."
+                        )
+                    }
                     enhancement = Some(detail.into());
                 }
                 AdvExtType::Optimization => {

@@ -859,6 +859,19 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_with_unknown_prefix_returns_not_found() {
+        let registry = ExtensionRegistry::new();
+        // The actual content of the Any doesn't matter; the prefix dispatch
+        // should short-circuit before any type-URL lookup.
+        let dummy = Any::new("type.googleapis.com/test.Dummy".to_string(), vec![]);
+        let result = registry.decode_with_ext_type_str("Invalid", dummy.as_ref());
+        assert!(
+            matches!(result, Err(ExtensionError::NotFound { .. })),
+            "expected NotFound for unknown prefix, got {result:?}"
+        );
+    }
+
+    #[test]
     fn test_conflicting_type_url_leaves_registry_unchanged() {
         let mut registry = ExtensionRegistry::new();
         registry.register_relation::<TestExtension>().unwrap();

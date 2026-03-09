@@ -461,7 +461,7 @@ impl ParsePair for AdvExtInvocation {
         let ext_type = match type_pair.as_str() {
             "Enh" => AdvExtType::Enhancement,
             "Opt" => AdvExtType::Optimization,
-            other => panic!("Unexpected adv_ext_type: {other}"),
+            other => unreachable!("Unexpected adv_ext_type: {other}"),
         };
 
         // Second token: name

@@ -166,7 +166,7 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// Field reference ($0, $1, etc.)
     Reference(i32),
-    /// Enum value (e.g. &CORE, &Inner) — the string holds the identifier without the `&` prefix
+    /// Enum value (e.g. &CORE, &Inner) — Uses the wrapper EnumValue. the string holds the identifier without the `&` prefix
     Enum(String),
     /// Expression (function call, etc.) — not yet fully supported, hence the
     /// private interface.
