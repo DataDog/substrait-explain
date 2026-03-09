@@ -299,7 +299,11 @@ impl<'a> RelationParser<'a> {
             Rule::fetch_relation => self.parse_rel::<FetchRel>(e, l, p_inner, cr, ic),
             Rule::join_relation => self.parse_rel::<JoinRel>(e, l, p_inner, cr, ic),
             Rule::extension_relation => self.parse_extension_relation(e, r, l, p_inner, cr),
-            _ => todo!(),
+            Rule::adv_extension => Err(ParseError::ValidationError(format!(
+                "line {l}: '{}': advanced extension annotations is not a standalone relation",
+                p_inner.as_str(),
+            ))),
+            _ => unreachable!("unhandled planNode rule: {:?}", p_inner.as_rule()),
         }
     }
 
@@ -397,15 +401,24 @@ impl<'a> RelationParser<'a> {
         // Separate adv_extension annotation nodes from regular child relations.
         // adv_extension nodes have an inner pair of rule `adv_extension`; all
         // others are regular relation children.
-        let (adv_ext_nodes, rel_children): (Vec<_>, Vec<_>) =
-            node.children.into_iter().partition(|c| {
-                c.pair
-                    .clone()
-                    .into_inner()
-                    .next()
-                    .map(|p| p.as_rule() == Rule::adv_extension)
-                    .unwrap_or(false)
-            });
+        // This code enforces that advanced extensions are not treated
+        // as relations themselves and must be a child of a relation
+        let mut adv_ext_nodes: Vec<LineNode<'_>> = Vec::new();
+        let mut rel_children: Vec<LineNode<'_>> = Vec::new();
+
+        for child in node.children {
+            let mut is_adv = false;
+            if let Some(first_child) = child.clone().pair.into_inner().next()
+                && first_child.as_rule() == Rule::adv_extension
+            {
+                is_adv = true;
+            }
+            if is_adv {
+                adv_ext_nodes.push(child);
+            } else {
+                rel_children.push(child);
+            }
+        }
 
         // Build regular input children first to get their output schemas
         let child_relations = rel_children
@@ -468,9 +481,10 @@ impl<'a> RelationParser<'a> {
                     let detail =
                         context.resolve_enhancement_detail(&invocation.name, &invocation.args)?;
                     if enhancement.is_some() {
-                        eprintln!(
-                            "Enhancement overwritten substrait proto semantics allows only 1 enhancement per relation."
-                        )
+                        return Err(ParseError::ValidationError(
+                            "substrait proto semantics allows only 1 enhancement per relation"
+                                .to_string(),
+                        ));
                     }
                     enhancement = Some(detail.into());
                 }

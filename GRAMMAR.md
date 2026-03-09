@@ -758,13 +758,12 @@ Each relation can carry:
 ### Syntax
 
 ```text
-adv_extension := "+" sp adv_ext_type ":" name "[" (empty | extension_args)? "]"
+adv_extension := "+" adv_ext_type ":" name "[" (empty | extension_args)? "]"
 adv_ext_type  := "Enh" | "Opt"
 ```
 
 Where:
 
-- **`+`** — prefix that distinguishes annotation lines from child relations
 - **`adv_ext_type`** — `Enh` for an enhancement, `Opt` for an optimization
 - **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty

@@ -261,6 +261,62 @@ Root[result]
     );
 }
 
+/// Parsing a plan with two `+ Enh:` lines on the same relation must fail.
+/// Substrait semantics allow at most one enhancement per relation.
+#[test]
+fn test_multiple_enhancements_fails_to_parse() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:PartitionHint[&HASH]
+    + Enh:PartitionHint[&RANGE]"#;
+
+    let parser = Parser::new().with_extension_registry(registry);
+    let result = parser.parse_plan(plan_text);
+    assert!(
+        result.is_err(),
+        "expected parse error for duplicate enhancement, but parse succeeded"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("enhancement") || err_msg.contains("Enhancement"),
+        "error message should mention 'enhancement', got: {err_msg}"
+    );
+}
+
+#[test]
+fn test_adv_extension_as_standalone_root_fails_with_error() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
++ Enh:PartitionHint[&HASH]"#;
+
+    let parser = Parser::new().with_extension_registry(registry);
+    let result = parser.parse_plan(plan_text);
+    assert!(
+        result.is_err(),
+        "expected parse error for adv_extension as standalone root, but parse succeeded"
+    );
+}
+
+#[test]
+fn test_adv_extension_as_roots_only_child_fails_with_error() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  + Enh:PartitionHint[&HASH]"#;
+
+    let parser = Parser::new().with_extension_registry(registry);
+    let result = parser.parse_plan(plan_text);
+    assert!(
+        result.is_err(),
+        "expected parse error for adv_extension as Root's only child, but parse succeeded"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // PartitionStrategy unit tests
 // ---------------------------------------------------------------------------
