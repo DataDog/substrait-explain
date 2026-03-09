@@ -84,7 +84,7 @@ pub enum Value<'a> {
     /// Represents a valid enum value as a string for textification.
     Enum(Cow<'a, str>),
     Integer(i32),
-    EmptyGroup(),
+    EmptyGroup,
 }
 
 impl<'a> Value<'a> {
@@ -125,7 +125,7 @@ impl<'a> Textify for Value<'a> {
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
             Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
-            Value::EmptyGroup() => write!(w, "_"),
+            Value::EmptyGroup => write!(w, "_"),
         }
     }
 }
@@ -467,7 +467,11 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
         // if rel.grouping_expressions is empty, the deprecated rel.groupings.grouping_expressions might be set
         // If *both* the deprecated `rel.groupings.grouping_expressions` and `rel.grouping_expressions` are
         // set, then we silently ignore the deprecated one.
-        if rel.grouping_expressions.is_empty() {
+        #[allow(deprecated)]
+        if rel.grouping_expressions.is_empty()
+            && !rel.groupings.is_empty()
+            && !rel.groupings[0].grouping_expressions.is_empty()
+        {
             get_grouping_sets(rel, &mut expression_list, &mut grouping_sets);
         } else {
             expression_list = rel
@@ -492,7 +496,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
         let mut positional: Vec<Value> = vec![];
         for g in grouping_sets {
             if g.is_empty() {
-                positional.push(Value::EmptyGroup());
+                positional.push(Value::EmptyGroup);
             } else if is_single {
                 // Single non-empty grouping set: spread expressions directly without parens
                 positional.extend(g);
@@ -1186,9 +1190,9 @@ Filter[gt($0, 10:i32) => $0, $1]
         // grouping_expressions, leaving AggregateRel.grouping_expressions empty.
         let ctx = TestContext::new()
         .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-        .with_function(1, 10, "count");
+        .with_function(1, 11, "count");
 
-        let agg_fn1 = get_aggregate_func(10, 2);
+        let agg_fn1 = get_aggregate_func(11, 2);
 
         let grouping_expr_0 = create_exp(0);
         let grouping_expr_1 = create_exp(1);

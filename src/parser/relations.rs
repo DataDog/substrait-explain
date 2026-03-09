@@ -447,7 +447,6 @@ impl RelationParsePair for AggregateRel {
                 let expression_references: Vec<u32> = expression_list(
                     extensions,
                     inner,
-                    &mut grouping_sets,
                     &mut expression_index_map,
                     &mut grouping_expressions,
                 );
@@ -472,12 +471,14 @@ impl RelationParsePair for AggregateRel {
                                 expression_references = expression_list(
                                     extensions,
                                     item,
-                                    &mut grouping_sets,
                                     &mut expression_index_map,
                                     &mut grouping_expressions,
                                 );
                             }
-                            _ => panic!("Unexpected item in grouping_set: {:?}", item.as_rule()),
+                            _ => unreachable!(
+                                "Unexpected item in grouping_set: {:?}",
+                                item.as_rule()
+                            ),
                         }
                     }
                     grouping_sets.push(Grouping {
@@ -487,7 +488,7 @@ impl RelationParsePair for AggregateRel {
                     });
                 }
             }
-            _ => panic!(
+            _ => unreachable!(
                 "Unexpected rule in aggregate_group_by: {:?}",
                 inner.as_rule()
             ),
@@ -538,7 +539,6 @@ impl RelationParsePair for AggregateRel {
 fn expression_list(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
-    _grouping_sets: &mut Vec<Grouping>,
     expression_index_map: &mut HashMap<Vec<u8>, u32>,
     grouping_expressions: &mut Vec<Expression>,
 ) -> Vec<u32> {
@@ -547,6 +547,7 @@ fn expression_list(
 
     // for each expression in the expression list we map to an index in the order they are parsed
     for expr_pair in inner.into_inner() {
+        // By the grammar rule, only expressions should be parsed so erroring can be dropped silently
         if let Ok(exp) = Expression::parse_pair(extensions, expr_pair) {
             let key = exp.encode_to_vec();
             expression_index_map.entry(key.clone()).or_insert_with(|| {
@@ -1188,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_aggregate_relation_no_group_by() {
+    fn test_parse_aggregate_relation_global_aggregate() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")

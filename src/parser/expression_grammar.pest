@@ -219,7 +219,7 @@ project_argument      = { reference | expression }
 aggregate_relation    = { "Aggregate" ~ "[" ~ aggregate_group_by ~ sp ~ "=>" ~ sp ~ aggregate_output ~ "]" }
 
 aggregate_group_by = { grouping_set_list | expression_list}
-grouping_set_list = {grouping_set ~ sp ~ (", " ~ sp ~ grouping_set)* }
+grouping_set_list = {grouping_set ~ sp ~ ("," ~ sp ~ grouping_set)* }
 grouping_set = { ("(" ~ sp ~ expression_list ~ sp ~ ")" ) | empty }
 expression_list = { expression ~ sp ~ ( "," ~ sp ~ expression)* }
 
