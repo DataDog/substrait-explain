@@ -430,9 +430,9 @@ impl RelationParsePair for AggregateRel {
         let output_pair = iter.pop(Rule::aggregate_output);
         iter.done();
 
-        let mut grouping_sets: Vec<Grouping> = Vec::new();
         let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
-        let mut grouping_expressions: Vec<Expression> = Vec::new();
+        let grouping_sets: Vec<Grouping>;
+        let grouping_expressions: Vec<Expression>;
 
         // The grammar matches either a single `expression_list` (no parens, single grouping set)
         // or a `grouping_set_list` (one or more sets, each wrapped in parens, or a set `_` with no parens).
@@ -444,49 +444,11 @@ impl RelationParsePair for AggregateRel {
         match inner.as_rule() {
             Rule::expression_list => {
                 // Single non-empty grouping set written without parens: e.g. "$0, $1"
-                let expression_references: Vec<u32> = expression_list(
-                    extensions,
-                    inner,
-                    &mut expression_index_map,
-                    &mut grouping_expressions,
-                );
-                grouping_sets.push(Grouping {
-                    expression_references,
-                    #[allow(deprecated)]
-                    grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
-                });
+                (grouping_sets, grouping_expressions) =
+                    get_single_group(extensions, inner, &mut expression_index_map);
             }
             Rule::grouping_set_list => {
-                // One or more grouping sets, each written as `(expr_list)` or `_`
-                for grouping_set_pair in inner.into_inner() {
-                    assert_eq!(grouping_set_pair.as_rule(), Rule::grouping_set);
-
-                    let mut expression_references: Vec<u32> = vec![];
-                    for item in grouping_set_pair.into_inner() {
-                        match item.as_rule() {
-                            Rule::empty => {
-                                // empty grouping set — expression_references stays empty
-                            }
-                            Rule::expression_list => {
-                                expression_references = expression_list(
-                                    extensions,
-                                    item,
-                                    &mut expression_index_map,
-                                    &mut grouping_expressions,
-                                );
-                            }
-                            _ => unreachable!(
-                                "Unexpected item in grouping_set: {:?}",
-                                item.as_rule()
-                            ),
-                        }
-                    }
-                    grouping_sets.push(Grouping {
-                        expression_references,
-                        #[allow(deprecated)]
-                        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
-                    });
-                }
+                (grouping_sets, grouping_expressions) = get_grouping_sets(extensions, inner);
             }
             _ => unreachable!(
                 "Unexpected rule in aggregate_group_by: {:?}",
@@ -536,30 +498,76 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
-fn expression_list(
+fn get_single_group(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
     expression_index_map: &mut HashMap<Vec<u8>, u32>,
-    grouping_expressions: &mut Vec<Expression>,
-) -> Vec<u32> {
+) -> (Vec<Grouping>, Vec<Expression>) {
     let mut expression_references: Vec<u32> = vec![];
+    let mut grouping_expressions: Vec<Expression> = Vec::new();
     let mut i = 0;
 
     // for each expression in the expression list we map to an index in the order they are parsed
     for expr_pair in inner.into_inner() {
         // By the grammar rule, only expressions should be parsed so erroring can be dropped silently
-        if let Ok(exp) = Expression::parse_pair(extensions, expr_pair) {
-            let key = exp.encode_to_vec();
-            expression_index_map.entry(key.clone()).or_insert_with(|| {
-                grouping_expressions.push(exp);
-                let index = i;
-                i += 1;
-                index // is expression returned by this closure and inserted into map
-            });
-            expression_references.push(expression_index_map[&key]);
-        };
+        match Expression::parse_pair(extensions, expr_pair) {
+            Ok(exp) => {
+                let key = exp.encode_to_vec();
+                expression_index_map.entry(key.clone()).or_insert_with(|| {
+                    grouping_expressions.push(exp);
+                    let index = i;
+                    i += 1;
+                    index // is expression returned by this closure and inserted into map
+                });
+                expression_references.push(expression_index_map[&key]);
+            }
+            Err(_) => unreachable!(),
+        }
     }
-    expression_references
+
+    let group = Grouping {
+        expression_references,
+        #[allow(deprecated)]
+        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
+    };
+
+    (vec![group], grouping_expressions)
+}
+
+fn get_grouping_sets(
+    extensions: &SimpleExtensions,
+    inner: Pair<'_, Rule>,
+) -> (Vec<Grouping>, Vec<Expression>) {
+    let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
+
+    let mut grouping_sets: Vec<Grouping> = Vec::new();
+    let mut grouping_expressions: Vec<Expression> = Vec::new();
+
+    // One or more grouping sets, each written as `(expr_list)` or `_`
+    for grouping_set_pair in inner.into_inner() {
+        assert_eq!(grouping_set_pair.as_rule(), Rule::grouping_set);
+
+        for item in grouping_set_pair.into_inner() {
+            match item.as_rule() {
+                Rule::empty => {
+                    // empty grouping set — expression_references stays empty
+                    grouping_sets.push(Grouping {
+                        expression_references: vec![],
+                        #[allow(deprecated)]
+                        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
+                    });
+                }
+                Rule::expression_list => {
+                    let (mut group, mut new_grouping_expressions) =
+                        get_single_group(extensions, item, &mut expression_index_map);
+                    grouping_expressions.append(&mut new_grouping_expressions);
+                    grouping_sets.append(&mut group);
+                }
+                _ => unreachable!("Unexpected item in grouping_set: {:?}", item.as_rule()),
+            }
+        }
+    }
+    (grouping_sets, grouping_expressions)
 }
 
 impl ScopedParsePair for SortField {
