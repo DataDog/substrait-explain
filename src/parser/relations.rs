@@ -441,11 +441,14 @@ impl RelationParsePair for AggregateRel {
             .next()
             .expect("aggregate_group_by must have one inner item");
 
+        let group: Grouping;
+
         match inner.as_rule() {
             Rule::expression_list => {
                 // Single non-empty grouping set written without parens: e.g. "$0, $1"
-                (grouping_sets, grouping_expressions) =
+                (group, grouping_expressions) =
                     get_single_group(extensions, inner, &mut expression_index_map);
+                grouping_sets = vec![group];
             }
             Rule::grouping_set_list => {
                 (grouping_sets, grouping_expressions) = get_grouping_sets(extensions, inner);
@@ -502,14 +505,13 @@ fn get_single_group(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
     expression_index_map: &mut HashMap<Vec<u8>, u32>,
-) -> (Vec<Grouping>, Vec<Expression>) {
+) -> (Grouping, Vec<Expression>) {
     let mut expression_references: Vec<u32> = vec![];
     let mut grouping_expressions: Vec<Expression> = Vec::new();
     let mut i = 0;
 
     // for each expression in the expression list we map to an index in the order they are parsed
     for expr_pair in inner.into_inner() {
-        // By the grammar rule, only expressions should be parsed so erroring can be dropped silently
         match Expression::parse_pair(extensions, expr_pair) {
             Ok(exp) => {
                 let key = exp.encode_to_vec();
@@ -521,7 +523,9 @@ fn get_single_group(
                 });
                 expression_references.push(expression_index_map[&key]);
             }
-            Err(_) => unreachable!(),
+            Err(_) => unreachable!(
+                "By the grammar rule, only expressions should be parsed so erroring can be dropped silently"
+            ),
         }
     }
 
@@ -531,7 +535,7 @@ fn get_single_group(
         grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
     };
 
-    (vec![group], grouping_expressions)
+    (group, grouping_expressions)
 }
 
 fn get_grouping_sets(
@@ -558,10 +562,10 @@ fn get_grouping_sets(
                     });
                 }
                 Rule::expression_list => {
-                    let (mut group, mut new_grouping_expressions) =
+                    let (group, mut new_grouping_expressions) =
                         get_single_group(extensions, item, &mut expression_index_map);
                     grouping_expressions.append(&mut new_grouping_expressions);
-                    grouping_sets.append(&mut group);
+                    grouping_sets.push(group);
                 }
                 _ => unreachable!("Unexpected item in grouping_set: {:?}", item.as_rule()),
             }
