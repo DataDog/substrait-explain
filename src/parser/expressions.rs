@@ -1,9 +1,10 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::ReferenceType;
+use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
+    FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
@@ -462,7 +463,6 @@ impl ScopedParsePair for Expression {
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
-
         match inner.as_rule() {
             Rule::literal => Ok(Expression {
                 rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
@@ -477,11 +477,83 @@ impl ScopedParsePair for Expression {
                     inner,
                 )))),
             }),
-            _ => unimplemented!("Expression unexpected rule: {:?}", inner.as_rule()),
+            Rule::if_then => Ok(Expression {
+                rex_type: Some(RexType::IfThen(Box::new(IfThen::parse_pair(
+                    extensions, inner,
+                )?))),
+            }),
+            _ => unreachable!(
+                "Grammar guarantees expression can only be literal, function_call, reference, or if_then, got: {:?}",
+                inner.as_rule()
+            ),
         }
     }
 }
 
+impl ScopedParsePair for IfClause {
+    fn rule() -> Rule {
+        Rule::if_clause
+    }
+
+    fn message() -> &'static str {
+        "IfClause"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut pairs = pair.into_inner(); // should have 2 children, 2 expressions
+
+        let condition = pairs.next().unwrap();
+        let result = pairs.next().unwrap();
+        assert!(pairs.next().is_none());
+
+        let ex1 = Some(Expression::parse_pair(extensions, condition)?);
+        let ex2 = Some(Expression::parse_pair(extensions, result)?);
+
+        Ok(IfClause {
+            r#if: ex1,
+            then: ex2,
+        })
+    }
+}
+
+impl ScopedParsePair for IfThen {
+    fn rule() -> Rule {
+        Rule::if_then
+    }
+    fn message() -> &'static str {
+        "IfThen"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let mut iter = RuleIter::from(pair.into_inner()); // should have 2 or more children
+
+        let mut ifs: Vec<IfClause> = Vec::new();
+
+        // gets all of the if clauses
+        while let Some(p) = iter.try_pop(Rule::if_clause) {
+            let if_clause = IfClause::parse_pair(extensions, p)?;
+            ifs.push(if_clause);
+        }
+
+        let pair = iter.try_pop(Rule::expression).unwrap(); // should be else expression
+        iter.done();
+        let else_clause = Some(Box::new(Expression::parse_pair(extensions, pair)?));
+
+        Ok(IfThen {
+            ifs,
+            r#else: else_clause,
+        })
+    }
+}
 pub struct Name(pub String);
 
 impl ParsePair for Name {
@@ -549,7 +621,7 @@ mod tests {
     use super::*;
     use crate::parser::ExpressionParser;
 
-    fn parse_exact(rule: Rule, input: &str) -> pest::iterators::Pair<Rule> {
+    fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();
@@ -727,137 +799,182 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_parse_string_literal() {
-    //     assert_parses_to("'hello'", Literal::String("hello".to_string()));
-    // }
+    /// Helper function to create a literal boolean expression
+    fn make_literal_bool(value: bool) -> Expression {
+        Expression {
+            rex_type: Some(RexType::Literal(Literal {
+                literal_type: Some(LiteralType::Boolean(value)),
+                nullable: false,
+                type_variation_reference: 0,
+            })),
+        }
+    }
 
-    // #[test]
-    // fn test_parse_function_call_simple() {
-    //     assert_parses_to(
-    //         "add()",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: None,
-    //             anchor: None,
-    //             urn_anchor: None,
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+    #[test]
+    fn test_parse_if_then_single_clause() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> 42, _ -> 0)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
 
-    // #[test]
-    // fn test_parse_function_call_with_parameters() {
-    //     assert_parses_to(
-    //         "add<param1, param2>()",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
-    //             anchor: None,
-    //             urn_anchor: None,
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+        assert_eq!(result.ifs.len(), 1);
+        assert!(result.r#else.is_some());
+    }
 
-    // #[test]
-    // fn test_parse_function_call_with_anchor() {
-    //     assert_parses_to(
-    //         "add#1()",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: None,
-    //             anchor: Some(1),
-    //             urn_anchor: None,
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+    #[test]
+    fn test_parse_if_then_with_typed_literals() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> 100:i32, _ -> -100:i32)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
 
-    // #[test]
-    // fn test_parse_function_call_with_urn_anchor() {
-    //     assert_parses_to(
-    //         "add@1()",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: None,
-    //             anchor: None,
-    //             urn_anchor: Some(1),
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+        assert_eq!(result.ifs.len(), 1);
+        assert!(result.r#else.is_some());
+    }
 
-    // #[test]
-    // fn test_parse_function_call_all_optionals() {
-    //     assert_parses_to(
-    //         "add<param1, param2>#1@2()",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
-    //             anchor: Some(1),
-    //             urn_anchor: Some(2),
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+    #[test]
+    fn test_parse_if_then_with_date_literals() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> '2023-12-25':date, _ -> '1970-01-01':date)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
 
-    // #[test]
-    // fn test_parse_function_call_with_simple_arguments() {
-    //     assert_parses_to(
-    //         "add(1, 2)",
-    //         FunctionCall {
-    //             name: "add".to_string(),
-    //             parameters: None,
-    //             anchor: None,
-    //             urn_anchor: None,
-    //             arguments: vec![
-    //                 Expression::Literal(Literal::Integer(1)),
-    //                 Expression::Literal(Literal::Integer(2)),
-    //             ],
-    //         },
-    //     );
-    // }
+        assert_eq!(result.ifs.len(), 1);
+        assert!(result.r#else.is_some());
+    }
 
-    // #[test]
-    // fn test_parse_function_call_with_nested_function() {
-    //     assert_parses_to(
-    //         "outer_func(inner_func(), $1)",
-    //         Expression::FunctionCall(Box::new(FunctionCall {
-    //             name: "outer_func".to_string(),
-    //             parameters: None,
-    //             anchor: None,
-    //             urn_anchor: None,
-    //             arguments: vec![
-    //                 Expression::FunctionCall(Box::new(FunctionCall {
-    //                     name: "inner_func".to_string(),
-    //                     parameters: None,
-    //                     anchor: None,
-    //                     urn_anchor: None,
-    //                     arguments: vec![],
-    //                 })),
-    //                 Expression::Reference(Reference(1)),
-    //             ],
-    //         })),
-    //     );
-    // }
+    #[test]
+    fn test_parse_if_then_with_time_literals() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> '14:30:45':time, _ -> '00:00:00':time)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
 
-    // #[test]
-    // fn test_parse_function_call_funny_names() {
-    //     assert_parses_to(
-    //         "'funny name'<param1, param2>#1@2()",
-    //         FunctionCall {
-    //             name: "funny name".to_string(),
-    //             parameters: Some(vec!["param1".to_string(), "param2".to_string()]),
-    //             anchor: Some(1),
-    //             urn_anchor: Some(2),
-    //             arguments: vec![],
-    //         },
-    //     );
-    // }
+        assert_eq!(result.ifs.len(), 1);
+        assert!(result.r#else.is_some());
+    }
 
-    // #[test]
-    // fn test_parse_empty_string_literal() {
-    //     assert_parses_to("''", Literal::String("".to_string()));
-    // }
+    #[test]
+    fn test_parse_if_then_with_timestamp_literals() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> '2023-01-01T12:00:00':timestamp, _ -> '1970-01-01T00:00:00':timestamp)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
+
+        assert_eq!(result.ifs.len(), 1);
+        assert!(result.r#else.is_some());
+    }
+
+    #[test]
+    fn test_parse_if_clause_with_whitespace_variations() {
+        let extensions = SimpleExtensions::default();
+
+        // Test with various whitespace patterns
+        let inputs = vec!["true->false", "true -> false", "true  ->  false"];
+
+        for input in inputs {
+            let pair = parse_exact(Rule::if_clause, input);
+            let result = IfClause::parse_pair(&extensions, pair).unwrap();
+            assert!(result.r#if.is_some());
+            assert!(result.then.is_some());
+        }
+    }
+
+    #[test]
+    fn test_if_clause_structure() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::if_clause, "42 -> 100");
+        let result = IfClause::parse_pair(&extensions, pair).unwrap();
+
+        // Verify the if clause has both condition and result
+        let if_expr = result.r#if.as_ref().unwrap();
+        let then_expr = result.then.as_ref().unwrap();
+
+        // Check that they are literal expressions
+        match (&if_expr.rex_type, &then_expr.rex_type) {
+            (Some(RexType::Literal(_)), Some(RexType::Literal(_))) => {
+                // Success - both are literals as expected
+            }
+            _ => panic!("Expected both if and then to be literals"),
+        }
+    }
+
+    #[test]
+    fn test_if_then_structure() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(true -> 1, false -> 2, _ -> 0)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
+
+        // Verify structure
+        assert_eq!(result.ifs.len(), 2);
+
+        // Check each if clause
+        for clause in &result.ifs {
+            assert!(clause.r#if.is_some(), "If clause condition should exist");
+            assert!(clause.then.is_some(), "If clause result should exist");
+        }
+
+        // Check else clause
+        assert!(result.r#else.is_some(), "Else clause should exist");
+    }
+
+    #[test]
+    fn test_parse_if_then_mixed_types_in_conditions() {
+        let extensions = SimpleExtensions::default();
+        // Different types in conditions (not results)
+        let input = "if_then(true -> 1, true -> 'yes', 'yes' -> true, 42 -> 2, $0 -> 3, _ -> 0)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
+
+        assert_eq!(result.ifs.len(), 5);
+        assert!(result.r#else.is_some());
+    }
+
+    #[test]
+    fn test_if_then_preserves_clause_order() {
+        let extensions = SimpleExtensions::default();
+        let input = "if_then(1 -> 10, 2 -> 20, 3 -> 30, _ -> 0)";
+        let pair = parse_exact(Rule::if_then, input);
+        let result = IfThen::parse_pair(&extensions, pair).unwrap();
+
+        assert_eq!(result.ifs.len(), 3);
+
+        // Verify the clauses are in order by checking the literal values
+        for (i, clause) in result.ifs.iter().enumerate() {
+            if let Some(Expression {
+                rex_type: Some(RexType::Literal(lit)),
+            }) = &clause.r#if
+            {
+                if let Some(LiteralType::I64(val)) = &lit.literal_type {
+                    assert_eq!(*val, (i as i64) + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_if_then() {
+        let extensions = SimpleExtensions::default();
+
+        let c1 = IfClause {
+            r#if: Some(make_literal_bool(true)),
+            then: Some(make_literal_bool(true)),
+        };
+
+        let c2 = IfClause {
+            r#if: Some(make_literal_bool(false)),
+            then: Some(make_literal_bool(false)),
+        };
+
+        let if_clause = IfThen {
+            ifs: vec![c1, c2],
+            r#else: Some(Box::new(make_literal_bool(false))),
+        };
+        assert_parses_with(
+            &extensions,
+            "if_then(true -> true , false -> false, _ -> false)",
+            if_clause,
+        );
+    }
 }

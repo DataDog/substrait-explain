@@ -55,6 +55,25 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 - Run `cargo clippy` to catch common issues (enforced by pre-commit hooks)
 - Add documentation for public APIs, and review them with `cargo doc --open`
 - Include tests for new functionality
+- **Import organization**: Prefer module-level imports over function-level `use` statements or long inline type references (e.g., `use substrait::proto::RelType;` at module level rather than `substrait::proto::RelType` inline)
+- **Pattern matching depth**: Avoid deeply nested pattern matching (if-let chains, match arms). Prefer sequential operations with let-else patterns or early returns for clarity
+  ```rust
+  // Good: Sequential with let-else
+  let Some(root) = plan.relations.first_mut() else {
+      return Err("No relations");
+  };
+  let RelType::Filter(filter) = &root.rel_type else {
+      return Err("Expected Filter");
+  };
+
+  // Bad: Deeply nested
+  if let Some(root) = plan.relations.first_mut() {
+      if let RelType::Filter(filter) = &root.rel_type {
+          // ... more nesting
+      }
+  }
+  ```
+- **Unused parameters**: When refactoring changes behavior, remove parameters that are no longer used rather than prefixing with underscore
 
 ### Project-Specific Guidelines
 

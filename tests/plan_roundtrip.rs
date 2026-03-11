@@ -5,11 +5,9 @@
 //! rare, and more likely a reflection of the author's misunderstanding of the
 //! Substrait plan format.
 
-mod common;
-
-use common::{roundtrip_plan, roundtrip_plan_with_verbose};
+use substrait_explain::fixtures::{roundtrip_plan, roundtrip_plan_with_verbose};
 use substrait_explain::format;
-use substrait_explain::parser::Parser;
+use substrait_explain::parser::{ParseError, Parser};
 
 /// Assert that both canonical and equivalent plans parse and pretty-print to the canonical form.
 fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
@@ -294,4 +292,56 @@ Root[d, mark]
     Read[left_table => a:i32, b:string]
     Read[right_table => c:i32, d:string, e:boolean]"#;
     roundtrip_plan(plan_right_mark);
+}
+
+#[test]
+fn test_unregistered_extension_error() {
+    let plan_text = r#"=== Plan
+Root[result]
+  ExtensionLeaf:UnknownExtension[path='test.parquet' => col1:i32]"#;
+
+    let err = Parser::parse(plan_text).expect_err("parse should fail for unknown extension");
+    match err {
+        ParseError::UnregisteredExtension { name, context } => {
+            assert_eq!(name, "UnknownExtension");
+            assert_eq!(context.line_no, 3);
+            assert!(
+                context.line.contains("ExtensionLeaf:UnknownExtension"),
+                "context should include the extension line"
+            );
+        }
+        other => panic!("expected unregistered extension error, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_malformed_input_error_handling() {
+    use substrait_explain::parser::Parser;
+
+    // Test malformed input: unclosed bracket in extension relation
+    let malformed_plan = r#"=== Plan
+Root[result]
+  ExtensionLeaf:TestExtension[path='test.parquet', missing_close => col1:i32"#;
+
+    let result = Parser::parse(malformed_plan);
+
+    // Should fail with a clear error
+    assert!(
+        result.is_err(),
+        "Malformed input should result in parse error"
+    );
+
+    let error = result.unwrap_err();
+    let error_msg = format!("{error}");
+
+    // Verify error contains useful information
+    assert!(error_msg.len() > 10, "Error message should be descriptive");
+
+    // Error should reference the problematic line (line 3 where the unclosed bracket is)
+    assert!(
+        error_msg.contains("3") || error_msg.contains("line"),
+        "Error should reference line information: {error_msg}"
+    );
+
+    // Malformed input error test passed
 }

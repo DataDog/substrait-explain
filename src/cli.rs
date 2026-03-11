@@ -1,11 +1,24 @@
 use std::fs;
 use std::io::{self, Read, Write};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use prost::Message;
 
-use crate::{OutputOptions, Visibility, format, format_with_options, parse};
+use crate::{FormatError, OutputOptions, Visibility, format, format_with_options, parse};
+
+/// The outcome of a CLI operation.
+///
+/// Distinguishes between complete success and "soft failures" like formatting
+/// issues where output was still written but there were problems.
+#[derive(Debug)]
+pub enum Outcome {
+    /// Operation completed successfully with no issues.
+    Success,
+    /// Output was written, but there were formatting issues.
+    HadFormattingIssues(Vec<FormatError>),
+}
 
 #[derive(Parser)]
 #[command(name = "substrait-explain")]
@@ -17,7 +30,27 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn run(self) -> Result<()> {
+    /// Run the CLI and return an exit code.
+    ///
+    /// Errors are printed to stderr.
+    pub fn run(self) -> ExitCode {
+        match self.run_inner() {
+            Ok(Outcome::Success) => ExitCode::SUCCESS,
+            Ok(Outcome::HadFormattingIssues(errors)) => {
+                eprintln!("Formatting issues:");
+                for error in errors {
+                    eprintln!("  {error}");
+                }
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("Error: {e:?}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+
+    fn run_inner(self) -> Result<Outcome> {
         match &self.command {
             Commands::Convert {
                 input,
@@ -61,7 +94,7 @@ impl Cli {
     }
 
     /// Run CLI with provided readers and writers for testing
-    pub fn run_with_io<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<()> {
+    pub fn run_with_io<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<Outcome> {
         match &self.command {
             Commands::Convert {
                 input,
@@ -145,7 +178,7 @@ impl Cli {
         to: &Format,
         options: &OutputOptions,
         verbose: bool,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         // Read input based on format
         let plan = from.read_plan(reader).with_context(|| {
             format!(
@@ -155,19 +188,18 @@ impl Cli {
         })?;
 
         // Write output based on format
-        to.write_plan(writer, &plan, options, verbose)
-            .with_context(|| {
-                format!(
-                    "Failed to write output as {} format",
-                    format!("{to:?}").to_lowercase()
-                )
-            })?;
+        let outcome = to.write_plan(writer, &plan, options).with_context(|| {
+            format!(
+                "Failed to write output as {} format",
+                format!("{to:?}").to_lowercase()
+            )
+        })?;
 
-        if verbose {
+        if verbose && matches!(outcome, Outcome::Success) {
             eprintln!("Successfully converted from {from:?} to {to:?}");
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
     fn run_validate_with_io<R: Read, W: Write>(
@@ -175,7 +207,7 @@ impl Cli {
         reader: R,
         writer: W,
         verbose: bool,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         let input_text = read_text_input(reader)?;
 
         // Parse text to protobuf
@@ -185,20 +217,19 @@ impl Cli {
         // Format back to text
         let (output_text, errors) = format(&plan);
 
-        if verbose && !errors.is_empty() {
-            eprintln!("Formatting warnings:");
-            for error in errors {
-                eprintln!("  {error}");
-            }
-        }
-
+        // Write output first (best-effort)
         write_text_output(writer, &output_text)?;
 
-        if verbose {
+        if verbose && errors.is_empty() {
             eprintln!("Successfully validated plan");
         }
 
-        Ok(())
+        // Return outcome based on whether there were formatting issues
+        if errors.is_empty() {
+            Ok(Outcome::Success)
+        } else {
+            Ok(Outcome::HadFormattingIssues(errors))
+        }
     }
 }
 
@@ -210,7 +241,7 @@ pub enum Commands {
     ///   If -f/--from or -t/--to are not specified, formats will be auto-detected
     ///   from file extensions:
     ///     .substrait, .txt    -> text format
-    ///     .json               -> json format  
+    ///     .json               -> json format
     ///     .yaml, .yml         -> yaml format
     ///     .pb, .proto, .protobuf -> protobuf format
     ///
@@ -341,30 +372,31 @@ impl Format {
         writer: W,
         plan: &substrait::proto::Plan,
         options: &OutputOptions,
-        verbose: bool,
-    ) -> Result<()> {
+    ) -> Result<Outcome> {
         match self {
             Format::Text => {
                 let (text, errors) = format_with_options(plan, options);
 
-                if verbose && !errors.is_empty() {
-                    eprintln!("Formatting warnings:");
-                    for error in errors {
-                        eprintln!("  {error}");
-                    }
-                }
-
+                // Write output first (best-effort)
                 write_text_output(writer, &text)?;
+
+                // Return outcome based on whether there were formatting issues
+                if errors.is_empty() {
+                    Ok(Outcome::Success)
+                } else {
+                    Ok(Outcome::HadFormattingIssues(errors))
+                }
             }
             Format::Json => {
                 #[cfg(feature = "serde")]
                 {
                     let json = serde_json::to_string_pretty(plan)?;
                     write_text_output(writer, &json)?;
+                    Ok(Outcome::Success)
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    return Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into());
+                    Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
                 }
             }
             Format::Yaml => {
@@ -372,18 +404,19 @@ impl Format {
                 {
                     let yaml = serde_yaml::to_string(plan)?;
                     write_text_output(writer, &yaml)?;
+                    Ok(Outcome::Success)
                 }
                 #[cfg(not(feature = "serde"))]
                 {
-                    return Err("YAML support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into());
+                    Err("YAML support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
                 }
             }
             Format::Protobuf => {
                 let bytes = plan.encode_to_vec();
                 write_binary_output(writer, &bytes)?;
+                Ok(Outcome::Success)
             }
         }
-        Ok(())
     }
 }
 
@@ -434,6 +467,10 @@ fn get_writer(path: &str) -> Result<Box<dyn Write>> {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+
+    use substrait::proto::expression::RexType;
+    use substrait::proto::plan_rel;
+    use substrait::proto::rel::RelType;
 
     use super::*;
 
@@ -827,5 +864,59 @@ Root[result]
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
         assert!(output_content.contains("Read[data => a:i64, b:string]"));
+    }
+
+    /// Creates a plan with an invalid function reference that will cause formatting errors.
+    fn make_plan_with_invalid_function_ref() -> substrait::proto::Plan {
+        const VALID_PLAN: &str = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: equal
+
+=== Plan
+Root[result]
+  Filter[equal($0, 42:i32) => $0]
+    Read[data => a:i32]
+"#;
+
+        let mut plan = parse(VALID_PLAN).expect("Failed to parse valid plan");
+
+        // Navigate to the function and corrupt its reference
+        let rel_root = plan.relations.first_mut().unwrap();
+        let plan_rel::RelType::Root(root) = rel_root.rel_type.as_mut().unwrap() else {
+            panic!("Expected Root relation");
+        };
+        let rel = root.input.as_mut().unwrap();
+        let RelType::Filter(filter) = rel.rel_type.as_mut().unwrap() else {
+            panic!("Expected Filter relation");
+        };
+        let condition = filter.condition.as_mut().unwrap();
+        let RexType::ScalarFunction(func) = condition.rex_type.as_mut().unwrap() else {
+            panic!("Expected ScalarFunction");
+        };
+        func.function_reference = 999; // Invalid - doesn't exist in extensions
+
+        plan
+    }
+
+    #[test]
+    fn test_write_plan_reports_formatting_issues() {
+        let plan = make_plan_with_invalid_function_ref();
+        let mut output = Vec::new();
+
+        let result = Format::Text.write_plan(&mut output, &plan, &OutputOptions::default());
+
+        // Should succeed but report formatting issues
+        let outcome = result.expect("write_plan should not return hard error");
+        assert!(
+            matches!(outcome, Outcome::HadFormattingIssues(ref errors) if !errors.is_empty()),
+            "Expected HadFormattingIssues with errors, got {outcome:?}"
+        );
+        // Output should still be written (best-effort formatting)
+        assert!(
+            !output.is_empty(),
+            "Output should be written even with issues"
+        );
     }
 }

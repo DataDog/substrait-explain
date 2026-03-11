@@ -54,6 +54,26 @@ impl NamedRelation for Rel {
     }
 }
 
+impl Textify for Rel {
+    fn name() -> &'static str {
+        "Rel"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // Handle extension relations directly to use registry-aware implementations
+        match &self.rel_type {
+            Some(substrait::proto::rel::RelType::ExtensionLeaf(ext)) => ext.textify(ctx, w),
+            Some(substrait::proto::rel::RelType::ExtensionSingle(ext)) => ext.textify(ctx, w),
+            Some(substrait::proto::rel::RelType::ExtensionMulti(ext)) => ext.textify(ctx, w),
+            _ => {
+                // For non-extension relations, use the old Relation conversion
+                let relation = Relation::from(self);
+                relation.textify(ctx, w)
+            }
+        }
+    }
+}
+
 /// Trait for enums that can be converted to a string representation for
 /// textification.
 ///
@@ -85,6 +105,9 @@ pub enum Value<'a> {
     Enum(Cow<'a, str>),
     Integer(i32),
     EmptyGroup,
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
 }
 
 impl<'a> Value<'a> {
@@ -126,6 +149,8 @@ impl<'a> Textify for Value<'a> {
             Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
             Value::EmptyGroup => write!(w, "_"),
+            Value::Float(f) => write!(w, "{f}"),
+            Value::Boolean(b) => write!(w, "{b}"),
         }
     }
 }
@@ -445,6 +470,15 @@ impl<'a> From<&'a Rel> for Relation<'a> {
             Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
             Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
             Some(RelType::Join(r)) => Relation::from(r.as_ref()),
+            Some(RelType::ExtensionLeaf(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
+            Some(RelType::ExtensionSingle(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
+            Some(RelType::ExtensionMulti(_)) => {
+                unreachable!("Extension relations should use Textify trait directly")
+            }
             _ => todo!(),
         }
     }
@@ -580,7 +614,6 @@ impl Textify for RelRoot {
         )?;
         let child_scope = ctx.push_indent();
         for child in self.input.iter() {
-            let child = Relation::from(child);
             writeln!(w)?;
             child.textify(&child_scope, w)?;
         }
@@ -596,7 +629,7 @@ impl Textify for PlanRelType {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            PlanRelType::Rel(rel) => Relation::from(rel).textify(ctx, w),
+            PlanRelType::Rel(rel) => rel.textify(ctx, w),
             PlanRelType::Root(root) => root.textify(ctx, w),
         }
     }
@@ -650,7 +683,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
             Some(CountMode::Count(val)) => {
                 named_args.push(NamedArg {
                     name: "limit",
-                    value: Value::Integer(*val as i32),
+                    value: Value::Integer(*val),
                 });
             }
             None => {}
@@ -667,7 +700,7 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
                 substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
                         name: "offset",
-                        value: Value::Integer(*val as i32),
+                        value: Value::Integer(*val),
                     });
                 }
             }
@@ -1363,7 +1396,6 @@ Filter[gt($0, 10:i32) => $0, $1]
             result.contains("Join["),
             "Expected Join relation to be formatted"
         );
-        println!("Unknown join type result: {result}");
     }
 
     #[test]

@@ -7,8 +7,9 @@ use std::sync::mpsc;
 
 use thiserror::Error;
 
+use crate::extensions::registry::ExtensionError;
 use crate::extensions::simple::MissingReference;
-use crate::extensions::{InsertError, SimpleExtensions};
+use crate::extensions::{ExtensionRegistry, InsertError, SimpleExtensions};
 
 pub const NONSPECIFIC: Option<&'static str> = None;
 
@@ -124,14 +125,12 @@ impl ErrorAccumulator for ErrorQueue {
 
 impl fmt::Display for ErrorQueue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut first = true;
-        for e in self.receiver.try_iter() {
-            if first {
-                first = false;
-            } else {
-                writeln!(f)?;
+        for (i, e) in self.receiver.try_iter().enumerate() {
+            if i == 0 {
+                writeln!(f, "Warnings during conversion:")?;
             }
-            write!(f, "{e}")?;
+            let error_number = i + 1;
+            writeln!(f, "  - {error_number}: {e}")?;
         }
         Ok(())
     }
@@ -187,6 +186,8 @@ impl fmt::Debug for ErrorList {
     }
 }
 
+impl std::error::Error for ErrorList {}
+
 impl<'e> IntoIterator for &'e ErrorQueue {
     type Item = FormatError;
     type IntoIter = std::sync::mpsc::TryIter<'e, FormatError>;
@@ -224,6 +225,7 @@ pub struct ScopedContext<'a, Err: ErrorAccumulator> {
     options: &'a OutputOptions,
     extensions: &'a SimpleExtensions,
     indent: IndentStack<'a>,
+    extension_registry: &'a ExtensionRegistry,
 }
 
 impl<'a> IndentStack<'a> {
@@ -251,12 +253,14 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
         options: &'a OutputOptions,
         errors: &'a Err,
         extensions: &'a SimpleExtensions,
+        extension_registry: &'a ExtensionRegistry,
     ) -> Self {
         Self {
             options,
             errors,
             extensions,
             indent: IndentStack::new(options.indent.as_str()),
+            extension_registry,
         }
     }
 }
@@ -266,11 +270,14 @@ impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
 pub enum FormatError {
     /// Error in adding extensions to the plan - e.g. duplicates, invalid URN
     /// references, etc.
-    #[error("Error adding extension: {0}")]
+    #[error("Error adding simple extension: {0}")]
     Insert(#[from] InsertError),
     /// Error in looking up an extension - e.g. missing URN, anchor, name, etc.
-    #[error("Error finding extension: {0}")]
+    #[error("Error finding simple extension: {0}")]
     Lookup(#[from] MissingReference),
+    /// Error in extension registry operations - e.g. extension not found, parse errors, etc.
+    #[error("Extension error: {0}")]
+    Extension(#[from] ExtensionError),
     /// Error in formatting the plan - e.g. invalid value, unimplemented, etc.
     #[error("Error formatting output: {0}")]
     Format(#[from] PlanError),
@@ -284,6 +291,7 @@ impl FormatError {
             FormatError::Lookup(MissingReference::MissingName(k, _)) => k.name(),
             FormatError::Lookup(MissingReference::Mismatched(k, _, _)) => k.name(),
             FormatError::Lookup(MissingReference::DuplicateName(k, _)) => k.name(),
+            FormatError::Extension(_) => "extension",
             FormatError::Format(m) => m.message,
             FormatError::Insert(InsertError::MissingMappingType) => "extension",
             FormatError::Insert(InsertError::DuplicateUrnAnchor { .. }) => "uri",
@@ -436,6 +444,9 @@ pub trait Scope: Sized {
     /// Get the options for formatting the plan.
     fn options(&self) -> &OutputOptions;
     fn extensions(&self) -> &SimpleExtensions;
+
+    /// Get the extension registry
+    fn extension_registry(&self) -> &ExtensionRegistry;
     fn errors(&self) -> &Self::Errors;
 
     fn push_error(&self, e: FormatError) {
@@ -629,5 +640,9 @@ impl<'a, Err: ErrorAccumulator> Scope for ScopedContext<'a, Err> {
 
     fn extensions(&self) -> &SimpleExtensions {
         self.extensions
+    }
+
+    fn extension_registry(&self) -> &ExtensionRegistry {
+        self.extension_registry
     }
 }

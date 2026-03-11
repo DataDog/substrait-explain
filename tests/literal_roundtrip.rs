@@ -1,8 +1,6 @@
 //! Test roundtrip functionality for literal parsing and formatting
 
-mod common;
-
-use common::roundtrip_plan;
+use substrait_explain::fixtures::roundtrip_plan;
 
 #[test]
 fn test_float_literal_roundtrip() {
@@ -77,6 +75,18 @@ fn test_timestamp_literal_roundtrip() {
 Root[result]
   Project['2023-01-01T12:00:00':timestamp]
     Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_if_then_expression_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[statusq]
+  Fetch[limit=10, offset=0 => ]
+    Project[if_then(true -> $0, false -> $1, _ -> $2)]
+      Read[events.logs => status:string?]
 "#;
     roundtrip_plan(plan);
 }
