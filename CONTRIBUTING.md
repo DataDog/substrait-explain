@@ -223,6 +223,14 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 - Provide a clear description of what the PR does
 - Link to any related issues
 
+### Releases
+
+Releases are automated via [release-plz](https://release-plz.dev/). See
+[RELEASING.md](RELEASING.md) for details. Contributors don't need to worry about
+version bumping or changelog entries — just use
+[conventional commit](https://www.conventionalcommits.org/) messages and the
+release automation handles the rest.
+
 ## Contributing to Issues
 
 ### Contributing to reporting bugs
