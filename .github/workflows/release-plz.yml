@@ -21,6 +21,7 @@ jobs:
   release-plz-release:
     name: Release
     runs-on: ubuntu-latest
+    environment: protected-main-env
     steps:
       - uses: actions/checkout@v4
         with:
