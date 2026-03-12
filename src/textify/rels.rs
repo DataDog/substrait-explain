@@ -103,7 +103,6 @@ pub enum Value<'a> {
     Missing(PlanError),
     /// Represents a valid enum value as a string for textification.
     Enum(Cow<'a, str>),
-    Integer(i32),
     EmptyGroup,
     Integer(i64),
     Float(f64),
