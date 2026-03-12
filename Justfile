@@ -39,3 +39,11 @@ licenses:
 # Example: just run convert --from text --to json < input.txt
 run *args:
     cargo run --features cli -- {{args}}
+
+# Create a release PR for current main. Will bump the version number and create
+# a changelog, based on conventional commits + semantic versioning.
+release-pr:
+    # Must be on main to release
+    git checkout main
+    git pull origin main
+    release-plz release-pr --git-token $(gh auth token)

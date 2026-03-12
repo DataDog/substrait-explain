@@ -1,6 +1,11 @@
 [workspace]
 pr_labels = ["release"]
 
+[[package]]
+name = "substrait-explain"
+# Use the 'protoc' feature to publish - needed in CI
+publish_features = ["protoc"]
+
 [changelog]
 commit_parsers = [
     { message = "^feat", group = "Features" },

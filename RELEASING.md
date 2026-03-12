@@ -23,24 +23,16 @@ each individual commit in the PR; with squash-and-merge, it's the PR title.)
 > **Note**: While below 1.0.0, breaking changes should still use `feat!:` or
 > `BREAKING CHANGE:` so they appear prominently in the changelog.
 
-### 2. CI: release-plz creates (or updates) a Release PR
+### 2. You make a release PR
 
-On every push to `main`, the **Release PR** job runs. It:
+Steps, run locally:
 
-- Scans all commits since the last release tag
-- Determines the version bump from conventional commit prefixes
-- Creates a PR (or updates an existing one) that changes:
-  - `Cargo.toml` — version bump
-  - `Cargo.lock` — updated lockfile
-  - `CHANGELOG.md` — new entry with grouped commit messages
-
-The PR is labeled `release` for easy identification.
-
-> **Note**: CI checks (fmt, lint, test) don't automatically run on this PR because
-> it's created by `GITHUB_TOKEN` (a GitHub limitation to prevent infinite loops).
-> This is acceptable because the PR only modifies version/changelog files, not source
-> code. See [Known Limitations](#ci-checks-dont-run-automatically-on-release-prs)
-> for workarounds.
+1. \[Only once\] Install tools
+   1. `brew install gh` - for Github access
+   2. `gh auth login` - login to Github from CLI
+   3. `cargo install --locked release-plz` - the CLI for making the Release PR
+2. `git checkout main` - need to be on `main` for a release
+3. `release-plz release-pr --git-token $(gh auth token)` - `release-plz` will analyze the current state, and generate a Changelog, version bump, and PR on Github.
 
 ### 3. You review and merge the Release PR
 
@@ -108,7 +100,7 @@ gh release create v<VERSION> --title "v<VERSION>" --notes "See CHANGELOG.md"
 
 | File                                | Purpose                                                  |
 | ----------------------------------- | -------------------------------------------------------- |
-| `.github/workflows/release-plz.yml` | GitHub Actions workflow (two jobs: release + release-pr) |
+| `.github/workflows/release-plz.yml` | GitHub Actions workflow (publish + GitHub Release)       |
 | `release-plz.toml`                  | release-plz behavior and changelog format                |
 | `CHANGELOG.md`                      | Auto-updated changelog                                   |
 
@@ -119,22 +111,15 @@ gh release create v<VERSION> --title "v<VERSION>" --notes "See CHANGELOG.md"
 
 ## Known Limitations
 
-### CI checks don't run automatically on release PRs
+### Release PRs must be created locally
 
-Release PRs are created using the built-in `GITHUB_TOKEN`, which means they don't
-trigger other workflows (this is a GitHub limitation to prevent infinite loops). The
-existing Rust CI checks (fmt, lint, test) won't run automatically on release PRs.
+release-plz supports [automated release PRs via CI](https://release-plz.dev/docs/github/quickstart),
+but the DataDog GitHub org disables "Allow GitHub Actions to create and approve pull
+requests" at the org level. This means the `release-pr` command can't run as a GitHub
+Actions job. Instead, release PRs are created locally (see step 2 above).
 
-**Why this is acceptable**: Release PRs only modify `Cargo.toml`, `Cargo.lock`, and
-`CHANGELOG.md` — no source code changes. The risk of breakage is low.
-
-**Workarounds if needed**:
-
-- Push an empty commit to the release PR branch to trigger CI
-- Manually trigger the Rust CI workflow from the Actions tab
-- Upgrade to a [GitHub App token](https://release-plz.dev/docs/github/trigger) for
-  full automation (the recommended long-term solution if branch protection requires
-  passing CI to merge)
+If org settings change in the future, re-adding a `release-pr` job to the workflow
+would fully automate the process.
 
 ### No CI Check for conventional commits
 
@@ -159,10 +144,11 @@ significantly, or as a periodic maintenance task.
 
 ### Release PR not created
 
+- Make sure you're on `main` (`git checkout main`) — release-plz uses the current
+  branch as the PR base
 - Check that commits since the last release include `feat:` or `fix:` prefixes
   (commits without these prefixes don't trigger version bumps)
-- Verify the workflow ran: Actions tab → "Release-plz"
-- Check workflow logs for errors
+- Verify your GitHub token works: `gh auth status`
 
 ### crates.io publish failed
 
