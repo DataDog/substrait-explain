@@ -546,6 +546,9 @@ fn get_single_group(
     for expr_pair in inner.into_inner() {
         match Expression::parse_pair(extensions, expr_pair) {
             Ok(exp) => {
+                // TODO: use a better key here than encoding to bytes.
+                // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+                // but as there isn't an easy way to do that now, we'll skip.
                 let key = exp.encode_to_vec();
                 expression_index_map.entry(key.clone()).or_insert_with(|| {
                     grouping_expressions.push(exp);
@@ -1134,45 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_aggregate_relation_simple() {
-        let extensions = TestContext::new()
-            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
-            .with_function(1, 11, "count")
-            .extensions;
-
-        let aggregate = AggregateRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(
-                Rule::aggregate_relation,
-                "Aggregate[$0 => $0, sum($1), count($1)]",
-            ),
-            vec![Box::new(example_read_relation().into_rel())],
-            3,
-        )
-        .unwrap();
-
-        // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
-        assert_eq!(aggregate.grouping_expressions.len(), 1);
-        assert_eq!(aggregate.groupings.len(), 1);
-        assert_eq!(aggregate.measures.len(), 2);
-
-        let emit_kind = &aggregate
-            .common
-            .as_ref()
-            .unwrap()
-            .emit_kind
-            .as_ref()
-            .unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        // Output mapping should be [0, 1, 2] (grouping fields + measures)
-        assert_eq!(emit, &[0, 1, 2]);
-    }
-
-    #[test]
     fn test_parse_aggregate_relation_maintain_column_order() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
@@ -1212,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_aggregate_relation_expression_references_are_positions_not_field_indices() {
+    fn test_parse_aggregate_relation_simple() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
@@ -1270,6 +1234,45 @@ mod tests {
         };
         // Output mapping should be [0, 1] (measures only, no group-by fields)
         assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_grouping_sets() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 11, "count")
+            .extensions;
+
+        let read_rel = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::read_relation,
+                "Read[ab.cd.ef => a:i32, b:string?, c:i64, d:i64]",
+            ),
+            vec![],
+            0,
+        )
+        .unwrap();
+
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
+            ),
+            vec![Box::new(read_rel.into_rel())],
+            4,
+        )
+        .unwrap();
+
+        // Should have 4 group-by fields and 1 measures
+        assert_eq!(aggregate.grouping_expressions.len(), 3);
+        assert_eq!(aggregate.groupings.len(), 4);
+        assert_eq!(aggregate.groupings[0].expression_references.len(), 3);
+        assert_eq!(aggregate.groupings[1].expression_references.len(), 2);
+        assert_eq!(aggregate.groupings[2].expression_references.len(), 1);
+        assert_eq!(aggregate.groupings[3].expression_references.len(), 0);
+        assert_eq!(aggregate.measures.len(), 1);
     }
 
     #[test]

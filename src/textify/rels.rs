@@ -495,7 +495,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     /// 4. Children: The input relation
     fn from(rel: &'a AggregateRel) -> Self {
         let mut grouping_sets: Vec<Vec<Value>> = vec![]; // the Groupings in the Aggregate
-        let mut expression_list: Vec<Value> = Vec::new(); // grouping_expressions defined on Aggregate
+        let expression_list: Vec<Value>; // grouping_expressions defined on Aggregate
 
         // if rel.grouping_expressions is empty, the deprecated rel.groupings.grouping_expressions might be set
         // If *both* the deprecated `rel.groupings.grouping_expressions` and `rel.grouping_expressions` are
@@ -505,7 +505,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
             && !rel.groupings.is_empty()
             && !rel.groupings[0].grouping_expressions.is_empty()
         {
-            get_grouping_sets(rel, &mut expression_list, &mut grouping_sets);
+            (expression_list, grouping_sets) = get_grouping_sets(rel);
         } else {
             expression_list = rel
                 .grouping_expressions
@@ -569,11 +569,10 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     }
 }
 
-fn get_grouping_sets<'a>(
-    rel: &'a AggregateRel,
-    expression_list: &mut Vec<Value<'a>>,
-    grouping_sets: &mut Vec<Vec<Value<'a>>>,
-) {
+fn get_grouping_sets<'a>(rel: &'a AggregateRel) -> (Vec<Value<'a>>, Vec<Vec<Value<'a>>>) {
+    let mut grouping_sets: Vec<Vec<Value>> = vec![];
+    let mut expression_list: Vec<Value> = Vec::new();
+
     // groupings might have the same expressions in their set so we use a map to get unique expressions
     let mut expression_index_map = HashMap::new();
     let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
@@ -582,6 +581,9 @@ fn get_grouping_sets<'a>(
         let mut grouping_set: Vec<Value> = vec![];
         #[allow(deprecated)]
         for exp in &group.grouping_expressions {
+            // TODO: use a better key here than encoding to bytes.
+            // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+            // but as there isn't an easy way to do that now, we'll skip.
             let key = exp.encode_to_vec();
             expression_index_map.entry(key.clone()).or_insert_with(|| {
                 let value = Value::Expression(exp);
@@ -595,6 +597,7 @@ fn get_grouping_sets<'a>(
         }
         grouping_sets.push(grouping_set);
     }
+    (expression_list, grouping_sets)
 }
 
 impl Textify for RelRoot {
@@ -1122,10 +1125,6 @@ Filter[gt($0, 10:i32) => $0, $1]
         let value = Value::AggregateFunction(&agg_fn);
         let (result, errors) = ctx.textify(&value);
 
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
-
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "sum($1)");
     }
@@ -1170,10 +1169,6 @@ Filter[gt($0, 10:i32) => $0, $1]
         let relation = Relation::from(&aggregate_rel);
         let (result, errors) = ctx.textify(&relation);
 
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
-        println!("result: {}", result);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         // Expected: Aggregate[_ => sum($1), count($1)] we chose to emit only measures
         assert!(result.contains("Aggregate[_ => sum($1), count($1)]"));
@@ -1207,10 +1202,6 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         let relation = Relation::from(&aggregate_rel);
         let (result, errors) = ctx.textify(&relation);
-
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(result.contains("Aggregate[($0), ($0, $1) => $0, $1]"));
@@ -1251,10 +1242,6 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         let relation = Relation::from(&aggregate_rel);
         let (result, errors) = ctx.textify(&relation);
-
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(result.contains("($0), ($0, $1) => $0, $1, count($2)"));
@@ -1320,9 +1307,6 @@ Filter[gt($0, 10:i32) => $0, $1]
         let relation = Relation::from(&aggregate_rel);
         let (result, errors) = ctx.textify(&relation);
 
-        if !errors.is_empty() {
-            println!("Errors: {errors:?}");
-        }
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(
             result
