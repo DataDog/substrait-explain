@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use pest::iterators::Pair;
+use prost::Message;
+use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
@@ -459,35 +461,43 @@ impl RelationParsePair for AggregateRel {
         let group_by_pair = iter.pop(Rule::aggregate_group_by);
         let output_pair = iter.pop(Rule::aggregate_output);
         iter.done();
-        let mut grouping_expressions = Vec::new();
-        for group_by_item in group_by_pair.into_inner() {
-            match group_by_item.as_rule() {
-                Rule::reference => {
-                    let field_index = FieldIndex::parse_pair(group_by_item);
-                    grouping_expressions.push(Expression {
-                        rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
-                            field_index.to_field_reference(),
-                        ))),
-                    });
-                }
-                Rule::empty => {
-                    // No grouping expressions to add
-                }
-                _ => panic!(
-                    "Unexpected group-by item rule: {:?}",
-                    group_by_item.as_rule()
-                ),
+
+        let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
+        let grouping_sets: Vec<Grouping>;
+        let grouping_expressions: Vec<Expression>;
+
+        // The grammar matches either a single `expression_list` (no parens, single grouping set)
+        // or a `grouping_set_list` (one or more sets, each wrapped in parens, or a set `_` with no parens).
+        let inner = group_by_pair
+            .into_inner()
+            .next()
+            .expect("aggregate_group_by must have one inner item");
+
+        let group: Grouping;
+
+        match inner.as_rule() {
+            Rule::expression_list => {
+                // Single non-empty grouping set written without parens: e.g. "$0, $1"
+                (group, grouping_expressions) =
+                    get_single_group(extensions, inner, &mut expression_index_map);
+                grouping_sets = vec![group];
             }
+            Rule::grouping_set_list => {
+                (grouping_sets, grouping_expressions) = get_grouping_sets(extensions, inner);
+            }
+            _ => unreachable!(
+                "Unexpected rule in aggregate_group_by: {:?}",
+                inner.as_rule()
+            ),
         }
 
         // Parse output items (can be references or aggregate measures)
         let mut measures = Vec::new();
         let mut output_mapping = Vec::new();
-        let group_by_count = grouping_expressions.len();
         let mut measure_count = 0;
 
-        for output_item in output_pair.into_inner() {
-            let inner_item = unwrap_single_pair(output_item);
+        for aggregate_output_item in output_pair.into_inner() {
+            let inner_item = unwrap_single_pair(aggregate_output_item);
             match inner_item.as_rule() {
                 Rule::reference => {
                     let field_index = FieldIndex::parse_pair(inner_item);
@@ -496,7 +506,7 @@ impl RelationParsePair for AggregateRel {
                 Rule::aggregate_measure => {
                     let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
                     measures.push(measure);
-                    output_mapping.push(group_by_count as i32 + measure_count);
+                    output_mapping.push(grouping_expressions.len() as i32 + measure_count);
                     measure_count += 1;
                 }
                 _ => panic!(
@@ -515,12 +525,88 @@ impl RelationParsePair for AggregateRel {
         Ok(AggregateRel {
             input: Some(input),
             grouping_expressions,
-            groupings: vec![], // TODO: Create groupings from grouping_expressions for complex grouping scenarios
+            groupings: grouping_sets,
             measures,
             common: Some(common),
             advanced_extension: None,
         })
     }
+}
+
+fn get_single_group(
+    extensions: &SimpleExtensions,
+    inner: Pair<'_, Rule>,
+    expression_index_map: &mut HashMap<Vec<u8>, u32>,
+) -> (Grouping, Vec<Expression>) {
+    let mut expression_references: Vec<u32> = vec![];
+    let mut grouping_expressions: Vec<Expression> = Vec::new();
+    let mut i = 0;
+
+    // for each expression in the expression list we map to an index in the order they are parsed
+    for expr_pair in inner.into_inner() {
+        match Expression::parse_pair(extensions, expr_pair) {
+            Ok(exp) => {
+                // TODO: use a better key here than encoding to bytes.
+                // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+                // but as there isn't an easy way to do that now, we'll skip.
+                let key = exp.encode_to_vec();
+                expression_index_map.entry(key.clone()).or_insert_with(|| {
+                    grouping_expressions.push(exp);
+                    let index = i;
+                    i += 1;
+                    index // is expression returned by this closure and inserted into map
+                });
+                expression_references.push(expression_index_map[&key]);
+            }
+            Err(_) => unreachable!(
+                "By the grammar rule, only expressions should be parsed so erroring can be dropped silently"
+            ),
+        }
+    }
+
+    let group = Grouping {
+        expression_references,
+        #[allow(deprecated)]
+        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
+    };
+
+    (group, grouping_expressions)
+}
+
+fn get_grouping_sets(
+    extensions: &SimpleExtensions,
+    inner: Pair<'_, Rule>,
+) -> (Vec<Grouping>, Vec<Expression>) {
+    let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
+
+    let mut grouping_sets: Vec<Grouping> = Vec::new();
+    let mut grouping_expressions: Vec<Expression> = Vec::new();
+
+    // One or more grouping sets, each written as `(expr_list)` or `_`
+    for grouping_set_pair in inner.into_inner() {
+        assert_eq!(grouping_set_pair.as_rule(), Rule::grouping_set);
+
+        for item in grouping_set_pair.into_inner() {
+            match item.as_rule() {
+                Rule::empty => {
+                    // empty grouping set — expression_references stays empty
+                    grouping_sets.push(Grouping {
+                        expression_references: vec![],
+                        #[allow(deprecated)]
+                        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
+                    });
+                }
+                Rule::expression_list => {
+                    let (group, mut new_grouping_expressions) =
+                        get_single_group(extensions, item, &mut expression_index_map);
+                    grouping_expressions.append(&mut new_grouping_expressions);
+                    grouping_sets.push(group);
+                }
+                _ => unreachable!("Unexpected item in grouping_set: {:?}", item.as_rule()),
+            }
+        }
+    }
+    (grouping_sets, grouping_expressions)
 }
 
 impl ScopedParsePair for SortField {
@@ -1021,15 +1107,17 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[$0, $1 => sum($2), $0, count($2)]",
+                "Aggregate[($0, $1), _ => sum($2), $0, count($2)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
         )
         .unwrap();
 
-        // Should have 2 group-by fields ($0, $1) and 2 measures (sum($2), count($2))
+        // Should have 2 group-by sets ($0, $1) and an empty group, and emit 2 measures (sum($2), count($2))
         assert_eq!(aggregate.grouping_expressions.len(), 2);
+        assert_eq!(aggregate.groupings[0].expression_references.len(), 2);
+        assert_eq!(aggregate.groupings.len(), 2);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1049,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_aggregate_relation_simple() {
+    fn test_parse_aggregate_relation_maintain_column_order() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
@@ -1060,7 +1148,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[$0 => sum($1), count($1)]",
+                "Aggregate[$0 => sum($1), $0, count($1)]",
             ),
             vec![Box::new(example_read_relation().into_rel())],
             3,
@@ -1069,6 +1157,7 @@ mod tests {
 
         // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
         assert_eq!(aggregate.grouping_expressions.len(), 1);
+        assert_eq!(aggregate.groupings.len(), 1);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1082,12 +1171,33 @@ mod tests {
             EmitKind::Emit(emit) => &emit.output_mapping,
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
-        // Output mapping should be [1, 2] (measures only)
-        assert_eq!(emit, &[1, 2]);
+        // Output mapping should be [1, 0, 2] (grouping fields + measures)
+        assert_eq!(emit, &[1, 0, 2]);
     }
 
     #[test]
-    fn test_parse_aggregate_relation_no_group_by() {
+    fn test_parse_aggregate_relation_simple() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1)]"),
+            vec![Box::new(example_read_relation().into_rel())],
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        assert_eq!(aggregate.groupings.len(), 1);
+        // expression_references must be positions [0, 1], not raw field indices [2, 0]
+        assert_eq!(aggregate.groupings[0].expression_references, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_global_aggregate() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
             .with_function(1, 10, "sum")
@@ -1107,6 +1217,8 @@ mod tests {
 
         // Should have 0 group-by fields and 2 measures
         assert_eq!(aggregate.grouping_expressions.len(), 0);
+        assert_eq!(aggregate.groupings.len(), 1);
+        assert_eq!(aggregate.groupings[0].expression_references.len(), 0);
         assert_eq!(aggregate.measures.len(), 2);
 
         let emit_kind = &aggregate
@@ -1125,41 +1237,42 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_aggregate_relation_empty_group_by() {
+    fn test_parse_aggregate_relation_grouping_sets() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
-            .with_function(1, 10, "sum")
             .with_function(1, 11, "count")
             .extensions;
+
+        let read_rel = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::read_relation,
+                "Read[ab.cd.ef => a:i32, b:string?, c:i64, d:i64]",
+            ),
+            vec![],
+            0,
+        )
+        .unwrap();
 
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[_ => sum($0), count($1)]",
+                "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
             ),
-            vec![Box::new(example_read_relation().into_rel())],
-            3,
+            vec![Box::new(read_rel.into_rel())],
+            4,
         )
         .unwrap();
 
-        // Should have 0 group-by fields and 2 measures
-        assert_eq!(aggregate.grouping_expressions.len(), 0);
-        assert_eq!(aggregate.measures.len(), 2);
-
-        let emit_kind = &aggregate
-            .common
-            .as_ref()
-            .unwrap()
-            .emit_kind
-            .as_ref()
-            .unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        // Output mapping should be [0, 1] (measures only, no group-by fields)
-        assert_eq!(emit, &[0, 1]);
+        // Should have 4 group-by fields and 1 measures
+        assert_eq!(aggregate.grouping_expressions.len(), 3);
+        assert_eq!(aggregate.groupings.len(), 4);
+        assert_eq!(aggregate.groupings[0].expression_references.len(), 3);
+        assert_eq!(aggregate.groupings[1].expression_references.len(), 2);
+        assert_eq!(aggregate.groupings[2].expression_references.len(), 1);
+        assert_eq!(aggregate.groupings[3].expression_references.len(), 0);
+        assert_eq!(aggregate.measures.len(), 1);
     }
 
     #[test]
