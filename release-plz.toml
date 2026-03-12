@@ -2,7 +2,6 @@
 pr_labels = ["release"]
 
 [changelog]
-body = true
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
