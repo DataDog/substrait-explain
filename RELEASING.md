@@ -136,6 +136,10 @@ existing Rust CI checks (fmt, lint, test) won't run automatically on release PRs
   full automation (the recommended long-term solution if branch protection requires
   passing CI to merge)
 
+### No CI Check for conventional commits
+
+This is a TODO for later: enforce conventional commits for PR titles with a check. See [`substrait-java`](https://github.com/substrait-io/substrait-java/blob/fc27033dcf53a4309b30fb4072232ce812c43489/.github/workflows/pr_title.yaml) for an example of this.
+
 ### LICENSE-3rdparty.csv is not part of automated releases
 
 The `generate_licenses.sh` script produces `LICENSE-3rdparty.csv`, which tracks
