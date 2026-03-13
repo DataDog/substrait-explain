@@ -530,41 +530,51 @@ fn parse_aggregate_measures(
 /// this parses `($0, $1), _`.
 ///
 /// Each inner Vec is one grouping set; an empty vec represents no grouping (global aggregate).
+///
+/// Grammar: `aggregate_group_by = { grouping_set_list | expression_list }`
 fn parse_grouping_sets(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
 ) -> Vec<Vec<Expression>> {
-    let parse_expression_list = |pair: Pair<'_, Rule>| -> Vec<Expression> {
-        pair.into_inner()
-            .map(|expr_pair| {
-                Expression::parse_pair(extensions, expr_pair)
-                    .expect("By the grammar rule, only expressions should be parsed")
-            })
-            .collect()
-    };
-
     match inner.as_rule() {
         Rule::expression_list => {
-            vec![parse_expression_list(inner)]
+            vec![parse_expression_list(extensions, inner)]
         }
         Rule::grouping_set_list => inner
             .into_inner()
-            .flat_map(|grouping_set_pair| {
-                assert_eq!(grouping_set_pair.as_rule(), Rule::grouping_set);
-                grouping_set_pair
-                    .into_inner()
-                    .map(|item| match item.as_rule() {
-                        Rule::empty => vec![],
-                        Rule::expression_list => parse_expression_list(item),
-                        _ => unreachable!("Unexpected item in grouping_set: {:?}", item.as_rule()),
-                    })
-            })
+            .map(|pair| parse_grouping_set(extensions, pair))
             .collect(),
         _ => unreachable!(
             "Unexpected rule in aggregate_group_by: {:?}",
             inner.as_rule()
         ),
     }
+}
+
+/// Parses a single grouping set, e.g. `($0, $1)` or `_`.
+///
+/// Grammar: `grouping_set = { ("(" ~ expression_list ~ ")") | empty }`
+fn parse_grouping_set(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+    assert_eq!(pair.as_rule(), Rule::grouping_set);
+    let inner = pair
+        .into_inner()
+        .next()
+        .expect("grouping_set must have one inner item");
+    match inner.as_rule() {
+        Rule::empty => vec![],
+        Rule::expression_list => parse_expression_list(extensions, inner),
+        _ => unreachable!("Unexpected item in grouping_set: {:?}", inner.as_rule()),
+    }
+}
+
+/// Grammar: `expression_list = { expression ~ ("," ~ expression)* }`
+fn parse_expression_list(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+    pair.into_inner()
+        .map(|expr_pair| {
+            Expression::parse_pair(extensions, expr_pair)
+                .expect("By the grammar rule, only expressions should be parsed")
+        })
+        .collect()
 }
 
 /// Deduplicates expressions across all sets and produces the AggregateRel's
