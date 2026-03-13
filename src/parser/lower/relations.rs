@@ -1,14 +1,16 @@
 //! Relation-specific lowering logic.
 
-use substrait::proto::aggregate_rel::Measure;
+use std::collections::HashMap;
+
+use substrait::proto::aggregate_rel::{Grouping, Measure};
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
 use substrait::proto::sort_field::SortKind;
 use substrait::proto::r#type::{self as ptype, Nullability};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel,
-    ReadRel, Rel, RelCommon, SortField, SortRel, read_rel,
+    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct,
+    ProjectRel, ReadRel, Rel, RelCommon, SortField, SortRel, read_rel,
 };
 
 use super::expr::{fetch_value_expression, field_ref_expression, lower_arg_as_expression};
@@ -200,23 +202,8 @@ fn lower_aggregate(
     ensure_no_named_args(ctx, relation, "Aggregate")?;
     let input = expect_one_child(ctx, &mut child_relations, "Aggregate")?;
 
-    let mut grouping_expressions = Vec::new();
-    for arg in &relation.args.positional {
-        match arg {
-            ast::Arg::Wildcard => {}
-            ast::Arg::Expr(ast::Expr::FieldRef(index)) => {
-                grouping_expressions.push(field_ref_expression(*index));
-            }
-            _ => {
-                return ctx.invalid(
-                    "Aggregate",
-                    format!(
-                        "Aggregate grouping argument must be field reference or '_', got '{arg}'"
-                    ),
-                );
-            }
-        }
-    }
+    let (grouping_expressions, groupings) =
+        lower_grouping_sets(ctx, &relation.args.positional)?;
 
     let group_by_count = grouping_expressions.len();
     let mut measures = Vec::new();
@@ -241,7 +228,6 @@ fn lower_aggregate(
                     }),
                     filter: None,
                 });
-                // Aggregate outputs are grouped fields followed by measures.
                 output_mapping.push(group_by_count as i32 + (measures.len() as i32 - 1));
             }
             _ => {
@@ -257,9 +243,7 @@ fn lower_aggregate(
         rel_type: Some(RelType::Aggregate(Box::new(AggregateRel {
             input: Some(input),
             grouping_expressions,
-            // We use `grouping_expressions` (newer API) and leave legacy
-            // `groupings` empty for compatibility with current text format.
-            groupings: vec![],
+            groupings,
             measures,
             common: Some(RelCommon {
                 emit_kind: Some(EmitKind::Emit(Emit { output_mapping })),
@@ -268,6 +252,93 @@ fn lower_aggregate(
             advanced_extension: None,
         }))),
     })
+}
+
+/// Lower grouping arguments into deduplicated `grouping_expressions` and `Grouping`s.
+///
+/// Handles both flat and tuple-based grouping:
+/// - `$0, $1 => ...` — single grouping set with refs `[0, 1]`
+/// - `($0, $1), ($0), _ => ...` — multiple grouping sets with deduplication
+/// - `_ => ...` — global aggregate (empty expressions and groupings)
+///
+/// Accepts arbitrary expressions (not just field refs) within grouping positions.
+fn lower_grouping_sets(
+    ctx: &LowerCtx<'_>,
+    positional: &[ast::Arg],
+) -> Result<(Vec<Expression>, Vec<Grouping>), ParseError> {
+    let mut dedup: HashMap<ast::Arg, u32> = HashMap::new();
+    let mut grouping_expressions: Vec<Expression> = Vec::new();
+    let mut groupings: Vec<Grouping> = Vec::new();
+
+    for arg in positional {
+        match arg {
+            ast::Arg::Tuple(items) => {
+                let refs = lower_grouping_items(ctx, &mut dedup, &mut grouping_expressions, items)?;
+                groupings.push(make_grouping(refs));
+            }
+            ast::Arg::Wildcard => {
+                groupings.push(make_grouping(vec![]));
+            }
+            ast::Arg::Expr(_) => {
+                // Bare expression: accumulate into an implicit single grouping set.
+                lower_grouping_item(ctx, &mut dedup, &mut grouping_expressions, arg)?;
+            }
+            _ => {
+                return ctx.invalid(
+                    "Aggregate",
+                    format!("Aggregate grouping argument must be expression, tuple, or '_', got '{arg}'"),
+                );
+            }
+        }
+    }
+
+    // If no explicit groupings were created, build one from all accumulated expressions.
+    if groupings.is_empty() && !dedup.is_empty() {
+        let expression_references: Vec<u32> = (0..grouping_expressions.len() as u32).collect();
+        groupings.push(make_grouping(expression_references));
+    }
+
+    Ok((grouping_expressions, groupings))
+}
+
+/// Lower a slice of grouping items, returning their `expression_references`.
+fn lower_grouping_items(
+    ctx: &LowerCtx<'_>,
+    dedup: &mut HashMap<ast::Arg, u32>,
+    grouping_expressions: &mut Vec<Expression>,
+    items: &[ast::Arg],
+) -> Result<Vec<u32>, ParseError> {
+    let mut refs = Vec::with_capacity(items.len());
+    for item in items {
+        let pos = lower_grouping_item(ctx, dedup, grouping_expressions, item)?;
+        refs.push(pos);
+    }
+    Ok(refs)
+}
+
+/// Lower a single grouping item, deduplicating against previously seen items.
+fn lower_grouping_item(
+    ctx: &LowerCtx<'_>,
+    dedup: &mut HashMap<ast::Arg, u32>,
+    grouping_expressions: &mut Vec<Expression>,
+    item: &ast::Arg,
+) -> Result<u32, ParseError> {
+    if let Some(&pos) = dedup.get(item) {
+        return Ok(pos);
+    }
+    let expr = lower_arg_as_expression(ctx, item, "Aggregate")?;
+    let pos = grouping_expressions.len() as u32;
+    grouping_expressions.push(expr);
+    dedup.insert(item.clone(), pos);
+    Ok(pos)
+}
+
+fn make_grouping(expression_references: Vec<u32>) -> Grouping {
+    Grouping {
+        #[allow(deprecated)]
+        grouping_expressions: vec![],
+        expression_references,
+    }
 }
 
 #[allow(clippy::vec_box)]
