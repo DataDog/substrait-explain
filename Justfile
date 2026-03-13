@@ -25,6 +25,7 @@ test:
 # Run clippy to check for linting errors.
 check:
     cargo clippy --examples --tests --all-features
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 examples:
     cargo run --example basic_usage
