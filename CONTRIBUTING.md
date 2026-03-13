@@ -200,6 +200,16 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 
 **Roundtrip testing**: The most effective validation is parse→format→parse comparison. Parse text to protobuf, format back to text, and verify the output matches the input. See `tests/plan_roundtrip.rs` for examples.
 
+**Assert on expected values, not just properties**: When testing structured output, prefer comparing against concrete expected values rather than only checking lengths or other surface-level properties. Use judgment for deeply nested structures where building a full expected value would be unwieldy — property-based checks are fine there. For example:
+
+```rust
+// Good: catches ordering, content, and structural bugs
+assert_eq!(result, vec![0, 1, 2]);
+
+// Weaker: only catches missing or extra entries
+assert_eq!(result.len(), 3);
+```
+
 **TODO**: Add comprehensive edge case testing for invalid enum values, unknown relation types, malformed input, and boundary conditions to ensure graceful error handling.
 
 ### Pull Request Process

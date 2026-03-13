@@ -462,59 +462,16 @@ impl RelationParsePair for AggregateRel {
         let output_pair = iter.pop(Rule::aggregate_output);
         iter.done();
 
-        let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
-        let grouping_sets: Vec<Grouping>;
-        let grouping_expressions: Vec<Expression>;
-
-        // The grammar matches either a single `expression_list` (no parens, single grouping set)
-        // or a `grouping_set_list` (one or more sets, each wrapped in parens, or a set `_` with no parens).
         let inner = group_by_pair
             .into_inner()
             .next()
             .expect("aggregate_group_by must have one inner item");
 
-        let group: Grouping;
+        let grouping_sets = parse_grouping_sets(extensions, inner);
+        let (groupings, grouping_expressions) = build_grouping_fields(&grouping_sets);
 
-        match inner.as_rule() {
-            Rule::expression_list => {
-                // Single non-empty grouping set written without parens: e.g. "$0, $1"
-                (group, grouping_expressions) =
-                    get_single_group(extensions, inner, &mut expression_index_map);
-                grouping_sets = vec![group];
-            }
-            Rule::grouping_set_list => {
-                (grouping_sets, grouping_expressions) = get_grouping_sets(extensions, inner);
-            }
-            _ => unreachable!(
-                "Unexpected rule in aggregate_group_by: {:?}",
-                inner.as_rule()
-            ),
-        }
-
-        // Parse output items (can be references or aggregate measures)
-        let mut measures = Vec::new();
-        let mut output_mapping = Vec::new();
-        let mut measure_count = 0;
-
-        for aggregate_output_item in output_pair.into_inner() {
-            let inner_item = unwrap_single_pair(aggregate_output_item);
-            match inner_item.as_rule() {
-                Rule::reference => {
-                    let field_index = FieldIndex::parse_pair(inner_item);
-                    output_mapping.push(field_index.0);
-                }
-                Rule::aggregate_measure => {
-                    let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
-                    measures.push(measure);
-                    output_mapping.push(grouping_expressions.len() as i32 + measure_count);
-                    measure_count += 1;
-                }
-                _ => panic!(
-                    "Unexpected inner output item rule: {:?}",
-                    inner_item.as_rule()
-                ),
-            }
-        }
+        let (measures, output_mapping) =
+            parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
 
         let emit = EmitKind::Emit(Emit { output_mapping });
         let common = RelCommon {
@@ -525,7 +482,7 @@ impl RelationParsePair for AggregateRel {
         Ok(AggregateRel {
             input: Some(input),
             grouping_expressions,
-            groupings: grouping_sets,
+            groupings,
             measures,
             common: Some(common),
             advanced_extension: None,
@@ -533,80 +490,135 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
-fn get_single_group(
+/// Parses the output section of an aggregate (everything after `=>`).
+///
+/// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
+/// this parses `sum($2), $0, count($2)`.
+fn parse_aggregate_measures(
     extensions: &SimpleExtensions,
-    inner: Pair<'_, Rule>,
-    expression_index_map: &mut HashMap<Vec<u8>, u32>,
-) -> (Grouping, Vec<Expression>) {
-    let mut expression_references: Vec<u32> = vec![];
-    let mut grouping_expressions: Vec<Expression> = Vec::new();
-    let mut i = 0;
+    output_pair: Pair<'_, Rule>,
+    grouping_expressions: &[Expression],
+) -> Result<(Vec<aggregate_rel::Measure>, Vec<i32>), MessageParseError> {
+    assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
+    let mut measures = Vec::new();
+    let mut output_mapping = Vec::new();
 
-    // for each expression in the expression list we map to an index in the order they are parsed
-    for expr_pair in inner.into_inner() {
-        match Expression::parse_pair(extensions, expr_pair) {
-            Ok(exp) => {
-                // TODO: use a better key here than encoding to bytes.
-                // Ideally, substrait-rs would support `PartialEq` and `Hash`,
-                // but as there isn't an easy way to do that now, we'll skip.
-                let key = exp.encode_to_vec();
-                expression_index_map.entry(key.clone()).or_insert_with(|| {
-                    grouping_expressions.push(exp);
-                    let index = i;
-                    i += 1;
-                    index // is expression returned by this closure and inserted into map
-                });
-                expression_references.push(expression_index_map[&key]);
+    for aggregate_output_item in output_pair.into_inner() {
+        let inner_item = unwrap_single_pair(aggregate_output_item);
+        match inner_item.as_rule() {
+            Rule::reference => {
+                let field_index = FieldIndex::parse_pair(inner_item);
+                output_mapping.push(field_index.0);
             }
-            Err(_) => unreachable!(
-                "By the grammar rule, only expressions should be parsed so erroring can be dropped silently"
+            Rule::aggregate_measure => {
+                let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
+                output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
+                measures.push(measure);
+            }
+            _ => panic!(
+                "Unexpected inner output item rule: {:?}",
+                inner_item.as_rule()
             ),
         }
     }
 
-    let group = Grouping {
-        expression_references,
-        #[allow(deprecated)]
-        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
-    };
-
-    (group, grouping_expressions)
+    Ok((measures, output_mapping))
 }
 
-fn get_grouping_sets(
+/// Parses the grouping section of an aggregate (everything before `=>`).
+///
+/// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
+/// this parses `($0, $1), _`.
+///
+/// Each inner Vec is one grouping set; an empty vec represents no grouping (global aggregate).
+///
+/// Grammar: `aggregate_group_by = { grouping_set_list | expression_list }`
+fn parse_grouping_sets(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
-) -> (Vec<Grouping>, Vec<Expression>) {
-    let mut expression_index_map: HashMap<Vec<u8>, u32> = HashMap::new();
-
-    let mut grouping_sets: Vec<Grouping> = Vec::new();
-    let mut grouping_expressions: Vec<Expression> = Vec::new();
-
-    // One or more grouping sets, each written as `(expr_list)` or `_`
-    for grouping_set_pair in inner.into_inner() {
-        assert_eq!(grouping_set_pair.as_rule(), Rule::grouping_set);
-
-        for item in grouping_set_pair.into_inner() {
-            match item.as_rule() {
-                Rule::empty => {
-                    // empty grouping set — expression_references stays empty
-                    grouping_sets.push(Grouping {
-                        expression_references: vec![],
-                        #[allow(deprecated)]
-                        grouping_expressions: vec![], // this is a deprecated proto field replaced by expression_references
-                    });
-                }
-                Rule::expression_list => {
-                    let (group, mut new_grouping_expressions) =
-                        get_single_group(extensions, item, &mut expression_index_map);
-                    grouping_expressions.append(&mut new_grouping_expressions);
-                    grouping_sets.push(group);
-                }
-                _ => unreachable!("Unexpected item in grouping_set: {:?}", item.as_rule()),
-            }
+) -> Vec<Vec<Expression>> {
+    assert!(
+        matches!(
+            inner.as_rule(),
+            Rule::expression_list | Rule::grouping_set_list
+        ),
+        "Expected expression_list or grouping_set_list, got {:?}",
+        inner.as_rule()
+    );
+    match inner.as_rule() {
+        Rule::expression_list => {
+            vec![parse_expression_list(extensions, inner)]
         }
+        Rule::grouping_set_list => inner
+            .into_inner()
+            .map(|pair| parse_grouping_set(extensions, pair))
+            .collect(),
+        _ => unreachable!(
+            "Unexpected rule in aggregate_group_by: {:?}",
+            inner.as_rule()
+        ),
     }
-    (grouping_sets, grouping_expressions)
+}
+
+/// Parses a single grouping set, e.g. `($0, $1)` or `_`.
+///
+/// Grammar: `grouping_set = { ("(" ~ expression_list ~ ")") | empty }`
+fn parse_grouping_set(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+    assert_eq!(pair.as_rule(), Rule::grouping_set);
+    let inner = pair
+        .into_inner()
+        .next()
+        .expect("grouping_set must have one inner item");
+    match inner.as_rule() {
+        Rule::empty => vec![],
+        Rule::expression_list => parse_expression_list(extensions, inner),
+        _ => unreachable!("Unexpected item in grouping_set: {:?}", inner.as_rule()),
+    }
+}
+
+/// Grammar: `expression_list = { expression ~ ("," ~ expression)* }`
+fn parse_expression_list(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+    pair.into_inner()
+        .map(|expr_pair| {
+            Expression::parse_pair(extensions, expr_pair)
+                .expect("By the grammar rule, only expressions should be parsed")
+        })
+        .collect()
+}
+
+/// Deduplicates expressions across all sets and produces the AggregateRel's
+/// protobuf fields: a flat deduplicated expression list and per-set Grouping
+/// messages with index references into that list.
+fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>, Vec<Expression>) {
+    let mut expressions: Vec<Expression> = Vec::new();
+    let mut seen: HashMap<Vec<u8>, u32> = HashMap::new();
+
+    let groupings = expression_sets
+        .iter()
+        .map(|set| {
+            let expression_references = set
+                .iter()
+                .map(|exp| {
+                    // TODO: use a better key here than encoding to bytes.
+                    // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+                    // but as there isn't an easy way to do that now, we'll skip.
+                    let key = exp.encode_to_vec();
+                    let next_idx = expressions.len() as u32;
+                    *seen.entry(key).or_insert_with(|| {
+                        expressions.push(exp.clone());
+                        next_idx
+                    })
+                })
+                .collect();
+            Grouping {
+                expression_references,
+                #[allow(deprecated)]
+                grouping_expressions: vec![],
+            }
+        })
+        .collect();
+
+    (groupings, expressions)
 }
 
 impl ScopedParsePair for SortField {
@@ -1265,13 +1277,16 @@ mod tests {
         )
         .unwrap();
 
-        // Should have 4 group-by fields and 1 measures
         assert_eq!(aggregate.grouping_expressions.len(), 3);
         assert_eq!(aggregate.groupings.len(), 4);
-        assert_eq!(aggregate.groupings[0].expression_references.len(), 3);
-        assert_eq!(aggregate.groupings[1].expression_references.len(), 2);
-        assert_eq!(aggregate.groupings[2].expression_references.len(), 1);
-        assert_eq!(aggregate.groupings[3].expression_references.len(), 0);
+        // ($0, $1, $2) -> [0, 1, 2]
+        assert_eq!(aggregate.groupings[0].expression_references, vec![0, 1, 2]);
+        // ($2, $0) -> [2, 0] (reuses indices, different order)
+        assert_eq!(aggregate.groupings[1].expression_references, vec![2, 0]);
+        // ($1) -> [1]
+        assert_eq!(aggregate.groupings[2].expression_references, vec![1]);
+        // _ -> empty
+        assert!(aggregate.groupings[3].expression_references.is_empty());
         assert_eq!(aggregate.measures.len(), 1);
     }
 
