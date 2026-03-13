@@ -499,6 +499,7 @@ fn parse_aggregate_measures(
     output_pair: Pair<'_, Rule>,
     grouping_expressions: &[Expression],
 ) -> Result<(Vec<aggregate_rel::Measure>, Vec<i32>), MessageParseError> {
+    assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
     let mut measures = Vec::new();
     let mut output_mapping = Vec::new();
 
@@ -536,6 +537,14 @@ fn parse_grouping_sets(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
 ) -> Vec<Vec<Expression>> {
+    assert!(
+        matches!(
+            inner.as_rule(),
+            Rule::expression_list | Rule::grouping_set_list
+        ),
+        "Expected expression_list or grouping_set_list, got {:?}",
+        inner.as_rule()
+    );
     match inner.as_rule() {
         Rule::expression_list => {
             vec![parse_expression_list(extensions, inner)]
@@ -582,9 +591,6 @@ fn parse_expression_list(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) ->
 /// messages with index references into that list.
 fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>, Vec<Expression>) {
     let mut expressions: Vec<Expression> = Vec::new();
-    // TODO: use a better key here than encoding to bytes.
-    // Ideally, substrait-rs would support `PartialEq` and `Hash`,
-    // but as there isn't an easy way to do that now, we'll skip.
     let mut seen: HashMap<Vec<u8>, u32> = HashMap::new();
 
     let groupings = expression_sets
@@ -593,6 +599,9 @@ fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>,
             let expression_references = set
                 .iter()
                 .map(|exp| {
+                    // TODO: use a better key here than encoding to bytes.
+                    // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+                    // but as there isn't an easy way to do that now, we'll skip.
                     let key = exp.encode_to_vec();
                     let next_idx = expressions.len() as u32;
                     *seen.entry(key).or_insert_with(|| {
