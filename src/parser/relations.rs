@@ -467,8 +467,8 @@ impl RelationParsePair for AggregateRel {
             .next()
             .expect("aggregate_group_by must have one inner item");
 
-        let expression_sets = parse_grouping_sets(extensions, inner);
-        let (grouping_sets, grouping_expressions) = build_grouping_fields(&expression_sets);
+        let grouping_sets = parse_grouping_sets(extensions, inner);
+        let (groupings, grouping_expressions) = build_grouping_fields(&grouping_sets);
 
         let (measures, output_mapping) =
             parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
@@ -482,7 +482,7 @@ impl RelationParsePair for AggregateRel {
         Ok(AggregateRel {
             input: Some(input),
             grouping_expressions,
-            groupings: grouping_sets,
+            groupings,
             measures,
             common: Some(common),
             advanced_extension: None,
