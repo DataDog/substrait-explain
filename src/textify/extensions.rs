@@ -10,6 +10,7 @@ use std::fmt;
 use substrait::proto::extensions::AdvancedExtension;
 
 use crate::extensions::any::AnyRef;
+use crate::extensions::registry::ExtensionType;
 use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
 use crate::textify::foundation::{Scope, Textify};
 use crate::textify::types::escaped;
@@ -94,12 +95,17 @@ impl Textify for ExtensionArgs {
 fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     ctx: &S,
     w: &mut W,
-    prefix: &str,
+    ext_type: ExtensionType,
     detail: AnyRef<'_>,
 ) -> fmt::Result {
     let indent = ctx.indent();
     let registry = ctx.extension_registry();
-    match registry.decode_with_ext_type_str(prefix, detail) {
+    let (prefix, decode_result) = match ext_type {
+        ExtensionType::Enhancement => ("Enh", registry.decode_enhancement(detail)),
+        ExtensionType::Optimization => ("Opt", registry.decode_optimization(detail)),
+        ExtensionType::Relation => unreachable!("Relation extensions don't use adv_ext lines"),
+    };
+    match decode_result {
         Ok((name, args)) => {
             write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
         }
@@ -120,11 +126,21 @@ pub fn textify_advanced_extension<S: Scope, W: fmt::Write>(
 ) -> fmt::Result {
     if let Some(enhancement) = &adv_ext.enhancement {
         writeln!(w)?;
-        format_adv_ext_line(ctx, w, "Enh", AnyRef::from(enhancement))?;
+        format_adv_ext_line(
+            ctx,
+            w,
+            ExtensionType::Enhancement,
+            AnyRef::from(enhancement),
+        )?;
     }
     for optimization in &adv_ext.optimization {
         writeln!(w)?;
-        format_adv_ext_line(ctx, w, "Opt", AnyRef::from(optimization))?;
+        format_adv_ext_line(
+            ctx,
+            w,
+            ExtensionType::Optimization,
+            AnyRef::from(optimization),
+        )?;
     }
     Ok(())
 }

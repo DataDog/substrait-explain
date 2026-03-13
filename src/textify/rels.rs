@@ -88,6 +88,8 @@ fn get_advanced_extension(rel: &Rel) -> Option<&substrait::proto::extensions::Ad
         Some(RelType::Sort(r)) => r.advanced_extension.as_ref(),
         Some(RelType::Fetch(r)) => r.advanced_extension.as_ref(),
         Some(RelType::Join(r)) => r.advanced_extension.as_ref(),
+        // Other relation types (Cross, Exchange, Window, etc.) do not carry
+        // advanced_extension per the Substrait proto schema as of v0.62.
         _ => None,
     }
 }
@@ -1121,8 +1123,6 @@ mod tests {
                 advanced_extension: None,
             })),
         };
-
-        // let rel = Relation::from(&read_rel);
 
         let rel = Rel {
             rel_type: Some(RelType::Read(Box::new(read_rel))),

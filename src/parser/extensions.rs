@@ -4,6 +4,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use super::{ParsePair, Rule, RuleIter, unescape_string, unwrap_single_pair};
+use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
@@ -425,19 +426,14 @@ impl ParsePair for ExtensionInvocation {
     }
 }
 
-/// Whether an advanced-extension line is an enhancement or an optimization.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AdvExtType {
-    /// `+ Enh:Name[args]` — alters plan semantics, cannot be ignored
-    Enhancement,
-    /// `+ Opt:Name[args]` — hints, can be ignored by the executor
-    Optimization,
-}
-
 /// A parsed `+ Enh:Name[args]` or `+ Opt:Name[args]` line.
 #[derive(Debug, Clone)]
 pub struct AdvExtInvocation {
-    pub ext_type: AdvExtType,
+    /// Whether this is an enhancement (`ExtensionType::Enhancement`) or
+    /// optimization (`ExtensionType::Optimization`).  The grammar restricts
+    /// the value to those two variants; `ExtensionType::Relation` will never
+    /// appear here.
+    pub ext_type: ExtensionType,
     pub name: String,
     pub args: ExtensionArgs,
 }
@@ -456,11 +452,11 @@ impl ParsePair for AdvExtInvocation {
 
         let mut iter = pair.into_inner();
 
-        // First token: adv_ext_type ("Enh" or "Opt")
-        let type_pair = iter.next().unwrap();
+        // First token: adv_ext_type — grammar guarantees "Enh" or "Opt"
+        let type_pair = iter.next().unwrap(); // Grammar guarantees adv_ext_type exists
         let ext_type = match type_pair.as_str() {
-            "Enh" => AdvExtType::Enhancement,
-            "Opt" => AdvExtType::Optimization,
+            "Enh" => ExtensionType::Enhancement,
+            "Opt" => ExtensionType::Optimization,
             other => unreachable!("Unexpected adv_ext_type: {other}"),
         };
 
@@ -525,22 +521,39 @@ impl ExtensionRelationType {
         self,
         detail: Option<Any>,
         children: Vec<Box<substrait::proto::Rel>>,
+        output_column_count: usize,
     ) -> Result<substrait::proto::Rel, String> {
         use substrait::proto::rel::RelType;
-        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+        use substrait::proto::rel_common::{Emit, EmitKind};
+        use substrait::proto::{
+            ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel, RelCommon,
+        };
 
         // Validate child count matches relation type
         self.validate_child_count(children.len())?;
 
+        // Store the output column count as an identity emit in RelCommon so that
+        // get_input_field_count can read it back when this extension is used as
+        // a child of another relation (e.g. a Project with expressions).
+        let common = if output_column_count > 0 {
+            let output_mapping = (0..output_column_count as i32).collect();
+            Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit { output_mapping })),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
         let rel_type = match self {
             ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common: None,
+                common,
                 detail: detail.map(Into::into),
             }),
             ExtensionRelationType::Single => {
                 let input = children.into_iter().next().map(|child| *child);
                 RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common: None,
+                    common,
                     detail: detail.map(Into::into),
                     input: input.map(Box::new),
                 }))
@@ -548,7 +561,7 @@ impl ExtensionRelationType {
             ExtensionRelationType::Multi => {
                 let inputs = children.into_iter().map(|child| *child).collect();
                 RelType::ExtensionMulti(ExtensionMultiRel {
-                    common: None,
+                    common,
                     detail: detail.map(Into::into),
                     inputs,
                 })

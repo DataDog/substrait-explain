@@ -3,6 +3,8 @@
 //! Tests parse → textify round-trips for `+ Enh:` and `+ Opt:` annotations
 //! on standard relations, using [`PartitionHint`] as the concrete example.
 
+use substrait::proto::plan_rel;
+use substrait::proto::rel::RelType;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::format_with_registry;
@@ -109,6 +111,48 @@ Root[result]
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
     assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
     assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Proto-level verification: enhancement must be attached to the Filter relation,
+/// not to the Read child.
+#[test]
+fn test_enhancement_attaches_to_filter_not_read() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+    + Enh:PartitionHint[&BROADCAST]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    // Navigate: Plan → PlanRel → Root → Filter
+    let plan_rel = plan.relations.first().expect("expected a relation");
+    let root = match &plan_rel.rel_type {
+        Some(plan_rel::RelType::Root(r)) => r,
+        other => panic!("expected Root, got {other:?}"),
+    };
+    let filter = match root.input.as_ref().and_then(|r| r.rel_type.as_ref()) {
+        Some(RelType::Filter(f)) => f,
+        other => panic!("expected Filter as Root input, got {other:?}"),
+    };
+
+    assert!(
+        filter.advanced_extension.is_some(),
+        "expected enhancement on Filter, but advanced_extension is None"
+    );
+
+    // Read child must NOT carry the enhancement.
+    let read = match filter.input.as_deref().and_then(|r| r.rel_type.as_ref()) {
+        Some(RelType::Read(r)) => r,
+        other => panic!("expected Read as Filter input, got {other:?}"),
+    };
+    assert!(
+        read.advanced_extension.is_none(),
+        "expected no enhancement on Read, but advanced_extension is Some"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -247,17 +291,24 @@ Root[result]
     let empty_registry = ExtensionRegistry::new();
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &empty_registry);
 
+    // The rest of the plan (Root, Read) should still be rendered.
     assert!(
-        !formatted.is_empty(),
-        "expected non-empty output even on decode error"
+        formatted.contains("Root["),
+        "expected Root in output, got:\n{formatted}"
     );
+    assert!(
+        formatted.contains("Read["),
+        "expected Read in output, got:\n{formatted}"
+    );
+    // The enhancement line should appear with the prefix but no name (decode failed).
+    assert!(
+        formatted.contains("+ Enh["),
+        "expected fallback enhancement line in output, got:\n{formatted}"
+    );
+    // At least one format error should be reported.
     assert!(
         !errors.is_empty(),
         "expected at least one format error for unknown enhancement type URL"
-    );
-    assert!(
-        formatted.contains("+ Enh["),
-        "expected enhancement prefix in output, got:\n{formatted}"
     );
 }
 
@@ -315,6 +366,203 @@ Root[result]
         result.is_err(),
         "expected parse error for adv_extension as Root's only child, but parse succeeded"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Additional relation types
+// ---------------------------------------------------------------------------
+
+/// Enhancement round-trip on a Filter relation.
+#[test]
+fn test_enhancement_on_filter_roundtrip() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+    + Enh:PartitionHint[&HASH, count=4]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement round-trip on a Sort relation.
+#[test]
+fn test_enhancement_on_sort_roundtrip() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Sort[($0, &AscNullsFirst) => $0]
+    Read[my.table => col:i64]
+    + Enh:PartitionHint[&RANGE]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// Additional error cases
+// ---------------------------------------------------------------------------
+
+/// Parsing a plan with an unregistered `+ Opt:` type fails at parse time.
+#[test]
+fn test_unregistered_optimization_fails_to_parse() {
+    let registry = ExtensionRegistry::new(); // empty — nothing registered
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Opt:PlanHint[hint='fast']"#;
+
+    let parser = Parser::new().with_extension_registry(registry);
+    let result = parser.parse_plan(plan_text);
+    assert!(
+        result.is_err(),
+        "expected parse error for unregistered optimization"
+    );
+}
+
+/// Passing a non-enum positional arg (integer) where PartitionHint expects
+/// enum values must produce a parse error.
+#[test]
+fn test_wrong_argument_type_for_enhancement_fails() {
+    let registry = make_registry();
+
+    // PartitionHint expects &VARIANT enum values as positional args, not integers.
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:PartitionHint[5]"#;
+
+    let parser = Parser::new().with_extension_registry(registry);
+    let result = parser.parse_plan(plan_text);
+    assert!(
+        result.is_err(),
+        "expected parse error when integer is passed where enum is expected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Project over extension child: get_input_field_count
+// ---------------------------------------------------------------------------
+
+/// A minimal two-column extension leaf used to verify that `get_input_field_count`
+/// correctly reads the output column count back from the identity emit stored in
+/// `RelCommon` when the child of a `Project` is an extension relation.
+mod extension_child_fixture {
+    use prost::Name;
+    use substrait_explain::extensions::{
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+    };
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct TwoColumnScan {}
+
+    impl Name for TwoColumnScan {
+        const NAME: &'static str = "TwoColumnScan";
+        const PACKAGE: &'static str = "test";
+
+        fn full_name() -> String {
+            "test.TwoColumnScan".to_owned()
+        }
+
+        fn type_url() -> String {
+            "type.googleapis.com/test.TwoColumnScan".to_owned()
+        }
+    }
+
+    impl Explainable for TwoColumnScan {
+        fn name() -> &'static str {
+            "TwoColumnScan"
+        }
+
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let mut extractor = args.extractor();
+            extractor.check_exhausted()?;
+            // Output columns are validated by the parser; we just ignore them here.
+            let _ = &args.output_columns;
+            Ok(TwoColumnScan {})
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            args.output_columns.push(ExtensionColumn::Named {
+                name: "col0".to_owned(),
+                type_spec: "i64".to_owned(),
+            });
+            args.output_columns.push(ExtensionColumn::Named {
+                name: "col1".to_owned(),
+                type_spec: "i32".to_owned(),
+            });
+            Ok(args)
+        }
+    }
+}
+
+/// `Project[$0, $1, 42]` over an `ExtensionLeaf:TwoColumnScan` with 2 output columns.
+///
+/// Without the `get_input_field_count` fix, the literal `42` would be given emit
+/// index 0 (wrapping around) instead of 2, producing `[0, 1, 0]` in the proto.
+/// With the fix it must be `[0, 1, 2]`.
+#[test]
+fn test_project_over_extension_leaf_emit_mapping() {
+    use substrait::proto::plan_rel;
+    use substrait::proto::rel::RelType;
+    use substrait::proto::rel_common::EmitKind;
+
+    let mut registry = substrait_explain::extensions::ExtensionRegistry::new();
+    registry
+        .register_relation::<extension_child_fixture::TwoColumnScan>()
+        .expect("register_relation");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Project[$0, $1, 42]
+    ExtensionLeaf:TwoColumnScan[_ => col0:i64, col1:i32]"#;
+
+    let parser = substrait_explain::parser::Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    // --- proto-level: verify emit mapping on ProjectRel ---
+    let plan_rel = plan.relations.first().expect("expected a relation");
+    let root = match &plan_rel.rel_type {
+        Some(plan_rel::RelType::Root(r)) => r,
+        other => panic!("expected Root, got {other:?}"),
+    };
+    let project = match root.input.as_ref().and_then(|r| r.rel_type.as_ref()) {
+        Some(RelType::Project(p)) => p,
+        other => panic!("expected Project as Root input, got {other:?}"),
+    };
+    let emit_kind = project
+        .common
+        .as_ref()
+        .and_then(|c| c.emit_kind.as_ref())
+        .expect("ProjectRel must have an emit");
+    let output_mapping = match emit_kind {
+        EmitKind::Emit(e) => &e.output_mapping,
+        EmitKind::Direct(_) => panic!("expected Emit, got Direct"),
+    };
+    assert_eq!(
+        output_mapping,
+        &[0_i32, 1, 2],
+        "emit mapping should be [0, 1, 2]; without fix it would be [0, 1, 0]"
+    );
+
+    // --- round-trip ---
+    let (formatted, errors) =
+        substrait_explain::format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
 }
 
 // ---------------------------------------------------------------------------

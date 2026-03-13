@@ -216,6 +216,41 @@ mod tests {
     }
 
     #[test]
+    fn from_args_rejects_non_enum_positional() {
+        // An integer positional arg where an enum is expected should fail.
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        args.positional.push(ExtensionValue::Integer(1));
+        let result = PartitionHint::from_args(&args);
+        assert!(
+            result.is_err(),
+            "expected error for non-enum positional arg, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn from_args_rejects_extra_named_args() {
+        // check_exhausted should reject unknown named args.
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        args.named
+            .insert("unknown_key".to_owned(), ExtensionValue::Integer(99));
+        let result = PartitionHint::from_args(&args);
+        assert!(
+            result.is_err(),
+            "expected error for unknown named arg, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn from_args_empty_strategies_roundtrip() {
+        let original = make_hint(vec![], 0);
+        let args = original.to_args().unwrap();
+        let decoded = PartitionHint::from_args(&args).unwrap();
+        assert_eq!(original, decoded);
+        assert!(decoded.strategies.is_empty());
+        assert_eq!(decoded.count, 0);
+    }
+
+    #[test]
     fn registry_roundtrip() {
         let mut registry = ExtensionRegistry::new();
         registry.register_enhancement::<PartitionHint>().unwrap();

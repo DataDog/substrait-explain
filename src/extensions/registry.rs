@@ -462,27 +462,6 @@ impl ExtensionRegistry {
         Ok((extension_name.clone(), args))
     }
 
-    /// Decode an advanced-extension detail using the prefix string ("Enh" or "Opt").
-    ///
-    /// This is a convenience method used by the textifier to avoid duplicating the
-    /// `Enh` / `Opt` dispatch logic.
-    pub fn decode_with_ext_type_str(
-        &self,
-        prefix: &str,
-        detail: AnyRef<'_>,
-    ) -> Result<(String, ExtensionArgs), ExtensionError> {
-        let ext_type = match prefix {
-            "Enh" => ExtensionType::Enhancement,
-            "Opt" => ExtensionType::Optimization,
-            _ => {
-                return Err(ExtensionError::NotFound {
-                    name: format!("unknown prefix '{prefix}'"),
-                });
-            }
-        };
-        self.decode_with_type(ext_type, detail)
-    }
-
     /// Get all registered extension names for a specific ExtensionType
     pub fn extension_names(&self, ext_type: ExtensionType) -> Vec<&str> {
         let mut names: Vec<&str> = self
@@ -856,19 +835,6 @@ mod tests {
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
         }
-    }
-
-    #[test]
-    fn test_decode_with_unknown_prefix_returns_not_found() {
-        let registry = ExtensionRegistry::new();
-        // The actual content of the Any doesn't matter; the prefix dispatch
-        // should short-circuit before any type-URL lookup.
-        let dummy = Any::new("type.googleapis.com/test.Dummy".to_string(), vec![]);
-        let result = registry.decode_with_ext_type_str("Invalid", dummy.as_ref());
-        assert!(
-            matches!(result, Err(ExtensionError::NotFound { .. })),
-            "expected NotFound for unknown prefix, got {result:?}"
-        );
     }
 
     #[test]

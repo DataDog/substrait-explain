@@ -13,12 +13,12 @@ use substrait::proto::{
     SortRel, plan_rel,
 };
 
-use crate::extensions::{ExtensionRegistry, SimpleExtensions, simple};
+use crate::extensions::{ExtensionRegistry, ExtensionType, SimpleExtensions, simple};
 use crate::parser::common::{MessageParseError, ParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
 use crate::parser::extensions::{
-    AdvExtInvocation, AdvExtType, ExtensionInvocation, ExtensionParseError, ExtensionParser,
+    AdvExtInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
 use crate::parser::relations::RelationParsingContext;
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
@@ -149,8 +149,29 @@ fn get_input_field_count(rel: &Rel) -> usize {
                 .map(|input| get_input_field_count(input))
                 .unwrap_or(0)
         }
+        // Extension relations store their output column count as an identity
+        // emit in RelCommon (written by create_rel). Read it back here so that
+        // parent relations (especially Project) can correctly index expressions.
+        Some(RelType::ExtensionLeaf(r)) => extension_output_column_count(r.common.as_ref()),
+        Some(RelType::ExtensionSingle(r)) => extension_output_column_count(r.common.as_ref()),
+        Some(RelType::ExtensionMulti(r)) => extension_output_column_count(r.common.as_ref()),
         _ => 0,
     }
+}
+
+/// Read the output column count stored in an extension relation's `common` field.
+///
+/// `create_rel` encodes the count as an identity emit (`[0, 1, ..., n-1]`), so
+/// the length of that mapping is the number of output columns.
+fn extension_output_column_count(common: Option<&substrait::proto::RelCommon>) -> usize {
+    use substrait::proto::rel_common::EmitKind;
+    common
+        .and_then(|c| c.emit_kind.as_ref())
+        .map(|ek| match ek {
+            EmitKind::Emit(e) => e.output_mapping.len(),
+            EmitKind::Direct(_) => 0,
+        })
+        .unwrap_or(0)
 }
 
 /// Set the `advanced_extension` field on a [`Rel`], covering all standard
@@ -379,10 +400,11 @@ impl<'a> RelationParser<'a> {
         };
 
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
+        let output_column_count = extension_args.output_columns.len();
 
         extension_args
             .relation_type
-            .create_rel(detail, child_relations)
+            .create_rel(detail, child_relations, output_column_count)
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
@@ -401,8 +423,7 @@ impl<'a> RelationParser<'a> {
         // Separate adv_extension annotation nodes from regular child relations.
         // adv_extension nodes have an inner pair of rule `adv_extension`; all
         // others are regular relation children.
-        // This code enforces that advanced extensions are not treated
-        // as relations themselves and must be a child of a relation
+        // This code enforces that advanced extensions are children of a relation
         let mut adv_ext_nodes: Vec<LineNode<'_>> = Vec::new();
         let mut rel_children: Vec<LineNode<'_>> = Vec::new();
 
@@ -477,21 +498,23 @@ impl<'a> RelationParser<'a> {
             };
 
             match invocation.ext_type {
-                AdvExtType::Enhancement => {
+                ExtensionType::Enhancement => {
                     let detail =
                         context.resolve_enhancement_detail(&invocation.name, &invocation.args)?;
                     if enhancement.is_some() {
                         return Err(ParseError::ValidationError(
-                            "substrait proto semantics allows only 1 enhancement per relation"
-                                .to_string(),
+                            "at most one enhancement per relation is allowed".to_string(),
                         ));
                     }
                     enhancement = Some(detail.into());
                 }
-                AdvExtType::Optimization => {
+                ExtensionType::Optimization => {
                     let detail =
                         context.resolve_optimization_detail(&invocation.name, &invocation.args)?;
                     optimizations.push(detail.into());
+                }
+                ExtensionType::Relation => {
+                    unreachable!("Grammar restricts adv_ext_type to 'Enh' or 'Opt'")
                 }
             }
         }
