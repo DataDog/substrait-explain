@@ -200,6 +200,27 @@ Root[sum, count]
 }
 
 #[test]
+fn test_aggregate_expression_grouping_roundtrip() {
+    // Group by an expression (function call), not just a bare field ref.
+    // The textify side renders grouping expressions as $N references in
+    // positional args, and resolves them to the actual expression in outputs.
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  #  1 @  1: abs
+  # 10 @  2: count
+
+=== Plan
+Root[abs_val, count]
+  Aggregate[abs($0) => abs($0), count($1)]
+    Read[orders => amount:fp64?, quantity:i32?]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_sort_relation_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
