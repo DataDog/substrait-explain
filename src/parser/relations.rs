@@ -467,8 +467,8 @@ impl RelationParsePair for AggregateRel {
             .next()
             .expect("aggregate_group_by must have one inner item");
 
-        let (grouping_sets, grouping_expressions) =
-            parse_aggregate_grouping_sets(extensions, inner);
+        let expression_sets = parse_grouping_sets(extensions, inner);
+        let (grouping_sets, grouping_expressions) = build_grouping_fields(&expression_sets);
 
         let (measures, output_mapping) =
             parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
@@ -524,7 +524,11 @@ fn parse_aggregate_measures(
     Ok((measures, output_mapping))
 }
 
-/// Parses the grammar into a list of expression sets.
+/// Parses the grouping section of an aggregate (everything before `=>`).
+///
+/// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
+/// this parses `($0, $1), _`.
+///
 /// Each inner Vec is one grouping set; an empty vec represents no grouping (global aggregate).
 fn parse_grouping_sets(
     extensions: &SimpleExtensions,
@@ -596,18 +600,6 @@ fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>,
         .collect();
 
     (groupings, expressions)
-}
-
-/// Parses the grouping section of an aggregate (everything before `=>`).
-///
-/// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
-/// this parses `($0, $1), _`.
-fn parse_aggregate_grouping_sets(
-    extensions: &SimpleExtensions,
-    inner: Pair<'_, Rule>,
-) -> (Vec<Grouping>, Vec<Expression>) {
-    let expression_sets = parse_grouping_sets(extensions, inner);
-    build_grouping_fields(&expression_sets)
 }
 
 impl ScopedParsePair for SortField {
