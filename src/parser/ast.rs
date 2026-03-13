@@ -13,6 +13,9 @@
 //! semantic constraints; semantic validation happens in lowering.
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
+
+use ordered_float::OrderedFloat;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionUrnDeclaration {
@@ -46,7 +49,7 @@ impl ExtensionDeclaration {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Relation {
     pub name: RelationName,
     pub args: ArgList,
@@ -71,7 +74,7 @@ impl Relation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RelationName {
     Standard(String),
     Extension(ExtensionType, String),
@@ -87,14 +90,14 @@ impl RelationName {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExtensionType {
     Leaf,
     Single,
     Multi,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct ArgList {
     /// Positional arguments in source order.
     pub positional: Vec<Arg>,
@@ -106,7 +109,7 @@ pub struct ArgList {
     pub invalid_order: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Arg {
     Expr(Expr),
     Enum(String),
@@ -137,7 +140,7 @@ impl Arg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NamedArg {
     pub name: String,
     pub value: Arg,
@@ -152,7 +155,7 @@ impl NamedArg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     FieldRef(i32),
     Literal(Literal),
@@ -194,7 +197,7 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionCall {
     pub name: String,
     pub anchor: Option<u32>,
@@ -221,7 +224,7 @@ impl FunctionCall {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IfThenExpr {
     pub clauses: Vec<(Expr, Expr)>,
     pub else_expr: Box<Expr>,
@@ -236,7 +239,7 @@ impl IfThenExpr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Literal {
     pub value: LiteralValue,
     pub typ: Option<TypeExpr>,
@@ -264,7 +267,7 @@ impl Literal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum LiteralValue {
     Integer(i64),
     Float(f64),
@@ -272,7 +275,33 @@ pub enum LiteralValue {
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl PartialEq for LiteralValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Integer(a), Self::Integer(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => OrderedFloat(*a) == OrderedFloat(*b),
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for LiteralValue {}
+
+impl Hash for LiteralValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Integer(v) => v.hash(state),
+            Self::Float(v) => OrderedFloat(*v).hash(state),
+            Self::Boolean(v) => v.hash(state),
+            Self::String(v) => v.hash(state),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeExpr {
     Simple {
         name: String,
@@ -323,7 +352,7 @@ impl TypeExpr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Nullability {
     #[default]
     Required,
@@ -331,7 +360,7 @@ pub enum Nullability {
     Unspecified,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArgEntry {
     Positional(Arg),
     Named(NamedArg),
