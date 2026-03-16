@@ -768,7 +768,7 @@ Where:
 - **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty
 
-Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. In the textified output, enhancement and optimization lines appear **after** any child relations.
+Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. Enhancement and optimization lines MUST appear **before** any child relations.
 
 ### Argument Syntax
 
@@ -833,6 +833,23 @@ Both require implementing the `Explainable` trait, which provides `from_args` / 
 If a `+ Enh:` or `+ Opt:` name is **not registered** in the registry at parse time, the parser returns a hard error.
 
 If the registry does not know the type URL at **textify** time (e.g. when formatting a plan received from an external source), the line is still emitted with a failure token and a `FormatError` is collected — the rest of the plan is unaffected.
+
+For example, if a plan contains an enhancement whose type URL is not registered, the textified output replaces the name and arguments with `!{extension}`:
+
+```text
+=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh[!{extension}]
+```
+
+The collected `FormatError` carries the full detail:
+
+```text
+FormatError::Extension(ExtensionError::NotFound { type_url: "type.googleapis.com/acme.PartitionHint" })
+```
+
+The `Read` line and everything else in the plan are textified normally; only the unrecognized enhancement line degrades to the failure token.
 
 ## Complete Example
 

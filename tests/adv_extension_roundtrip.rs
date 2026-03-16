@@ -5,10 +5,12 @@
 
 use substrait::proto::plan_rel;
 use substrait::proto::rel::RelType;
+use substrait_explain::extensions::registry::ExtensionError;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
+use substrait_explain::FormatError;
 
 fn make_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
@@ -97,13 +99,13 @@ Root[result]
 fn test_enhancement_with_child_relation() {
     let registry = make_registry();
 
-    // The enhancement annotates the Filter; its Read child appears before
-    // the annotation line in the textified output.
+    // The enhancement annotates the Filter; it appears before the Read child
+    // so the annotation visually attaches to Filter and not to Read.
     let plan_text = r#"=== Plan
 Root[result]
   Filter[$0 => $0]
-    Read[my.table => col:i64]
-    + Enh:PartitionHint[&BROADCAST]"#;
+    + Enh:PartitionHint[&BROADCAST]
+    Read[my.table => col:i64]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -122,8 +124,8 @@ fn test_enhancement_attaches_to_filter_not_read() {
     let plan_text = r#"=== Plan
 Root[result]
   Filter[$0 => $0]
-    Read[my.table => col:i64]
-    + Enh:PartitionHint[&BROADCAST]"#;
+    + Enh:PartitionHint[&BROADCAST]
+    Read[my.table => col:i64]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -380,8 +382,8 @@ fn test_enhancement_on_filter_roundtrip() {
     let plan_text = r#"=== Plan
 Root[result]
   Filter[$0 => $0]
-    Read[my.table => col:i64]
-    + Enh:PartitionHint[&HASH, count=4]"#;
+    + Enh:PartitionHint[&HASH, count=4]
+    Read[my.table => col:i64]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -399,8 +401,8 @@ fn test_enhancement_on_sort_roundtrip() {
     let plan_text = r#"=== Plan
 Root[result]
   Sort[($0, &AscNullsFirst) => $0]
-    Read[my.table => col:i64]
-    + Enh:PartitionHint[&RANGE]"#;
+    + Enh:PartitionHint[&RANGE]
+    Read[my.table => col:i64]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
@@ -449,6 +451,57 @@ Root[result]
     assert!(
         result.is_err(),
         "expected parse error when integer is passed where enum is expected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Textify failure token for unregistered enhancement
+// ---------------------------------------------------------------------------
+
+/// Verifies the behaviour described in GRAMMAR.md: when an enhancement's type
+/// URL is present in the plan proto but is not registered in the registry at
+/// textify time, the line is emitted with `!{extension}` in place of the name
+/// and arguments, a `FormatError` is collected, and the rest of the plan is
+/// unaffected.
+///
+/// Setup: parse with a registry that knows PartitionHint, then textify with an
+/// empty registry so the type URL cannot be resolved.
+#[test]
+fn test_unregistered_enhancement_produces_failure_token_at_textify_time() {
+    // Parse with a full registry so the plan is valid.
+    let parse_registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:PartitionHint[&HASH]"#;
+
+    let parser = Parser::new().with_extension_registry(parse_registry);
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    // Textify with an empty registry — the enhancement type URL is unknown.
+    let empty_registry = ExtensionRegistry::new();
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &empty_registry);
+
+    // The rest of the plan must be unaffected.
+    assert!(
+        formatted.contains("Read[my.table => col:i64]"),
+        "expected Read line to be present, got:\n{formatted}"
+    );
+
+    // The enhancement line must contain the failure token with no name or args.
+    assert!(
+        formatted.contains("+ Enh[!{extension}]"),
+        "expected failure token '+ Enh[!{{extension}}]' in output, got:\n{formatted}"
+    );
+
+    // Exactly one FormatError must have been collected.
+    assert_eq!(errors.len(), 1, "expected exactly one FormatError, got: {errors:?}");
+
+    // The error must be an extension-not-found error.
+    assert!(
+        matches!(&errors[0], FormatError::Extension(ExtensionError::NotFound { .. })),
+        "expected FormatError::Extension(ExtensionError::NotFound {{ .. }}), got: {:?}",
+        errors[0]
     );
 }
 

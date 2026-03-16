@@ -464,17 +464,16 @@ impl ParsePair for AdvExtInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Remaining tokens: optional arguments (same structure as extension_relation)
+        // Remaining token: arguments — grammar guarantees it is always present
         // Use Leaf as the relation_type placeholder — adv_extensions don't have children
         let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
 
-        for inner_pair in iter {
-            match inner_pair.as_rule() {
-                Rule::arguments => {
-                    arguments_rule_parsing(inner_pair, &mut args);
-                }
-                r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+        let arguments_pair = iter.next().unwrap();
+        match arguments_pair.as_rule() {
+            Rule::arguments => {
+                arguments_rule_parsing(arguments_pair, &mut args);
             }
+            r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
         }
 
         AdvExtInvocation {
@@ -521,39 +520,24 @@ impl ExtensionRelationType {
         self,
         detail: Option<Any>,
         children: Vec<Box<substrait::proto::Rel>>,
-        output_column_count: usize,
     ) -> Result<substrait::proto::Rel, String> {
         use substrait::proto::rel::RelType;
-        use substrait::proto::rel_common::{Emit, EmitKind};
-        use substrait::proto::{
-            ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel, RelCommon,
-        };
+        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
 
         // Validate child count matches relation type
         self.validate_child_count(children.len())?;
 
-        // Store the output column count as an identity emit in RelCommon so that
-        // get_input_field_count can read it back when this extension is used as
-        // a child of another relation (e.g. a Project with expressions).
-        let common = if output_column_count > 0 {
-            let output_mapping = (0..output_column_count as i32).collect();
-            Some(RelCommon {
-                emit_kind: Some(EmitKind::Emit(Emit { output_mapping })),
-                ..Default::default()
-            })
-        } else {
-            None
-        };
-
+        // The output column count is returned alongside the Rel by parse_extension_relation
+        // and flows up the parse tree through Rust return values
         let rel_type = match self {
             ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common,
+                common: None,
                 detail: detail.map(Into::into),
             }),
             ExtensionRelationType::Single => {
                 let input = children.into_iter().next().map(|child| *child);
                 RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common,
+                    common: None,
                     detail: detail.map(Into::into),
                     input: input.map(Box::new),
                 }))
@@ -561,7 +545,7 @@ impl ExtensionRelationType {
             ExtensionRelationType::Multi => {
                 let inputs = children.into_iter().map(|child| *child).collect();
                 RelType::ExtensionMulti(ExtensionMultiRel {
-                    common,
+                    common: None,
                     detail: detail.map(Into::into),
                     inputs,
                 })

@@ -120,58 +120,42 @@ impl<'a> LineNode<'a> {
     }
 }
 
-/// Helper function to get the number of input fields from a relation.
-/// This is needed for Project relations to calculate output mapping indices.
-fn get_input_field_count(rel: &Rel) -> usize {
+/// Return the number of output columns for a relation.
+///
+/// This is used by `build_rel` to compute the `input_field_count` passed to
+/// `ProjectRel` and `AggregateRel` parsers, which need it to assign correct
+/// emit-mapping indices to their computed expressions.
+///
+/// Extension relations are excluded here intentionally: their output column
+/// count is carried as the `usize` in the `(Rel, usize)` returned by
+/// `build_rel` / `parse_extension_relation`, so they never reach this function.
+fn get_output_field_count(rel: &Rel) -> usize {
     match &rel.rel_type {
         Some(RelType::Read(read_rel)) => {
-            // For Read relations, count the fields in the base schema
-            read_rel
-                .base_schema
-                .as_ref()
-                .and_then(|schema| schema.r#struct.as_ref())
-                .map(|struct_| struct_.types.len())
-                .unwrap_or(0)
+            // Read embeds the schema directly — count the typed fields.
+            if let Some(schema) = read_rel.base_schema.as_ref() {
+                if let Some(s) = schema.r#struct.as_ref() {
+                    return s.types.len();
+                }
+            }
+            0
         }
         Some(RelType::Filter(filter_rel)) => {
-            // For Filter relations, get the count from the input
-            filter_rel
-                .input
-                .as_ref()
-                .map(|input| get_input_field_count(input))
-                .unwrap_or(0)
+            // Filter passes all input columns through unchanged.
+            if let Some(input) = filter_rel.input.as_ref() {
+                return get_output_field_count(input);
+            }
+            0
         }
         Some(RelType::Project(project_rel)) => {
-            // For Project relations, get the count from the input
-            project_rel
-                .input
-                .as_ref()
-                .map(|input| get_input_field_count(input))
-                .unwrap_or(0)
+            // Project passes all input columns through unchanged.
+            if let Some(input) = project_rel.input.as_ref() {
+                return get_output_field_count(input);
+            }
+            0
         }
-        // Extension relations store their output column count as an identity
-        // emit in RelCommon (written by create_rel). Read it back here so that
-        // parent relations (especially Project) can correctly index expressions.
-        Some(RelType::ExtensionLeaf(r)) => extension_output_column_count(r.common.as_ref()),
-        Some(RelType::ExtensionSingle(r)) => extension_output_column_count(r.common.as_ref()),
-        Some(RelType::ExtensionMulti(r)) => extension_output_column_count(r.common.as_ref()),
         _ => 0,
     }
-}
-
-/// Read the output column count stored in an extension relation's `common` field.
-///
-/// `create_rel` encodes the count as an identity emit (`[0, 1, ..., n-1]`), so
-/// the length of that mapping is the number of output columns.
-fn extension_output_column_count(common: Option<&substrait::proto::RelCommon>) -> usize {
-    use substrait::proto::rel_common::EmitKind;
-    common
-        .and_then(|c| c.emit_kind.as_ref())
-        .map(|ek| match ek {
-            EmitKind::Emit(e) => e.output_mapping.len(),
-            EmitKind::Direct(_) => 0,
-        })
-        .unwrap_or(0)
 }
 
 /// Set the `advanced_extension` field on a [`Rel`], covering all standard
@@ -285,7 +269,12 @@ impl<'a> RelationParser<'a> {
     }
 
     /// Parse a relation from a Pest pair of rule 'relation' into a Substrait
-    /// Rel.
+    /// Rel, together with its output column count.
+    ///
+    /// The `usize` in the return value is the number of columns this relation
+    /// outputs.  Callers accumulate these counts across children and pass the
+    /// sum in as `input_field_count` so that relations like `ProjectRel` can
+    /// assign correct emit-mapping indices to their computed expressions.
     //
     // Clippy says a Vec<Box<…>> is unnecessary, as the Vec is already on the
     // heap, but this is what the protobuf requires so we allow it here
@@ -298,7 +287,7 @@ impl<'a> RelationParser<'a> {
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
-    ) -> Result<substrait::proto::Rel, ParseError> {
+    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
         assert_eq!(pair.as_rule(), Rule::planNode);
         let p = unwrap_single_pair(pair);
 
@@ -328,7 +317,12 @@ impl<'a> RelationParser<'a> {
         }
     }
 
-    /// Parse a specific relation type.
+    /// Parse a specific relation type, returning the relation and its output column count.
+    ///
+    /// The count is derived from the just-built relation via `get_output_field_count`.
+    /// Extension relations are handled separately in `parse_extension_relation` because
+    /// their count comes from the user-supplied output-columns list, not from a schema
+    /// embedded in the protobuf.
     // Box is needed because Rel is a large enum and we need to pass ownership
     // through the RelationParsePair trait, which requires Box<Rel>.
     #[allow(clippy::vec_box)]
@@ -339,7 +333,7 @@ impl<'a> RelationParser<'a> {
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
-    ) -> Result<substrait::proto::Rel, ParseError> {
+    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
         assert_eq!(pair.as_rule(), T::rule());
 
         let line = pair.as_str();
@@ -348,7 +342,11 @@ impl<'a> RelationParser<'a> {
             T::parse_pair_with_context(extensions, pair, child_relations, input_field_count);
 
         match rel_type {
-            Ok(rel) => Ok(rel.into_rel()),
+            Ok(rel) => {
+                let as_rel = rel.into_rel();
+                let count = get_output_field_count(&as_rel);
+                Ok((as_rel, count))
+            }
             Err(e) => Err(ParseError::Plan(
                 ParseContext::new(line_no, line.to_string()),
                 e,
@@ -368,7 +366,7 @@ impl<'a> RelationParser<'a> {
         line_no: i64,
         pair: pest::iterators::Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
-    ) -> Result<substrait::proto::Rel, ParseError> {
+    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
         assert_eq!(pair.as_rule(), Rule::extension_relation);
 
         let line = pair.as_str();
@@ -400,62 +398,79 @@ impl<'a> RelationParser<'a> {
         };
 
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
+        // Capture the output column count before consuming extension_args, so
+        // it can be returned to the caller.  The caller (build_rel) accumulates
+        // these counts across children and passes the sum to the parent relation
+        // as input_field_count, replacing the old protobuf-encode/decode hack.
         let output_column_count = extension_args.output_columns.len();
 
-        extension_args
+        let rel = extension_args
             .relation_type
-            .create_rel(detail, child_relations, output_column_count)
+            .create_rel(detail, child_relations)
             .map_err(|e| {
                 ParseError::Plan(
                     ParseContext::new(line_no, line.to_string()),
                     MessageParseError::invalid("extension_relation", pair_span, e),
                 )
-            })
+            })?;
+
+        Ok((rel, output_column_count))
     }
 
-    /// Convert a LineNode into a Substrait Rel.
+    /// Return true if `node`'s grammar pair wraps an `adv_extension` rule.
+    ///
+    /// A relation LineNode's pair is always `planNode`; its single inner pair
+    /// is the concrete relation rule.  For advanced-extension lines that rule is
+    /// `adv_extension`.  We look at that inner rule to decide whether the child
+    /// is an annotation or a real input relation.
+    fn is_adv_extension_node(node: &LineNode) -> bool {
+        if let Some(first_child) = node.pair.clone().into_inner().next() {
+            first_child.as_rule() == Rule::adv_extension
+        } else {
+            false
+        }
+    }
+
+    /// Convert a LineNode into a Substrait Rel, together with its output column count.
+    /// The returned `usize` is the number of columns this relation emits.  It is
+    /// used by the parent call to compute `input_field_count` for relations such
+    /// as `ProjectRel` that need it to assign correct emit-mapping indices to
+    /// computed expressions.
     fn build_rel(
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         node: LineNode,
-    ) -> Result<substrait::proto::Rel, ParseError> {
-        // Separate adv_extension annotation nodes from regular child relations.
-        // adv_extension nodes have an inner pair of rule `adv_extension`; all
-        // others are regular relation children.
-        // This code enforces that advanced extensions are children of a relation
+    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
+        // classifying children as either an adv_extension
+        // annotation or a regular input relation.
         let mut adv_ext_nodes: Vec<LineNode<'_>> = Vec::new();
-        let mut rel_children: Vec<LineNode<'_>> = Vec::new();
+        let mut child_relations: Vec<Box<Rel>> = Vec::new();
+        let mut input_field_count: usize = 0;
+        let mut seen_rel_child = false;
 
         for child in node.children {
-            let mut is_adv = false;
-            if let Some(first_child) = child.clone().pair.into_inner().next()
-                && first_child.as_rule() == Rule::adv_extension
-            {
-                is_adv = true;
-            }
-            if is_adv {
+            if Self::is_adv_extension_node(&child) {
+                if seen_rel_child {
+                    return Err(ParseError::ValidationError(
+                        format!(
+                            "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
+                             appear before child relations, not after",
+                            child.line_no
+                        ),
+                    ));
+                }
                 adv_ext_nodes.push(child);
             } else {
-                rel_children.push(child);
+                seen_rel_child = true;
+                let (rel, count) = self.build_rel(extensions, registry, child)?;
+                input_field_count += count;
+                child_relations.push(Box::new(rel));
             }
         }
 
-        // Build regular input children first to get their output schemas
-        let child_relations = rel_children
-            .into_iter()
-            .map(|c| self.build_rel(extensions, registry, c).map(Box::new))
-            .collect::<Result<Vec<Box<Rel>>, ParseError>>()?;
-
-        // Get the input field count from all the children
-        let input_field_count = child_relations
-            .iter()
-            .map(|r| get_input_field_count(r.as_ref()))
-            .reduce(|a, b| a + b)
-            .unwrap_or(0);
-
-        // Build the relation itself
-        let mut rel = self.parse_relation(
+        // Build the relation itself, receiving back its output column count.
+        let (mut rel, output_count) = self.parse_relation(
             extensions,
             registry,
             node.line_no,
@@ -464,13 +479,13 @@ impl<'a> RelationParser<'a> {
             input_field_count,
         )?;
 
-        // Parse adv_extension annotations and attach them to the relation
+        // Attach any adv_extension annotations to the relation.
         if !adv_ext_nodes.is_empty() {
             let adv_ext = self.build_advanced_extension(extensions, registry, adv_ext_nodes)?;
             set_advanced_extension(&mut rel, adv_ext);
         }
 
-        Ok(rel)
+        Ok((rel, output_count))
     }
 
     /// Parse a list of adv_extension LineNodes into an [`AdvancedExtension`] proto.
@@ -499,8 +514,11 @@ impl<'a> RelationParser<'a> {
 
             match invocation.ext_type {
                 ExtensionType::Enhancement => {
-                    let detail =
-                        context.resolve_enhancement_detail(&invocation.name, &invocation.args)?;
+                    let detail = context.resolve_adv_ext_detail(
+                        ExtensionType::Enhancement,
+                        &invocation.name,
+                        &invocation.args,
+                    )?;
                     if enhancement.is_some() {
                         return Err(ParseError::ValidationError(
                             "at most one enhancement per relation is allowed".to_string(),
@@ -509,8 +527,11 @@ impl<'a> RelationParser<'a> {
                     enhancement = Some(detail.into());
                 }
                 ExtensionType::Optimization => {
-                    let detail =
-                        context.resolve_optimization_detail(&invocation.name, &invocation.args)?;
+                    let detail = context.resolve_adv_ext_detail(
+                        ExtensionType::Optimization,
+                        &invocation.name,
+                        &invocation.args,
+                    )?;
                     optimizations.push(detail.into());
                 }
                 ExtensionType::Relation => {
@@ -534,7 +555,7 @@ impl<'a> RelationParser<'a> {
     ) -> Result<PlanRel, ParseError> {
         // Plain relations are allowed as root relations, they just don't have names.
         if node.pair.as_rule() == Rule::planNode {
-            let rel = self.build_rel(extensions, registry, node)?;
+            let (rel, _) = self.build_rel(extensions, registry, node)?;
             return Ok(PlanRel {
                 rel_type: Some(plan_rel::RelType::Rel(rel)),
             });
@@ -558,7 +579,10 @@ impl<'a> RelationParser<'a> {
             .collect();
 
         let child = match node.children.len() {
-            1 => self.build_rel(extensions, registry, node.children.pop().unwrap())?,
+            1 => {
+                let (rel, _) = self.build_rel(extensions, registry, node.children.pop().unwrap())?;
+                rel
+            }
             n => {
                 return Err(ParseError::Plan(
                     context,

@@ -65,13 +65,16 @@ impl Textify for Rel {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let relation = Relation::from_rel(self, ctx);
-        relation.textify(ctx, w)?;
-        // Emit + Enh: / + Opt: lines at child-indent level after the
-        // relation and its children have been written.
+        let child_scope = ctx.push_indent();
+        // Write the header line first (e.g. `Filter[$0 => $0]`).
+        relation.write_header(ctx, w)?;
+        // Advanced extensions are written at child indent, between the header
+        // and the child relations, so they visually attach to this relation. 
         if let Some(adv_ext) = get_advanced_extension(self) {
-            let child_scope = ctx.push_indent();
             textify_advanced_extension(&child_scope, w, adv_ext)?;
         }
+        // Children follow, also at child indent.
+        relation.write_children(ctx, w)?;
         Ok(())
     }
 }
@@ -88,8 +91,6 @@ fn get_advanced_extension(rel: &Rel) -> Option<&substrait::proto::extensions::Ad
         Some(RelType::Sort(r)) => r.advanced_extension.as_ref(),
         Some(RelType::Fetch(r)) => r.advanced_extension.as_ref(),
         Some(RelType::Join(r)) => r.advanced_extension.as_ref(),
-        // Other relation types (Cross, Exchange, Window, etc.) do not carry
-        // advanced_extension per the Substrait proto schema as of v0.62.
         _ => None,
     }
 }
@@ -310,23 +311,39 @@ impl Textify for Relation<'_> {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        self.write_header(ctx, w)?;
+        self.write_children(ctx, w)?;
+        Ok(())
+    }
+}
+
+impl Relation<'_> {
+    /// Write the single header line for this relation, e.g. `Filter[$0 => $0]`.
+    /// Does not write a trailing newline; callers are responsible for any
+    /// newline that follows (either from adv_ext or from the next child).
+    pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
         let name = &self.name;
         let cols = ctx.display(&cols);
         match &self.arguments {
             None => {
-                write!(w, "{indent}{name}[{cols}]")?;
+                write!(w, "{indent}{name}[{cols}]")
             }
             Some(args) => {
                 let args = ctx.display(args);
                 if self.columns.is_empty() && self.emit.is_none() {
-                    write!(w, "{indent}{name}[{args}]")?;
+                    write!(w, "{indent}{name}[{args}]")
                 } else {
-                    write!(w, "{indent}{name}[{args} => {cols}]")?;
+                    write!(w, "{indent}{name}[{args} => {cols}]")
                 }
             }
         }
+    }
+
+    /// Write each child relation at one indent level deeper than `ctx`.
+    /// Each child is preceded by a newline.
+    pub fn write_children<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let child_scope = ctx.push_indent();
         for child in self.children.iter().flatten() {
             writeln!(w)?;
@@ -463,15 +480,12 @@ impl<'a> Relation<'a> {
         });
         let emit = get_emit(rel.common.as_ref());
         let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
-        let mut col_values = vec![];
-        for i in 0..columns {
-            col_values.push(Value::Reference(i as i32));
-        }
+        let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
 
         Relation {
             name: Cow::Borrowed("Filter"),
             arguments,
-            columns: col_values,
+            columns,
             emit,
             children,
         }
