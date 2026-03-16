@@ -20,7 +20,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Check formatting
         run: cargo fmt -- --check --config imports_granularity=Module,group_imports=StdExternalCrate
 
@@ -28,7 +28,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         # Uses rust cache action, stnadard in Rust community.
         # Added to allowlist here:
         # https://github.com/DataDog/substrait-explain/settings/actions
@@ -42,7 +42,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # 2.8.1
 
       - name: Run tests
