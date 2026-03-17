@@ -133,10 +133,10 @@ fn get_output_field_count(rel: &Rel) -> usize {
     match &rel.rel_type {
         Some(RelType::Read(read_rel)) => {
             // Read embeds the schema directly — count the typed fields.
-            if let Some(schema) = read_rel.base_schema.as_ref() {
-                if let Some(s) = schema.r#struct.as_ref() {
-                    return s.types.len();
-                }
+            if let Some(schema) = read_rel.base_schema.as_ref()
+                && let Some(s) = schema.r#struct.as_ref()
+            {
+                return s.types.len();
             }
             0
         }
@@ -452,13 +452,11 @@ impl<'a> RelationParser<'a> {
         for child in node.children {
             if Self::is_adv_extension_node(&child) {
                 if seen_rel_child {
-                    return Err(ParseError::ValidationError(
-                        format!(
-                            "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
+                    return Err(ParseError::ValidationError(format!(
+                        "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
                              appear before child relations, not after",
-                            child.line_no
-                        ),
-                    ));
+                        child.line_no
+                    )));
                 }
                 adv_ext_nodes.push(child);
             } else {
@@ -580,7 +578,8 @@ impl<'a> RelationParser<'a> {
 
         let child = match node.children.len() {
             1 => {
-                let (rel, _) = self.build_rel(extensions, registry, node.children.pop().unwrap())?;
+                let (rel, _) =
+                    self.build_rel(extensions, registry, node.children.pop().unwrap())?;
                 rel
             }
             n => {

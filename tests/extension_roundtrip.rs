@@ -1,6 +1,7 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
 use prost::{Message, Name};
+use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
     ExtensionRelationType, ExtensionValue,
@@ -407,4 +408,189 @@ Root[result]
     let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
     assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
     assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionSingle and ExtensionMulti fixtures
+// ---------------------------------------------------------------------------
+
+/// A minimal ExtensionSingle: no arguments, passes through its single input
+/// column unchanged.  The `_ => $0` syntax uses the empty-args placeholder
+/// and a reference-style output column.
+#[derive(Clone, PartialEq, Message)]
+pub struct PassThroughWrapper {}
+
+impl Name for PassThroughWrapper {
+    const NAME: &'static str = "PassThroughWrapper";
+    const PACKAGE: &'static str = "test";
+    fn full_name() -> String {
+        "test.PassThroughWrapper".to_string()
+    }
+    fn type_url() -> String {
+        "type.googleapis.com/test.PassThroughWrapper".to_string()
+    }
+}
+
+impl Explainable for PassThroughWrapper {
+    fn name() -> &'static str {
+        "PassThrough"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(PassThroughWrapper {})
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
+        args.output_columns.push(ExtensionColumn::Reference(0));
+        Ok(args)
+    }
+}
+
+/// A minimal ExtensionMulti: no arguments, takes two children and exposes one
+/// reference-style output column from each (`_ => $0, $1`).
+#[derive(Clone, PartialEq, Message)]
+pub struct BinaryMerge {}
+
+impl Name for BinaryMerge {
+    const NAME: &'static str = "BinaryMerge";
+    const PACKAGE: &'static str = "test";
+    fn full_name() -> String {
+        "test.BinaryMerge".to_string()
+    }
+    fn type_url() -> String {
+        "type.googleapis.com/test.BinaryMerge".to_string()
+    }
+}
+
+impl Explainable for BinaryMerge {
+    fn name() -> &'static str {
+        "BinaryMerge"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(BinaryMerge {})
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Multi);
+        args.output_columns.push(ExtensionColumn::Reference(0));
+        args.output_columns.push(ExtensionColumn::Reference(1));
+        Ok(args)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionSingle round-trip over a standard Read
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extension_single_over_read_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<PassThroughWrapper>().unwrap();
+
+    let plan_text = r#"=== Plan
+Root[col]
+  ExtensionSingle:PassThrough[_ => $0]
+    Read[my.table => col:i64]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionMulti round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extension_multi_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<BinaryMerge>().unwrap();
+
+    let plan_text = r#"=== Plan
+Root[a, b]
+  ExtensionMulti:BinaryMerge[_ => $0, $1]
+    Read[left => a:i64]
+    Read[right => b:i64]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// Enhancement on a standard relation nested under an ExtensionSingle
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_enhancement_on_read_under_extension_single() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<PassThroughWrapper>().unwrap();
+    registry
+        .register_enhancement::<PartitionHint>()
+        .expect("register_enhancement");
+
+    let plan_text = r#"=== Plan
+Root[col]
+  ExtensionSingle:PassThrough[_ => $0]
+    Read[my.table => col:i64]
+      + Enh:PartitionHint[&HASH]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// Lenient textification for an ExtensionLeaf with an unknown type URL
+// Symmetric to the enhancement leniency tests: if the type URL stored in the
+// proto is not registered at textify time, the node renders with a failure
+// token rather than panicking or omitting the line entirely.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extension_leaf_unknown_type_url_textify_is_lenient() {
+    let mut parse_registry = ExtensionRegistry::new();
+    parse_registry
+        .register_relation::<UserTableConfig>()
+        .unwrap();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  ExtensionLeaf:UserTable[name='customers', version=2, temp=true => id:string, region:string]"#;
+
+    let parser = Parser::new().with_extension_registry(parse_registry);
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    // Textify with an empty registry — the extension type URL is no longer known.
+    let empty_registry = ExtensionRegistry::new();
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &empty_registry);
+
+    assert!(
+        formatted.contains("Root["),
+        "expected Root in output, got:\n{formatted}"
+    );
+    // The ExtensionLeaf line should contain a failure token.
+    assert!(
+        formatted.contains("ExtensionLeaf[!{"),
+        "expected failure token in ExtensionLeaf output, got:\n{formatted}"
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one format error for unknown extension type URL"
+    );
 }

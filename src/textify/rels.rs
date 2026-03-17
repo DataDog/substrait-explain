@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Debug;
 
 use prost::{Message, UnknownEnumValue};
+use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -64,34 +65,9 @@ impl Textify for Rel {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let relation = Relation::from_rel(self, ctx);
-        let child_scope = ctx.push_indent();
-        // Write the header line first (e.g. `Filter[$0 => $0]`).
-        relation.write_header(ctx, w)?;
-        // Advanced extensions are written at child indent, between the header
-        // and the child relations, so they visually attach to this relation. 
-        if let Some(adv_ext) = get_advanced_extension(self) {
-            textify_advanced_extension(&child_scope, w, adv_ext)?;
-        }
-        // Children follow, also at child indent.
-        relation.write_children(ctx, w)?;
-        Ok(())
-    }
-}
-
-/// Return a reference to the `AdvancedExtension` on the given [`Rel`], if any.
-///
-/// Covers all standard relation types that carry `advanced_extension` directly.
-fn get_advanced_extension(rel: &Rel) -> Option<&substrait::proto::extensions::AdvancedExtension> {
-    match &rel.rel_type {
-        Some(RelType::Read(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Filter(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Project(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Aggregate(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Sort(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Fetch(r)) => r.advanced_extension.as_ref(),
-        Some(RelType::Join(r)) => r.advanced_extension.as_ref(),
-        _ => None,
+        // delegates to `Relation` which carries `advanced_extension`, so the full
+        // header → enhancement → children sequence is handled uniformly there.
+        Relation::from_rel(self, ctx).textify(ctx, w)
     }
 }
 
@@ -301,6 +277,12 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    /// The advanced extension (enhancement and/or optimizations) attached to
+    /// this relation, if any.  Mirrors the `advanced_extension` field carried
+    /// by standard relation types in the protobuf (Read, Filter, Project, etc...)
+    ///  Extension relations (`ExtensionLeaf`, `ExtensionSingle`, `ExtensionMulti`)
+    /// do not carry this field and always set it to `None`.
+    pub advanced_extension: Option<&'a AdvancedExtension>,
     /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
@@ -312,6 +294,13 @@ impl Textify for Relation<'_> {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         self.write_header(ctx, w)?;
+        // Emit any enhancement / optimizations between the header line and the
+        // child relations, indented one level deeper than this relation — the
+        // same position they occupy in the text format when parsed.
+        if let Some(adv_ext) = self.advanced_extension {
+            let child_scope = ctx.push_indent();
+            textify_advanced_extension(&child_scope, w, adv_ext)?;
+        }
         self.write_children(ctx, w)?;
         Ok(())
     }
@@ -417,6 +406,7 @@ impl<'a> Relation<'a> {
             }),
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children: vec![],
         }
     }
@@ -487,6 +477,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -506,6 +497,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -589,6 +581,10 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments { positional, named }),
                     columns,
                     emit: None,
+                    // Extension relations use `detail` rather than
+                    // `advanced_extension`; the field does not exist on these
+                    // proto types.
+                    advanced_extension: None,
                     children,
                 }
             }
@@ -603,6 +599,7 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
+                    advanced_extension: None,
                     children,
                 }
             }
@@ -687,6 +684,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -794,6 +792,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -850,6 +849,7 @@ impl<'a> Relation<'a> {
             }),
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -960,6 +960,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }

@@ -5,12 +5,11 @@
 
 use substrait::proto::plan_rel;
 use substrait::proto::rel::RelType;
-use substrait_explain::extensions::registry::ExtensionError;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
-use substrait_explain::format_with_registry;
+use substrait_explain::extensions::registry::ExtensionError;
 use substrait_explain::parser::Parser;
-use substrait_explain::FormatError;
+use substrait_explain::{FormatError, format_with_registry};
 
 fn make_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
@@ -495,11 +494,18 @@ Root[result]
     );
 
     // Exactly one FormatError must have been collected.
-    assert_eq!(errors.len(), 1, "expected exactly one FormatError, got: {errors:?}");
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one FormatError, got: {errors:?}"
+    );
 
     // The error must be an extension-not-found error.
     assert!(
-        matches!(&errors[0], FormatError::Extension(ExtensionError::NotFound { .. })),
+        matches!(
+            &errors[0],
+            FormatError::Extension(ExtensionError::NotFound { .. })
+        ),
         "expected FormatError::Extension(ExtensionError::NotFound {{ .. }}), got: {:?}",
         errors[0]
     );
@@ -614,6 +620,216 @@ Root[result]
     // --- round-trip ---
     let (formatted, errors) =
         substrait_explain::format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+// ---------------------------------------------------------------------------
+// Enhancement on all remaining standard relation types
+//
+// Sort, Filter, and Read are covered by earlier tests.  These four verify that
+// from_project, from_fetch, from_aggregate, and from_join each correctly
+// populate `advanced_extension` on the `Relation` they build, and that
+// `Textify for Relation` subsequently emits the line.
+// ---------------------------------------------------------------------------
+
+/// Enhancement round-trip on a Project relation.
+#[test]
+fn test_enhancement_on_project_roundtrip() {
+    let registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[col]
+  Project[$0]
+    + Enh:PartitionHint[&HASH]
+    Read[my.table => col:i64]"#;
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement round-trip on a Fetch relation.
+#[test]
+fn test_enhancement_on_fetch_roundtrip() {
+    let registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[col]
+  Fetch[limit=5 => $0]
+    + Enh:PartitionHint[&HASH]
+    Read[my.table => col:i64]"#;
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement round-trip on an Aggregate relation.
+///
+/// Uses a group-by-only aggregate (no measures) to avoid requiring a function
+/// like `sum` to be registered in SimpleExtensions.
+#[test]
+fn test_enhancement_on_aggregate_roundtrip() {
+    let registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[col]
+  Aggregate[$0 => $0]
+    + Enh:PartitionHint[&HASH]
+    Read[my.table => col:i64]"#;
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement round-trip on a Join relation (two child relations).
+///
+/// Uses a LeftSemi join with a plain field-reference condition to avoid
+/// requiring `eq` to be registered in SimpleExtensions.  The enhancement
+/// must appear before both child reads in the text format.
+#[test]
+fn test_enhancement_on_join_roundtrip() {
+    let registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[id, name]
+  Join[&LeftSemi, $0 => $0, $1]
+    + Enh:PartitionHint[&HASH]
+    Read[users => id:i64, name:string]
+    Read[orders => user_id:i64, amount:i32]"#;
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Optimization on a Read that is a grandchild of Root.
+///
+/// Before the fix, the `+ Opt:` line was silently dropped when the Read went
+/// through `write_children` → `Textify for Relation`.
+#[test]
+fn test_optimization_on_nested_read_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_optimization::<opt_fixture::PlanHint>()
+        .expect("register_optimization");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+      + Opt:PlanHint[hint='index']"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Multiple optimizations on a nested Read (grandchild of Root).
+///
+/// `test_multiple_optimizations_roundtrip` covers the direct-child-of-Root
+/// case (which goes through `Textify for Rel`).  This covers depth ≥ 2,
+/// where each opt line must survive `write_children` → `Textify for Relation`.
+#[test]
+fn test_multiple_optimizations_on_nested_read_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_optimization::<opt_fixture::PlanHint>()
+        .expect("register_optimization");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+      + Opt:PlanHint[hint='use_index']
+      + Opt:PlanHint[hint='parallel']"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement and optimization together on a nested Read.
+#[test]
+fn test_enhancement_and_optimization_on_nested_relation_roundtrip() {
+    let mut registry = make_registry();
+    registry
+        .register_optimization::<opt_fixture::PlanHint>()
+        .expect("register_optimization");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+      + Enh:PartitionHint[&HASH]
+      + Opt:PlanHint[hint='index']"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement on a Read that is a grandchild of Root (Read → Filter → Root).
+#[test]
+fn test_enhancement_on_nested_read_roundtrip() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Filter[$0 => $0]
+    Read[my.table => col:i64]
+      + Enh:PartitionHint[&HASH]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement on a Filter that is a grandchild of Root (Filter → Sort → Root).
+#[test]
+fn test_enhancement_on_nested_filter_roundtrip() {
+    let registry = make_registry();
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Sort[($0, &AscNullsFirst) => $0]
+    Filter[$0 => $0]
+      + Enh:PartitionHint[&RANGE]
+      Read[my.table => col:i64]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Enhancement on a Read at depth 3 from Root (Root → Sort → Filter → Read).
+#[test]
+fn test_enhancement_depth_three_nesting_roundtrip() {
+    let registry = make_registry();
+    let plan_text = r#"=== Plan
+Root[result]
+  Sort[($0, &AscNullsFirst) => $0]
+    Filter[$0 => $0]
+      Read[my.table => col:i64]
+        + Enh:PartitionHint[&RANGE]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
     assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
     assert_eq!(formatted.trim(), plan_text.trim());
 }
