@@ -1,4 +1,11 @@
 [workspace]
+# Disable git tags and GitHub Releases. Creating tags requires contents:write,
+# and any CI workflow with that permission can tag arbitrary commits — including
+# unreviewed code on feature branches, bypassing branch protection entirely.
+# Since crates.io is the actual distribution channel, we avoid the risk by
+# skipping GitHub Releases and relying on crates.io version history instead.
+git_tag_enable = false
+git_release_enable = false
 pr_labels = ["release"]
 
 [[package]]

@@ -43,21 +43,25 @@ Review the PR like any other:
 - Optionally edit the changelog before merging if you want to reword anything
 - Merge when satisfied
 
-### 4. CI: release-plz publishes the release
+### 4. CI: release-plz publishes to crates.io
 
 On the push to `main` from the merged Release PR, the **Release** job runs. It:
 
 - Compares the `Cargo.toml` version to the latest version on crates.io
-- Since the version is now newer, it:
-  - Runs `cargo publish` to publish to **crates.io**
-  - Creates a **git tag** (e.g., `v0.3.0`)
-  - Creates a **GitHub Release** with the changelog entry as the release notes
+- Since the version is now newer, runs `cargo publish` to publish to **crates.io**
 
-### 5. Done!
+### 5. (Optional) Tag and release on GitHub
 
-The new version is live on [crates.io](https://crates.io/crates/substrait-explain)
-and visible on the [GitHub Releases](https://github.com/DataDog/substrait-explain/releases)
-page.
+Requires maintainer permissions (CI tokens cannot create tags due to
+org-wide tag protection rulesets).
+
+```bash
+just release-tag
+```
+
+### 6. Done!
+
+The new version is live on [crates.io](https://crates.io/crates/substrait-explain).
 
 ### What if I just merge docs/CI/chore commits?
 
@@ -88,11 +92,9 @@ cargo publish --dry-run
 # Publish to crates.io
 cargo publish
 
-# Create a git tag
-git tag -a v<VERSION> -m "Release v<VERSION>"
+# Optionally tag and release (requires maintainer permissions)
+git tag v<VERSION>
 git push origin v<VERSION>
-
-# Create a GitHub release
 gh release create v<VERSION> --title "v<VERSION>" --notes "See CHANGELOG.md"
 ```
 
@@ -100,7 +102,7 @@ gh release create v<VERSION> --title "v<VERSION>" --notes "See CHANGELOG.md"
 
 | File                                | Purpose                                                  |
 | ----------------------------------- | -------------------------------------------------------- |
-| `.github/workflows/release-plz.yml` | GitHub Actions workflow (publish + GitHub Release)       |
+| `.github/workflows/release-plz.yml` | GitHub Actions workflow (publish to crates.io)           |
 | `release-plz.toml`                  | release-plz behavior and changelog format                |
 | `CHANGELOG.md`                      | Auto-updated changelog                                   |
 
