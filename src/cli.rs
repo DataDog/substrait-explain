@@ -191,6 +191,7 @@ impl Cli {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_convert_with_io<R: Read, W: Write>(
         &self,
         reader: R,
