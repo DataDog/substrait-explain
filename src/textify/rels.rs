@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Debug;
 
 use prost::{Message, UnknownEnumValue};
+use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -12,13 +13,17 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct,
-    PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
+    AggregateFunction, AggregateRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
+    ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel,
+    Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
 };
 
 use super::expressions::Reference;
+use super::extensions::textify_advanced_extension;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
+use crate::extensions::any::AnyRef;
+use crate::extensions::{ExtensionColumn, ExtensionValue};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -60,17 +65,9 @@ impl Textify for Rel {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Handle extension relations directly to use registry-aware implementations
-        match &self.rel_type {
-            Some(substrait::proto::rel::RelType::ExtensionLeaf(ext)) => ext.textify(ctx, w),
-            Some(substrait::proto::rel::RelType::ExtensionSingle(ext)) => ext.textify(ctx, w),
-            Some(substrait::proto::rel::RelType::ExtensionMulti(ext)) => ext.textify(ctx, w),
-            _ => {
-                // For non-extension relations, use the old Relation conversion
-                let relation = Relation::from(self);
-                relation.textify(ctx, w)
-            }
-        }
+        // delegates to `Relation` which carries `advanced_extension`, so the full
+        // header → enhancement → children sequence is handled uniformly there.
+        Relation::from_rel(self, ctx).textify(ctx, w)
     }
 }
 
@@ -85,7 +82,7 @@ pub trait ValueEnum {
 
 #[derive(Debug, Clone)]
 pub struct NamedArg<'a> {
-    pub name: &'a str,
+    pub name: Cow<'a, str>,
     pub value: Value<'a>,
 }
 
@@ -107,6 +104,10 @@ pub enum Value<'a> {
     Integer(i64),
     Float(f64),
     Boolean(bool),
+    /// A decoded extension argument value.
+    ExtValue(ExtensionValue),
+    /// A decoded extension output column.
+    ExtColumn(ExtensionColumn),
 }
 
 impl<'a> Value<'a> {
@@ -150,6 +151,8 @@ impl<'a> Textify for Value<'a> {
             Value::EmptyGroup => write!(w, "_"),
             Value::Float(f) => write!(w, "{f}"),
             Value::Boolean(b) => write!(w, "{b}"),
+            Value::ExtValue(ev) => ev.textify(ctx, w),
+            Value::ExtColumn(ec) => ec.textify(ctx, w),
         }
     }
 }
@@ -259,7 +262,7 @@ impl<'a> Textify for Arguments<'a> {
 }
 
 pub struct Relation<'a> {
-    pub name: &'a str,
+    pub name: Cow<'a, str>,
     /// Arguments to the relation, if any.
     ///
     /// - `None` means this relation does not take arguments, and the argument
@@ -274,6 +277,12 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    /// The advanced extension (enhancement and/or optimizations) attached to
+    /// this relation, if any.  Mirrors the `advanced_extension` field carried
+    /// by standard relation types in the protobuf (Read, Filter, Project, etc...)
+    ///  Extension relations (`ExtensionLeaf`, `ExtensionSingle`, `ExtensionMulti`)
+    /// do not carry this field and always set it to `None`.
+    pub advanced_extension: Option<&'a AdvancedExtension>,
     /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
@@ -284,19 +293,46 @@ impl Textify for Relation<'_> {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        self.write_header(ctx, w)?;
+        // Emit any enhancement / optimizations between the header line and the
+        // child relations, indented one level deeper than this relation — the
+        // same position they occupy in the text format when parsed.
+        if let Some(adv_ext) = self.advanced_extension {
+            let child_scope = ctx.push_indent();
+            textify_advanced_extension(&child_scope, w, adv_ext)?;
+        }
+        self.write_children(ctx, w)?;
+        Ok(())
+    }
+}
+
+impl Relation<'_> {
+    /// Write the single header line for this relation, e.g. `Filter[$0 => $0]`.
+    /// Does not write a trailing newline; callers are responsible for any
+    /// newline that follows (either from adv_ext or from the next child).
+    pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
-        let name = self.name;
+        let name = &self.name;
         let cols = ctx.display(&cols);
         match &self.arguments {
             None => {
-                write!(w, "{indent}{name}[{cols}]")?;
+                write!(w, "{indent}{name}[{cols}]")
             }
             Some(args) => {
                 let args = ctx.display(args);
-                write!(w, "{indent}{name}[{args} => {cols}]")?;
+                if self.columns.is_empty() && self.emit.is_none() {
+                    write!(w, "{indent}{name}[{args}]")
+                } else {
+                    write!(w, "{indent}{name}[{args} => {cols}]")
+                }
             }
         }
+    }
+
+    /// Write each child relation at one indent level deeper than `ctx`.
+    /// Each child is preceded by a newline.
+    pub fn write_children<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let child_scope = ctx.push_indent();
         for child in self.children.iter().flatten() {
             writeln!(w)?;
@@ -341,8 +377,8 @@ pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], PlanError> {
     }
 }
 
-impl<'a> From<&'a ReadRel> for Relation<'a> {
-    fn from(rel: &'a ReadRel) -> Self {
+impl<'a> Relation<'a> {
+    fn from_read<S: Scope>(rel: &'a ReadRel, _ctx: &S) -> Self {
         let name = get_table_name(rel.read_type.as_ref());
         let table_name: Value = match name {
             Ok(n) => Value::TableName(n.iter().map(|n| Name(n)).collect()),
@@ -363,13 +399,14 @@ impl<'a> From<&'a ReadRel> for Relation<'a> {
         let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
 
         Relation {
-            name: "Read",
+            name: Cow::Borrowed("Read"),
             arguments: Some(Arguments {
                 positional: vec![table_name],
                 named: vec![],
             }),
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children: vec![],
         }
     }
@@ -395,14 +432,17 @@ impl<'a> Relation<'a> {
     /// Convert a vector of relation references into their structured form.
     ///
     /// Returns a list of children (with None for ones missing), and a count of input columns.
-    pub fn convert_children(refs: Vec<Option<&'a Rel>>) -> (Vec<Option<Relation<'a>>>, usize) {
+    pub fn convert_children<S: Scope>(
+        refs: Vec<Option<&'a Rel>>,
+        ctx: &S,
+    ) -> (Vec<Option<Relation<'a>>>, usize) {
         let mut children = vec![];
         let mut inputs = 0;
 
         for maybe_rel in refs {
             match maybe_rel {
                 Some(rel) => {
-                    let child = Relation::from(rel);
+                    let child = Relation::from_rel(rel, ctx);
                     inputs += child.emitted();
                     children.push(Some(child));
                 }
@@ -414,8 +454,8 @@ impl<'a> Relation<'a> {
     }
 }
 
-impl<'a> From<&'a FilterRel> for Relation<'a> {
-    fn from(rel: &'a FilterRel) -> Self {
+impl<'a> Relation<'a> {
+    fn from_filter<S: Scope>(rel: &'a FilterRel, ctx: &S) -> Self {
         let condition = rel
             .condition
             .as_ref()
@@ -429,61 +469,143 @@ impl<'a> From<&'a FilterRel> for Relation<'a> {
             named: vec![],
         });
         let emit = get_emit(rel.common.as_ref());
-        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);
+        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
 
         Relation {
-            name: "Filter",
+            name: Cow::Borrowed("Filter"),
             arguments,
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
-}
 
-impl<'a> From<&'a ProjectRel> for Relation<'a> {
-    fn from(rel: &'a ProjectRel) -> Self {
-        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);
-        let expressions = rel.expressions.iter().map(Value::Expression);
-        let mut columns: Vec<Value> = (0..columns).map(|i| Value::Reference(i as i32)).collect();
-        columns.extend(expressions);
+    fn from_project<S: Scope>(rel: &'a ProjectRel, ctx: &S) -> Self {
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let mut columns: Vec<Value> = vec![];
+        for i in 0..input_columns {
+            columns.push(Value::Reference(i as i32));
+        }
+        for expr in &rel.expressions {
+            columns.push(Value::Expression(expr));
+        }
 
         Relation {
-            name: "Project",
+            name: Cow::Borrowed("Project"),
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
-}
 
-impl<'a> From<&'a Rel> for Relation<'a> {
-    fn from(rel: &'a Rel) -> Self {
+    pub fn from_rel<S: Scope>(rel: &'a Rel, ctx: &S) -> Self {
         match rel.rel_type.as_ref() {
-            Some(RelType::Read(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Filter(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Project(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Aggregate(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Sort(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Fetch(r)) => Relation::from(r.as_ref()),
-            Some(RelType::Join(r)) => Relation::from(r.as_ref()),
-            Some(RelType::ExtensionLeaf(_)) => {
-                unreachable!("Extension relations should use Textify trait directly")
-            }
-            Some(RelType::ExtensionSingle(_)) => {
-                unreachable!("Extension relations should use Textify trait directly")
-            }
-            Some(RelType::ExtensionMulti(_)) => {
-                unreachable!("Extension relations should use Textify trait directly")
-            }
+            Some(RelType::Read(r)) => Relation::from_read(r, ctx),
+            Some(RelType::Filter(r)) => Relation::from_filter(r, ctx),
+            Some(RelType::Project(r)) => Relation::from_project(r, ctx),
+            Some(RelType::Aggregate(r)) => Relation::from_aggregate(r, ctx),
+            Some(RelType::Sort(r)) => Relation::from_sort(r, ctx),
+            Some(RelType::Fetch(r)) => Relation::from_fetch(r, ctx),
+            Some(RelType::Join(r)) => Relation::from_join(r, ctx),
+            Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
+            Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
+            Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
             _ => todo!(),
         }
     }
-}
 
-impl<'a> From<&'a AggregateRel> for Relation<'a> {
+    fn from_extension_leaf<S: Scope>(rel: &'a ExtensionLeafRel, ctx: &S) -> Self {
+        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
+        let decoded = match detail_ref {
+            Some(d) => ctx.extension_registry().decode(d),
+            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+        };
+        Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
+    }
+
+    fn from_extension_single<S: Scope>(rel: &'a ExtensionSingleRel, ctx: &S) -> Self {
+        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
+        let decoded = match detail_ref {
+            Some(d) => ctx.extension_registry().decode(d),
+            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+        };
+        Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
+    }
+
+    fn from_extension_multi<S: Scope>(rel: &'a ExtensionMultiRel, ctx: &S) -> Self {
+        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
+        let decoded = match detail_ref {
+            Some(d) => ctx.extension_registry().decode(d),
+            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+        };
+        let mut child_refs: Vec<Option<&'a Rel>> = vec![];
+        for input in &rel.inputs {
+            child_refs.push(Some(input));
+        }
+        Relation::from_extension("ExtensionMulti", decoded, child_refs, ctx)
+    }
+
+    fn from_extension<S: Scope>(
+        ext_type: &'static str,
+        decoded: Result<
+            (String, crate::extensions::ExtensionArgs),
+            crate::extensions::registry::ExtensionError,
+        >,
+        child_refs: Vec<Option<&'a Rel>>,
+        ctx: &S,
+    ) -> Self {
+        match decoded {
+            Ok((name, args)) => {
+                let (children, _) = Relation::convert_children(child_refs, ctx);
+                let mut positional = vec![];
+                for value in args.positional {
+                    positional.push(Value::ExtValue(value));
+                }
+                let mut named = vec![];
+                for (key, value) in args.named {
+                    named.push(NamedArg {
+                        name: Cow::Owned(key),
+                        value: Value::ExtValue(value),
+                    });
+                }
+                let mut columns = vec![];
+                for col in args.output_columns {
+                    columns.push(Value::ExtColumn(col));
+                }
+                Relation {
+                    name: Cow::Owned(format!("{}:{}", ext_type, name)),
+                    arguments: Some(Arguments { positional, named }),
+                    columns,
+                    emit: None,
+                    // Extension relations use `detail` rather than
+                    // `advanced_extension`; the field does not exist on these
+                    // proto types.
+                    advanced_extension: None,
+                    children,
+                }
+            }
+            Err(error) => {
+                let (children, _) = Relation::convert_children(child_refs, ctx);
+                Relation {
+                    name: Cow::Borrowed(ext_type),
+                    arguments: None,
+                    columns: vec![Value::Missing(PlanError::invalid(
+                        "extension",
+                        None::<&str>,
+                        error.to_string(),
+                    ))],
+                    emit: None,
+                    advanced_extension: None,
+                    children,
+                }
+            }
+        }
+    }
+
     /// Convert an AggregateRel to a Relation for textification.
     ///
     /// The conversion follows this logic:
@@ -493,7 +615,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
     ///    - Then: Aggregate function measures (Value::AggregateFunction)
     /// 3. Emit: Uses the relation's emit mapping to select which outputs to display
     /// 4. Children: The input relation
-    fn from(rel: &'a AggregateRel) -> Self {
+    fn from_aggregate<S: Scope>(rel: &'a AggregateRel, ctx: &S) -> Self {
         let mut grouping_sets: Vec<Vec<Value>> = vec![]; // the Groupings in the Aggregate
         let expression_list: Vec<Value>; // grouping_expressions defined on Aggregate
 
@@ -505,7 +627,7 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
             && !rel.groupings.is_empty()
             && !rel.groupings[0].grouping_expressions.is_empty()
         {
-            (expression_list, grouping_sets) = get_grouping_sets(rel);
+            (expression_list, grouping_sets) = Relation::get_grouping_sets(rel);
         } else {
             expression_list = rel
                 .grouping_expressions
@@ -547,57 +669,56 @@ impl<'a> From<&'a AggregateRel> for Relation<'a> {
         // The columns are the direct outputs of this relation (before emit)
         let mut all_outputs: Vec<Value> = expression_list;
 
-        // Add all measures (aggregate functions) These are indexed after the group-by fields
+        // Then, add all measures (aggregate functions)
+        // These are indexed after the group-by fields
         for m in &rel.measures {
             if let Some(agg_fn) = m.measure.as_ref() {
                 all_outputs.push(Value::AggregateFunction(agg_fn));
             }
         }
         let emit = get_emit(rel.common.as_ref());
+        let (children, _) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+
         Relation {
-            name: "Aggregate",
+            name: Cow::Borrowed("Aggregate"),
             arguments,
             columns: all_outputs,
             emit,
-            children: rel
-                .input
-                .as_ref()
-                .map(|c| Some(Relation::from(c.as_ref())))
-                .into_iter()
-                .collect(),
+            advanced_extension: rel.advanced_extension.as_ref(),
+            children,
         }
     }
-}
 
-fn get_grouping_sets<'a>(rel: &'a AggregateRel) -> (Vec<Value<'a>>, Vec<Vec<Value<'a>>>) {
-    let mut grouping_sets: Vec<Vec<Value>> = vec![];
-    let mut expression_list: Vec<Value> = Vec::new();
+    fn get_grouping_sets(rel: &'a AggregateRel) -> (Vec<Value<'a>>, Vec<Vec<Value<'a>>>) {
+        let mut grouping_sets: Vec<Vec<Value>> = vec![];
+        let mut expression_list: Vec<Value> = Vec::new();
 
-    // groupings might have the same expressions in their set so we use a map to get unique expressions
-    let mut expression_index_map = HashMap::new();
-    let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
+        // groupings might have the same expressions in their set so we use a map to get unique expressions
+        let mut expression_index_map = HashMap::new();
+        let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
 
-    for group in &rel.groupings {
-        let mut grouping_set: Vec<Value> = vec![];
-        #[allow(deprecated)]
-        for exp in &group.grouping_expressions {
-            // TODO: use a better key here than encoding to bytes.
-            // Ideally, substrait-rs would support `PartialEq` and `Hash`,
-            // but as there isn't an easy way to do that now, we'll skip.
-            let key = exp.encode_to_vec();
-            expression_index_map.entry(key.clone()).or_insert_with(|| {
-                let value = Value::Expression(exp);
-                expression_list.push(value); // new unique expression found
-                // mapping the byte encoded expression to its index in the group_expression list
-                let index = i;
-                i += 1;
-                index // is expression returned by this closure and inserted into map
-            });
-            grouping_set.push(Value::Reference(expression_index_map[&key]));
+        for group in &rel.groupings {
+            let mut grouping_set: Vec<Value> = vec![];
+            #[allow(deprecated)]
+            for exp in &group.grouping_expressions {
+                // TODO: use a better key here than encoding to bytes.
+                // Ideally, substrait-rs would support `PartialEq` and `Hash`,
+                // but as there isn't an easy way to do that now, we'll skip.
+                let key = exp.encode_to_vec();
+                expression_index_map.entry(key.clone()).or_insert_with(|| {
+                    let value = Value::Expression(exp);
+                    expression_list.push(value); // new unique expression found
+                    // mapping the byte encoded expression to its index in the group_expression list
+                    let index = i;
+                    i += 1;
+                    index // is expression returned by this closure and inserted into map
+                });
+                grouping_set.push(Value::Reference(expression_index_map[&key]));
+            }
+            grouping_sets.push(grouping_set);
         }
-        grouping_sets.push(grouping_set);
+        (expression_list, grouping_sets)
     }
-    (expression_list, grouping_sets)
 }
 
 impl Textify for RelRoot {
@@ -649,42 +770,47 @@ impl Textify for PlanRel {
     }
 }
 
-impl<'a> From<&'a SortRel> for Relation<'a> {
-    fn from(rel: &'a SortRel) -> Self {
-        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()]);
-        let positional = rel.sorts.iter().map(Value::from).collect::<Vec<_>>();
+impl<'a> Relation<'a> {
+    fn from_sort<S: Scope>(rel: &'a SortRel, ctx: &S) -> Self {
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let mut positional = vec![];
+        for sort_field in &rel.sorts {
+            positional.push(Value::from(sort_field));
+        }
         let arguments = Some(Arguments {
             positional,
             named: vec![],
         });
         // The columns are the direct outputs of this relation (before emit)
-        let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
+        let mut col_values = vec![];
+        for i in 0..input_columns {
+            col_values.push(Value::Reference(i as i32));
+        }
         let emit = get_emit(rel.common.as_ref());
         Relation {
-            name: "Sort",
+            name: Cow::Borrowed("Sort"),
             arguments,
-            columns,
+            columns: col_values,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
-}
 
-impl<'a> From<&'a FetchRel> for Relation<'a> {
-    fn from(rel: &'a FetchRel) -> Self {
-        let (children, _columns) = Relation::convert_children(vec![rel.input.as_deref()]);
-        let mut named_args = Vec::new();
+    fn from_fetch<S: Scope>(rel: &'a FetchRel, ctx: &S) -> Self {
+        let (children, _) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let mut named_args: Vec<NamedArg> = vec![];
         match &rel.count_mode {
             Some(CountMode::CountExpr(expr)) => {
                 named_args.push(NamedArg {
-                    name: "limit",
+                    name: Cow::Borrowed("limit"),
                     value: Value::Expression(expr),
                 });
             }
             #[allow(deprecated)]
             Some(CountMode::Count(val)) => {
                 named_args.push(NamedArg {
-                    name: "limit",
+                    name: Cow::Borrowed("limit"),
                     value: Value::Integer(*val),
                 });
             }
@@ -694,14 +820,14 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
             match offset {
                 substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr) => {
                     named_args.push(NamedArg {
-                        name: "offset",
+                        name: Cow::Borrowed("offset"),
                         value: Value::Expression(expr),
                     });
                 }
                 #[allow(deprecated)]
                 substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
-                        name: "offset",
+                        name: Cow::Borrowed("offset"),
                         value: Value::Integer(*val),
                     });
                 }
@@ -709,22 +835,21 @@ impl<'a> From<&'a FetchRel> for Relation<'a> {
         }
 
         let emit = get_emit(rel.common.as_ref());
-        let columns = match emit {
-            Some(EmitKind::Emit(e)) => e
-                .output_mapping
-                .iter()
-                .map(|&i| Value::Reference(i))
-                .collect(),
-            _ => vec![],
-        };
+        let mut columns = vec![];
+        if let Some(EmitKind::Emit(e)) = emit {
+            for &i in &e.output_mapping {
+                columns.push(Value::Reference(i));
+            }
+        }
         Relation {
-            name: "Fetch",
+            name: Cow::Borrowed("Fetch"),
             arguments: Some(Arguments {
                 positional: vec![],
                 named: named_args,
             }),
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -766,10 +891,10 @@ fn join_output_columns(
         .collect()
 }
 
-impl<'a> From<&'a JoinRel> for Relation<'a> {
-    fn from(rel: &'a JoinRel) -> Self {
+impl<'a> Relation<'a> {
+    fn from_join<S: Scope>(rel: &'a JoinRel, ctx: &S) -> Self {
         let (children, _total_columns) =
-            Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()]);
+            Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()], ctx);
 
         // convert_children should preserve input vector length
         assert_eq!(
@@ -831,10 +956,11 @@ impl<'a> From<&'a JoinRel> for Relation<'a> {
         let columns = join_output_columns(join_type, left_columns, right_columns);
 
         Relation {
-            name: "Join",
+            name: Cow::Borrowed("Join"),
             arguments,
             columns,
             emit,
+            advanced_extension: rel.advanced_extension.as_ref(),
             children,
         }
     }
@@ -1013,8 +1139,9 @@ mod tests {
             })),
         };
 
-        let rel = Relation::from(&read_rel);
-
+        let rel = Rel {
+            rel_type: Some(RelType::Read(Box::new(read_rel))),
+        };
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(
@@ -1101,8 +1228,6 @@ mod tests {
             rel_type: Some(RelType::Filter(Box::new(filter_rel))),
         };
 
-        let rel = Relation::from(&rel);
-
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
@@ -1166,8 +1291,10 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         let aggregate_rel = create_aggregate_rel(grouping_expressions, vec![], measures, common);
 
-        let relation = Relation::from(&aggregate_rel);
-        let (result, errors) = ctx.textify(&relation);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         // Expected: Aggregate[_ => sum($1), count($1)] we chose to emit only measures
@@ -1200,8 +1327,10 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         let aggregate_rel = create_aggregate_rel(vec![], grouping_sets, vec![], None);
 
-        let relation = Relation::from(&aggregate_rel);
-        let (result, errors) = ctx.textify(&relation);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(result.contains("Aggregate[($0), ($0, $1) => $0, $1]"));
@@ -1240,8 +1369,10 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         let aggregate_rel = create_aggregate_rel(vec![], grouping_sets, measures, None);
 
-        let relation = Relation::from(&aggregate_rel);
-        let (result, errors) = ctx.textify(&relation);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(result.contains("($0), ($0, $1) => $0, $1, count($2)"));
@@ -1304,8 +1435,10 @@ Filter[gt($0, 10:i32) => $0, $1]
         let aggregate_rel =
             create_aggregate_rel(grouping_expressions, grouping_sets, measures, None);
 
-        let relation = Relation::from(&aggregate_rel);
-        let (result, errors) = ctx.textify(&relation);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(
@@ -1333,11 +1466,11 @@ Filter[gt($0, 10:i32) => $0, $1]
             positional: vec![],
             named: vec![
                 NamedArg {
-                    name: "limit",
+                    name: Cow::Borrowed("limit"),
                     value: Value::Integer(10),
                 },
                 NamedArg {
-                    name: "offset",
+                    name: Cow::Borrowed("offset"),
                     value: Value::Integer(5),
                 },
             ],
@@ -1366,8 +1499,10 @@ Filter[gt($0, 10:i32) => $0, $1]
             advanced_extension: None,
         };
 
-        let relation = Relation::from(&join_rel);
-        let (result, errors) = ctx.textify(&relation);
+        let rel = Rel {
+            rel_type: Some(RelType::Join(Box::new(join_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
 
         // Should contain error for unknown join type but still show condition and columns
         assert!(!errors.is_empty(), "Expected errors for unknown join type");
@@ -1387,7 +1522,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let args = Arguments {
             positional: vec![Value::Integer(1)],
             named: vec![NamedArg {
-                name: "foo",
+                name: "foo".into(),
                 value: Value::Integer(2),
             }],
         };
@@ -1412,7 +1547,7 @@ Filter[gt($0, 10:i32) => $0, $1]
     fn test_named_arg_textify_error_token() {
         let ctx = TestContext::new();
         let named_arg = NamedArg {
-            name: "foo",
+            name: "foo".into(),
             value: Value::Missing(PlanError::invalid(
                 "my_enum",
                 Some(Cow::Borrowed("my_enum")),

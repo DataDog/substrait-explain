@@ -4,6 +4,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use super::{ParsePair, Rule, RuleIter, unescape_string, unwrap_single_pair};
+use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
@@ -262,6 +263,11 @@ impl ParsePair for ExtensionValue {
         let inner = unwrap_single_pair(pair); // Extract the actual content
 
         match inner.as_rule() {
+            Rule::enum_value => {
+                // Strip leading '&' and store the identifier
+                let s = inner.as_str().trim_start_matches('&').to_string();
+                ExtensionValue::Enum(s)
+            }
             Rule::reference => {
                 // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
@@ -388,49 +394,121 @@ impl ParsePair for ExtensionInvocation {
         let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
         let mut args = ExtensionArgs::new(relation_type);
 
-        // Parse optional arguments and columns
-        for inner_pair in iter {
-            match inner_pair.as_rule() {
-                Rule::extension_arguments => {
-                    // Parse positional arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_argument {
-                            let value = ExtensionValue::parse_pair(arg_pair);
-                            args.positional.push(value);
-                        }
-                    }
-                }
-                Rule::extension_named_arguments => {
-                    // Parse named arguments
-                    for arg_pair in inner_pair.into_inner() {
-                        if arg_pair.as_rule() == Rule::extension_named_argument {
-                            let mut arg_iter = arg_pair.into_inner();
-                            let name_pair = arg_iter.next().unwrap();
-                            let value_pair = arg_iter.next().unwrap();
+        // Parse optional arguments
+        let ext_arguments = iter.next().unwrap();
+        match ext_arguments.as_rule() {
+            Rule::arguments => {
+                arguments_rule_parsing(ext_arguments, &mut args);
+            }
+            r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
+        }
 
-                            let name = Name::parse_pair(name_pair).0.to_string();
-                            let value = ExtensionValue::parse_pair(value_pair);
-                            args.named.insert(name, value);
-                        }
-                    }
-                }
+        // parse optional output columns
+        let extension_columns = iter.next();
+        if let Some(value) = extension_columns {
+            match value.as_rule() {
                 Rule::extension_columns => {
-                    // Parse output columns
-                    for col_pair in inner_pair.into_inner() {
+                    for col_pair in value.into_inner() {
                         if col_pair.as_rule() == Rule::extension_column {
                             let column = ExtensionColumn::parse_pair(col_pair);
                             args.output_columns.push(column);
                         }
                     }
                 }
-                Rule::empty => {} // "_" — no arguments
-                r => panic!("Unexpected rule in ExtensionArgs: {:?}", r),
+                r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
             }
         }
 
         ExtensionInvocation {
             name: custom_name,
             args,
+        }
+    }
+}
+
+/// A parsed `+ Enh:Name[args]` or `+ Opt:Name[args]` line.
+#[derive(Debug, Clone)]
+pub struct AdvExtInvocation {
+    /// Whether this is an enhancement (`ExtensionType::Enhancement`) or
+    /// optimization (`ExtensionType::Optimization`).  The grammar restricts
+    /// the value to those two variants; `ExtensionType::Relation` will never
+    /// appear here.
+    pub ext_type: ExtensionType,
+    pub name: String,
+    pub args: ExtensionArgs,
+}
+
+impl ParsePair for AdvExtInvocation {
+    fn rule() -> Rule {
+        Rule::adv_extension
+    }
+
+    fn message() -> &'static str {
+        "AdvExtInvocation"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        let mut iter = pair.into_inner();
+
+        // First token: adv_ext_type — grammar guarantees "Enh" or "Opt"
+        let type_pair = iter.next().unwrap(); // Grammar guarantees adv_ext_type exists
+        let ext_type = match type_pair.as_str() {
+            "Enh" => ExtensionType::Enhancement,
+            "Opt" => ExtensionType::Optimization,
+            other => unreachable!("Unexpected adv_ext_type: {other}"),
+        };
+
+        // Second token: name
+        let name_pair = iter.next().unwrap();
+        let name = Name::parse_pair(name_pair).0.to_string();
+
+        // Remaining token: arguments — grammar guarantees it is always present
+        // Use Leaf as the relation_type placeholder — adv_extensions don't have children
+        let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
+
+        let arguments_pair = iter.next().unwrap();
+        match arguments_pair.as_rule() {
+            Rule::arguments => {
+                arguments_rule_parsing(arguments_pair, &mut args);
+            }
+            r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+        }
+
+        AdvExtInvocation {
+            ext_type,
+            name,
+            args,
+        }
+    }
+}
+
+fn arguments_rule_parsing(inner_pair: pest::iterators::Pair<'_, Rule>, args: &mut ExtensionArgs) {
+    for arg in inner_pair.into_inner() {
+        match arg.as_rule() {
+            Rule::extension_arguments => {
+                // Parse positional arguments
+                for arg_pair in arg.into_inner() {
+                    if arg_pair.as_rule() == Rule::extension_argument {
+                        args.positional.push(ExtensionValue::parse_pair(arg_pair));
+                    }
+                }
+            }
+            Rule::extension_named_arguments => {
+                for arg_pair in arg.into_inner() {
+                    if arg_pair.as_rule() == Rule::extension_named_argument {
+                        let mut arg_iter = arg_pair.into_inner();
+                        let name_p = arg_iter.next().unwrap();
+                        let value_p = arg_iter.next().unwrap();
+                        let key = Name::parse_pair(name_p).0.to_string();
+                        let val = ExtensionValue::parse_pair(value_p);
+                        args.named.insert(key, val);
+                    }
+                }
+            }
+            Rule::empty => {}
+            r => unreachable!("Unexpected rule in extension args: {r:?}"),
         }
     }
 }
@@ -449,6 +527,8 @@ impl ExtensionRelationType {
         // Validate child count matches relation type
         self.validate_child_count(children.len())?;
 
+        // The output column count is returned alongside the Rel by parse_extension_relation
+        // and flows up the parse tree through Rust return values
         let rel_type = match self {
             ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
                 common: None,

@@ -145,6 +145,9 @@ if_then = {
   "if_then(" ~ sp ~ (if_clause  ~ sp ~ "," ~ sp)+ ~ sp ~ "_" ~ sp ~ "->" ~ sp ~ expression ~ ")"
 }
 
+// Enum value, e.g. &Inner, &CORE, &AscNullsFirst
+enum_value = @{ "&" ~ identifier }
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
 expression = { if_then | function_call | reference | literal }
@@ -190,7 +193,7 @@ table_name = { (name ~ ("." ~ name)*) }
 named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
-relation = {
+planNode = {
     read_relation
   | filter_relation
   | project_relation
@@ -199,12 +202,13 @@ relation = {
   | fetch_relation
   | join_relation
   | extension_relation
+  | adv_extension
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
 top_level_relation = {
     root_relation
-  | relation
+  | planNode
 }
 
 root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
@@ -268,16 +272,16 @@ join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ "
 // - ExtensionLeaf:ParquetScan[path='data/*.parquet', schema='auto' => col1:i32, col2:string]
 // - ExtensionSingle:VectorNormalize[method='l2', dimensions=128 => $0, $1] 
 // - ExtensionMulti:FuzzyJoin[algorithm='lsh', threshold=0.8 => $0, $1, $2, $3]
-extension_relation = { extension_name ~ "[" ~ (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
+extension_relation = { extension_name ~ "[" ~ sp ~ arguments ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
 
 // Extension name format: ExtensionType:CustomExtensionName
 extension_name = { extension_type ~ ":" ~ name }
 extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 
-// Positional arguments (expressions, literals, references)
-// TODO: May want to add tuples, enums, …?
+arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
+// Positional arguments (expressions, literals, references, enums)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
-extension_argument = {reference | literal | expression }
+extension_argument = { enum_value | reference | literal | expression }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }
@@ -286,3 +290,11 @@ extension_named_argument = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 // Output columns - can mix named columns, references, and expressions
 extension_columns = { extension_column ~ (sp ~ "," ~ sp ~ extension_column)* }
 extension_column = { named_column | reference | expression }
+
+// Advanced extensions: enhancements and optimizations attached to relations
+// Format: + Enh:Name[args] or + Opt:Name[args]
+// Examples:
+// - + Enh:PartitionHint[&HASH, count=8]
+// - + Opt:SomeOptimization[threshold=100, mode='fast']
+adv_extension      = { "+" ~ sp ~ adv_ext_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
+adv_ext_type       = { "Enh" | "Opt" }
