@@ -366,15 +366,9 @@ impl Format {
                 Ok(parse(&input_text)?)
             }
             Format::Json => {
-                #[cfg(feature = "serde")]
-                {
-                    let input_text = read_text_input(reader)?;
-                    Ok(serde_json::from_str(&input_text)?)
-                }
-                #[cfg(not(feature = "serde"))]
-                {
-                    Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
-                }
+                let input_text = read_text_input(reader)?;
+                let pool = crate::json::build_descriptor_pool(&[])?;
+                crate::json::parse_json(&input_text, &pool)
             }
             Format::Yaml => {
                 #[cfg(feature = "serde")]
