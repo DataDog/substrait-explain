@@ -203,7 +203,7 @@ impl Cli {
         registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
         // Read input based on format
-        let plan = from.read_plan(reader).with_context(|| {
+        let plan = from.read_plan(reader, registry).with_context(|| {
             format!(
                 "Failed to parse input as {} format",
                 format!("{from:?}").to_lowercase()
@@ -359,7 +359,11 @@ impl Format {
         }
     }
 
-    pub fn read_plan<R: Read>(&self, reader: R) -> Result<substrait::proto::Plan> {
+    pub fn read_plan<R: Read>(
+        &self,
+        reader: R,
+        registry: &ExtensionRegistry,
+    ) -> Result<substrait::proto::Plan> {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
@@ -367,7 +371,7 @@ impl Format {
             }
             Format::Json => {
                 let input_text = read_text_input(reader)?;
-                let pool = crate::json::build_descriptor_pool(&[])?;
+                let pool = crate::json::build_descriptor_pool(&registry.descriptors())?;
                 crate::json::parse_json(&input_text, &pool)
             }
             Format::Yaml => {

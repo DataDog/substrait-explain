@@ -30,6 +30,10 @@ name = "extensions"
 path = "examples/extensions.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "json_parsing"
+required-features = ["cli"]
+
 [features]
 # Default feature is the CLI, so 'cargo run' works automatically, as do 'cargo
 # run --example …' commands. Library users may not need the CLI, so they can

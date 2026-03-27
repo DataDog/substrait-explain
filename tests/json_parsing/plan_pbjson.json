@@ -1,0 +1,20 @@
+{
+  "relations": [
+    {
+      "root": {
+        "input": {
+          "extensionLeaf": {
+            "detail": {
+              "typeUrl": "type.googleapis.com/example.ParquetScanConfig",
+              "value": "ChJkYXRhL3NhbGVzLnBhcnF1ZXQQgBA="
+            }
+          }
+        },
+        "names": [
+          "customer_id",
+          "amount"
+        ]
+      }
+    }
+  ]
+}

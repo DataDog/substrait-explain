@@ -264,6 +264,12 @@ pub struct ExtensionRegistry {
     handlers: HashMap<(ExtensionType, String), Arc<dyn ExtensionConverter>>,
     // Composite key: (ExtensionType, type_url) -> name
     type_urls: HashMap<(ExtensionType, String), String>,
+    // Compiled proto FileDescriptorSet blobs for extension types.
+    // Used by the JSON parser to resolve google.protobuf.Any type URLs in Go
+    // protojson input. Register these alongside the Rust handler so that a
+    // single registry carries all extension knowledge for both formatting and
+    // JSON parsing.
+    descriptors: Vec<Vec<u8>>,
 }
 
 impl ExtensionRegistry {
@@ -272,7 +278,23 @@ impl ExtensionRegistry {
         Self {
             handlers: HashMap::new(),
             type_urls: HashMap::new(),
+            descriptors: Vec::new(),
         }
+    }
+
+    /// Register a compiled proto `FileDescriptorSet` blob for extension types.
+    ///
+    /// Required when parsing Go protojson (`@type` encoding) for plans that
+    /// contain `google.protobuf.Any` fields whose types are not part of the
+    /// Substrait core schema. Pass the bytes of a compiled `.bin` descriptor,
+    /// e.g. `include_bytes!("my_extensions.bin")`.
+    pub fn add_descriptor(&mut self, bytes: Vec<u8>) {
+        self.descriptors.push(bytes);
+    }
+
+    /// Returns slices of all registered descriptor blobs.
+    pub fn descriptors(&self) -> Vec<&[u8]> {
+        self.descriptors.iter().map(|b| b.as_slice()).collect()
     }
 
     /// Register an extension type with a specific ExtensionType

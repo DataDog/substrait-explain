@@ -6,8 +6,8 @@
 //!
 //! [`prost_reflect::DynamicMessage`] implements the full protobuf JSON mapping spec and
 //! handles both forms, as long as the `DescriptorPool` contains the schema for every type
-//! URL referenced in the JSON. 
-//! 
+//! URL referenced in the JSON.
+//!
 //! This module exposes [`build_descriptor_pool`] (to construct
 //! the pool, optionally merging in extra descriptor blobs for extension types) and
 //! [`parse_json`] (to parse a JSON string into a [`Plan`] using the pool).
@@ -16,7 +16,7 @@
 //!
 //! ```rust,ignore
 //! use substrait_explain::json::{build_descriptor_pool, parse_json};
-//! 
+//!
 //! static MY_EXT: &[u8] = include_bytes!("my_extensions.bin");
 //! let pool = build_descriptor_pool(&[MY_EXT]).unwrap();
 //!  // Works with both Go protojson and Rust pbjson encoding.
@@ -35,10 +35,10 @@ pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<Desc
     let mut fds = FileDescriptorSet::decode(substrait::proto::FILE_DESCRIPTOR_SET)
         .context("failed to decode substrait core descriptor")?;
 
-    // Descriptor blobs compiled from proto files bundle their transitive, 
-    // therefore custom descriptors are likely to have repeat file names 
+    // Descriptor blobs compiled from proto files bundle their transitive,
+    // therefore custom descriptors are likely to have repeat file names
     // such as: google/protobuf/timestamp.proto, google/protobuf/any.proto,
-    // which are also present in substrait core protos. 
+    // which are also present in substrait core protos.
     // DescriptorPool::decode treats duplicate filenames as a hard error.
     // Track filenames already in the set so we can skip duplicates.
     let mut seen: std::collections::HashSet<String> =
@@ -59,9 +59,21 @@ pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<Desc
 }
 
 /// Parse a protobuf JSON string into a [`Plan`], handling both JSON encodings:
-/// - **Go `protojson`**: `{"@type": "type.googleapis.com/pkg.Msg", "field": value, ...}`
-/// - **Rust `pbjson`**: `{"typeUrl": "type.googleapis.com/pkg.Msg", "value": "<base64>"}`
+///
+/// - **Rust pbjson** (`{"typeUrl": "...", "value": "<base64>"}`): decoded via `serde_json`.
+/// - **Go protojson** (`{"@type": "...", "field": value, ...}`): decoded via `prost-reflect`,
+///   which requires the concrete type's schema to be present in `pool`.
+///
+/// pbjson is tried first; if it fails, protojson is attempted.
 pub fn parse_json(json: &str, pool: &DescriptorPool) -> anyhow::Result<Plan> {
+    // serde handles the parsing of rust pbjson
+    if let Ok(plan) = serde_json::from_str::<Plan>(json) {
+        return Ok(plan);
+    }
+
+    //  prost-reflect's JSON deserializer handles google.protobuf.Any specifically.
+    //   DynamicMessage::deserialize implements the proto3 JSON mapping
+    //   spec, which encode Any as: { "@type": "type.googleapis.com/pkg.Msg", "field1": val, ... }
     let plan_desc = pool
         .get_message_by_name("substrait.Plan")
         .context("substrait.Plan not found in descriptor pool")?;
