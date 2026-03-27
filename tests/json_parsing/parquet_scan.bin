@@ -1,0 +1,7 @@
+
+m
+parquet_scan.protoexample"F
+ParquetScanConfig
+path (	Rpath
+
+batch_size (R	batchSizebproto3
