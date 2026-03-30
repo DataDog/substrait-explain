@@ -1,12 +1,10 @@
 //! Integration tests for JSON plan parsing.
-
+//!
 //! The extension type under test is `example.ParquetScanConfig`, defined in
-//! `tests/json_parsing/parquet_scan.proto`. Its descriptor is built
-//! programmatically in [`parquet_scan_descriptor_bytes`] so there is no
-//! protoc build dependency.
+//! `tests/json_parsing/parquet_scan.proto`. The struct, `impl prost::Name`,
+//! and the compiled descriptor binary are all generated at build time by
+//! `build.rs` using protox and prost-build.
 
-use prost::{Message, Name};
-use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
@@ -16,24 +14,14 @@ use substrait_explain::json::{build_descriptor_pool, parse_json};
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
 
-#[derive(Clone, PartialEq, Message)]
-struct ParquetScanConfig {
-    #[prost(string, tag = "1")]
-    path: String,
-    #[prost(int64, tag = "2")]
-    batch_size: i64,
-}
+// ParquetScanConfig struct + impl prost::Name — generated from parquet_scan.proto by build.rs.
+include!(concat!(env!("OUT_DIR"), "/example.rs"));
 
-impl Name for ParquetScanConfig {
-    const NAME: &'static str = "ParquetScanConfig";
-    const PACKAGE: &'static str = "example";
-    fn full_name() -> String {
-        "example.ParquetScanConfig".to_string()
-    }
-    fn type_url() -> String {
-        "type.googleapis.com/example.ParquetScanConfig".to_string()
-    }
-}
+// Compiled FileDescriptorSet for ParquetScanConfig, written to OUT_DIR by build.rs.
+// Passed to build_descriptor_pool so prost-reflect can resolve the type URL when
+// parsing go protojson (@type) plans that contain this extension type.
+static PARQUET_SCAN_DESCRIPTOR: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/parquet_scan.bin"));
 
 impl Explainable for ParquetScanConfig {
     fn name() -> &'static str {
@@ -76,44 +64,8 @@ impl Explainable for ParquetScanConfig {
 fn build_registry() -> ExtensionRegistry {
     let mut r = ExtensionRegistry::new();
     r.register_relation::<ParquetScanConfig>().unwrap();
-    r.add_descriptor(parquet_scan_descriptor_bytes());
+    r.add_descriptor(PARQUET_SCAN_DESCRIPTOR.to_vec());
     r
-}
-
-fn parquet_scan_descriptor_bytes() -> Vec<u8> {
-    use prost_types::field_descriptor_proto::{Label, Type};
-
-    let fds = FileDescriptorSet {
-        file: vec![FileDescriptorProto {
-            name: Some("parquet_scan.proto".to_string()),
-            package: Some("example".to_string()),
-            syntax: Some("proto3".to_string()),
-            message_type: vec![DescriptorProto {
-                name: Some("ParquetScanConfig".to_string()),
-                field: vec![
-                    FieldDescriptorProto {
-                        name: Some("path".to_string()),
-                        number: Some(1),
-                        label: Some(Label::Optional as i32),
-                        r#type: Some(Type::String as i32),
-                        json_name: Some("path".to_string()),
-                        ..Default::default()
-                    },
-                    FieldDescriptorProto {
-                        name: Some("batch_size".to_string()),
-                        number: Some(2),
-                        label: Some(Label::Optional as i32),
-                        r#type: Some(Type::Int64 as i32),
-                        json_name: Some("batchSize".to_string()),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-    fds.encode_to_vec()
 }
 
 fn format_plan(plan: &substrait::proto::Plan) -> String {
@@ -150,9 +102,8 @@ fn test_text_path() {
 /// text fixture.
 #[test]
 fn test_protojson_fixture_matches_text_plan() {
-    let ext_descriptor = parquet_scan_descriptor_bytes();
-    let pool =
-        build_descriptor_pool(&[&ext_descriptor]).expect("failed to build pool with extension");
+    let pool = build_descriptor_pool(&[PARQUET_SCAN_DESCRIPTOR])
+        .expect("failed to build pool with extension");
     let plan_from_protojson =
         parse_json(PLAN_PROTOJSON, &pool).expect("failed to parse protojson fixture");
 
@@ -178,9 +129,8 @@ fn test_gojson_parsing() {
         .parse_plan(PLAN_TEXT)
         .expect("failed to parse text plan");
 
-    let ext_descriptor = parquet_scan_descriptor_bytes();
-    let pool =
-        build_descriptor_pool(&[&ext_descriptor]).expect("failed to build pool with extension");
+    let pool = build_descriptor_pool(&[PARQUET_SCAN_DESCRIPTOR])
+        .expect("failed to build pool with extension");
     let plan_from_protojson = parse_json(PLAN_PROTOJSON, &pool).expect("failed to parse protojson");
 
     assert_eq!(

@@ -109,6 +109,7 @@ impl Cli {
         }
     }
 
+    /// Run CLI with provided readers and writers for testing
     pub fn run_with_io<R: Read, W: Write>(
         &self,
         reader: R,
@@ -191,6 +192,9 @@ impl Cli {
         }
     }
 
+    // TODO: this could use a refactor; the too_many_arguments tells us
+    // something useful here. We could perhaps add a type containing (registry,
+    // formats, options) or something
     #[allow(clippy::too_many_arguments)]
     fn run_convert_with_io<R: Read, W: Write>(
         &self,

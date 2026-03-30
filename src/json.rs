@@ -35,7 +35,7 @@ pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<Desc
     let mut fds = FileDescriptorSet::decode(substrait::proto::FILE_DESCRIPTOR_SET)
         .context("failed to decode substrait core descriptor")?;
 
-    // Descriptor blobs compiled from proto files bundle their transitive,
+    // Descriptor blobs compiled from proto files bundle their transitive dependencies,
     // therefore custom descriptors are likely to have repeat file names
     // such as: google/protobuf/timestamp.proto, google/protobuf/any.proto,
     // which are also present in substrait core protos.
@@ -58,13 +58,23 @@ pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<Desc
         .context("failed to build descriptor pool")
 }
 
-/// Parse a protobuf JSON string into a [`Plan`], handling both JSON encodings:
+/// - **Naive** (`{"typeUrl": "...", "value": "<base64>"}`): decoded via
+///   `serde_json` and `pbjson`.
+///   - This takes the protobuf fields of an `Any` (`type_url`, `value`) and
+///     serializes them like it would any other field. This is the 'naive'
+///     approach to JSON encoding protobufs; see
+///     <https://github.com/influxdata/pbjson/issues/2>
+/// - **Standard** (`{"@type": "...", "field": value, ...}`): decoded via
+///   `prost-reflect`
+///   - `Any` is a Well-Known Type in Protobuf, so in the standard, it has
+///     special handling: the protobuf `type_url` should become the JSON `@type`
+///     field, and other fields should be inlined. See
+///     <https://protobuf.dev/reference/protobuf/google.protobuf/#any>.
+///   - This requires the concrete type's schema to be present in `pool`.
 ///
-/// - **Rust pbjson** (`{"typeUrl": "...", "value": "<base64>"}`): decoded via `serde_json`.
-/// - **Go protojson** (`{"@type": "...", "field": value, ...}`): decoded via `prost-reflect`,
-///   which requires the concrete type's schema to be present in `pool`.
-///
-/// pbjson is tried first; if it fails, protojson is attempted.
+/// The naive method is tried first (via `serde_json` + `pbjson`); we fall back
+/// to `prost-reflect`, which requires descriptors but can decode
+/// standards-correct JSON-encoded protobufs.
 pub fn parse_json(json: &str, pool: &DescriptorPool) -> anyhow::Result<Plan> {
     // serde handles the parsing of rust pbjson
     if let Ok(plan) = serde_json::from_str::<Plan>(json) {

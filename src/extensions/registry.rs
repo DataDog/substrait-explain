@@ -284,10 +284,11 @@ impl ExtensionRegistry {
 
     /// Register a compiled proto `FileDescriptorSet` blob for extension types.
     ///
-    /// Required when parsing Go protojson (`@type` encoding) for plans that
-    /// contain `google.protobuf.Any` fields whose types are not part of the
-    /// Substrait core schema. Pass the bytes of a compiled `.bin` descriptor,
-    /// e.g. `include_bytes!("my_extensions.bin")`.
+    /// Required when parsing extensions for plans that contain
+    /// `google.protobuf.Any` fields that use standard JSON encoding (with
+    /// `@type` for the type_url) whose types are not part of the Substrait core
+    /// schema. Pass the bytes of a compiled `.bin` descriptor, e.g.
+    /// `include_bytes!("my_extensions.bin")`.
     pub fn add_descriptor(&mut self, bytes: Vec<u8>) {
         self.descriptors.push(bytes);
     }
