@@ -490,9 +490,8 @@ fn arguments_rule_parsing(inner_pair: pest::iterators::Pair<'_, Rule>, args: &mu
             Rule::extension_arguments => {
                 // Parse positional arguments
                 for arg_pair in arg.into_inner() {
-                    if arg_pair.as_rule() == Rule::extension_argument {
-                        args.positional.push(ExtensionValue::parse_pair(arg_pair));
-                    }
+                    assert_eq!(arg_pair.as_rule(), Rule::extension_argument);
+                    args.positional.push(ExtensionValue::parse_pair(arg_pair));
                 }
             }
             Rule::extension_named_arguments => {
