@@ -221,8 +221,9 @@ impl ParsePair for SimpleExtensionDeclaration {
             .as_str()
             .parse::<u32>()
             .unwrap();
-        let name_pair = iter.pop(Rule::name);
-        let name = unwrap_single_pair(name_pair).as_str().to_string();
+        // compound_name handles both plain names ("add") and compound names with signatures ("equal:any_any").
+        let name_pair = iter.pop(Rule::compound_name);
+        let name = name_pair.as_str().to_string();
         iter.done();
 
         SimpleExtensionDeclaration {
@@ -550,5 +551,58 @@ Type Variations:
 
         // The output should match the input
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_parse_simple_extension_declaration_compound_name() {
+        // A function name that includes a Substrait signature suffix
+        let line = "#1 @2: equal:any_any";
+        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        assert_eq!(decl.anchor, 1);
+        assert_eq!(decl.urn_anchor, 2);
+        assert_eq!(decl.name, "equal:any_any");
+    }
+
+    #[test]
+    fn test_parse_simple_extension_declaration_compound_name_multi_segment() {
+        let line = "#3 @1: regexp_match_substring:str_str_i64";
+        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        assert_eq!(decl.anchor, 3);
+        assert_eq!(decl.urn_anchor, 1);
+        assert_eq!(decl.name, "regexp_match_substring:str_str_i64");
+    }
+
+    #[test]
+    fn test_extensions_round_trip_plan_with_compound_names() {
+        let input = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_string
+  @  2: extension:io.substrait:functions_comparison
+Functions:
+  #  1 @  2: equal:any_any
+  #  2 @  1: regexp_match_substring:str_str
+  #  3 @  1: regexp_match_substring:str_str_i64
+"#;
+        let plan = Parser::parse(input).unwrap();
+        let (extensions, errors) =
+            SimpleExtensions::from_extensions(&plan.extension_urns, &plan.extensions);
+        assert!(errors.is_empty());
+        // Compound names must survive the roundtrip
+        assert_eq!(
+            extensions
+                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 1)
+                .unwrap()
+                .1,
+            "equal:any_any"
+        );
+        assert_eq!(
+            extensions
+                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 3)
+                .unwrap()
+                .1,
+            "regexp_match_substring:str_str_i64"
+        );
+        // Text output must reproduce the input exactly
+        assert_eq!(extensions.to_string("  "), input);
     }
 }
