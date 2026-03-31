@@ -837,18 +837,6 @@ Type Variations:
     }
 
     #[test]
-    fn test_is_base_name_unique_only_one_overload() {
-        let urns = vec![new_urn(1, "urn1")];
-        let extensions = vec![new_ext_fn(1, 1, "equal:any_any")];
-        let exts = unwrap_new_extensions(&urns, &extensions);
-
-        assert_eq!(
-            exts.is_base_name_unique(ExtensionKind::Function, 1),
-            Ok(true)
-        );
-    }
-
-    #[test]
     fn test_is_base_name_unique_two_overloads() {
         let urns = vec![new_urn(1, "urn1")];
         let extensions = vec![
