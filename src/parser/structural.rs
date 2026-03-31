@@ -50,26 +50,46 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
     }
 }
 
-/// Represents a line in the [`Plan`] tree structure before it's converted to a
-/// relation. This allows us to build the tree structure first, then convert to
-/// relations with proper parent-child relationships.
+/// An advanced-extension annotation (`+ Enh:Name[args]` or `+ Opt:Name[args]`)
+/// that is attached to a relation node. The `pair` holds the `adv_extension`
+/// grammar rule directly (already unwrapped from the outer `planNode`).
 #[derive(Debug, Clone)]
-pub struct LineNode<'a> {
-    pub pair: pest::iterators::Pair<'a, Rule>,
+pub struct AdvExt<'a> {
+    pub pair: pest::iterators::Pair<'a, Rule>, // Rule::adv_extension
     pub line_no: i64,
-    pub children: Vec<LineNode<'a>>,
 }
 
-impl<'a> LineNode<'a> {
+/// A relation node in the plan tree, before conversion to a Substrait proto.
+#[derive(Debug, Clone)]
+pub struct RelationNode<'a> {
+    pub pair: pest::iterators::Pair<'a, Rule>,
+    pub line_no: i64,
+    pub adv_extensions: Vec<AdvExt<'a>>,
+    pub children: Vec<RelationNode<'a>>,
+}
+
+impl<'a> RelationNode<'a> {
     pub fn context(&self) -> ParseContext {
         ParseContext {
             line_no: self.line_no,
             line: self.pair.as_str().to_string(),
         }
     }
+}
 
+/// A parsed plan line: either a relation or an advanced-extension annotation.
+///
+/// Classification happens at construction time by inspecting the inner grammar
+/// rule, so downstream code can use standard Rust pattern matching rather than
+/// runtime rule inspection.
+#[derive(Debug, Clone)]
+pub enum LineNode<'a> {
+    Relation(RelationNode<'a>),
+    AdvExt(AdvExt<'a>),
+}
+
+impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
-        // Parse the line immediately to catch syntax errors
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
             <ExpressionParser as pest::Parser<Rule>>::parse(Rule::planNode, line).map_err(|e| {
                 ParseError::Plan(
@@ -81,19 +101,27 @@ impl<'a> LineNode<'a> {
                 )
             })?;
 
-        let pair = pairs.next().unwrap();
-        assert!(pairs.next().is_none()); // Should be exactly one pair
+        let outer = pairs.next().unwrap();
+        assert!(pairs.next().is_none()); // Should be exactly one pair 
+        let inner = unwrap_single_pair(outer);
 
-        Ok(Self {
-            pair,
-            line_no,
-            children: Vec::new(),
+        Ok(if inner.as_rule() == Rule::adv_extension {
+            LineNode::AdvExt(AdvExt {
+                pair: inner,
+                line_no,
+            })
+        } else {
+            LineNode::Relation(RelationNode {
+                pair: inner,
+                line_no,
+                adv_extensions: Vec::new(),
+                children: Vec::new(),
+            })
         })
     }
 
-    /// Parse the root relation of a plan, at depth 0.
+    /// Parse the line as a top-level relation at depth 0 (either root_relation or regular relation)
     pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
-        // Parse the line as a top-level relation (either root_relation or regular relation)
         let mut pairs: pest::iterators::Pairs<'a, Rule> = <ExpressionParser as pest::Parser<
             Rule,
         >>::parse(
@@ -106,17 +134,30 @@ impl<'a> LineNode<'a> {
             )
         })?;
 
-        let pair = pairs.next().unwrap();
+        let outer = pairs.next().unwrap();
         assert!(pairs.next().is_none());
 
-        // Get the inner pair, which is either a root relation or a regular relation
-        let inner_pair = unwrap_single_pair(pair);
+        // top_level_relation is either root_relation or planNode.
+        // If planNode, unwrap one more level to obtain the specific relation rule.
+        let inner = unwrap_single_pair(outer);
+        let pair = if inner.as_rule() == Rule::planNode {
+            unwrap_single_pair(inner)
+        } else {
+            inner // root_relation
+        };
 
-        Ok(Self {
-            pair: inner_pair,
+        // planNode can technically include adv_extension; surface it as AdvExt so
+        // TreeBuilder::add_line can produce the appropriate depth-0 error.
+        if pair.as_rule() == Rule::adv_extension {
+            return Ok(LineNode::AdvExt(AdvExt { pair, line_no })); // Where is the error produced or checked???
+        }
+
+        Ok(LineNode::Relation(RelationNode {
+            pair,
             line_no,
+            adv_extensions: Vec::new(),
             children: Vec::new(),
-        })
+        }))
     }
 }
 
@@ -169,7 +210,16 @@ fn set_advanced_extension(rel: &mut Rel, adv_ext: AdvancedExtension) {
         Some(RelType::Sort(r)) => r.advanced_extension = Some(adv_ext),
         Some(RelType::Fetch(r)) => r.advanced_extension = Some(adv_ext),
         Some(RelType::Join(r)) => r.advanced_extension = Some(adv_ext),
-        _ => {} // Extension relations and other types do not carry this field directly
+        Some(RelType::ExtensionLeaf(_)) => {
+            unreachable!("Extension types do not have advanced extensions defined on them")
+        }
+        Some(RelType::ExtensionSingle(_)) => {
+            unreachable!("Extension types do not have advanced extensions defined on them")
+        }
+        Some(RelType::ExtensionMulti(_)) => {
+            unreachable!("Extension types do not have advanced extensions defined on them")
+        }
+        _ => {}
     }
 }
 
@@ -194,14 +244,14 @@ impl fmt::Display for State {
 pub struct TreeBuilder<'a> {
     // Current tree of nodes being built. These have been successfully parsed
     // into Pest pairs, but have not yet been converted to substrait plans.
-    current: Option<LineNode<'a>>,
+    current: Option<RelationNode<'a>>,
     // Completed trees that have been built.
-    completed: Vec<LineNode<'a>>,
+    completed: Vec<RelationNode<'a>>,
 }
 
 impl<'a> TreeBuilder<'a> {
     /// Traverse down the tree, always taking the last child at each level, until reaching the specified depth.
-    pub fn get_at_depth(&mut self, depth: usize) -> Option<&mut LineNode<'a>> {
+    pub fn get_at_depth(&mut self, depth: usize) -> Option<&mut RelationNode<'a>> {
         let mut node = self.current.as_mut()?;
         for _ in 0..depth {
             node = node.children.last_mut()?;
@@ -210,37 +260,69 @@ impl<'a> TreeBuilder<'a> {
     }
 
     pub fn add_line(&mut self, depth: usize, node: LineNode<'a>) -> Result<(), ParseError> {
-        if depth == 0 {
-            if let Some(prev) = self.current.take() {
-                self.completed.push(prev)
+        match node {
+            LineNode::Relation(rel_node) => {
+                if depth == 0 {
+                    if let Some(prev) = self.current.take() {
+                        self.completed.push(prev);
+                    }
+                    self.current = Some(rel_node);
+                    return Ok(());
+                }
+
+                let parent = match self.get_at_depth(depth - 1) {
+                    None => {
+                        return Err(ParseError::Plan(
+                            rel_node.context(),
+                            MessageParseError::invalid(
+                                "relation",
+                                rel_node.pair.as_span(),
+                                format!("No parent found for depth {depth}"),
+                            ),
+                        ));
+                    }
+                    Some(parent) => parent,
+                };
+
+                parent.children.push(rel_node);
             }
-            self.current = Some(node);
-            return Ok(());
+            LineNode::AdvExt(adv_ext) => {
+                if depth == 0 {
+                    return Err(ParseError::ValidationError(format!(
+                        "line {}: advanced extension annotations cannot appear at the top level",
+                        adv_ext.line_no
+                    )));
+                }
+
+                let parent = match self.get_at_depth(depth - 1) {
+                    None => {
+                        return Err(ParseError::ValidationError(format!(
+                            "line {}: no parent found for advanced extension at depth {depth}",
+                            adv_ext.line_no
+                        )));
+                    }
+                    Some(parent) => parent,
+                };
+
+                if !parent.children.is_empty() {
+                    return Err(ParseError::ValidationError(format!(
+                        "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
+                         appear before child relations, not after",
+                        adv_ext.line_no
+                    )));
+                }
+
+                parent.adv_extensions.push(adv_ext);
+            }
         }
-
-        let parent = match self.get_at_depth(depth - 1) {
-            None => {
-                return Err(ParseError::Plan(
-                    node.context(),
-                    MessageParseError::invalid(
-                        "relation",
-                        node.pair.as_span(),
-                        format!("No parent found for depth {depth}"),
-                    ),
-                ));
-            }
-            Some(parent) => parent,
-        };
-
-        parent.children.push(node.clone());
         Ok(())
     }
 
     /// End of input - move any remaining nodes from stack to completed and
     /// return any trees in progress. Resets the builder to its initial state
     /// (empty)
-    pub fn finish(&mut self) -> Vec<LineNode<'a>> {
-        // Move any remaining nodes from stack to completed
+    /// Move any remaining nodes from stack to completed
+    pub fn finish(&mut self) -> Vec<RelationNode<'a>> {
         if let Some(node) = self.current.take() {
             self.completed.push(node);
         }
@@ -288,14 +370,13 @@ impl<'a> RelationParser<'a> {
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
     ) -> Result<(substrait::proto::Rel, usize), ParseError> {
-        assert_eq!(pair.as_rule(), Rule::planNode);
-        let p = unwrap_single_pair(pair);
-
+        // `pair` is already the specific relation rule (e.g. Rule::project_relation),
+        // unwrapped from the outer planNode during LineNode construction.
         let (e, r, l, p_inner, cr, ic) = (
             extensions,
             registry,
             line_no,
-            p,
+            pair,
             child_relations,
             input_field_count,
         );
@@ -309,11 +390,7 @@ impl<'a> RelationParser<'a> {
             Rule::fetch_relation => self.parse_rel::<FetchRel>(e, l, p_inner, cr, ic),
             Rule::join_relation => self.parse_rel::<JoinRel>(e, l, p_inner, cr, ic),
             Rule::extension_relation => self.parse_extension_relation(e, r, l, p_inner, cr),
-            Rule::adv_extension => Err(ParseError::ValidationError(format!(
-                "line {l}: '{}': advanced extension annotations is not a standalone relation",
-                p_inner.as_str(),
-            ))),
-            _ => unreachable!("unhandled planNode rule: {:?}", p_inner.as_rule()),
+            _ => unreachable!("unhandled relation rule: {:?}", p_inner.as_rule()),
         }
     }
 
@@ -399,9 +476,7 @@ impl<'a> RelationParser<'a> {
 
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
         // Capture the output column count before consuming extension_args, so
-        // it can be returned to the caller.  The caller (build_rel) accumulates
-        // these counts across children and passes the sum to the parent relation
-        // as input_field_count, replacing the old protobuf-encode/decode hack.
+        // it can be returned to the caller.
         let output_column_count = extension_args.output_columns.len();
 
         let rel = extension_args
@@ -417,57 +492,23 @@ impl<'a> RelationParser<'a> {
         Ok((rel, output_column_count))
     }
 
-    /// Return true if `node`'s grammar pair wraps an `adv_extension` rule.
-    ///
-    /// A relation LineNode's pair is always `planNode`; its single inner pair
-    /// is the concrete relation rule.  For advanced-extension lines that rule is
-    /// `adv_extension`.  We look at that inner rule to decide whether the child
-    /// is an annotation or a real input relation.
-    fn is_adv_extension_node(node: &LineNode) -> bool {
-        if let Some(first_child) = node.pair.clone().into_inner().next() {
-            first_child.as_rule() == Rule::adv_extension
-        } else {
-            false
-        }
-    }
-
-    /// Convert a LineNode into a Substrait Rel, together with its output column count.
-    /// The returned `usize` is the number of columns this relation emits.  It is
-    /// used by the parent call to compute `input_field_count` for relations such
-    /// as `ProjectRel` that need it to assign correct emit-mapping indices to
-    /// computed expressions.
+    /// Convert a [`RelationNode`] into a Substrait Rel, together with its output column count.
+    /// The returned `usize` is the number of columns this relation emits.
     fn build_rel(
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        node: LineNode,
+        node: RelationNode,
     ) -> Result<(substrait::proto::Rel, usize), ParseError> {
-        // classifying children as either an adv_extension
-        // annotation or a regular input relation.
-        let mut adv_ext_nodes: Vec<LineNode<'_>> = Vec::new();
         let mut child_relations: Vec<Box<Rel>> = Vec::new();
         let mut input_field_count: usize = 0;
-        let mut seen_rel_child = false;
 
         for child in node.children {
-            if Self::is_adv_extension_node(&child) {
-                if seen_rel_child {
-                    return Err(ParseError::ValidationError(format!(
-                        "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
-                             appear before child relations, not after",
-                        child.line_no
-                    )));
-                }
-                adv_ext_nodes.push(child);
-            } else {
-                seen_rel_child = true;
-                let (rel, count) = self.build_rel(extensions, registry, child)?;
-                input_field_count += count;
-                child_relations.push(Box::new(rel));
-            }
+            let (rel, count) = self.build_rel(extensions, registry, child)?;
+            input_field_count += count;
+            child_relations.push(Box::new(rel));
         }
 
-        // Build the relation itself, receiving back its output column count.
         let (mut rel, output_count) = self.parse_relation(
             extensions,
             registry,
@@ -477,32 +518,29 @@ impl<'a> RelationParser<'a> {
             input_field_count,
         )?;
 
-        // Attach any adv_extension annotations to the relation.
-        if !adv_ext_nodes.is_empty() {
-            let adv_ext = self.build_advanced_extension(extensions, registry, adv_ext_nodes)?;
+        if !node.adv_extensions.is_empty() {
+            let adv_ext =
+                self.build_advanced_extension(extensions, registry, node.adv_extensions)?;
             set_advanced_extension(&mut rel, adv_ext);
         }
 
         Ok((rel, output_count))
     }
 
-    /// Parse a list of adv_extension LineNodes into an [`AdvancedExtension`] proto.
+    /// Parse a list of [`AdvExt`] nodes into an [`AdvancedExtension`] proto.
     fn build_advanced_extension(
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        nodes: Vec<LineNode>,
+        adv_exts: Vec<AdvExt>,
     ) -> Result<AdvancedExtension, ParseError> {
         let mut enhancement = None;
         let mut optimizations = Vec::new();
 
-        for node in nodes {
-            let line_no = node.line_no;
-            let line = node.pair.as_str().to_string();
-            // The outer pair is `relation`; unwrap to get `adv_extension`
-            let adv_ext_pair = unwrap_single_pair(node.pair);
-            let invocation = AdvExtInvocation::parse_pair(adv_ext_pair);
-
+        for adv_ext in adv_exts {
+            let line_no = adv_ext.line_no;
+            let line = adv_ext.pair.as_str().to_string();
+            let invocation = AdvExtInvocation::parse_pair(adv_ext.pair);
             let context = RelationParsingContext {
                 extensions,
                 registry,
@@ -549,18 +587,17 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
-        mut node: LineNode,
+        node: RelationNode,
     ) -> Result<PlanRel, ParseError> {
-        // Plain relations are allowed as root relations, they just don't have names.
-        if node.pair.as_rule() == Rule::planNode {
+        // Plain relations are allowed as root relations; they just don't have names.
+        if node.pair.as_rule() != Rule::root_relation {
             let (rel, _) = self.build_rel(extensions, registry, node)?;
             return Ok(PlanRel {
                 rel_type: Some(plan_rel::RelType::Rel(rel)),
             });
         }
 
-        // Otherwise, it must be a root relation.
-        assert_eq!(node.pair.as_rule(), Rule::root_relation);
+        // Named root relation.
         let context = node.context();
         let span = node.pair.as_span();
 
@@ -576,10 +613,10 @@ impl<'a> RelationParser<'a> {
             })
             .collect();
 
-        let child = match node.children.len() {
+        let mut children = node.children;
+        let child = match children.len() {
             1 => {
-                let (rel, _) =
-                    self.build_rel(extensions, registry, node.children.pop().unwrap())?;
+                let (rel, _) = self.build_rel(extensions, registry, children.pop().unwrap())?;
                 rel
             }
             n => {
@@ -594,13 +631,11 @@ impl<'a> RelationParser<'a> {
             }
         };
 
-        let rel_root = RelRoot {
-            names,
-            input: Some(child),
-        };
-
         Ok(PlanRel {
-            rel_type: Some(plan_rel::RelType::Root(rel_root)),
+            rel_type: Some(plan_rel::RelType::Root(RelRoot {
+                names,
+                input: Some(child),
+            })),
         })
     }
 

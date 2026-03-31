@@ -838,6 +838,113 @@ Root[result]
 // PartitionStrategy unit tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// output_columns in adv_ext → failure token
+// ---------------------------------------------------------------------------
+
+/// A synthetic enhancement whose `to_args()` deliberately returns non-empty
+/// `output_columns`.  The `adv_extension` grammar has no `=> columns` clause,
+/// so formatting this would produce text the parser cannot read back.
+/// The formatter must emit a failure token and a `FormatError` instead.
+mod adv_ext_with_columns_fixture {
+    use prost::Name;
+    use substrait_explain::extensions::{
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+    };
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct EnhancementWithColumns {}
+
+    impl Name for EnhancementWithColumns {
+        const NAME: &'static str = "EnhancementWithColumns";
+        const PACKAGE: &'static str = "test";
+
+        fn full_name() -> String {
+            "test.EnhancementWithColumns".to_owned()
+        }
+
+        fn type_url() -> String {
+            "type.googleapis.com/test.EnhancementWithColumns".to_owned()
+        }
+    }
+
+    impl Explainable for EnhancementWithColumns {
+        fn name() -> &'static str {
+            "EnhancementWithColumns"
+        }
+
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let mut extractor = args.extractor();
+            extractor.check_exhausted()?;
+            Ok(EnhancementWithColumns {})
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            // Deliberately populate output_columns — the adv_extension grammar
+            // has no "=> columns" clause, so this cannot be round-tripped.
+            args.output_columns.push(ExtensionColumn::Named {
+                name: "col".to_owned(),
+                type_spec: "i64".to_owned(),
+            });
+            Ok(args)
+        }
+    }
+}
+
+/// When a registry's `to_args()` returns non-empty `output_columns` for an
+/// enhancement, the formatter must emit a failure token rather than writing
+/// `+ Enh:Name[args => col:type]`, which the `adv_extension` grammar cannot parse.
+#[test]
+fn test_adv_ext_output_columns_produces_failure_token() {
+    use adv_ext_with_columns_fixture::EnhancementWithColumns;
+
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_enhancement::<EnhancementWithColumns>()
+        .expect("register_enhancement");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:EnhancementWithColumns[_]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+
+    // The enhancement line must contain a failure token, not "=> col:i64".
+    assert!(
+        formatted.contains("+ Enh[!{adv_extension}]"),
+        "expected failure token '+ Enh[!{{adv_extension}}]' in output, got:\n{formatted}"
+    );
+    // No adv_extension line may contain "=>" — that syntax is only valid in
+    // extension_relation, not in adv_extension.
+    let adv_ext_line = formatted
+        .lines()
+        .find(|l| l.trim_start().starts_with("+ Enh"))
+        .expect("expected a '+ Enh' line in output");
+    assert!(
+        !adv_ext_line.contains("=>"),
+        "adv_extension line must not contain '=>', got: {adv_ext_line:?}"
+    );
+
+    // Exactly one FormatError must have been collected.
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one FormatError, got: {errors:?}"
+    );
+
+    // The error must be a Format error (not an extension-not-found error).
+    assert!(
+        matches!(&errors[0], FormatError::Format(_)),
+        "expected FormatError::Format, got: {:?}",
+        errors[0]
+    );
+}
+
 #[test]
 fn test_partition_strategy_str_names_roundtrip() {
     let strategies = [

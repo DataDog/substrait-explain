@@ -9,10 +9,11 @@ use std::fmt;
 
 use substrait::proto::extensions::AdvancedExtension;
 
+use crate::FormatError;
 use crate::extensions::any::AnyRef;
 use crate::extensions::registry::ExtensionType;
 use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
-use crate::textify::foundation::{Scope, Textify};
+use crate::textify::foundation::{PlanError, Scope, Textify};
 use crate::textify::types::escaped;
 
 impl Textify for ExtensionValue {
@@ -107,7 +108,19 @@ fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     };
     match decode_result {
         Ok((name, args)) => {
-            write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
+            if !args.output_columns.is_empty() {
+                write!(
+                    w,
+                    "{indent}+ {prefix}[{}]",
+                    ctx.failure(FormatError::Format(PlanError::invalid(
+                        "adv_extension",
+                        Some(name),
+                        "output_columns cannot be represented in adv_extension syntax",
+                    )))
+                )
+            } else {
+                write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
+            }
         }
         Err(error) => {
             write!(w, "{indent}+ {prefix}[{}]", ctx.failure(error))
