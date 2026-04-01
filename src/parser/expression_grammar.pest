@@ -145,9 +145,14 @@ if_then = {
   "if_then(" ~ sp ~ (if_clause  ~ sp ~ "," ~ sp)+ ~ sp ~ "_" ~ sp ~ "->" ~ sp ~ expression ~ ")"
 }
 
+// Cast expression: wraps an expression in parens and appends ::target_type
+// Example: (78:i32)::i16
+cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ type }
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
-expression = { if_then | function_call | reference | literal }
+// cast_expression must come before literal/function_call since it starts with "("
+expression = { if_then | cast_expression | function_call | reference | literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
