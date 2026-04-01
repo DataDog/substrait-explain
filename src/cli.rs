@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use prost::Message;
 
-use crate::{FormatError, OutputOptions, Visibility, format, format_with_options, parse};
+use crate::extensions::ExtensionRegistry;
+use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse};
 
 /// The outcome of a CLI operation.
 ///
@@ -34,7 +35,21 @@ impl Cli {
     ///
     /// Errors are printed to stderr.
     pub fn run(self) -> ExitCode {
-        match self.run_inner() {
+        self.run_with_extensions(ExtensionRegistry::default())
+    }
+
+    /// Run the CLI with a custom extension registry and return an exit code.
+    ///
+    /// Use this when embedding the CLI in a binary that registers custom
+    /// extension relation types:
+    ///
+    /// ```rust,ignore
+    /// let mut registry = ExtensionRegistry::new();
+    /// registry.register_relation::<MyCustomScan>().unwrap();
+    /// Cli::parse().run_with_extensions(registry)
+    /// ```
+    pub fn run_with_extensions(self, registry: ExtensionRegistry) -> ExitCode {
+        match self.run_inner(&registry) {
             Ok(Outcome::Success) => ExitCode::SUCCESS,
             Ok(Outcome::HadFormattingIssues(errors)) => {
                 eprintln!("Formatting issues:");
@@ -50,7 +65,7 @@ impl Cli {
         }
     }
 
-    fn run_inner(self) -> Result<Outcome> {
+    fn run_inner(self, registry: &ExtensionRegistry) -> Result<Outcome> {
         match &self.command {
             Commands::Convert {
                 input,
@@ -76,6 +91,7 @@ impl Cli {
                     &to_format,
                     &options,
                     *verbose,
+                    registry,
                 )
             }
 
@@ -88,13 +104,18 @@ impl Cli {
                     .with_context(|| format!("Failed to open input file: {input}"))?;
                 let writer = get_writer(output)
                     .with_context(|| format!("Failed to create output file: {output}"))?;
-                self.run_validate_with_io(reader, writer, *verbose)
+                self.run_validate_with_io(reader, writer, *verbose, registry)
             }
         }
     }
 
     /// Run CLI with provided readers and writers for testing
-    pub fn run_with_io<R: Read, W: Write>(&self, reader: R, writer: W) -> Result<Outcome> {
+    pub fn run_with_io<R: Read, W: Write>(
+        &self,
+        reader: R,
+        writer: W,
+        registry: &ExtensionRegistry,
+    ) -> Result<Outcome> {
         match &self.command {
             Commands::Convert {
                 input,
@@ -117,11 +138,12 @@ impl Cli {
                     &to_format,
                     &options,
                     *verbose,
+                    registry,
                 )
             }
 
             Commands::Validate { verbose, .. } => {
-                self.run_validate_with_io(reader, writer, *verbose)
+                self.run_validate_with_io(reader, writer, *verbose, registry)
             }
         }
     }
@@ -170,6 +192,10 @@ impl Cli {
         }
     }
 
+    // TODO: this could use a refactor; the too_many_arguments tells us
+    // something useful here. We could perhaps add a type containing (registry,
+    // formats, options) or something
+    #[allow(clippy::too_many_arguments)]
     fn run_convert_with_io<R: Read, W: Write>(
         &self,
         reader: R,
@@ -178,9 +204,10 @@ impl Cli {
         to: &Format,
         options: &OutputOptions,
         verbose: bool,
+        registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
         // Read input based on format
-        let plan = from.read_plan(reader).with_context(|| {
+        let plan = from.read_plan(reader, registry).with_context(|| {
             format!(
                 "Failed to parse input as {} format",
                 format!("{from:?}").to_lowercase()
@@ -188,12 +215,14 @@ impl Cli {
         })?;
 
         // Write output based on format
-        let outcome = to.write_plan(writer, &plan, options).with_context(|| {
-            format!(
-                "Failed to write output as {} format",
-                format!("{to:?}").to_lowercase()
-            )
-        })?;
+        let outcome = to
+            .write_plan(writer, &plan, options, registry)
+            .with_context(|| {
+                format!(
+                    "Failed to write output as {} format",
+                    format!("{to:?}").to_lowercase()
+                )
+            })?;
 
         if verbose && matches!(outcome, Outcome::Success) {
             eprintln!("Successfully converted from {from:?} to {to:?}");
@@ -207,6 +236,7 @@ impl Cli {
         reader: R,
         writer: W,
         verbose: bool,
+        registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
         let input_text = read_text_input(reader)?;
 
@@ -215,7 +245,8 @@ impl Cli {
             parse(&input_text).with_context(|| "Failed to parse input as Substrait text format")?;
 
         // Format back to text
-        let (output_text, errors) = format(&plan);
+        let (output_text, errors) =
+            format_with_registry(&plan, &OutputOptions::default(), registry);
 
         // Write output first (best-effort)
         write_text_output(writer, &output_text)?;
@@ -332,22 +363,20 @@ impl Format {
         }
     }
 
-    pub fn read_plan<R: Read>(&self, reader: R) -> Result<substrait::proto::Plan> {
+    pub fn read_plan<R: Read>(
+        &self,
+        reader: R,
+        registry: &ExtensionRegistry,
+    ) -> Result<substrait::proto::Plan> {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
                 Ok(parse(&input_text)?)
             }
             Format::Json => {
-                #[cfg(feature = "serde")]
-                {
-                    let input_text = read_text_input(reader)?;
-                    Ok(serde_json::from_str(&input_text)?)
-                }
-                #[cfg(not(feature = "serde"))]
-                {
-                    Err("JSON support requires the 'serde' feature. Install with: cargo install substrait-explain --features cli,serde".into())
-                }
+                let input_text = read_text_input(reader)?;
+                let pool = crate::json::build_descriptor_pool(&registry.descriptors())?;
+                crate::json::parse_json(&input_text, &pool)
             }
             Format::Yaml => {
                 #[cfg(feature = "serde")]
@@ -372,10 +401,11 @@ impl Format {
         writer: W,
         plan: &substrait::proto::Plan,
         options: &OutputOptions,
+        registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
         match self {
             Format::Text => {
-                let (text, errors) = format_with_options(plan, options);
+                let (text, errors) = format_with_registry(plan, options, registry);
 
                 // Write output first (best-effort)
                 write_text_output(writer, &text)?;
@@ -510,7 +540,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
@@ -536,7 +567,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("\"relations\""));
@@ -563,7 +595,9 @@ Root[result]
             },
         };
 
-        cli_to_json.run_with_io(input, &mut json_output).unwrap();
+        cli_to_json
+            .run_with_io(input, &mut json_output, &ExtensionRegistry::default())
+            .unwrap();
 
         // Now convert JSON back to text
         let json_input = Cursor::new(json_output);
@@ -582,7 +616,7 @@ Root[result]
         };
 
         cli_to_text
-            .run_with_io(json_input, &mut text_output)
+            .run_with_io(json_input, &mut text_output, &ExtensionRegistry::default())
             .unwrap();
 
         let output_content = String::from_utf8(text_output).unwrap();
@@ -607,7 +641,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         // Protobuf output should be binary, so we just check that it's not empty
         assert!(!output.is_empty());
@@ -630,7 +665,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
@@ -652,7 +688,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Extensions"));
@@ -678,7 +715,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
@@ -731,7 +769,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("\"relations\""));
@@ -757,7 +796,7 @@ Root[result]
             },
         };
 
-        let result = cli.run_with_io(input, &mut output);
+        let result = cli.run_with_io(input, &mut output, &ExtensionRegistry::default());
         assert!(result.is_err());
         assert!(
             result
@@ -784,7 +823,7 @@ Root[result]
             },
         };
 
-        let result = cli.run_with_io(input, &mut output);
+        let result = cli.run_with_io(input, &mut output, &ExtensionRegistry::default());
         assert!(result.is_err());
         assert!(
             result
@@ -811,7 +850,8 @@ Root[result]
             },
         };
 
-        cli.run_with_io(input, &mut output).unwrap();
+        cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
+            .unwrap();
 
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
@@ -837,7 +877,7 @@ Root[result]
         };
 
         cli_to_protobuf
-            .run_with_io(input, &mut protobuf_output)
+            .run_with_io(input, &mut protobuf_output, &ExtensionRegistry::default())
             .unwrap();
 
         // Convert protobuf back to text
@@ -857,7 +897,11 @@ Root[result]
         };
 
         cli_to_text
-            .run_with_io(protobuf_input, &mut text_output)
+            .run_with_io(
+                protobuf_input,
+                &mut text_output,
+                &ExtensionRegistry::default(),
+            )
             .unwrap();
 
         let output_content = String::from_utf8(text_output).unwrap();
@@ -905,7 +949,12 @@ Root[result]
         let plan = make_plan_with_invalid_function_ref();
         let mut output = Vec::new();
 
-        let result = Format::Text.write_plan(&mut output, &plan, &OutputOptions::default());
+        let result = Format::Text.write_plan(
+            &mut output,
+            &plan,
+            &OutputOptions::default(),
+            &ExtensionRegistry::default(),
+        );
 
         // Should succeed but report formatting issues
         let outcome = result.expect("write_plan should not return hard error");

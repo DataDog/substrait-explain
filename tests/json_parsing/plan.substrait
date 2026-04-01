@@ -1,0 +1,3 @@
+=== Plan
+Root[customer_id, amount]
+  ExtensionLeaf:ParquetScan[path='data/sales.parquet', batch_size=2048 => customer_id:i64, amount:fp64]
