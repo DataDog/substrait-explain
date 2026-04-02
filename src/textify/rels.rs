@@ -22,6 +22,7 @@ use super::expressions::Reference;
 use super::extensions::textify_advanced_extension;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
+use crate::FormatError;
 use crate::extensions::any::AnyRef;
 use crate::extensions::{ExtensionColumn, ExtensionValue};
 
@@ -514,7 +515,22 @@ impl<'a> Relation<'a> {
             Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
             Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
             Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
-            _ => todo!(),
+            _ => {
+                let name = rel.name();
+                let token = ctx.failure(FormatError::Format(PlanError::unimplemented(
+                    "Rel",
+                    Some(name),
+                    format!("{name} is not yet supported in the text format"),
+                )));
+                Relation {
+                    name: Cow::Owned(format!("{token}")),
+                    arguments: None,
+                    columns: vec![],
+                    emit: None,
+                    advanced_extension: None,
+                    children: vec![],
+                }
+            }
         }
     }
 
@@ -1703,6 +1719,53 @@ Filter[gt($0, 10:i32) => $0, $1]
             rex_type: Some(RexType::Selection(Box::new(
                 FieldIndex(column_ind).to_field_reference(),
             ))),
+        }
+    }
+
+    #[test]
+    fn test_unsupported_rel_type_produces_failure_token() {
+        use substrait::proto::CrossRel;
+
+        let ctx = TestContext::new();
+
+        // CrossRel is a valid Substrait relation type that the textifier
+        // does not yet support.  Wrapping it in a Rel and textifying should
+        // produce a `!{Rel}` failure token rather than panicking.
+        let rel = Rel {
+            rel_type: Some(RelType::Cross(Box::new(CrossRel {
+                common: None,
+                left: None,
+                right: None,
+                advanced_extension: None,
+            }))),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+
+        // The output should contain the failure token, not an empty string.
+        assert!(
+            result.contains("!{Rel}"),
+            "Expected '!{{Rel}}' in output, got: {result}"
+        );
+
+        // Exactly one error should have been collected.
+        assert_eq!(errors.0.len(), 1, "Expected exactly one error: {errors:?}");
+
+        // The error should be a Format / Unimplemented error mentioning CrossRel.
+        match &errors.0[0] {
+            FormatError::Format(plan_err) => {
+                assert_eq!(plan_err.message, "Rel");
+                assert_eq!(
+                    plan_err.error_type,
+                    crate::textify::foundation::FormatErrorType::Unimplemented
+                );
+                assert!(
+                    plan_err.lookup.as_deref().unwrap_or("").contains("Cross"),
+                    "Expected lookup to mention 'Cross', got: {:?}",
+                    plan_err.lookup
+                );
+            }
+            other => panic!("Expected FormatError::Format, got: {other:?}"),
         }
     }
 }
