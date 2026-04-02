@@ -4,7 +4,7 @@ use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction,
+    Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
     reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
@@ -466,7 +466,20 @@ impl ScopedParsePair for Cast {
         let mut pairs = pair.into_inner();
 
         let expr_pair = pairs.next().unwrap();
-        let type_pair = pairs.next().unwrap();
+
+        // Optional failure behavior prefix: ? = RETURN_NULL, ! = THROW_EXCEPTION
+        let next = pairs.next().unwrap();
+        let (failure_behavior, type_pair) = if next.as_rule() == Rule::cast_failure_behavior {
+            let fb = match next.as_str() {
+                "?" => cast::FailureBehavior::ReturnNull as i32,
+                "!" => cast::FailureBehavior::ThrowException as i32,
+                _ => unreachable!("Grammar guarantees cast_failure_behavior is ? or !"),
+            };
+            (fb, pairs.next().unwrap())
+        } else {
+            (cast::FailureBehavior::Unspecified as i32, next)
+        };
+
         assert!(pairs.next().is_none());
 
         let input = Expression::parse_pair(extensions, expr_pair)?;
@@ -475,7 +488,7 @@ impl ScopedParsePair for Cast {
         Ok(Cast {
             r#type: Some(target_type),
             input: Some(Box::new(input)),
-            failure_behavior: 0, // FailureBehavior::Unspecified — not represented in text
+            failure_behavior,
         })
     }
 }
@@ -1104,5 +1117,38 @@ mod tests {
         let result = Cast::parse_pair(&extensions, pair).unwrap();
         assert!(result.input.is_some());
         assert!(result.r#type.is_some());
+    }
+
+    #[test]
+    fn test_parse_cast_unspecified_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::Unspecified as i32
+        );
+    }
+
+    #[test]
+    fn test_parse_cast_return_null_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::?i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::ReturnNull as i32
+        );
+    }
+
+    #[test]
+    fn test_parse_cast_throw_exception_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::!i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::ThrowException as i32
+        );
     }
 }
