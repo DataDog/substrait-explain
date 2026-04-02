@@ -128,32 +128,34 @@ fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     }
 }
 
-/// Textify all enhancement and optimization lines for an [`AdvancedExtension`].
-///
-/// Writes one `+ Enh:` line (if an enhancement is present) followed by zero
-/// or more `+ Opt:` lines, each preceded by a newline.
-pub fn textify_advanced_extension<S: Scope, W: fmt::Write>(
-    ctx: &S,
-    w: &mut W,
-    adv_ext: &AdvancedExtension,
-) -> fmt::Result {
-    if let Some(enhancement) = &adv_ext.enhancement {
-        writeln!(w)?;
-        format_adv_ext_line(
-            ctx,
-            w,
-            ExtensionType::Enhancement,
-            AnyRef::from(enhancement),
-        )?;
+impl Textify for AdvancedExtension {
+    fn name() -> &'static str {
+        "AdvancedExtension"
     }
-    for optimization in &adv_ext.optimization {
-        writeln!(w)?;
-        format_adv_ext_line(
-            ctx,
-            w,
-            ExtensionType::Optimization,
-            AnyRef::from(optimization),
-        )?;
+
+    /// Textify all enhancement and optimization lines for an [`AdvancedExtension`].
+    ///
+    /// Writes one `+ Enh:` line (if an enhancement is present) followed by zero
+    /// or more `+ Opt:` lines, each preceded by a newline.
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if let Some(enhancement) = &self.enhancement {
+            writeln!(w)?;
+            format_adv_ext_line(
+                ctx,
+                w,
+                ExtensionType::Enhancement,
+                AnyRef::from(enhancement),
+            )?;
+        }
+        for optimization in &self.optimization {
+            writeln!(w)?;
+            format_adv_ext_line(
+                ctx,
+                w,
+                ExtensionType::Optimization,
+                AnyRef::from(optimization),
+            )?;
+        }
+        Ok(())
     }
-    Ok(())
 }

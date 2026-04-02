@@ -191,7 +191,7 @@ fn get_output_field_count(rel: &Rel) -> usize {
         Some(RelType::Project(project_rel)) => {
             // Project passes all input columns through unchanged.
             if let Some(input) = project_rel.input.as_ref() {
-                return get_output_field_count(input);
+                return get_output_field_count(input) + project_rel.expressions.len();
             }
             0
         }

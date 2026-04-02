@@ -19,7 +19,6 @@ use substrait::proto::{
 };
 
 use super::expressions::Reference;
-use super::extensions::textify_advanced_extension;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
@@ -300,7 +299,7 @@ impl Textify for Relation<'_> {
         // same position they occupy in the text format when parsed.
         if let Some(adv_ext) = self.advanced_extension {
             let child_scope = ctx.push_indent();
-            textify_advanced_extension(&child_scope, w, adv_ext)?;
+            adv_ext.textify(&child_scope, w)?;
         }
         self.write_children(ctx, w)?;
         Ok(())
