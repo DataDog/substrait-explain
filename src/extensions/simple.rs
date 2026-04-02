@@ -341,6 +341,14 @@ pub struct SimpleExtension {
     pub urn: u32,
 }
 
+/// Extract the base name from a Substrait compound function name.
+pub fn base_name(compound: &str) -> &str {
+    match compound.split_once(':') {
+        Some((base, _)) => base,
+        None => compound,
+    }
+}
+
 impl SimpleExtensions {
     pub fn find_urn(&self, anchor: u32) -> Result<&str, MissingReference> {
         self.urns
@@ -429,6 +437,56 @@ impl SimpleExtensions {
             (true, true) => Ok(false),
             // Didn't find the one we're looking for;
             (false, _) => Err(MissingReference::MissingAnchor(kind, anchor)),
+        }
+    }
+
+    /// Returns `true` if no other registered extension of the same kind shares
+    /// the same base name (the part before the first `:` in the compound name).
+    ///
+    /// For example, if `equal:any_any` (anchor 1) and `equal:str_str` (anchor 2)
+    /// are both registered, `is_base_name_unique(Function, 1)` returns `Ok(false)`.
+    /// If only `equal:any_any` is registered, it returns `Ok(true)`.
+    pub fn is_base_name_unique(
+        &self,
+        kind: ExtensionKind,
+        anchor: u32,
+    ) -> Result<bool, MissingReference> {
+        let (_, compound) = self.find_by_anchor(kind, anchor)?;
+        let my_base = base_name(compound);
+
+        let other_exists = self
+            .extensions
+            .iter()
+            .any(|(&(a, k), (_, n))| k == kind && a != anchor && base_name(n.as_str()) == my_base);
+
+        Ok(!other_exists)
+    }
+
+    /// Find the unique anchor for a function whose base name (before the first
+    /// `:`) matches `base`. Returns `DuplicateName` if more than one function
+    /// has that base name.
+    ///
+    /// This is used as a fallback when a plan expression names a function
+    /// without its signature (e.g. `equal(…)`) and the stored name is a
+    /// compound name (e.g. `equal:any_any`).
+    pub fn find_by_base_name(
+        &self,
+        kind: ExtensionKind,
+        base: &str,
+    ) -> Result<u32, MissingReference> {
+        let mut matches = self
+            .extensions
+            .iter()
+            .filter(|&(&(_a, k), (_, n))| k == kind && base_name(n.as_str()) == base)
+            .map(|(&(anchor, _), _)| anchor);
+
+        let anchor = matches
+            .next()
+            .ok_or_else(|| MissingReference::MissingName(kind, base.to_string()))?;
+
+        match matches.next() {
+            Some(_) => Err(MissingReference::DuplicateName(kind, base.to_string())),
+            None => Ok(anchor),
         }
     }
 }
@@ -754,5 +812,173 @@ Type Variations:
 "#;
 
         assert_eq!(output, expected_output.trim_start());
+    }
+
+    #[test]
+    fn test_base_name_no_signature() {
+        assert_eq!(base_name("add"), "add");
+        assert_eq!(base_name("coalesce"), "coalesce");
+    }
+
+    #[test]
+    fn test_base_name_with_signature() {
+        assert_eq!(base_name("equal:any_any"), "equal");
+        assert_eq!(
+            base_name("regexp_match_substring:str_str_i64"),
+            "regexp_match_substring"
+        );
+        assert_eq!(base_name("add:i64_i64"), "add");
+    }
+
+    #[test]
+    fn test_base_name_empty_signature() {
+        // Edge case: trailing colon → empty signature, base is the whole prefix
+        assert_eq!(base_name("foo:"), "foo");
+    }
+
+    #[test]
+    fn test_is_base_name_unique_two_overloads() {
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 1),
+            Ok(false)
+        );
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 2),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn test_is_base_name_unique_different_base_names() {
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "like:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        // Different base names → each is unique
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 1),
+            Ok(true)
+        );
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 2),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn test_is_base_name_unique_missing_anchor() {
+        let exts = SimpleExtensions::new();
+        assert!(
+            exts.is_base_name_unique(ExtensionKind::Function, 99)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_is_base_name_unique_plain_name_overloaded_across_urns() {
+        // Same plain name in two URNs → not unique by base name either
+        let urns = vec![new_urn(1, "urn1"), new_urn(2, "urn2")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "duplicated"),
+            new_ext_fn(2, 2, "duplicated"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 1),
+            Ok(false)
+        );
+        assert_eq!(
+            exts.is_base_name_unique(ExtensionKind::Function, 2),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn test_find_by_base_name_plain_stored_name() {
+        // Stored as plain name (no signature): find_by_base_name should still find it
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![new_ext_fn(10, 1, "add")];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert_eq!(
+            exts.find_by_base_name(ExtensionKind::Function, "add"),
+            Ok(10)
+        );
+    }
+
+    #[test]
+    fn test_find_by_base_name_compound_stored_name() {
+        // Stored as compound name: find by base name succeeds
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![new_ext_fn(1, 1, "equal:any_any")];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert_eq!(
+            exts.find_by_base_name(ExtensionKind::Function, "equal"),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn test_find_by_base_name_duplicate_returns_error() {
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert_eq!(
+            exts.find_by_base_name(ExtensionKind::Function, "equal"),
+            Err(MissingReference::DuplicateName(
+                ExtensionKind::Function,
+                "equal".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_find_by_base_name_not_found() {
+        let exts = SimpleExtensions::new();
+        assert_eq!(
+            exts.find_by_base_name(ExtensionKind::Function, "nonexistent"),
+            Err(MissingReference::MissingName(
+                ExtensionKind::Function,
+                "nonexistent".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_compound_name_roundtrip_in_extensions_section() {
+        // Verify that compound names survive a write → parse roundtrip through
+        // the Extensions section text format.
+        let urns = vec![new_urn(1, "substrait:functions_comparison")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        let text = exts.to_string("  ");
+        assert!(
+            text.contains("equal:any_any"),
+            "compound name must appear in output"
+        );
+        assert!(
+            text.contains("equal:str_str"),
+            "compound name must appear in output"
+        );
     }
 }

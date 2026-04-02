@@ -7,7 +7,7 @@ use substrait::proto::r#type::{self as ptype};
 
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{PlanError, Textify};
-use crate::extensions::simple::ExtensionKind;
+use crate::extensions::simple::{ExtensionKind, base_name};
 use crate::textify::foundation::{MaybeToken, Visibility};
 
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
@@ -126,28 +126,48 @@ impl Textify for Anchor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct NamedAnchor<'a> {
+    /// The full stored compound name, e.g. `"equal:any_any"` or `"add"`.
     pub name: MaybeToken<&'a str>,
     pub anchor: u32,
-    // True if the name is valid and unique for the extension kind, false if not.
+    /// True if the compound name is unique across all URNs for this extension
+    /// kind (i.e. no other URN registers the same full compound name).
+    /// anchor shown when `false`.
     pub unique: bool,
+    /// True if the base name (part before the first `:`) is unique for this
+    /// extension kind. signature shown when `false`.
+    pub base_name_unique: bool,
 }
 
 impl<'a> NamedAnchor<'a> {
-    /// Lookup an anchor in the extensions, and return a NamedAnchor. Errors will be pushed to the ErrorAccumulator along the way.
+    /// Lookup an anchor in the extensions, and return a NamedAnchor.
+    /// Errors are pushed to the error accumulator along the way.
     pub fn lookup<S: Scope>(ctx: &'a S, kind: ExtensionKind, anchor: u32) -> Self {
         let ext = ctx.extensions().find_by_anchor(kind, anchor);
-        let (name, unique) = match ext {
-            Ok((_, n)) => match ctx.extensions().is_name_unique(kind, anchor, n) {
-                // Nothing wrong; may or may not be unique.
-                Ok(unique) => (MaybeToken(Ok(n)), unique),
-                Err(e) => (MaybeToken(Err(ctx.failure(e))), false),
-            },
-            Err(e) => (MaybeToken(Err(ctx.failure(e))), false),
+        let (name, unique, base_name_unique) = match ext {
+            Ok((_, n)) => {
+                let unique = match ctx.extensions().is_name_unique(kind, anchor, n) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        ctx.push_error(e.into());
+                        false
+                    }
+                };
+                let base_name_unique = match ctx.extensions().is_base_name_unique(kind, anchor) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        ctx.push_error(e.into());
+                        false
+                    }
+                };
+                (MaybeToken(Ok(n)), unique, base_name_unique)
+            }
+            Err(e) => (MaybeToken(Err(ctx.failure(e))), false, false),
         };
         Self {
             name,
             anchor,
             unique,
+            base_name_unique,
         }
     }
 }
@@ -158,13 +178,26 @@ impl<'a> Textify for NamedAnchor<'a> {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // Decide whether to show the full compound name or just the base name.
+        let show_signature = match ctx.options().show_simple_extension_anchors {
+            Visibility::Always => true,
+            Visibility::Required => !self.base_name_unique,
+            Visibility::Never => false,
+        };
+
+        match &self.name.0 {
+            Ok(n) => {
+                if show_signature {
+                    write!(w, "{n}")?;
+                } else {
+                    write!(w, "{}", base_name(n))?;
+                }
+            }
+            Err(e) => write!(w, "{e}")?,
+        }
+
         let anchor = Anchor::new(self.anchor, !self.unique);
-        write!(
-            w,
-            "{name}{anchor}",
-            name = self.name,
-            anchor = ctx.display(&anchor)
-        )
+        write!(w, "{}", ctx.display(&anchor))
     }
 }
 
@@ -879,4 +912,130 @@ mod tests {
     //     );
     //     assert!(errs.is_empty());
     // }
+
+    // ---- Tests for NamedAnchor signature display ----
+
+    /// Build a TestContext with two overloaded functions (`equal:any_any` and
+    /// `equal:str_str`) sharing the same URN, plus a unique function (`add`).
+    fn overloaded_ctx() -> TestContext {
+        TestContext::new()
+            .with_urn(1, "substrait:functions_comparison")
+            .with_function(1, 1, "equal:any_any")
+            .with_function(1, 2, "equal:str_str")
+            .with_function(1, 3, "add:i64_i64")
+    }
+
+    #[test]
+    fn named_anchor_compact_unique_base_name_no_signature() {
+        // `add:i64_i64` is the only function with base name "add".
+        // Compact mode: show base name only, no anchor (compound name unique).
+        let ctx = overloaded_ctx();
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 3);
+        assert!(na.base_name_unique, "add should have unique base name");
+        assert!(na.unique, "add:i64_i64 compound name should be unique");
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "add");
+    }
+
+    #[test]
+    fn named_anchor_compact_overloaded_shows_signature() {
+        // `equal:any_any` shares base name "equal" with `equal:str_str`.
+        // Compact mode: base name not unique → show full compound name.
+        // Compound name is unique (only one URN) → no anchor.
+        let ctx = overloaded_ctx();
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 1);
+        assert!(!na.base_name_unique, "equal base name should not be unique");
+        assert!(
+            na.unique,
+            "equal:any_any compound name should be unique across URNs"
+        );
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "equal:any_any");
+    }
+
+    #[test]
+    fn named_anchor_verbose_unique_base_name_shows_signature_and_anchor() {
+        // Verbose mode: always show signature and always show anchor.
+        let mut ctx = overloaded_ctx();
+        ctx.options.show_simple_extension_anchors = Visibility::Always;
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 3);
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "add:i64_i64#3");
+    }
+
+    #[test]
+    fn named_anchor_verbose_overloaded_shows_signature_and_anchor() {
+        // Verbose mode: overloaded function shows full compound name + anchor.
+        let mut ctx = overloaded_ctx();
+        ctx.options.show_simple_extension_anchors = Visibility::Always;
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 2);
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "equal:str_str#2");
+    }
+
+    #[test]
+    fn named_anchor_compact_same_compound_name_two_urns_shows_anchor() {
+        // Same compound name `equal:any_any` registered in two different URNs.
+        // Compact mode: compound name not unique → anchor required.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn_a")
+            .with_urn(2, "urn_b")
+            .with_function(1, 1, "equal:any_any")
+            .with_function(2, 2, "equal:any_any");
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 1);
+        assert!(!na.base_name_unique);
+        assert!(!na.unique, "compound name not unique across two URNs");
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "equal:any_any#1");
+    }
+
+    #[test]
+    fn named_anchor_compact_plain_name_unique_no_signature_no_anchor() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn")
+            .with_function(1, 10, "coalesce");
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 10);
+        assert!(na.base_name_unique);
+        assert!(na.unique);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "coalesce");
+    }
+
+    #[test]
+    fn named_anchor_compact_plain_name_non_unique_shows_anchor() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn1")
+            .with_urn(2, "urn2")
+            .with_function(1, 231, "duplicated")
+            .with_function(2, 232, "duplicated");
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 231);
+        assert!(!na.base_name_unique);
+        assert!(!na.unique);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "duplicated#231");
+    }
 }
