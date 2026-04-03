@@ -102,7 +102,7 @@ impl<'a> LineNode<'a> {
             })?;
 
         let outer = pairs.next().unwrap();
-        assert!(pairs.next().is_none()); // Should be exactly one pair 
+        assert!(pairs.next().is_none()); // Should be exactly one pair
         let inner = unwrap_single_pair(outer);
 
         Ok(if inner.as_rule() == Rule::adv_extension {
@@ -195,6 +195,8 @@ fn get_output_field_count(rel: &Rel) -> usize {
             }
             0
         }
+        // TODO: get the input columns right for other relations
+        // <https://github.com/DataDog/substrait-explain/issues/84>
         _ => 0,
     }
 }
