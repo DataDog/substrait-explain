@@ -780,7 +780,7 @@ enum_value := "&" identifier
 
 #### Examples
 
-- `&HASH`, `&RANGE`, `&BROADCAST` — [`PartitionStrategy`] variants for `PartitionHint`
+- `&HASH`, `&RANGE`, `&BROADCAST` — `PartitionStrategy` variants for `PartitionHint`
 - `&AscNullsFirst` — sort direction enum in a relation argument
 
 ### Example: Enhancement on a Read Relation

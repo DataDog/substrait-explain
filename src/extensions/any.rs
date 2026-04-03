@@ -11,8 +11,8 @@ pub struct Any {
 }
 
 /// A reference to a protobuf `Any` type. Can be created from references to
-/// [`prost_types::Any`](prost_types::Any),
-/// [`pbjson_types::Any`](pbjson_types::Any), or our own [`Any`](Any) type.
+/// [`prost_types::Any`],
+/// [`pbjson_types::Any`], or our own [`Any`] type.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct AnyRef<'a> {
     pub type_url: &'a str,

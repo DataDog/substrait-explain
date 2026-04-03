@@ -35,7 +35,7 @@ impl fmt::Display for RawExpression {
 /// Represents the arguments and output columns for an extension relation.
 ///
 /// Named arguments are stored in an [`IndexMap`] whose iteration order
-/// determines display order. Extension [`Explainable::to_args()`]
+/// determines display order. Extension [`super::Explainable::to_args()`]
 /// implementations should insert named arguments in the order they should
 /// appear in the text format.
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub struct ExtensionArgs {
 /// Tracks which arguments have been consumed. Callers **must** call
 /// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
 /// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic (matching the [`RuleIter`] pattern).
+/// calling `check_exhausted` will panic (matching the [`RuleIter`](crate::parser::RuleIter) pattern).
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
     consumed: HashSet<&'a str>,

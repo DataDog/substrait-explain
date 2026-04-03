@@ -2,8 +2,8 @@
 //!
 //! This module provides [`Textify`] implementations for extension-related
 //! types, including [`ExtensionValue`], [`ExtensionColumn`], [`ExtensionArgs`],
-//! and the various extension relation types ([`ExtensionLeafRel`],
-//! [`ExtensionSingleRel`], [`ExtensionMultiRel`]).
+//! and the various extension relation types ([`substrait::proto::ExtensionLeafRel`],
+//! [`substrait::proto::ExtensionSingleRel`], [`substrait::proto::ExtensionMultiRel`]).
 
 use std::fmt;
 
