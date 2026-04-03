@@ -1,0 +1,15 @@
+syntax = "proto3";
+package example;
+
+// Describes a scan over a Parquet dataset.
+//
+// Used as the extension type in JSON parsing integration tests. The Rust struct
+// is defined in tests/json_parsing.rs using prost derive macros and must stay
+// in sync with this schema: same package, same field names, same field numbers.
+//
+// The FileDescriptorSet for this message is built programmatically in the test
+// (see `parquet_scan_descriptor_bytes()`) to avoid a protoc build dependency.
+message ParquetScanConfig {
+  string path = 1;
+  int64 batch_size = 2;
+}

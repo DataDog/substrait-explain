@@ -5,7 +5,7 @@ use expr::RexType;
 use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, IfThen, ReferenceSegment, ScalarFunction, reference_segment,
+    Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{self as ptype, Kind, Nullability};
@@ -690,6 +690,32 @@ impl Textify for ArgType {
     }
 }
 
+impl Textify for Cast {
+    fn name() -> &'static str {
+        "Cast"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let failure_err;
+        let fb: &dyn fmt::Display = match cast::FailureBehavior::try_from(self.failure_behavior) {
+            Ok(cast::FailureBehavior::Unspecified) => &"",
+            Ok(cast::FailureBehavior::ReturnNull) => &"?",
+            Ok(cast::FailureBehavior::ThrowException) => &"!",
+            Err(_) => {
+                failure_err = ctx.failure(PlanError::invalid(
+                    "Cast",
+                    Some("failure_behavior"),
+                    format!("Unknown failure_behavior value: {}", self.failure_behavior),
+                ));
+                &failure_err
+            }
+        };
+        let input = ctx.expect(self.input.as_deref());
+        let target_type = ctx.expect(self.r#type.as_ref());
+        write!(w, "({input})::{fb}{target_type}")
+    }
+}
+
 impl Textify for IfThen {
     fn name() -> &'static str {
         "IfThen"
@@ -757,15 +783,7 @@ impl Textify for RexType {
                     "MultiOrList textification not implemented",
                 ))
             ),
-            RexType::Cast(_c) => write!(
-                w,
-                "{}",
-                ctx.failure(PlanError::unimplemented(
-                    "RexType",
-                    Some("Cast"),
-                    "Cast textification not implemented",
-                ))
-            ),
+            RexType::Cast(c) => c.textify(ctx, w),
             RexType::Subquery(_s) => write!(
                 w,
                 "{}",
@@ -848,12 +866,14 @@ impl Textify for AggregateFunction {
 
 #[cfg(test)]
 mod tests {
-    use substrait::proto::expression::if_then;
+    use substrait::proto::Type;
+    use substrait::proto::expression::{cast, if_then};
+    use substrait::proto::r#type::{I16, I32, Kind, Nullability};
 
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
-    use crate::textify::foundation::FormatError;
+    use crate::textify::foundation::{FormatError, FormatErrorType};
 
     fn literal_bool(value: bool) -> Expression {
         Expression {
@@ -1000,5 +1020,156 @@ mod tests {
         let (s, errs) = ctx.textify(&if_then);
         assert_eq!(s, "if_then(true -> false, _ -> !{Expression})");
         assert_eq!(errs.0.len(), 1);
+    }
+
+    fn make_i32_type() -> Type {
+        Type {
+            kind: Some(Kind::I32(I32 {
+                nullability: Nullability::Required as i32,
+                type_variation_reference: 0,
+            })),
+        }
+    }
+
+    fn make_i16_type() -> Type {
+        Type {
+            kind: Some(Kind::I16(I16 {
+                nullability: Nullability::Required as i32,
+                type_variation_reference: 0,
+            })),
+        }
+    }
+
+    fn literal_i32(value: i32) -> Expression {
+        Expression {
+            rex_type: Some(RexType::Literal(expr::Literal {
+                nullable: false,
+                type_variation_reference: 0,
+                literal_type: Some(expr::literal::LiteralType::I32(value)),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_cast_textify() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: Some(make_i16_type()),
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: 0,
+        };
+        assert_eq!(ctx.textify_no_errors(&cast), "(78:i32)::i16");
+    }
+
+    #[test]
+    fn test_cast_textify_via_rextype() {
+        let ctx = TestContext::new();
+        let rex = RexType::Cast(Box::new(Cast {
+            r#type: Some(make_i16_type()),
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: 0,
+        }));
+        assert_eq!(ctx.textify_no_errors(&rex), "(78:i32)::i16");
+    }
+
+    #[test]
+    fn test_cast_textify_nested() {
+        // ((78:i32)::i16)::i32 — cast of a cast
+        let ctx = TestContext::new();
+        let inner_cast = Expression {
+            rex_type: Some(RexType::Cast(Box::new(Cast {
+                r#type: Some(make_i16_type()),
+                input: Some(Box::new(literal_i32(78))),
+                failure_behavior: 0,
+            }))),
+        };
+        let outer_cast = Cast {
+            r#type: Some(make_i32_type()),
+            input: Some(Box::new(inner_cast)),
+            failure_behavior: 0,
+        };
+        assert_eq!(ctx.textify_no_errors(&outer_cast), "((78:i32)::i16)::i32");
+    }
+
+    #[test]
+    fn test_cast_textify_return_null() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: Some(make_i16_type()),
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: cast::FailureBehavior::ReturnNull as i32,
+        };
+        assert_eq!(ctx.textify_no_errors(&cast), "(78:i32)::?i16");
+    }
+
+    #[test]
+    fn test_cast_textify_throw_exception() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: Some(make_i16_type()),
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: cast::FailureBehavior::ThrowException as i32,
+        };
+        assert_eq!(ctx.textify_no_errors(&cast), "(78:i32)::!i16");
+    }
+
+    #[test]
+    fn test_cast_textify_missing_input() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: Some(make_i16_type()),
+            input: None,
+            failure_behavior: 0,
+        };
+        let (s, errs) = ctx.textify(&cast);
+        assert_eq!(s, "(!{Expression})::i16");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "Expression");
+                assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+            }
+            other => panic!("Expected Format(InvalidValue) for missing input, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_cast_textify_missing_type() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: None,
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: 0,
+        };
+        let (s, errs) = ctx.textify(&cast);
+        assert_eq!(s, "(78:i32)::!{Type}");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "Type");
+                assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+            }
+            other => panic!("Expected Format(InvalidValue) for missing type, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_cast_textify_invalid_failure_behavior() {
+        let ctx = TestContext::new();
+        let cast = Cast {
+            r#type: Some(make_i16_type()),
+            input: Some(Box::new(literal_i32(78))),
+            failure_behavior: 99,
+        };
+        let (s, errs) = ctx.textify(&cast);
+        // Error token is embedded inline — input and type are still written
+        assert_eq!(s, "(78:i32)::!{Cast}i16");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "Cast");
+                assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+            }
+            other => {
+                panic!("Expected Format(InvalidValue) for invalid failure_behavior, got: {other}")
+            }
+        }
     }
 }
