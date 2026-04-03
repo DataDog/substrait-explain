@@ -455,7 +455,6 @@ impl SimpleExtensions {
             if a == anchor {
                 found = true;
                 if n.full() != name {
-                    // ???
                     return Err(MissingReference::Mismatched(kind, name.to_string(), anchor));
                 }
                 continue;
