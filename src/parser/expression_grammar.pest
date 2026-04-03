@@ -145,9 +145,20 @@ if_then = {
   "if_then(" ~ sp ~ (if_clause  ~ sp ~ "," ~ sp)+ ~ sp ~ "_" ~ sp ~ "->" ~ sp ~ expression ~ ")"
 }
 
+// Cast failure behavior: ? for RETURN_NULL, ! for THROW_EXCEPTION, absent for UNSPECIFIED
+cast_failure_behavior = { "?" | "!" }
+
+// Cast expression: wraps an expression in parens and appends ::target_type
+// Optional failure behavior prefix before the type:
+//   (78:i32)::i16      UNSPECIFIED (default)
+//   (78:i32)::?i16     RETURN_NULL
+//   (78:i32)::!i16     THROW_EXCEPTION
+cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_failure_behavior? ~ sp ~ type }
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifer can be a function call, we put that first.
-expression = { if_then | function_call | reference | literal }
+// cast_expression must come before literal/function_call since it starts with "("
+expression = { if_then | cast_expression | function_call | reference | literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
