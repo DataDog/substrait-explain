@@ -5,41 +5,15 @@ use substrait::proto::{self, Type};
 use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{ExtensionKind, MissingReference};
-use crate::parser::{ErrorKind, MessageParseError};
-
-fn make_lookup_error(
-    kind: ExtensionKind,
-    e: MissingReference,
-    message: &str,
-    span: pest::Span,
-) -> MessageParseError {
-    MessageParseError {
-        message: kind.name(),
-        kind: ErrorKind::Lookup(e),
-        error: Box::new(pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: message.to_string(),
-            },
-            span,
-        )),
-    }
-}
+use crate::parser::MessageParseError;
 
 /// Given a name (plain or compound) and an optional anchor, resolve and
-/// validate the function anchor.
+/// validate the extension anchor.
 ///
-/// When `anchor` is `Some(a)`:
-///   - Looks up the stored name for `a`.
-///   - Accepts the anchor if the stored compound name equals `name` (exact
-///     match) OR if `name` equals the base name of the stored compound name
-///     (e.g. `name = "equal"` matches stored `"equal:any_any"`).
+/// For `Function` kind, delegates to [`SimpleExtensions::resolve_function`]
+/// which encapsulates the full base-name fallback logic.
 ///
-/// When `anchor` is `None`:
-///   - First tries an exact match via `find_by_name` (handles both plain names
-///     and full compound names like `"equal:any_any"`).
-///   - If that returns `MissingName` and `name` contains no `:`, falls back to
-///     `find_by_base_name` so that `equal(…)` resolves when `equal:any_any` is
-///     the only registered overload.
+/// For other kinds, performs a direct anchor/name validation.
 pub(crate) fn get_and_validate_anchor(
     extensions: &SimpleExtensions,
     kind: ExtensionKind,
@@ -47,52 +21,39 @@ pub(crate) fn get_and_validate_anchor(
     name: &str,
     span: pest::Span,
 ) -> Result<u32, MessageParseError> {
+    if kind == ExtensionKind::Function {
+        return extensions
+            .resolve_function(name, anchor)
+            .map(|r| r.anchor)
+            .map_err(|e| {
+                MessageParseError::lookup(kind.name(), e, span, "Error resolving function")
+            });
+    }
+    // For non-function kinds, validate the anchor/name pair directly.
     match anchor {
-        Some(a) => {
-            // Explicit anchor: validate the supplied name is compatible with
-            // the stored compound name (accept either exact or base-name match).
-            match extensions.find_by_anchor(kind, a) {
-                Err(e) => Err(make_lookup_error(
-                    kind,
-                    e,
-                    "Error matching name to anchor",
-                    span,
-                )),
-                Ok((_, stored)) => {
-                    use crate::extensions::simple::base_name;
-                    if stored == name || base_name(stored) == name {
-                        // why do we need both these conditions? Shouldnt just base_name(stored) == name cover it?
-                        Ok(a)
-                    } else {
-                        Err(make_lookup_error(
-                            kind,
-                            MissingReference::Mismatched(kind, name.to_string(), a),
-                            "Error matching name to anchor",
-                            span,
-                        ))
-                    }
+        Some(a) => match extensions.find_by_anchor(kind, a) {
+            Err(e) => Err(MessageParseError::lookup(
+                kind.name(),
+                e,
+                span,
+                "Error matching name to anchor",
+            )),
+            Ok((_, stored)) => {
+                if stored.full() == name || stored.base() == name {
+                    Ok(a)
+                } else {
+                    Err(MessageParseError::lookup(
+                        kind.name(),
+                        MissingReference::Mismatched(kind, name.to_string(), a),
+                        span,
+                        "Error matching name to anchor",
+                    ))
                 }
             }
-        }
-        None => {
-            // No anchor: try exact compound-name match first.
-            match extensions.find_by_name(kind, name) {
-                Ok(a) => Ok(a),
-                // If the name has no ':' and wasn't found as an exact key, it
-                // might be a base-name reference into compound-named entries.
-                Err(MissingReference::MissingName(_, _)) if !name.contains(':') => {
-                    extensions.find_by_base_name(kind, name).map_err(|e| {
-                        make_lookup_error(kind, e, "Error finding extension for name", span)
-                    })
-                }
-                Err(e) => Err(make_lookup_error(
-                    kind,
-                    e,
-                    "Error finding extension for name",
-                    span,
-                )),
-            }
-        }
+        },
+        None => extensions.find_by_name(kind, name).map_err(|e| {
+            MessageParseError::lookup(kind.name(), e, span, "Error finding extension for name")
+        }),
     }
 }
 
@@ -470,127 +431,5 @@ mod tests {
                 }))
             }
         );
-    }
-
-    // ---- Tests for get_and_validate_anchor ----
-
-    fn make_fn_extensions_with_compound_names() -> SimpleExtensions {
-        let mut exts = SimpleExtensions::new();
-        exts.add_extension_urn("test_urn".to_string(), 1).unwrap();
-        exts.add_extension(ExtensionKind::Function, 1, 1, "equal:any_any".to_string())
-            .unwrap();
-        exts.add_extension(ExtensionKind::Function, 1, 2, "equal:str_str".to_string())
-            .unwrap();
-        exts.add_extension(ExtensionKind::Function, 1, 3, "add:i64_i64".to_string())
-            .unwrap();
-        exts
-    }
-
-    fn dummy_span() -> pest::Span<'static> {
-        // A minimal Pest span for testing — points at an empty string.
-        pest::Span::new("", 0, 0).unwrap()
-    }
-
-    #[test]
-    fn test_anchor_exact_compound_name_match() {
-        // Explicit anchor + exact compound name → resolves
-        let exts = make_fn_extensions_with_compound_names();
-        let result = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            Some(1),
-            "equal:any_any",
-            dummy_span(),
-        );
-        assert_eq!(result.unwrap(), 1);
-    }
-
-    #[test]
-    fn test_anchor_base_name_match() {
-        // Explicit anchor + base name only → resolves because stored name starts
-        // with that base name
-        let exts = make_fn_extensions_with_compound_names();
-        let result = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            Some(1),
-            "equal",
-            dummy_span(),
-        );
-        assert_eq!(result.unwrap(), 1);
-    }
-
-    #[test]
-    fn test_anchor_mismatched_name() {
-        // Explicit anchor + wrong name → error
-        let exts = make_fn_extensions_with_compound_names();
-        let result = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            Some(1),
-            "like",
-            dummy_span(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_no_anchor_exact_compound_name() {
-        // No anchor, full compound name → resolves directly
-        let exts = make_fn_extensions_with_compound_names();
-        let result = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            None,
-            "equal:any_any",
-            dummy_span(),
-        );
-        assert_eq!(result.unwrap(), 1);
-        let result2 = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            None,
-            "equal:str_str",
-            dummy_span(),
-        );
-        assert_eq!(result2.unwrap(), 2);
-    }
-
-    #[test]
-    fn test_no_anchor_base_name_unique() {
-        // No anchor, base name only, only one overload → falls back to find_by_base_name
-        let exts = make_fn_extensions_with_compound_names();
-        // "add" has only one overload (add:i64_i64)
-        let result =
-            get_and_validate_anchor(&exts, ExtensionKind::Function, None, "add", dummy_span());
-        assert_eq!(result.unwrap(), 3);
-    }
-
-    #[test]
-    fn test_no_anchor_base_name_ambiguous() {
-        // No anchor, base name only, multiple overloads → DuplicateName error
-        let exts = make_fn_extensions_with_compound_names();
-        // "equal" has two overloads
-        let result =
-            get_and_validate_anchor(&exts, ExtensionKind::Function, None, "equal", dummy_span());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_no_anchor_plain_stored_name() {
-        // Functions stored without a signature still resolve by their plain name
-        let mut exts = SimpleExtensions::new();
-        exts.add_extension_urn("urn".to_string(), 1).unwrap();
-        exts.add_extension(ExtensionKind::Function, 1, 10, "coalesce".to_string())
-            .unwrap();
-
-        let result = get_and_validate_anchor(
-            &exts,
-            ExtensionKind::Function,
-            None,
-            "coalesce",
-            dummy_span(),
-        );
-        assert_eq!(result.unwrap(), 10);
     }
 }

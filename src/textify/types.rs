@@ -7,7 +7,7 @@ use substrait::proto::r#type::{self as ptype};
 
 use super::foundation::{NONSPECIFIC, Scope};
 use super::{PlanError, Textify};
-use crate::extensions::simple::{ExtensionKind, base_name};
+use crate::extensions::simple::{CompoundName, ExtensionKind};
 use crate::textify::foundation::{MaybeToken, Visibility};
 
 const NULLABILITY_UNSPECIFIED: &str = "⁉";
@@ -127,7 +127,7 @@ impl Textify for Anchor {
 #[derive(Debug, Copy, Clone)]
 pub struct NamedAnchor<'a> {
     /// The full stored compound name, e.g. `"equal:any_any"` or `"add"`.
-    pub name: MaybeToken<&'a str>,
+    pub name: MaybeToken<&'a CompoundName>,
     pub anchor: u32,
     /// True if the compound name is unique across all URNs for this extension
     /// kind (i.e. no other URN registers the same full compound name).
@@ -140,26 +140,37 @@ pub struct NamedAnchor<'a> {
 
 impl<'a> NamedAnchor<'a> {
     /// Lookup an anchor in the extensions, and return a NamedAnchor.
-    /// Errors are pushed to the error accumulator along the way.
     pub fn lookup<S: Scope>(ctx: &'a S, kind: ExtensionKind, anchor: u32) -> Self {
+        if kind == ExtensionKind::Function {
+            return match ctx.extensions().lookup_function(anchor) {
+                Ok(r) => Self {
+                    name: MaybeToken(Ok(r.name)),
+                    anchor,
+                    unique: r.name_unique,
+                    base_name_unique: r.base_name_unique,
+                },
+                Err(e) => Self {
+                    name: MaybeToken(Err(ctx.failure(e))),
+                    anchor,
+                    unique: false,
+                    base_name_unique: false,
+                },
+            };
+        }
+        // For non-function kinds, use find_by_anchor + is_name_unique.
+        // base_name_unique defaults to true since non-function names don't use
+        // signature suffixes.
         let ext = ctx.extensions().find_by_anchor(kind, anchor);
         let (name, unique, base_name_unique) = match ext {
             Ok((_, n)) => {
-                let unique = match ctx.extensions().is_name_unique(kind, anchor, n) {
+                let unique = match ctx.extensions().is_name_unique(kind, anchor, n.full()) {
                     Ok(u) => u,
                     Err(e) => {
                         ctx.push_error(e.into());
                         false
                     }
                 };
-                let base_name_unique = match ctx.extensions().is_base_name_unique(kind, anchor) {
-                    Ok(u) => u,
-                    Err(e) => {
-                        ctx.push_error(e.into());
-                        false
-                    }
-                };
-                (MaybeToken(Ok(n)), unique, base_name_unique)
+                (MaybeToken(Ok(n)), unique, true)
             }
             Err(e) => (MaybeToken(Err(ctx.failure(e))), false, false),
         };
@@ -188,9 +199,9 @@ impl<'a> Textify for NamedAnchor<'a> {
         match &self.name.0 {
             Ok(n) => {
                 if show_signature {
-                    write!(w, "{n}")?;
+                    write!(w, "{}", n.full())?;
                 } else {
-                    write!(w, "{}", base_name(n))?;
+                    write!(w, "{}", n.base())?;
                 }
             }
             Err(e) => write!(w, "{e}")?,

@@ -592,14 +592,16 @@ Functions:
             extensions
                 .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 1)
                 .unwrap()
-                .1,
+                .1
+                .full(),
             "equal:any_any"
         );
         assert_eq!(
             extensions
                 .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 3)
                 .unwrap()
-                .1,
+                .1
+                .full(),
             "regexp_match_substring:str_str_i64"
         );
         // Text output must reproduce the input exactly

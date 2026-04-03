@@ -346,30 +346,11 @@ Root[result]
     // Malformed input error test passed
 }
 
-/// A plan where a function has an overloaded compound name. The compact output
-/// must include the signature because the base name is not unique, but must
-/// omit the anchor because the compound name is unique.
-#[test]
-fn test_overloaded_functions_compact_shows_signature() {
-    let simple = r#"=== Extensions
-URNs:
-  @  1: extension:io.substrait:functions_comparison
-Functions:
-  #  1 @  1: equal:any_any
-  #  2 @  1: equal:str_str
-
-=== Plan
-Root[result]
-  Project[$0, equal:any_any($0, $1), equal:str_str($0, $1)]
-    Read[t => a:i64, b:i64, c:string]"#;
-
-    roundtrip_plan(simple);
-}
-
-/// Verbose output always shows signatures and anchors for all functions,
-/// including those with unique base names.
 #[test]
 fn test_overloaded_functions_verbose_shows_signature_and_anchor() {
+    // A plan where a function has an overloaded compound name. The compact output
+    // must include the signature because the base name is not unique, but must
+    // omit the anchor because the compound name is unique.
     let simple = r#"=== Extensions
 URNs:
   @  1: extension:io.substrait:functions_comparison
@@ -382,6 +363,8 @@ Root[result]
   Project[$0, equal:any_any($0, $1), equal:str_str($0, $1)]
     Read[t => a:i64, b:i64, c:string]"#;
 
+    // Verbose output always shows signatures and anchors for all functions,
+    // including those with unique base names.
     let verbose = r#"=== Extensions
 URNs:
   @  1: extension:io.substrait:functions_comparison
@@ -394,14 +377,18 @@ Root[result]
   Project[$0, equal:any_any#1($0, $1), equal:str_str#2($0, $1)]
     Read[t => a:i64, b:i64, c:string]"#;
 
+    roundtrip_plan(simple);
     roundtrip_plan_with_verbose(simple, verbose);
 }
 
 /// A unique function (only one overload registered) uses the base name in
-/// compact mode and the compound name in verbose mode.
+/// compact mode and the compound name with anchor in verbose mode.
+/// Writing the compound name explicitly in input is equivalent to writing
+/// just the base name — both produce the same canonical output.
 #[test]
 fn test_unique_function_compact_omits_signature() {
-    let simple = r#"=== Extensions
+    // Canonical: base name only, because add:i64_i64 is the only "add"
+    let compact = r#"=== Extensions
 URNs:
   @  1: extension:io.substrait:functions_arithmetic
 Functions:
@@ -412,6 +399,19 @@ Root[result]
   Project[$0, add($0, $1)]
     Read[t => a:i64, b:i64]"#;
 
+    // Explicit compound name in input resolves to the same canonical output
+    let compound = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_arithmetic
+Functions:
+  #  1 @  1: add:i64_i64
+
+=== Plan
+Root[result]
+  Project[$0, add:i64_i64($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    // Verbose output always shows the full compound name and anchor
     let verbose = r#"=== Extensions
 URNs:
   @  1: extension:io.substrait:functions_arithmetic
@@ -423,7 +423,8 @@ Root[result]
   Project[$0, add:i64_i64#1($0, $1)]
     Read[t => a:i64, b:i64]"#;
 
-    roundtrip_plan_with_verbose(simple, verbose);
+    assert_roundtrip_canonical(compact, compound);
+    roundtrip_plan_with_verbose(compact, verbose);
 }
 
 /// A plan that mixes unique and overloaded functions.  Compact mode shows
@@ -445,39 +446,6 @@ Root[result]
     Read[t => id:i64, score:i64, name:string]"#;
 
     roundtrip_plan(simple);
-}
-
-/// Verify that a base-name-only reference in a plan text resolves correctly
-/// when the base name is unique (only one overload registered).  The canonical
-/// output uses the base name.
-#[test]
-fn test_base_name_only_resolves_when_unique() {
-    // Canonical form uses the base name because add:i64_i64 is the only "add"
-    let canonical = r#"=== Extensions
-URNs:
-  @  1: extension:io.substrait:functions_arithmetic
-Functions:
-  #  1 @  1: add:i64_i64
-
-=== Plan
-Root[result]
-  Project[$0, add($0, $1)]
-    Read[t => a:i64, b:i64]"#;
-
-    // Equivalent form uses the full compound name in the plan expression.
-    // Both should produce the same canonical (base-name) output.
-    let equivalent = r#"=== Extensions
-URNs:
-  @  1: extension:io.substrait:functions_arithmetic
-Functions:
-  #  1 @  1: add:i64_i64
-
-=== Plan
-Root[result]
-  Project[$0, add:i64_i64($0, $1)]
-    Read[t => a:i64, b:i64]"#;
-
-    assert_roundtrip_canonical(canonical, equivalent);
 }
 
 /// Same compound name registered in two different URNs — the anchor is

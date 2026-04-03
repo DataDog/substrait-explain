@@ -16,7 +16,7 @@ use super::{
     unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
-use crate::extensions::simple::ExtensionKind;
+use crate::extensions::simple::{CompoundName, ExtensionKind};
 use crate::parser::ErrorKind;
 
 /// A field index (e.g., parsed from "$0" -> 0).
@@ -435,8 +435,13 @@ impl ScopedParsePair for ScalarFunction {
         };
 
         iter.done();
-        let anchor =
-            get_and_validate_anchor(extensions, ExtensionKind::Function, anchor, &name.0, span)?;
+        let anchor = get_and_validate_anchor(
+            extensions,
+            ExtensionKind::Function,
+            anchor,
+            name.full(),
+            span,
+        )?;
         Ok(ScalarFunction {
             function_reference: anchor,
             arguments,
@@ -576,11 +581,6 @@ impl ParsePair for Name {
     }
 }
 
-/// A Substrait compound function name, i.e. the token produced by the
-/// `compound_name` grammar rule.  Examples: `"add"`, `"equal:any_any"`,
-/// `"regexp_match_substring:str_str_i64"`.
-pub struct CompoundName(pub String);
-
 impl ParsePair for CompoundName {
     fn rule() -> Rule {
         Rule::compound_name
@@ -592,7 +592,7 @@ impl ParsePair for CompoundName {
 
     fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
-        CompoundName(pair.as_str().to_string())
+        CompoundName::new(pair.as_str())
     }
 }
 
@@ -1006,17 +1006,17 @@ mod tests {
 
     #[test]
     fn test_compound_name_plain() {
-        assert_eq!(parse_compound_name("add").0, "add");
+        assert_eq!(parse_compound_name("add").full(), "add");
     }
 
     #[test]
     fn test_compound_name_with_signature() {
-        assert_eq!(parse_compound_name("equal:any_any").0, "equal:any_any");
+        assert_eq!(parse_compound_name("equal:any_any").full(), "equal:any_any");
         assert_eq!(
-            parse_compound_name("regexp_match_substring:str_str_i64").0,
+            parse_compound_name("regexp_match_substring:str_str_i64").full(),
             "regexp_match_substring:str_str_i64"
         );
-        assert_eq!(parse_compound_name("add:i64_i64").0, "add:i64_i64");
+        assert_eq!(parse_compound_name("add:i64_i64").full(), "add:i64_i64");
     }
 
     #[test]
