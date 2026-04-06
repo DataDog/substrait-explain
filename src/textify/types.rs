@@ -338,9 +338,6 @@ impl Textify for ptype::Kind {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            // This is the expansion of:
-            //     textify_kind!(ctx, w, k, "boolean")
-            // Shown here for visibility
             ptype::Kind::Bool(k) => textify_type(
                 ctx,
                 w,
@@ -360,6 +357,7 @@ impl Textify for ptype::Kind {
             #[allow(deprecated)]
             ptype::Kind::Timestamp(k) => textify_kind!(ctx, w, k, "timestamp"),
             ptype::Kind::Date(k) => textify_kind!(ctx, w, k, "date"),
+            #[allow(deprecated)] // time is deprecated in favor of PrecisionTime
             ptype::Kind::Time(k) => textify_kind!(ctx, w, k, "time"),
             ptype::Kind::IntervalYear(i) => {
                 textify_kind!(ctx, w, i, "interval_year")
@@ -369,7 +367,6 @@ impl Textify for ptype::Kind {
                 textify_kind!(ctx, w, ts, "timestamp_tz")
             }
             ptype::Kind::Uuid(uuid) => textify_kind!(ctx, w, uuid, "uuid"),
-
             ptype::Kind::IntervalDay(i) => textify_type(
                 ctx,
                 w,
@@ -516,6 +513,7 @@ impl Textify for ptype::Kind {
                     ))
                 )
             }
+            ptype::Kind::Func(_func) => unimplemented!(),
         }
     }
 }

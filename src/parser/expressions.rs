@@ -231,6 +231,7 @@ fn to_string_literal(
                 type_variation_reference: d.type_variation_reference,
             })
         }
+        #[allow(deprecated)] // time is deprecated in favor of PrecisionTime
         Kind::Time(t) => {
             // Parse time in ISO 8601 format: HH:MM:SS[.fff]
             let time_microseconds = parse_time_to_microseconds(&string_value, value.as_span())?;
@@ -798,6 +799,7 @@ mod tests {
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
+            #[allow(deprecated)] // time is deprecated in favor of PrecisionTime
             Some(LiteralType::Time(microseconds)) => {
                 // 14:30:45 = (14*3600 + 30*60 + 45) * 1_000_000 microseconds
                 let expected = (14 * 3600 + 30 * 60 + 45) * 1_000_000;

@@ -162,6 +162,7 @@ impl Kinded for LiteralType {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
             })),
+            #[allow(deprecated)] // time is deprecated in favor of PrecisionTime
             LiteralType::Time(_) => Some(Kind::Time(ptype::Time {
                 type_variation_reference: 0,
                 nullability: Nullability::Required.into(),
@@ -279,6 +280,7 @@ impl Textify for LiteralType {
                 let s = days_to_date_string(*days);
                 textify_literal_from_string(&s, k, ctx, w)?
             }
+            #[allow(deprecated)] // time is deprecated in favor of PrecisionTime
             LiteralType::Time(microseconds) => {
                 let k = match self.kind(ctx.extensions()) {
                     Some(k) => k,
@@ -821,6 +823,8 @@ impl Textify for RexType {
                     "Enum textification not implemented",
                 ))
             ),
+            RexType::Lambda(_lambda) => unimplemented!(), // TODO
+            RexType::LambdaInvocation(_lambda_invocation) => unimplemented!(),
         }
     }
 }
