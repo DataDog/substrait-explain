@@ -224,7 +224,7 @@ fn get_output_field_count(rel: &Rel) -> usize {
             // by the measure results.
             agg_rel.grouping_expressions.len() + agg_rel.measures.len()
         }
-        _ => 0,
+        _ => unimplemented!("TODO: implement this for the specific type"),
     }
 }
 
@@ -239,7 +239,7 @@ fn get_emit_kind(rel: &Rel) -> Option<&EmitKind> {
         Some(RelType::Fetch(r)) => r.common.as_ref(),
         Some(RelType::Join(r)) => r.common.as_ref(),
         Some(RelType::Aggregate(r)) => r.common.as_ref(),
-        _ => None,
+        _ => unimplemented!("TODO: implement this for the specific type"),
     }
     .and_then(|c| c.emit_kind.as_ref())
 }
