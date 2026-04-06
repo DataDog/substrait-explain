@@ -8,6 +8,7 @@ use std::fmt;
 
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::rel::RelType;
+use substrait::proto::rel_common::EmitKind;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
     SortRel, plan_rel,
@@ -163,14 +164,16 @@ impl<'a> LineNode<'a> {
 
 /// Return the number of output columns for a relation.
 ///
-/// This is used by `build_rel` to compute the `input_field_count` passed to
-/// `ProjectRel` and `AggregateRel` parsers, which need it to assign correct
-/// emit-mapping indices to their computed expressions.
-///
 /// Extension relations are excluded here intentionally: their output column
 /// count is carried as the `usize` in the `(Rel, usize)` returned by
 /// `build_rel` / `parse_extension_relation`, so they never reach this function.
 fn get_output_field_count(rel: &Rel) -> usize {
+    // An explicit emit mapping defines the exact emitted column count regardless
+    // of relation type
+    if let Some(EmitKind::Emit(e)) = get_emit_kind(rel) {
+        return e.output_mapping.len();
+    }
+
     match &rel.rel_type {
         Some(RelType::Read(read_rel)) => {
             // Read embeds the schema directly — count the typed fields.
@@ -189,16 +192,56 @@ fn get_output_field_count(rel: &Rel) -> usize {
             0
         }
         Some(RelType::Project(project_rel)) => {
-            // Project passes all input columns through unchanged.
+            // Without an emit, Project's direct output is all input columns
+            // followed by all computed expressions.
             if let Some(input) = project_rel.input.as_ref() {
                 return get_output_field_count(input) + project_rel.expressions.len();
             }
             0
         }
-        // TODO: get the input columns right for other relations
-        // <https://github.com/DataDog/substrait-explain/issues/84>
+        Some(RelType::Sort(sort_rel)) => {
+            // Sort passes all input columns through unchanged.
+            if let Some(input) = sort_rel.input.as_ref() {
+                return get_output_field_count(input);
+            }
+            0
+        }
+        Some(RelType::Fetch(fetch_rel)) => {
+            // Fetch (LIMIT/OFFSET) passes all input columns through unchanged.
+            if let Some(input) = fetch_rel.input.as_ref() {
+                return get_output_field_count(input);
+            }
+            0
+        }
+        Some(RelType::Join(join_rel)) => {
+            // Join concatenates the columns of its two inputs.
+            let left = join_rel.left.as_deref().map_or(0, get_output_field_count);
+            let right = join_rel.right.as_deref().map_or(0, get_output_field_count);
+            left + right
+        }
+        Some(RelType::Aggregate(agg_rel)) => {
+            // Aggregate's direct output is the grouping expressions followed
+            // by the measure results.
+            agg_rel.grouping_expressions.len() + agg_rel.measures.len()
+        }
         _ => 0,
     }
+}
+
+/// Extract the emit kind from a relation's `common` field, covering all
+/// standard relation variants that carry it.
+fn get_emit_kind(rel: &Rel) -> Option<&EmitKind> {
+    match &rel.rel_type {
+        Some(RelType::Read(r)) => r.common.as_ref(),
+        Some(RelType::Filter(r)) => r.common.as_ref(),
+        Some(RelType::Project(r)) => r.common.as_ref(),
+        Some(RelType::Sort(r)) => r.common.as_ref(),
+        Some(RelType::Fetch(r)) => r.common.as_ref(),
+        Some(RelType::Join(r)) => r.common.as_ref(),
+        Some(RelType::Aggregate(r)) => r.common.as_ref(),
+        _ => None,
+    }
+    .and_then(|c| c.emit_kind.as_ref())
 }
 
 /// Set the `advanced_extension` field on a [`Rel`], covering all standard
