@@ -516,7 +516,22 @@ impl Textify for expr::Literal {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(self.literal_type.as_ref()))
+        if !self.nullable {
+            return write!(w, "{}", ctx.expect(self.literal_type.as_ref()));
+        }
+        // Nullable: append `?` after the type suffix. Boolean, I64 and Fp64 normally
+        // omit their suffix (or have no suffix at all), so write it explicitly here.
+        match self.literal_type.as_ref() {
+            Some(LiteralType::Boolean(true)) => write!(w, "true:boolean?"),
+            Some(LiteralType::Boolean(false)) => write!(w, "false:boolean?"),
+            Some(LiteralType::I64(i)) => write!(w, "{i}:i64?"),
+            Some(LiteralType::Fp64(f)) => write!(w, "{f}:fp64?"),
+            Some(lit) => {
+                lit.textify(ctx, w)?;
+                write!(w, "?")
+            }
+            None => write!(w, "{}", ctx.expect(None::<&LiteralType>)),
+        }
     }
 }
 
@@ -891,6 +906,55 @@ mod tests {
 
         let literal = LiteralType::Boolean(true);
         assert_eq!(ctx.textify_no_errors(&literal), "true");
+    }
+
+    fn nullable_literal(lit: expr::literal::LiteralType) -> expr::Literal {
+        expr::Literal {
+            nullable: true,
+            type_variation_reference: 0,
+            literal_type: Some(lit),
+        }
+    }
+
+    #[test]
+    fn test_nullable_boolean_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Boolean(true))),
+            "true:boolean?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Boolean(
+                false
+            ))),
+            "false:boolean?"
+        );
+    }
+
+    #[test]
+    fn test_nullable_integer_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::I32(78))),
+            "78:i32?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::I64(42))),
+            "42:i64?"
+        );
+    }
+
+    #[test]
+    fn test_nullable_float_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Fp32(2.5))),
+            "2.5:fp32?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Fp64(3.14))),
+            "3.14:fp64?"
+        );
     }
 
     #[test]
