@@ -8,6 +8,8 @@ pub mod textify;
 
 #[cfg(feature = "cli")]
 pub mod cli;
+#[cfg(feature = "cli")]
+pub mod json;
 
 // Re-export commonly used types for easier access
 pub use parser::ParseError;

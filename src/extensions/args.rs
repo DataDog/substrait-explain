@@ -35,7 +35,7 @@ impl fmt::Display for RawExpression {
 /// Represents the arguments and output columns for an extension relation.
 ///
 /// Named arguments are stored in an [`IndexMap`] whose iteration order
-/// determines display order. Extension [`Explainable::to_args()`]
+/// determines display order. Extension [`super::Explainable::to_args()`]
 /// implementations should insert named arguments in the order they should
 /// appear in the text format.
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub struct ExtensionArgs {
 /// Tracks which arguments have been consumed. Callers **must** call
 /// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
 /// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic (matching the [`RuleIter`] pattern).
+/// calling `check_exhausted` will panic (matching the [`RuleIter`](crate::parser::RuleIter) pattern).
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
     consumed: HashSet<&'a str>,
@@ -166,6 +166,8 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// Field reference ($0, $1, etc.)
     Reference(i32),
+    /// Enum value (e.g. &CORE, &Inner) — Uses the wrapper EnumValue. the string holds the identifier without the `&` prefix
+    Enum(String),
     /// Expression (function call, etc.) — not yet fully supported, hence the
     /// private interface.
     #[allow(private_interfaces)]
@@ -180,6 +182,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Float(n) => write!(f, "Float({})", n),
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
+            ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
             ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
     }
@@ -206,6 +209,22 @@ impl TryFrom<ExtensionValue> for String {
             ExtensionValue::String(s) => Ok(s),
             v => Err(ExtensionError::InvalidArgument(format!(
                 "Expected string, got {v}",
+            ))),
+        }
+    }
+}
+
+/// Helper for extracting the identifier from an [`ExtensionValue::Enum`].
+pub struct EnumValue(pub String);
+
+impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
+    type Error = ExtensionError;
+
+    fn try_from(value: &'a ExtensionValue) -> Result<EnumValue, Self::Error> {
+        match value {
+            ExtensionValue::Enum(s) => Ok(EnumValue(s.clone())),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected enum, got {v}",
             ))),
         }
     }

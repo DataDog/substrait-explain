@@ -2,59 +2,19 @@
 //!
 //! This module provides [`Textify`] implementations for extension-related
 //! types, including [`ExtensionValue`], [`ExtensionColumn`], [`ExtensionArgs`],
-//! and the various extension relation types ([`ExtensionLeafRel`],
-//! [`ExtensionSingleRel`], [`ExtensionMultiRel`]).
+//! and the various extension relation types ([`substrait::proto::ExtensionLeafRel`],
+//! [`substrait::proto::ExtensionSingleRel`], [`substrait::proto::ExtensionMultiRel`]).
 
 use std::fmt;
 
-use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+use substrait::proto::extensions::AdvancedExtension;
 
+use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::registry::ExtensionError;
+use crate::extensions::registry::ExtensionType;
 use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
-use crate::textify::foundation::{Scope, Textify};
+use crate::textify::foundation::{PlanError, Scope, Textify};
 use crate::textify::types::escaped;
-
-/// Decode an extension from an [`AnyRef`], and format it as text
-fn format_extension<S: Scope, W: fmt::Write>(
-    ctx: &S,
-    w: &mut W,
-    extension_type: &str,
-    detail: Option<AnyRef<'_>>,
-) -> fmt::Result {
-    let indent = ctx.indent();
-
-    match detail {
-        Some(detail) => {
-            // Decode the extension using the registry
-            let registry = ctx.extension_registry();
-            match registry.decode(detail) {
-                Ok((name, args)) => {
-                    // Success: format with extension name and args (with built-in ordering)
-                    write!(
-                        w,
-                        "{}{}:{}[{}]",
-                        indent,
-                        extension_type,
-                        name,
-                        ctx.display(&args)
-                    )?;
-                }
-                Err(error) => {
-                    // Error decoding: format with error token
-                    write!(w, "{}{}[{}]", indent, extension_type, ctx.failure(error))?;
-                }
-            }
-        }
-        None => {
-            // No detail provided: format with error token
-            let error = ExtensionError::MissingDetail;
-            write!(w, "{}{}[{}]", indent, extension_type, ctx.failure(error))?;
-        }
-    }
-
-    Ok(())
-}
 
 impl Textify for ExtensionValue {
     fn name() -> &'static str {
@@ -68,6 +28,7 @@ impl Textify for ExtensionValue {
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Reference(r) => write!(w, "${r}"),
+            ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
     }
@@ -127,74 +88,74 @@ impl Textify for ExtensionArgs {
     }
 }
 
-/// Textify children relations with proper indentation
-fn textify_children<S: Scope, W: fmt::Write>(
+/// Textify a single enhancement or optimization line.
+///
+/// Emits one of:
+/// - `{indent}+ Enh:Name[args]`
+/// - `{indent}+ Opt:Name[args]`
+fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     ctx: &S,
     w: &mut W,
-    children: &[substrait::proto::Rel],
+    ext_type: ExtensionType,
+    detail: AnyRef<'_>,
 ) -> fmt::Result {
-    let child_scope = ctx.push_indent();
-    for child in children {
-        writeln!(w)?;
-        child.textify(&child_scope, w)?;
+    let indent = ctx.indent();
+    let registry = ctx.extension_registry();
+    let (prefix, decode_result) = match ext_type {
+        ExtensionType::Enhancement => ("Enh", registry.decode_enhancement(detail)),
+        ExtensionType::Optimization => ("Opt", registry.decode_optimization(detail)),
+        ExtensionType::Relation => unreachable!("Relation extensions don't use adv_ext lines"),
+    };
+    match decode_result {
+        Ok((name, args)) => {
+            if !args.output_columns.is_empty() {
+                write!(
+                    w,
+                    "{indent}+ {prefix}[{}]",
+                    ctx.failure(FormatError::Format(PlanError::invalid(
+                        "adv_extension",
+                        Some(name),
+                        "output_columns cannot be represented in adv_extension syntax",
+                    )))
+                )
+            } else {
+                write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
+            }
+        }
+        Err(error) => {
+            write!(w, "{indent}+ {prefix}[{}]", ctx.failure(error))
+        }
     }
-    Ok(())
 }
 
-/// Textify a single child relation with proper indentation
-fn textify_child<S: Scope, W: fmt::Write>(
-    ctx: &S,
-    w: &mut W,
-    child: Option<&substrait::proto::Rel>,
-) -> fmt::Result {
-    if let Some(input) = child {
-        let child_scope = ctx.push_indent();
-        writeln!(w)?;
-        input.textify(&child_scope, w)?;
-    }
-    Ok(())
-}
-
-impl Textify for ExtensionLeafRel {
+impl Textify for AdvancedExtension {
     fn name() -> &'static str {
-        "ExtensionLeafRel"
+        "AdvancedExtension"
     }
 
+    /// Textify all enhancement and optimization lines for an [`AdvancedExtension`].
+    ///
+    /// Writes one `+ Enh:` line (if an enhancement is present) followed by zero
+    /// or more `+ Opt:` lines, each preceded by a newline.
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Convert prost_types::Any to AnyRef at the boundary
-        let detail_ref = self.detail.as_ref().map(AnyRef::from);
-        format_extension(ctx, w, "ExtensionLeaf", detail_ref)
-    }
-}
-
-impl Textify for ExtensionSingleRel {
-    fn name() -> &'static str {
-        "ExtensionSingleRel"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Convert prost_types::Any to AnyRef at the boundary
-        let detail_ref = self.detail.as_ref().map(AnyRef::from);
-        format_extension(ctx, w, "ExtensionSingle", detail_ref)?;
-
-        // Add child input regardless of whether extension was resolved
-        textify_child(ctx, w, self.input.as_deref())?;
-        Ok(())
-    }
-}
-
-impl Textify for ExtensionMultiRel {
-    fn name() -> &'static str {
-        "ExtensionMultiRel"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Convert prost_types::Any to AnyRef at the boundary
-        let detail_ref = self.detail.as_ref().map(AnyRef::from);
-        format_extension(ctx, w, "ExtensionMulti", detail_ref)?;
-
-        // Add child inputs regardless of whether extension was resolved
-        textify_children(ctx, w, &self.inputs)?;
+        if let Some(enhancement) = &self.enhancement {
+            writeln!(w)?;
+            format_adv_ext_line(
+                ctx,
+                w,
+                ExtensionType::Enhancement,
+                AnyRef::from(enhancement),
+            )?;
+        }
+        for optimization in &self.optimization {
+            writeln!(w)?;
+            format_adv_ext_line(
+                ctx,
+                w,
+                ExtensionType::Optimization,
+                AnyRef::from(optimization),
+            )?;
+        }
         Ok(())
     }
 }

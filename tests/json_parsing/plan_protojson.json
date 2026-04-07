@@ -1,0 +1,21 @@
+{
+  "relations": [
+    {
+      "root": {
+        "input": {
+          "extensionLeaf": {
+            "detail": {
+              "@type": "type.googleapis.com/example.ParquetScanConfig",
+              "path": "data/sales.parquet",
+              "batchSize": "2048"
+            }
+          }
+        },
+        "names": [
+          "customer_id",
+          "amount"
+        ]
+      }
+    }
+  ]
+}

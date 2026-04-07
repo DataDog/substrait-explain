@@ -4,7 +4,8 @@ use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
-    FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, reference_segment,
+    Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
+    reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
@@ -453,6 +454,50 @@ impl ScopedParsePair for ScalarFunction {
     }
 }
 
+impl ScopedParsePair for Cast {
+    fn rule() -> Rule {
+        Rule::cast_expression
+    }
+
+    fn message() -> &'static str {
+        "Cast"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut pairs = pair.into_inner();
+
+        let expr_pair = pairs.next().unwrap();
+
+        // Optional failure behavior prefix: ? = RETURN_NULL, ! = THROW_EXCEPTION
+        let next = pairs.next().unwrap();
+        let (failure_behavior, type_pair) = if next.as_rule() == Rule::cast_failure_behavior {
+            let fb = match next.as_str() {
+                "?" => cast::FailureBehavior::ReturnNull as i32,
+                "!" => cast::FailureBehavior::ThrowException as i32,
+                _ => unreachable!("Grammar guarantees cast_failure_behavior is ? or !"),
+            };
+            (fb, pairs.next().unwrap())
+        } else {
+            (cast::FailureBehavior::Unspecified as i32, next)
+        };
+
+        assert!(pairs.next().is_none());
+
+        let input = Expression::parse_pair(extensions, expr_pair)?;
+        let target_type = Type::parse_pair(extensions, type_pair)?;
+
+        Ok(Cast {
+            r#type: Some(target_type),
+            input: Some(Box::new(input)),
+            failure_behavior,
+        })
+    }
+}
+
 impl ScopedParsePair for Expression {
     fn rule() -> Rule {
         Rule::expression
@@ -487,8 +532,13 @@ impl ScopedParsePair for Expression {
                     extensions, inner,
                 )?))),
             }),
+            Rule::cast_expression => Ok(Expression {
+                rex_type: Some(RexType::Cast(Box::new(Cast::parse_pair(
+                    extensions, inner,
+                )?))),
+            }),
             _ => unreachable!(
-                "Grammar guarantees expression can only be literal, function_call, reference, or if_then, got: {:?}",
+                "Grammar guarantees expression can only be literal, function_call, reference, if_then, or cast_expression, got: {:?}",
                 inner.as_rule()
             ),
         }
@@ -1122,5 +1172,130 @@ mod tests {
         let pair = parse_exact(Rule::function_call, "like#1($0)");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
+    }
+
+    #[test]
+    fn test_parse_cast_expression_basic() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+
+        // Input should be 78:i32
+        let input = result.input.as_ref().unwrap();
+        match &input.rex_type {
+            Some(RexType::Literal(lit)) => match &lit.literal_type {
+                Some(LiteralType::I32(v)) => assert_eq!(*v, 78),
+                other => panic!("Expected I32 literal, got: {:?}", other),
+            },
+            other => panic!("Expected literal, got: {:?}", other),
+        }
+
+        // Target type should be i16
+        let target = result.r#type.as_ref().unwrap();
+        match &target.kind {
+            Some(substrait::proto::r#type::Kind::I16(_)) => {}
+            other => panic!("Expected i16 type, got: {:?}", other),
+        }
+
+        assert_eq!(result.failure_behavior, 0);
+    }
+
+    #[test]
+    fn test_parse_cast_expression_via_expression_rule() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::expression, "(78:i32)::i16");
+        let result = Expression::parse_pair(&extensions, pair).unwrap();
+
+        match result.rex_type {
+            Some(RexType::Cast(_)) => {}
+            other => panic!("Expected Cast rex type, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_cast_expression_nested() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "((78:i32)::i16)::i32");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+
+        // Input should itself be a Cast
+        let input = result.input.as_ref().unwrap();
+        match &input.rex_type {
+            Some(RexType::Cast(inner)) => {
+                let inner_input = inner.input.as_ref().unwrap();
+                match &inner_input.rex_type {
+                    Some(RexType::Literal(lit)) => match &lit.literal_type {
+                        Some(LiteralType::I32(v)) => assert_eq!(*v, 78),
+                        other => panic!("Expected I32 literal, got: {:?}", other),
+                    },
+                    other => panic!("Expected literal, got: {:?}", other),
+                }
+            }
+            other => panic!("Expected inner Cast, got: {:?}", other),
+        }
+
+        match &result.r#type.as_ref().unwrap().kind {
+            Some(substrait::proto::r#type::Kind::I32(_)) => {}
+            other => panic!("Expected i32 outer type, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_cast_expression_with_boolean() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(true)::i32");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+
+        let input = result.input.as_ref().unwrap();
+        match &input.rex_type {
+            Some(RexType::Literal(lit)) => match &lit.literal_type {
+                Some(LiteralType::Boolean(v)) => assert!(*v),
+                other => panic!("Expected Boolean literal, got: {:?}", other),
+            },
+            other => panic!("Expected literal, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_cast_expression_with_whitespace() {
+        let extensions = SimpleExtensions::default();
+        // Grammar allows optional whitespace around the expression and ::
+        let pair = parse_exact(Rule::cast_expression, "( 78:i32 ) :: i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert!(result.input.is_some());
+        assert!(result.r#type.is_some());
+    }
+
+    #[test]
+    fn test_parse_cast_unspecified_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::Unspecified as i32
+        );
+    }
+
+    #[test]
+    fn test_parse_cast_return_null_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::?i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::ReturnNull as i32
+        );
+    }
+
+    #[test]
+    fn test_parse_cast_throw_exception_failure_behavior() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::cast_expression, "(78:i32)::!i16");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        assert_eq!(
+            result.failure_behavior,
+            cast::FailureBehavior::ThrowException as i32
+        );
     }
 }
