@@ -822,11 +822,11 @@ mod tests {
     fn test_parse_nullable_float_literal() {
         let extensions = SimpleExtensions::default();
         let expected_fp64 = Literal {
-            literal_type: Some(LiteralType::Fp64(3.14)),
+            literal_type: Some(LiteralType::Fp64(3.19)),
             nullable: true,
             type_variation_reference: 0,
         };
-        assert_parses_with(&extensions, "3.14:fp64?", expected_fp64);
+        assert_parses_with(&extensions, "3.19:fp64?", expected_fp64);
     }
 
     #[test]
