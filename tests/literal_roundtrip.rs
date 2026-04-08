@@ -80,6 +80,39 @@ Root[result]
 }
 
 #[test]
+fn test_nullable_integer_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project[78:i32?, 42:i64?]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_nullable_boolean_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project[true:boolean?, false:boolean?]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_nullable_float_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project[3.14:fp64?, 2.5:fp32?]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_if_then_expression_roundtrip() {
     let plan = r#"
 === Plan

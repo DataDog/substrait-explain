@@ -186,14 +186,38 @@ fn to_float_literal(
     })
 }
 
-fn to_boolean_literal(value: pest::iterators::Pair<Rule>) -> Result<Literal, MessageParseError> {
+fn to_boolean_literal(
+    value: pest::iterators::Pair<Rule>,
+    typ: Option<Type>,
+) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::boolean);
     let parsed_value: bool = value.as_str().parse().unwrap();
 
+    let (nullable, tvar) = match typ.and_then(|t| t.kind) {
+        Some(Kind::Bool(b)) => (
+            b.nullability != Nullability::Required as i32,
+            b.type_variation_reference,
+        ),
+        None => (false, 0),
+        Some(k) => {
+            let pest_error = pest::error::Error::new_from_span(
+                pest::error::ErrorVariant::CustomError {
+                    message: format!("Invalid type for boolean literal: {k:?}"),
+                },
+                value.as_span(),
+            );
+            return Err(MessageParseError {
+                message: "bool_literal_type",
+                kind: ErrorKind::InvalidValue,
+                error: Box::new(pest_error),
+            });
+        }
+    };
+
     Ok(Literal {
         literal_type: Some(LiteralType::Boolean(parsed_value)),
-        nullable: false,
-        type_variation_reference: 0,
+        nullable,
+        type_variation_reference: tvar,
     })
 }
 
@@ -383,7 +407,7 @@ impl ScopedParsePair for Literal {
         match value.as_rule() {
             Rule::integer => to_int_literal(value, typ),
             Rule::float => to_float_literal(value, typ),
-            Rule::boolean => to_boolean_literal(value),
+            Rule::boolean => to_boolean_literal(value, typ),
             Rule::string_literal => to_string_literal(value, typ),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
@@ -778,6 +802,51 @@ mod tests {
             type_variation_reference: 0,
         };
         assert_parses_with(&extensions, "false", expected);
+    }
+
+    #[test]
+    fn test_parse_nullable_boolean_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected_true = Literal {
+            literal_type: Some(LiteralType::Boolean(true)),
+            nullable: true,
+            type_variation_reference: 0,
+        };
+        let expected_false = Literal {
+            literal_type: Some(LiteralType::Boolean(false)),
+            nullable: true,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "true:boolean?", expected_true);
+        assert_parses_with(&extensions, "false:boolean?", expected_false);
+    }
+
+    #[test]
+    fn test_parse_nullable_integer_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected_i32 = Literal {
+            literal_type: Some(LiteralType::I32(78)),
+            nullable: true,
+            type_variation_reference: 0,
+        };
+        let expected_i64 = Literal {
+            literal_type: Some(LiteralType::I64(42)),
+            nullable: true,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "78:i32?", expected_i32);
+        assert_parses_with(&extensions, "42:i64?", expected_i64);
+    }
+
+    #[test]
+    fn test_parse_nullable_float_literal() {
+        let extensions = SimpleExtensions::default();
+        let expected_fp64 = Literal {
+            literal_type: Some(LiteralType::Fp64(3.19)),
+            nullable: true,
+            type_variation_reference: 0,
+        };
+        assert_parses_with(&extensions, "3.19:fp64?", expected_fp64);
     }
 
     #[test]

@@ -8,13 +8,11 @@ use substrait::proto::expression::{
     Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
-use substrait::proto::r#type::{self as ptype, Kind, Nullability};
 use substrait::proto::{
     AggregateFunction, Expression, FunctionArgument, FunctionOption, expression as expr,
 };
 
 use super::{PlanError, Scope, Textify, Visibility};
-use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
@@ -42,13 +40,21 @@ pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W)
     Ok(())
 }
 
-pub fn textify_literal_from_string<S: Scope, W: fmt::Write>(
-    s: &str,
-    t: Kind,
+/// Write an error token for a literal type that hasn't been implemented yet.
+fn unimplemented_literal<S: Scope, W: fmt::Write>(
+    variant: &'static str,
     ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
-    write!(w, "\'{}\':{}", escaped(s), ctx.display(&t))
+    write!(
+        w,
+        "{}",
+        ctx.failure(PlanError::unimplemented(
+            "LiteralType",
+            Some(variant),
+            format!("{variant} literal textification not implemented"),
+        ))
+    )
 }
 
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
@@ -110,404 +116,110 @@ fn microseconds_to_timestamp_string(microseconds: i64) -> String {
     }
 }
 
-trait Kinded {
-    fn kind(&self, ctx: &SimpleExtensions) -> Option<Kind>;
-}
-
-impl Kinded for LiteralType {
-    fn kind(&self, _ctx: &SimpleExtensions) -> Option<Kind> {
-        match self {
-            LiteralType::Boolean(_) => Some(Kind::Bool(ptype::Boolean {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::I8(_) => Some(Kind::I8(ptype::I8 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::I16(_) => Some(Kind::I16(ptype::I16 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::I32(_) => Some(Kind::I32(ptype::I32 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::I64(_) => Some(Kind::I64(ptype::I64 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::Fp32(_) => Some(Kind::Fp32(ptype::Fp32 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::Fp64(_) => Some(Kind::Fp64(ptype::Fp64 {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::String(_) => Some(Kind::String(ptype::String {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::Binary(_) => Some(Kind::Binary(ptype::Binary {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            #[allow(deprecated)]
-            LiteralType::Timestamp(_) => Some(Kind::Timestamp(ptype::Timestamp {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::Date(_) => Some(Kind::Date(ptype::Date {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::Time(_) => Some(Kind::Time(ptype::Time {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::IntervalYearToMonth(_) => Some(Kind::IntervalYear(ptype::IntervalYear {
-                type_variation_reference: 0,
-                nullability: Nullability::Required.into(),
-            })),
-            LiteralType::IntervalDayToSecond(i) => {
-                let precision = match i.precision_mode {
-                    #[allow(deprecated)]
-                    Some(expr::literal::interval_day_to_second::PrecisionMode::Microseconds(
-                        _m,
-                    )) => Some(6),
-                    Some(expr::literal::interval_day_to_second::PrecisionMode::Precision(p)) => {
-                        Some(p)
-                    }
-                    // Unset precision is 0; protobuf defaults to 0
-                    None => None,
-                };
-
-                Some(Kind::IntervalDay(ptype::IntervalDay {
-                    type_variation_reference: 0,
-                    nullability: Nullability::Required.into(),
-                    precision,
-                }))
-            }
-            LiteralType::IntervalCompound(_) => todo!(),
-            LiteralType::FixedChar(_) => todo!(),
-            LiteralType::VarChar(_c) => todo!(),
-            LiteralType::FixedBinary(_b) => todo!(),
-            LiteralType::Decimal(_d) => todo!(),
-            LiteralType::PrecisionTime(_t) => todo!(),
-            LiteralType::PrecisionTimestamp(t) => {
-                Some(Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
-                    type_variation_reference: 0,
-                    nullability: Nullability::Required.into(),
-                    precision: t.precision,
-                }))
-            }
-            LiteralType::PrecisionTimestampTz(_t) => todo!(),
-            LiteralType::Struct(_s) => todo!(),
-            LiteralType::Map(_m) => todo!(),
-            #[allow(deprecated)]
-            LiteralType::TimestampTz(_t) => todo!(),
-            LiteralType::Uuid(_u) => todo!(),
-            LiteralType::Null(_n) => todo!(),
-            LiteralType::List(_l) => todo!(),
-            LiteralType::EmptyList(_l) => todo!(),
-            LiteralType::EmptyMap(_m) => todo!(),
-            LiteralType::UserDefined(_u) => todo!(),
+/// Write just the value portion of a literal, with no type suffix or
+/// nullability marker.
+///
+/// For unimplemented types, writes an error token via `ctx.failure()`.
+fn write_literal_value<S: Scope, W: fmt::Write>(
+    lit: &LiteralType,
+    ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    match lit {
+        LiteralType::Boolean(b) => write!(w, "{b}"),
+        LiteralType::I8(i) | LiteralType::I16(i) | LiteralType::I32(i) => write!(w, "{i}"),
+        LiteralType::I64(i) => write!(w, "{i}"),
+        LiteralType::Fp32(f) => write!(w, "{f}"),
+        LiteralType::Fp64(f) => write!(w, "{f}"),
+        LiteralType::String(s) => write!(w, "'{}'", s.escape_debug()),
+        LiteralType::Binary(items) => textify_binary(items, ctx, w),
+        LiteralType::Date(days) => {
+            write!(w, "'{}'", escaped(&days_to_date_string(*days)))
         }
+        LiteralType::Time(microseconds) => {
+            write!(
+                w,
+                "'{}'",
+                escaped(&microseconds_to_time_string(*microseconds))
+            )
+        }
+        #[allow(deprecated)]
+        LiteralType::Timestamp(microseconds) => {
+            write!(
+                w,
+                "'{}'",
+                escaped(&microseconds_to_timestamp_string(*microseconds))
+            )
+        }
+        LiteralType::IntervalYearToMonth(_) => unimplemented_literal("IntervalYearToMonth", ctx, w),
+        LiteralType::IntervalDayToSecond(_) => unimplemented_literal("IntervalDayToSecond", ctx, w),
+        LiteralType::IntervalCompound(_) => unimplemented_literal("IntervalCompound", ctx, w),
+        LiteralType::FixedChar(_) => unimplemented_literal("FixedChar", ctx, w),
+        LiteralType::VarChar(_) => unimplemented_literal("VarChar", ctx, w),
+        LiteralType::FixedBinary(_) => unimplemented_literal("FixedBinary", ctx, w),
+        LiteralType::Decimal(_) => unimplemented_literal("Decimal", ctx, w),
+        LiteralType::PrecisionTime(_) => unimplemented_literal("PrecisionTime", ctx, w),
+        LiteralType::PrecisionTimestamp(_) => unimplemented_literal("PrecisionTimestamp", ctx, w),
+        LiteralType::PrecisionTimestampTz(_) => {
+            unimplemented_literal("PrecisionTimestampTz", ctx, w)
+        }
+        LiteralType::Struct(_) => unimplemented_literal("Struct", ctx, w),
+        LiteralType::Map(_) => unimplemented_literal("Map", ctx, w),
+        #[allow(deprecated)]
+        LiteralType::TimestampTz(_) => unimplemented_literal("TimestampTz", ctx, w),
+        LiteralType::Uuid(_) => unimplemented_literal("Uuid", ctx, w),
+        LiteralType::Null(_) => unimplemented_literal("Null", ctx, w),
+        LiteralType::List(_) => unimplemented_literal("List", ctx, w),
+        LiteralType::EmptyList(_) => unimplemented_literal("EmptyList", ctx, w),
+        LiteralType::EmptyMap(_) => unimplemented_literal("EmptyMap", ctx, w),
+        LiteralType::UserDefined(_) => unimplemented_literal("UserDefined", ctx, w),
     }
 }
 
-impl Textify for LiteralType {
-    fn name() -> &'static str {
-        "LiteralType"
+/// The type suffix for a literal (e.g., `"i32"`, `"fp64"`, `"date"`).
+///
+/// Returns `None` for unimplemented types whose [`write_literal_value`] already
+/// emitted an error token.
+fn literal_type_suffix(lit: &LiteralType) -> Option<&'static str> {
+    match lit {
+        LiteralType::Boolean(_) => Some("boolean"),
+        LiteralType::I8(_) => Some("i8"),
+        LiteralType::I16(_) => Some("i16"),
+        LiteralType::I32(_) => Some("i32"),
+        LiteralType::I64(_) => Some("i64"),
+        LiteralType::Fp32(_) => Some("fp32"),
+        LiteralType::Fp64(_) => Some("fp64"),
+        LiteralType::String(_) => Some("string"),
+        LiteralType::Binary(_) => Some("binary"),
+        LiteralType::Date(_) => Some("date"),
+        LiteralType::Time(_) => Some("time"),
+        #[allow(deprecated)]
+        LiteralType::Timestamp(_) => Some("timestamp"),
+        _ => None,
     }
+}
 
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        match self {
-            LiteralType::Boolean(true) => write!(w, "true")?,
-            LiteralType::Boolean(false) => write!(w, "false")?,
-            LiteralType::I8(i) => write!(w, "{i}:i8")?,
-            LiteralType::I16(i) => write!(w, "{i}:i16")?,
-            LiteralType::I32(i) => write!(w, "{i}:i32")?,
-            LiteralType::I64(i) => {
-                match ctx.options().literal_types {
-                    Visibility::Always => write!(w, "{i}:i64")?,
-                    Visibility::Required => write!(w, "{i}")?, // I64 is the default, no suffix needed
-                    Visibility::Never => write!(w, "{i}")?,
-                }
-            }
-            LiteralType::Fp32(f) => write!(w, "{f}:fp32")?,
-            LiteralType::Fp64(f) => {
-                match ctx.options().literal_types {
-                    Visibility::Always => write!(w, "{f}:fp64")?,
-                    Visibility::Required => write!(w, "{f}")?, // Fp64 is the default, no suffix needed
-                    Visibility::Never => write!(w, "{f}")?,
-                }
-            }
-            LiteralType::String(s) => write!(w, "'{}'", s.escape_debug())?,
-            LiteralType::Binary(items) => textify_binary(items, ctx, w)?,
-            #[allow(deprecated)]
-            LiteralType::Timestamp(microseconds) => {
-                let k = match self.kind(ctx.extensions()) {
-                    Some(k) => k,
-                    None => {
-                        let err = PlanError::internal(
-                            "LiteralType",
-                            Some("Timestamp"),
-                            format!("No kind found for {self:?}"),
-                        );
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                let s = microseconds_to_timestamp_string(*microseconds);
-                textify_literal_from_string(&s, k, ctx, w)?
-            }
-            LiteralType::Date(days) => {
-                let k = match self.kind(ctx.extensions()) {
-                    Some(k) => k,
-                    None => {
-                        let err = PlanError::internal(
-                            "LiteralType",
-                            Some("Date"),
-                            format!("No kind found for {self:?}"),
-                        );
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                let s = days_to_date_string(*days);
-                textify_literal_from_string(&s, k, ctx, w)?
-            }
-            LiteralType::Time(microseconds) => {
-                let k = match self.kind(ctx.extensions()) {
-                    Some(k) => k,
-                    None => {
-                        let err = PlanError::internal(
-                            "LiteralType",
-                            Some("Time"),
-                            format!("No kind found for {self:?}"),
-                        );
-                        write!(w, "{}", ctx.failure(err))?;
-                        return Ok(());
-                    }
-                };
-                let s = microseconds_to_time_string(*microseconds);
-                textify_literal_from_string(&s, k, ctx, w)?
-            }
-            LiteralType::IntervalYearToMonth(_i) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("IntervalYearToMonth"),
-                        "IntervalYearToMonth literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::IntervalDayToSecond(_i) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("IntervalDayToSecond"),
-                        "IntervalDayToSecond literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::IntervalCompound(_i) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("IntervalCompound"),
-                        "IntervalCompound literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::FixedChar(_c) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("FixedChar"),
-                        "FixedChar literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::VarChar(_c) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("VarChar"),
-                        "VarChar literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::FixedBinary(_i) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("FixedBinary"),
-                        "FixedBinary literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::Decimal(_d) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Decimal"),
-                        "Decimal literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::PrecisionTime(_p) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("PrecisionTime"),
-                        "PrecisionTime literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::PrecisionTimestamp(_p) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("PrecisionTimestamp"),
-                        "PrecisionTimestamp literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::PrecisionTimestampTz(_p) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("PrecisionTimestampTz"),
-                        "PrecisionTimestampTz literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::Struct(_s) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Struct"),
-                        "Struct literal textification not implemented",
-                    )),
-                );
-            }
-            LiteralType::Map(_m) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Map"),
-                        "Map literal textification not implemented",
-                    )),
-                );
-            }
-            #[allow(deprecated)]
-            LiteralType::TimestampTz(_t) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("TimestampTz"),
-                        "TimestampTz literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::Uuid(_u) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Uuid"),
-                        "Uuid literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::Null(_n) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("Null"),
-                        "Null literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::List(_l) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("List"),
-                        "List literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::EmptyList(_l) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("EmptyList"),
-                        "EmptyList literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::EmptyMap(_l) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("EmptyMap"),
-                        "EmptyMap literal textification not implemented",
-                    ))
-                );
-            }
-            LiteralType::UserDefined(_u) => {
-                return write!(
-                    w,
-                    "{}",
-                    ctx.failure(PlanError::unimplemented(
-                        "LiteralType",
-                        Some("UserDefined"),
-                        "UserDefined literal textification not implemented",
-                    ))
-                );
-            }
-        }
-        Ok(())
-    }
+/// Whether this type is the default interpretation for its value syntax.
+///
+/// Each literal value syntax has a default type that the parser assumes when
+/// no explicit type suffix is present:
+/// - `true`/`false` → `boolean`
+/// - bare integers (`42`) → `i64`
+/// - bare floats (`3.19`) → `fp64`
+/// - single-quoted strings (`'hello'`) → `string`
+/// - hex literals (`0x...`) → `binary`
+///
+/// Non-default types (e.g., `i32`, `fp32`, `date`) always need an explicit
+/// suffix to distinguish them from the default.
+fn is_default_for_syntax(lit: &LiteralType) -> bool {
+    matches!(
+        lit,
+        LiteralType::Boolean(_)
+            | LiteralType::String(_)
+            | LiteralType::Binary(_)
+            | LiteralType::I64(_)
+            | LiteralType::Fp64(_)
+    )
 }
 
 impl Textify for expr::Literal {
@@ -516,7 +228,32 @@ impl Textify for expr::Literal {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(self.literal_type.as_ref()))
+        let Some(lit) = self.literal_type.as_ref() else {
+            return write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::invalid(
+                    "Literal",
+                    Some("literal_type"),
+                    "missing literal_type",
+                ))
+            );
+        };
+        write_literal_value(lit, ctx, w)?;
+        let show_suffix = match ctx.options().literal_types {
+            Visibility::Never => false,
+            Visibility::Always => true,
+            Visibility::Required => self.nullable || !is_default_for_syntax(lit),
+        };
+        if show_suffix {
+            if let Some(suffix) = literal_type_suffix(lit) {
+                write!(w, ":{suffix}")?;
+            }
+            if self.nullable {
+                write!(w, "?")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -885,12 +622,69 @@ mod tests {
         }
     }
 
+    fn non_nullable_literal(lit: expr::literal::LiteralType) -> expr::Literal {
+        expr::Literal {
+            nullable: false,
+            type_variation_reference: 0,
+            literal_type: Some(lit),
+        }
+    }
+
     #[test]
     fn test_literal_textify() {
         let ctx = TestContext::new();
 
-        let literal = LiteralType::Boolean(true);
+        let literal = non_nullable_literal(LiteralType::Boolean(true));
         assert_eq!(ctx.textify_no_errors(&literal), "true");
+    }
+
+    fn nullable_literal(lit: expr::literal::LiteralType) -> expr::Literal {
+        expr::Literal {
+            nullable: true,
+            type_variation_reference: 0,
+            literal_type: Some(lit),
+        }
+    }
+
+    #[test]
+    fn test_nullable_boolean_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Boolean(true))),
+            "true:boolean?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Boolean(
+                false
+            ))),
+            "false:boolean?"
+        );
+    }
+
+    #[test]
+    fn test_nullable_integer_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::I32(78))),
+            "78:i32?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::I64(42))),
+            "42:i64?"
+        );
+    }
+
+    #[test]
+    fn test_nullable_float_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Fp32(2.5))),
+            "2.5:fp32?"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Fp64(3.19))),
+            "3.19:fp64?"
+        );
     }
 
     #[test]

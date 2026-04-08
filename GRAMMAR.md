@@ -199,7 +199,7 @@ A literal can come in the form of an integer, float, boolean, or string, and can
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-All literal types (`integer`, `float`, `boolean`, and `string`) are now supported in the current implementation. Support for typed literals (string literals with non-primitive type annotations like `'2023-01-01':date`) remains to be implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, and `timestamp` typed literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
 
 ## Types
 
