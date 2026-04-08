@@ -12,6 +12,7 @@ fix: fmt
 # the --config flag to get the same effect:
 # https://github.com/rust-lang/rustfmt/issues/5511
 #
+
 # Format the code.
 fmt:
     cargo fmt -- --config imports_granularity=Module,group_imports=StdExternalCrate
@@ -32,17 +33,20 @@ examples:
     cargo run --example extensions --features cli
 
 # Generate the LICENSE-3rdparty.csv file from the Cargo.lock file, for tracking
+
 # licenses of third-parties.
 licenses:
     bash generate_licenses.sh
 
 # Run the CLI with the given arguments. Usage: just run [args...]
 # Example: just run convert --help
+
 # Example: just run convert --from text --to json < input.txt
 run *args:
-    cargo run --features cli -- {{args}}
+    cargo run --features cli -- {{ args }}
 
 # Tag the current version and create a GitHub Release. Run after CI publishes
+
 # to crates.io (step 5 in RELEASING.md). Requires maintainer permissions.
 release-tag:
     #!/usr/bin/env bash
@@ -77,11 +81,12 @@ release-tag:
     fi
 
     echo "Tagging ${tag} at ${commit:0:12}..."
-    git tag "${tag}" "${commit}"
+    git tag "${tag}" "${commit}" -m "${notes}"
     git push origin "${tag}"
     gh release create "${tag}" --title "${tag}" --notes "${notes}"
 
 # Create a release PR for current main. Will bump the version number and create
+
 # a changelog, based on conventional commits + semantic versioning.
 release-pr:
     # Must be on main to release
