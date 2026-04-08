@@ -199,18 +199,20 @@ fn literal_type_suffix(lit: &LiteralType) -> Option<&'static str> {
     }
 }
 
-/// Whether the type suffix is required for disambiguation.
+/// Whether this type is the default interpretation for its value syntax.
 ///
-/// Returns `false` for types that are the default for their value syntax:
-/// - `boolean` — `true`/`false` are unambiguous
-/// - `i64` — bare integers default to i64
-/// - `fp64` — bare floats default to fp64
-/// - `string` — quoted strings default to string
-/// - `binary` — hex format is unambiguous
+/// Each literal value syntax has a default type that the parser assumes when
+/// no explicit type suffix is present:
+/// - `true`/`false` → `boolean`
+/// - bare integers (`42`) → `i64`
+/// - bare floats (`3.19`) → `fp64`
+/// - single-quoted strings (`'hello'`) → `string`
+/// - hex literals (`0x...`) → `binary`
 ///
-/// All other types (including unknown/future variants) require the suffix.
-fn literal_suffix_required(lit: &LiteralType) -> bool {
-    !matches!(
+/// Non-default types (e.g., `i32`, `fp32`, `date`) always need an explicit
+/// suffix to distinguish them from the default.
+fn is_default_for_syntax(lit: &LiteralType) -> bool {
+    matches!(
         lit,
         LiteralType::Boolean(_)
             | LiteralType::String(_)
@@ -241,7 +243,7 @@ impl Textify for expr::Literal {
         let show_suffix = match ctx.options().literal_types {
             Visibility::Never => false,
             Visibility::Always => true,
-            Visibility::Required => self.nullable || literal_suffix_required(lit),
+            Visibility::Required => self.nullable || !is_default_for_syntax(lit),
         };
         if show_suffix {
             if let Some(suffix) = literal_type_suffix(lit) {
