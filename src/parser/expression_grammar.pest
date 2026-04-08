@@ -31,6 +31,12 @@ quoted_name = @{
 // A name of a function or table can either be an unquoted identifier or a quoted string
 name = { identifier | quoted_name }
 
+// A compound name is a Substrait function compound name: base identifier followed by an optional
+// colon-delimited signature (e.g. "equal:any_any", "regexp_match_substring:str_str_i64").
+// The rule is atomic so no whitespace is allowed around the colon, making it unambiguous
+// with the output-type annotation which always follows the closing parenthesis.
+compound_name = @{ identifier ~ (":" ~ identifier)? }
+
 // Expression Components
 // Field reference
 reference = { "$" ~ integer }
@@ -127,13 +133,14 @@ type = { simple_type | compound_type | user_defined_type }
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
 // Scalar function call:
-// - Function name
+// - Compound function name (base name or base:signature, e.g. "equal" or "equal:any_any")
 // - Optional Anchor, e.g. #1
 // - Optional URN Anchor, e.g. @1
 // - Arguments `()` are required, e.g. (1, 2, 3)
-// - Optional output type, e.g. :i64
+// - Optional output type annotation after closing paren, e.g. :i64
+//   (unambiguous because compound_name is atomic and ends before the opening paren)
 function_call = {
-    name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
+    compound_name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
 if_clause = {
@@ -178,12 +185,12 @@ urn = @{ (!whitespace ~ ANY)+ }
 extension_urn_declaration = { urn_anchor ~ ":" ~ sp ~ urn }
 
 // -- Simple Extension Declaration (Function, Type, TypeVariation) --
-// Format: #anchor@urn_ref: name
-// Example: #10@1: my_func
+// Format: #anchor@urn_ref: name_or_compound_name
+// Examples: #10@1: my_func   #1@2: equal:any_any
 // `anchor` is defined above as "#" ~ integer.
 // `urn_anchor` is defined above as "@" ~ integer.
-// `name` is defined above as identifier | quoted_name.
-simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ name }
+// `compound_name` accepts both plain names and compound names with signatures.
+simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ compound_name }
 
 // == Relations ==
 // These rules are for parsing relations - well, for parsing one relation on one line.

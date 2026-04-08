@@ -345,3 +345,125 @@ Root[result]
 
     // Malformed input error test passed
 }
+
+#[test]
+fn test_overloaded_functions_verbose_shows_signature_and_anchor() {
+    // A plan where a function has an overloaded compound name. The compact output
+    // must include the signature because the base name is not unique, but must
+    // omit the anchor because the compound name is unique.
+    let simple = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_comparison
+Functions:
+  #  1 @  1: equal:any_any
+  #  2 @  1: equal:str_str
+
+=== Plan
+Root[result]
+  Project[$0, equal:any_any($0, $1), equal:str_str($0, $1)]
+    Read[t => a:i64, b:i64, c:string]"#;
+
+    // Verbose output always shows signatures and anchors for all functions,
+    // including those with unique base names.
+    let verbose = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_comparison
+Functions:
+  #  1 @  1: equal:any_any
+  #  2 @  1: equal:str_str
+
+=== Plan
+Root[result]
+  Project[$0, equal:any_any#1($0, $1), equal:str_str#2($0, $1)]
+    Read[t => a:i64, b:i64, c:string]"#;
+
+    roundtrip_plan(simple);
+    roundtrip_plan_with_verbose(simple, verbose);
+}
+
+/// A unique function (only one overload registered) uses the base name in
+/// compact mode and the compound name with anchor in verbose mode.
+/// Writing the compound name explicitly in input is equivalent to writing
+/// just the base name — both produce the same canonical output.
+#[test]
+fn test_unique_function_compact_omits_signature() {
+    // Canonical: base name only, because add:i64_i64 is the only "add"
+    let compact = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_arithmetic
+Functions:
+  #  1 @  1: add:i64_i64
+
+=== Plan
+Root[result]
+  Project[$0, add($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    // Explicit compound name in input resolves to the same canonical output
+    let compound = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_arithmetic
+Functions:
+  #  1 @  1: add:i64_i64
+
+=== Plan
+Root[result]
+  Project[$0, add:i64_i64($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    // Verbose output always shows the full compound name and anchor
+    let verbose = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_arithmetic
+Functions:
+  #  1 @  1: add:i64_i64
+
+=== Plan
+Root[result]
+  Project[$0, add:i64_i64#1($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    assert_roundtrip_canonical(compact, compound);
+    roundtrip_plan_with_verbose(compact, verbose);
+}
+
+/// A plan that mixes unique and overloaded functions.  Compact mode shows
+/// signatures only where needed.
+#[test]
+fn test_mixed_unique_and_overloaded_functions() {
+    let simple = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_comparison
+  @  2: extension:io.substrait:functions_string
+Functions:
+  #  1 @  1: equal:any_any
+  #  2 @  1: equal:str_str
+  #  3 @  2: like:str_str
+
+=== Plan
+Root[result]
+  Project[$0, equal:any_any($0, $1), equal:str_str($0, $2), like($0, $2)]
+    Read[t => id:i64, score:i64, name:string]"#;
+
+    roundtrip_plan(simple);
+}
+
+/// Same compound name registered in two different URNs — the anchor is
+/// required to disambiguate in all modes.
+#[test]
+fn test_same_compound_name_two_urns_requires_anchor() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: urn:substrait:vendor_a
+  @  2: urn:substrait:vendor_b
+Functions:
+  #  1 @  1: equal:any_any
+  #  2 @  2: equal:any_any
+
+=== Plan
+Root[result]
+  Project[$0, equal:any_any#1($0, $1), equal:any_any#2($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
+}

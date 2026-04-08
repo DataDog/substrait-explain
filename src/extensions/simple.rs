@@ -82,6 +82,48 @@ pub enum InsertError {
     },
 }
 
+/// A Substrait compound function name, e.g. `"equal:any_any"` or `"add"`.
+///
+/// The name before the first `:` is the *base name*; the part after is the
+/// *type-signature suffix*.  For plain names with no `:` the base name is the
+/// full name and `has_signature` returns `false`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompoundName {
+    /// Full name including the signature suffix, e.g. `"equal:any_any"`.
+    name: String,
+    /// Byte index of the `:` separator, or `name.len()` when absent.
+    index: usize,
+}
+
+impl CompoundName {
+    pub fn new(name: impl Into<String>) -> Self {
+        let name = name.into();
+        let index = name.find(':').unwrap_or(name.len());
+        Self { name, index }
+    }
+
+    /// The base name (part before the first `:`), e.g. `"equal"`.
+    pub fn base(&self) -> &str {
+        &self.name[..self.index]
+    }
+
+    /// The full compound name, e.g. `"equal:any_any"`.
+    pub fn full(&self) -> &str {
+        &self.name
+    }
+
+    /// `true` when the name includes a signature suffix (contains `:`).
+    pub fn has_signature(&self) -> bool {
+        self.index < self.name.len()
+    }
+}
+
+impl fmt::Display for CompoundName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 /// ExtensionLookup contains mappings from anchors to extension URNs, functions,
 /// types, and type variations.
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -89,7 +131,7 @@ pub struct SimpleExtensions {
     // Maps from extension URN anchor to URN
     urns: BTreeMap<u32, String>,
     // Maps from anchor and extension kind to (URN anchor, name)
-    extensions: BTreeMap<(u32, ExtensionKind), (u32, String)>,
+    extensions: BTreeMap<(u32, ExtensionKind), (u32, CompoundName)>,
 }
 
 impl SimpleExtensions {
@@ -181,9 +223,9 @@ impl SimpleExtensions {
         let missing_urn = !self.urns.contains_key(&urn);
 
         let prev = match self.extensions.entry((anchor, kind)) {
-            Entry::Occupied(e) => Some(e.get().1.clone()),
+            Entry::Occupied(e) => Some(e.get().1.full().to_string()),
             Entry::Vacant(v) => {
-                v.insert((urn, name.clone()));
+                v.insert((urn, CompoundName::new(name.clone())));
                 None
             }
         };
@@ -239,7 +281,7 @@ impl SimpleExtensions {
                             extension_urn_reference: *urn_ref,
                             extension_uri_reference: Default::default(), // deprecated
                             function_anchor: *anchor,
-                            name: name.clone(),
+                            name: name.full().to_string(),
                         },
                     ),
                     ExtensionKind::Type => MappingType::ExtensionType(
@@ -248,7 +290,7 @@ impl SimpleExtensions {
                             extension_urn_reference: *urn_ref,
                             extension_uri_reference: Default::default(), // deprecated
                             type_anchor: *anchor,
-                            name: name.clone(),
+                            name: name.full().to_string(),
                         },
                     ),
                     ExtensionKind::TypeVariation => MappingType::ExtensionTypeVariation(
@@ -257,7 +299,7 @@ impl SimpleExtensions {
                             extension_urn_reference: *urn_ref,
                             extension_uri_reference: Default::default(), // deprecated
                             type_variation_anchor: *anchor,
-                            name: name.clone(),
+                            name: name.full().to_string(),
                         },
                     ),
                 };
@@ -341,6 +383,20 @@ pub struct SimpleExtension {
     pub urn: u32,
 }
 
+/// The result of resolving a function anchor to its full metadata.
+pub struct ResolvedFunction<'a> {
+    pub anchor: u32,
+    pub urn: u32,
+    /// The full compound name stored for this anchor.
+    pub name: &'a CompoundName,
+    /// `true` when the base name is unique across all registered functions
+    /// (controls whether the signature suffix is needed in compact mode).
+    pub base_name_unique: bool,
+    /// `true` when the full compound name is unique across all registered
+    /// functions (controls whether the `#anchor` suffix is needed).
+    pub name_unique: bool,
+}
+
 impl SimpleExtensions {
     pub fn find_urn(&self, anchor: u32) -> Result<&str, MissingReference> {
         self.urns
@@ -353,7 +409,7 @@ impl SimpleExtensions {
         &self,
         kind: ExtensionKind,
         anchor: u32,
-    ) -> Result<(u32, &str), MissingReference> {
+    ) -> Result<(u32, &CompoundName), MissingReference> {
         let &(urn, ref name) = self
             .extensions
             .get(&(anchor, kind))
@@ -362,15 +418,11 @@ impl SimpleExtensions {
         Ok((urn, name))
     }
 
-    pub fn find_by_name<'a>(
-        &'a self,
-        kind: ExtensionKind,
-        name: &'a str,
-    ) -> Result<u32, MissingReference> {
+    pub fn find_by_name(&self, kind: ExtensionKind, name: &str) -> Result<u32, MissingReference> {
         let mut matches = self
             .extensions
             .iter()
-            .filter(move |((_a, k), (_, n))| *k == kind && n.as_str() == name)
+            .filter(move |((_a, k), (_, n))| *k == kind && n.full() == name)
             .map(|((anchor, _), _)| *anchor);
 
         let anchor = matches
@@ -383,12 +435,10 @@ impl SimpleExtensions {
         }
     }
 
-    // Validate that the extension exists, has the given name and anchor, and
-    // returns true if the name is unique for that extension kind.
-    //
-    // If the name is not unique, returns Ok(false). This is a valid case where
-    // two extensions have the same name (and presumably different URNs), but
-    // different anchors.
+    /// Returns `true` when no other extension of the same kind has the same
+    /// full compound name (i.e. the anchor display can be suppressed).
+    ///
+    /// Returns `Err` when `anchor` is not registered for `kind`.
     pub fn is_name_unique(
         &self,
         kind: ExtensionKind,
@@ -404,13 +454,13 @@ impl SimpleExtensions {
 
             if a == anchor {
                 found = true;
-                if n != name {
+                if n.full() != name {
                     return Err(MissingReference::Mismatched(kind, name.to_string(), anchor));
                 }
                 continue;
             }
 
-            if n.as_str() != name {
+            if n.full() != name {
                 // Neither anchor nor name match, so this is irrelevant.
                 continue;
             }
@@ -427,8 +477,97 @@ impl SimpleExtensions {
             (true, false) => Ok(true),
             // Found the one we're looking for, and another match.
             (true, true) => Ok(false),
-            // Didn't find the one we're looking for;
+            // Didn't find the one we're looking for.
             (false, _) => Err(MissingReference::MissingAnchor(kind, anchor)),
+        }
+    }
+
+    /// Look up a function anchor and return its full resolution metadata.
+    /// The caller already has `anchor` from the
+    /// Substrait plan and needs the name, URN, and uniqueness flags.
+    pub fn lookup_function(&self, anchor: u32) -> Result<ResolvedFunction<'_>, MissingReference> {
+        let (urn, name) = self.find_by_anchor(ExtensionKind::Function, anchor)?;
+        let name_unique = self.is_name_unique(ExtensionKind::Function, anchor, name.full())?;
+        let base_name_unique = self.is_base_name_unique(ExtensionKind::Function, anchor)?;
+        Ok(ResolvedFunction {
+            anchor,
+            urn,
+            name,
+            name_unique,
+            base_name_unique,
+        })
+    }
+
+    /// Resolve a function name (plain or compound) with an optional explicit
+    /// anchor to a [`ResolvedFunction`].
+    /// the caller has a text name and an optional anchor
+    /// from the plan source and needs the canonical anchor plus uniqueness info.
+    ///
+    /// * `anchor = Some(a)` — validates that `name` matches the stored name
+    ///   (exact compound-name match **or** base-name match, e.g. `"equal"`
+    ///   matches stored `"equal:any_any"`).
+    /// * `anchor = None` — tries an exact match first; if not found and
+    ///   `name` contains no `:`, falls back to base-name search so that
+    ///   `equal(…)` resolves when `equal:any_any` is the only overload.
+    pub fn resolve_function(
+        &self,
+        name: &str,
+        anchor: Option<u32>,
+    ) -> Result<ResolvedFunction<'_>, MissingReference> {
+        let resolved_anchor = match anchor {
+            Some(a) => {
+                let (_, stored) = self.find_by_anchor(ExtensionKind::Function, a)?;
+                if stored.full() == name || stored.base() == name {
+                    a
+                } else {
+                    return Err(MissingReference::Mismatched(
+                        ExtensionKind::Function,
+                        name.to_string(),
+                        a,
+                    ));
+                }
+            }
+            None => match self.find_by_name(ExtensionKind::Function, name) {
+                Ok(a) => a,
+                Err(MissingReference::MissingName(_, _)) if !name.contains(':') => {
+                    self.find_by_base_name(ExtensionKind::Function, name)?
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        self.lookup_function(resolved_anchor)
+    }
+
+    fn is_base_name_unique(
+        &self,
+        kind: ExtensionKind,
+        anchor: u32,
+    ) -> Result<bool, MissingReference> {
+        let (_, name) = self.find_by_anchor(kind, anchor)?;
+        let my_base = name.base();
+
+        let other_exists = self
+            .extensions
+            .iter()
+            .any(|(&(a, k), (_, n))| k == kind && a != anchor && n.base() == my_base);
+
+        Ok(!other_exists)
+    }
+
+    fn find_by_base_name(&self, kind: ExtensionKind, base: &str) -> Result<u32, MissingReference> {
+        let mut matches = self
+            .extensions
+            .iter()
+            .filter(|&(&(_a, k), (_, n))| k == kind && n.base() == base)
+            .map(|(&(anchor, _), _)| anchor);
+
+        let anchor = matches
+            .next()
+            .ok_or_else(|| MissingReference::MissingName(kind, base.to_string()))?;
+
+        match matches.next() {
+            Some(_) => Err(MissingReference::DuplicateName(kind, base.to_string())),
+            None => Ok(anchor),
         }
     }
 }
@@ -538,19 +677,19 @@ mod tests {
         assert!(exts.find_urn(3).is_err());
 
         let (urn, name) = exts.find_by_anchor(ExtensionKind::Function, 10).unwrap();
-        assert_eq!(name, "func1");
+        assert_eq!(name.full(), "func1");
         assert_eq!(urn, 1);
         assert!(exts.find_by_anchor(ExtensionKind::Function, 11).is_err());
 
         let (urn, name) = exts.find_by_anchor(ExtensionKind::Type, 20).unwrap();
-        assert_eq!(name, "type1");
+        assert_eq!(name.full(), "type1");
         assert_eq!(urn, 1);
         assert!(exts.find_by_anchor(ExtensionKind::Type, 21).is_err());
 
         let (urn, name) = exts
             .find_by_anchor(ExtensionKind::TypeVariation, 30)
             .unwrap();
-        assert_eq!(name, "var1");
+        assert_eq!(name.full(), "var1");
         assert_eq!(urn, 2);
         assert!(
             exts.find_by_anchor(ExtensionKind::TypeVariation, 31)
@@ -596,10 +735,9 @@ mod tests {
 
         // This is a duplicate anchor, so the first one is used.
         assert_eq!(exts.find_urn(1).unwrap(), "urn_old");
-        assert_eq!(
-            exts.find_by_anchor(ExtensionKind::Function, 10).unwrap(),
-            (1, "func_old")
-        );
+        let (urn, name) = exts.find_by_anchor(ExtensionKind::Function, 10).unwrap();
+        assert_eq!(urn, 1);
+        assert_eq!(name.full(), "func_old");
     }
 
     #[test]
@@ -754,5 +892,204 @@ Type Variations:
 "#;
 
         assert_eq!(output, expected_output.trim_start());
+    }
+
+    #[test]
+    fn test_compound_name_plain() {
+        let n = CompoundName::new("add");
+        assert_eq!(n.full(), "add");
+        assert_eq!(n.base(), "add");
+        assert!(!n.has_signature());
+
+        let n2 = CompoundName::new("coalesce");
+        assert_eq!(n2.full(), "coalesce");
+        assert_eq!(n2.base(), "coalesce");
+    }
+
+    #[test]
+    fn test_compound_name_with_signature() {
+        let n = CompoundName::new("equal:any_any");
+        assert_eq!(n.full(), "equal:any_any");
+        assert_eq!(n.base(), "equal");
+        assert!(n.has_signature());
+
+        let n2 = CompoundName::new("regexp_match_substring:str_str_i64");
+        assert_eq!(n2.base(), "regexp_match_substring");
+        assert_eq!(n2.full(), "regexp_match_substring:str_str_i64");
+        assert!(n2.has_signature());
+
+        let n3 = CompoundName::new("add:i64_i64");
+        assert_eq!(n3.base(), "add");
+    }
+
+    #[test]
+    fn test_compound_name_trailing_colon() {
+        // Edge case: trailing colon → empty signature suffix, base is the prefix
+        let n = CompoundName::new("foo:");
+        assert_eq!(n.base(), "foo");
+        assert_eq!(n.full(), "foo:");
+        assert!(n.has_signature());
+    }
+
+    // ---- Tests for lookup_function ----
+
+    fn make_overloaded_extensions() -> SimpleExtensions {
+        let urns = vec![new_urn(1, "urn:comparison")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+            new_ext_fn(3, 1, "add:i64_i64"),
+        ];
+        unwrap_new_extensions(&urns, &extensions)
+    }
+
+    #[test]
+    fn test_lookup_function_uniqueness_flags() {
+        // `equal:any_any` and `equal:str_str` share the base name "equal" →
+        // base_name_unique false, compound name unique within the one URN.
+        // `add:i64_i64` is the only "add" → both flags true.
+        let exts = make_overloaded_extensions();
+
+        let r1 = exts.lookup_function(1).unwrap();
+        assert_eq!(r1.name.full(), "equal:any_any");
+        assert!(!r1.base_name_unique, "two 'equal' overloads");
+        assert!(r1.name_unique, "compound name 'equal:any_any' is unique");
+
+        let r2 = exts.lookup_function(2).unwrap();
+        assert_eq!(r2.name.full(), "equal:str_str");
+        assert!(!r2.base_name_unique);
+        assert!(r2.name_unique);
+
+        let r3 = exts.lookup_function(3).unwrap();
+        assert_eq!(r3.name.full(), "add:i64_i64");
+        assert!(r3.base_name_unique, "only one 'add' overload");
+        assert!(r3.name_unique, "compound name appears only once");
+    }
+
+    #[test]
+    fn test_lookup_function_missing_anchor() {
+        let exts = SimpleExtensions::new();
+        assert!(exts.lookup_function(99).is_err());
+    }
+
+    #[test]
+    fn test_lookup_function_plain_name_overloaded_across_urns() {
+        // Same plain name in two URNs → base_name_unique false, name_unique false.
+        let urns = vec![new_urn(1, "urn1"), new_urn(2, "urn2")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "duplicated"),
+            new_ext_fn(2, 2, "duplicated"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        let r = exts.lookup_function(1).unwrap();
+        assert!(!r.base_name_unique);
+        assert!(!r.name_unique);
+    }
+
+    #[test]
+    fn test_lookup_function_different_base_names_each_unique() {
+        // `equal:any_any` and `like:str_str` have distinct base names → each unique.
+        let urns = vec![new_urn(1, "urn1")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "like:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        assert!(exts.lookup_function(1).unwrap().base_name_unique);
+        assert!(exts.lookup_function(2).unwrap().base_name_unique);
+    }
+
+    // ---- Tests for resolve_function ----
+
+    fn make_resolve_extensions() -> SimpleExtensions {
+        // Mirrors the fixture used in the old parser/types.rs tests.
+        let urns = vec![new_urn(1, "test_urn")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+            new_ext_fn(3, 1, "add:i64_i64"),
+        ];
+        unwrap_new_extensions(&urns, &extensions)
+    }
+
+    #[test]
+    fn test_resolve_function_with_anchor() {
+        // Explicit anchor: exact compound name, base name, and mismatched name.
+        let exts = make_resolve_extensions();
+
+        // Exact compound name matches stored name → resolves.
+        assert_eq!(
+            exts.resolve_function("equal:any_any", Some(1))
+                .unwrap()
+                .anchor,
+            1
+        );
+
+        // Base name "equal" matches stored "equal:any_any" → resolves.
+        assert_eq!(exts.resolve_function("equal", Some(1)).unwrap().anchor, 1);
+
+        // "like" does not match stored "equal:any_any" → error.
+        assert!(exts.resolve_function("like", Some(1)).is_err());
+    }
+
+    #[test]
+    fn test_resolve_function_without_anchor() {
+        // No anchor: exact compound, unique base (fallback), and ambiguous base.
+        let exts = make_resolve_extensions();
+
+        // Exact compound names resolve directly.
+        assert_eq!(
+            exts.resolve_function("equal:any_any", None).unwrap().anchor,
+            1
+        );
+        assert_eq!(
+            exts.resolve_function("equal:str_str", None).unwrap().anchor,
+            2
+        );
+
+        // "add" is the only overload → base-name fallback finds anchor 3.
+        assert_eq!(exts.resolve_function("add", None).unwrap().anchor, 3);
+
+        // "equal" has two overloads → DuplicateName error.
+        assert!(exts.resolve_function("equal", None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_function_plain_stored_name() {
+        // Functions stored without a signature still resolve by their plain name.
+        let urns = vec![new_urn(1, "urn")];
+        let extensions = vec![new_ext_fn(10, 1, "coalesce")];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+        assert_eq!(exts.resolve_function("coalesce", None).unwrap().anchor, 10);
+    }
+
+    #[test]
+    fn test_resolve_function_not_found() {
+        let exts = SimpleExtensions::new();
+        assert!(exts.resolve_function("nonexistent", None).is_err());
+    }
+
+    #[test]
+    fn test_compound_name_roundtrip_in_extensions_section() {
+        // Verify that compound names survive a write → parse roundtrip through
+        // the Extensions section text format.
+        let urns = vec![new_urn(1, "substrait:functions_comparison")];
+        let extensions = vec![
+            new_ext_fn(1, 1, "equal:any_any"),
+            new_ext_fn(2, 1, "equal:str_str"),
+        ];
+        let exts = unwrap_new_extensions(&urns, &extensions);
+
+        let text = exts.to_string("  ");
+        assert!(
+            text.contains("equal:any_any"),
+            "compound name must appear in output"
+        );
+        assert!(
+            text.contains("equal:str_str"),
+            "compound name must appear in output"
+        );
     }
 }

@@ -4,11 +4,16 @@ use substrait::proto::{self, Type};
 
 use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
-use crate::extensions::simple::ExtensionKind;
-use crate::parser::{ErrorKind, MessageParseError};
+use crate::extensions::simple::{ExtensionKind, MissingReference};
+use crate::parser::MessageParseError;
 
-// Given a name and an optional anchor, get the anchor and validate it. Errors will be pushed to the Scope error accumulator,
-// and the anchor will be returned if it is valid.
+/// Given a name (plain or compound) and an optional anchor, resolve and
+/// validate the extension anchor.
+///
+/// For `Function` kind, delegates to [`SimpleExtensions::resolve_function`]
+/// which encapsulates the full base-name fallback logic.
+///
+/// For other kinds, performs a direct anchor/name validation.
 pub(crate) fn get_and_validate_anchor(
     extensions: &SimpleExtensions,
     kind: ExtensionKind,
@@ -16,37 +21,39 @@ pub(crate) fn get_and_validate_anchor(
     name: &str,
     span: pest::Span,
 ) -> Result<u32, MessageParseError> {
+    if kind == ExtensionKind::Function {
+        return extensions
+            .resolve_function(name, anchor)
+            .map(|r| r.anchor)
+            .map_err(|e| {
+                MessageParseError::lookup(kind.name(), e, span, "Error resolving function")
+            });
+    }
+    // For non-function kinds, validate the anchor/name pair directly.
     match anchor {
-        Some(a) => match extensions.is_name_unique(kind, a, name) {
-            Ok(_) => Ok(a),
-            Err(e) => {
-                let message = "Error matching name to anchor".to_string();
-                let error = MessageParseError {
-                    message: kind.name(),
-                    kind: ErrorKind::Lookup(e),
-                    error: Box::new(pest::error::Error::new_from_span(
-                        pest::error::ErrorVariant::CustomError { message },
+        Some(a) => match extensions.find_by_anchor(kind, a) {
+            Err(e) => Err(MessageParseError::lookup(
+                kind.name(),
+                e,
+                span,
+                "Error matching name to anchor",
+            )),
+            Ok((_, stored)) => {
+                if stored.full() == name || stored.base() == name {
+                    Ok(a)
+                } else {
+                    Err(MessageParseError::lookup(
+                        kind.name(),
+                        MissingReference::Mismatched(kind, name.to_string(), a),
                         span,
-                    )),
-                };
-                Err(error)
+                        "Error matching name to anchor",
+                    ))
+                }
             }
         },
-        None => match extensions.find_by_name(kind, name) {
-            Ok(a) => Ok(a),
-            Err(e) => {
-                let message = "Error finding extension for name".to_string();
-                let error = MessageParseError {
-                    message: kind.name(),
-                    kind: ErrorKind::Lookup(e),
-                    error: Box::new(pest::error::Error::new_from_span(
-                        pest::error::ErrorVariant::CustomError { message },
-                        span,
-                    )),
-                };
-                Err(error)
-            }
-        },
+        None => extensions.find_by_name(kind, name).map_err(|e| {
+            MessageParseError::lookup(kind.name(), e, span, "Error finding extension for name")
+        }),
     }
 }
 

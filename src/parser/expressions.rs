@@ -17,7 +17,7 @@ use super::{
     unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
-use crate::extensions::simple::ExtensionKind;
+use crate::extensions::simple::{CompoundName, ExtensionKind};
 use crate::parser::ErrorKind;
 
 /// A field index (e.g., parsed from "$0" -> 0).
@@ -407,10 +407,10 @@ impl ScopedParsePair for ScalarFunction {
         let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
 
-        // Parse function name (required)
-        let name = iter.parse_next::<Name>();
+        // Parse compound function name (required) — e.g. "equal" or "equal:any_any"
+        let name = iter.parse_next::<CompoundName>();
 
-        // Parse optional URN anchor (e.g., #1)
+        // Parse optional anchor (e.g., #1)
         let anchor = iter
             .try_pop(Rule::anchor)
             .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
@@ -436,8 +436,13 @@ impl ScopedParsePair for ScalarFunction {
         };
 
         iter.done();
-        let anchor =
-            get_and_validate_anchor(extensions, ExtensionKind::Function, anchor, &name.0, span)?;
+        let anchor = get_and_validate_anchor(
+            extensions,
+            ExtensionKind::Function,
+            anchor,
+            name.full(),
+            span,
+        )?;
         Ok(ScalarFunction {
             function_reference: anchor,
             arguments,
@@ -623,6 +628,21 @@ impl ParsePair for Name {
             Rule::quoted_name => Name(unescape_string(inner)),
             _ => unreachable!("Name unexpected rule: {:?}", inner.as_rule()),
         }
+    }
+}
+
+impl ParsePair for CompoundName {
+    fn rule() -> Rule {
+        Rule::compound_name
+    }
+
+    fn message() -> &'static str {
+        "CompoundName"
+    }
+
+    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        CompoundName::new(pair.as_str())
     }
 }
 
@@ -1025,6 +1045,133 @@ mod tests {
             "if_then(true -> true , false -> false, _ -> false)",
             if_clause,
         );
+    }
+
+    // ---- Tests for CompoundName grammar rule ----
+
+    fn parse_compound_name(input: &str) -> CompoundName {
+        let pair = parse_exact(Rule::compound_name, input);
+        CompoundName::parse_pair(pair)
+    }
+
+    #[test]
+    fn test_compound_name_plain() {
+        assert_eq!(parse_compound_name("add").full(), "add");
+    }
+
+    #[test]
+    fn test_compound_name_with_signature() {
+        assert_eq!(parse_compound_name("equal:any_any").full(), "equal:any_any");
+        assert_eq!(
+            parse_compound_name("regexp_match_substring:str_str_i64").full(),
+            "regexp_match_substring:str_str_i64"
+        );
+        assert_eq!(parse_compound_name("add:i64_i64").full(), "add:i64_i64");
+    }
+
+    #[test]
+    fn test_compound_name_stops_at_opening_paren() {
+        // where is the paren ???
+        // In a function call, the compound_name must stop before the '('.
+        // Verify the grammar does not consume the paren.
+        let pairs = ExpressionParser::parse(Rule::compound_name, "equal:any_any").unwrap();
+        assert_eq!(pairs.as_str(), "equal:any_any");
+    }
+
+    // ---- Tests for ScalarFunction parsing with compound names ----
+
+    fn make_extensions_for_fn_tests() -> SimpleExtensions {
+        let mut exts = SimpleExtensions::default();
+        exts.add_extension_urn("urn".to_string(), 1).unwrap();
+        exts.add_extension(
+            crate::extensions::simple::ExtensionKind::Function,
+            1,
+            1,
+            "equal:any_any".to_string(),
+        )
+        .unwrap();
+        exts.add_extension(
+            crate::extensions::simple::ExtensionKind::Function,
+            1,
+            2,
+            "equal:str_str".to_string(),
+        )
+        .unwrap();
+        exts.add_extension(
+            crate::extensions::simple::ExtensionKind::Function,
+            1,
+            3,
+            "add:i64_i64".to_string(),
+        )
+        .unwrap();
+        exts
+    }
+
+    #[test]
+    fn test_scalar_function_full_compound_name() {
+        // Full compound name without anchor
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+        assert_eq!(f.function_reference, 1);
+        assert_eq!(f.arguments.len(), 2);
+    }
+
+    #[test]
+    fn test_scalar_function_second_overload() {
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+
+        assert_eq!(f.arguments.len(), 2);
+        assert_eq!(f.function_reference, 2);
+    }
+
+    #[test]
+    fn test_scalar_function_base_name_unique_overload() {
+        // "add" has only one overload; base-name lookup should succeed
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "add($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+
+        assert_eq!(f.arguments.len(), 2);
+        assert_eq!(f.function_reference, 3);
+    }
+
+    #[test]
+    fn test_scalar_function_base_name_ambiguous_fails() {
+        // "equal" has two overloads; base-name lookup should fail
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "equal($0, $1)");
+        let result = ScalarFunction::parse_pair(&exts, pair);
+        assert!(result.is_err(), "ambiguous base name should fail");
+    }
+
+    #[test]
+    fn test_scalar_function_compound_name_with_anchor() {
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+        assert_eq!(f.function_reference, 1);
+        assert_eq!(f.arguments.len(), 2);
+    }
+
+    #[test]
+    fn test_scalar_function_base_name_with_anchor() {
+        // Base name + explicit anchor should resolve (anchor 1 stores equal:any_any)
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "equal#1($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+        assert_eq!(f.function_reference, 1);
+        assert_eq!(f.arguments.len(), 2);
+    }
+
+    #[test]
+    fn test_scalar_function_wrong_name_for_anchor_fails() {
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(Rule::function_call, "like#1($0)");
+        let result = ScalarFunction::parse_pair(&exts, pair);
+        assert!(result.is_err(), "mismatched name/anchor should fail");
     }
 
     #[test]
