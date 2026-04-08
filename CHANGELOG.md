@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/DataDog/substrait-explain/compare/v0.3.0...v0.3.1) - 2026-04-08
+
+### Bug Fixes
+
+- fix to output columns
+- fixing bug and refactoring rel and relation types for advanced extensions
+- fixes based on ai review
+- fixing conflict after merge
+- fixed code after review
+- fixes based on PR comments
+- fixed bug
+
+### Documentation
+
+- fix 9 rustdoc warnings (broken links, redundant targets)
+
+### Features
+
+- include nullability on literals ([#88](https://github.com/DataDog/substrait-explain/pull/88))
+- implementation for function signature in function Anchors ([#82](https://github.com/DataDog/substrait-explain/pull/82))
+
+### Refactoring
+
+- refactoring line node based on PR comments
+
 ## [0.3.0](https://github.com/DataDog/substrait-explain/compare/v0.2.0...v0.3.0) - 2026-03-12
 
 ### Bug Fixes
