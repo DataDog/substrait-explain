@@ -527,6 +527,91 @@ Root[result2]
 # assert_eq!(plan.relations.len(), 2);
 ```
 
+### VirtualTable Read Relation
+
+A VirtualTable read embeds inline data directly in the plan, similar to SQL's `VALUES` clause. Instead of referencing a catalog table, the data rows are specified as part of the relation.
+
+The `Read:Virtual` relation uses the same `ReadRel` protobuf message with `ReadType::VirtualTable`, where each row is a `nested::Struct` containing expressions.
+
+#### Syntax
+
+There are two forms: **inline** (rows as arguments) and **verbose** (`+ Row` addenda).
+
+**Inline form:**
+
+`"Read:Virtual" "[" (virtual_row ("," virtual_row)*)? "=>" named_column_list "]"`
+
+Where `virtual_row := "(" expression ("," expression)* ")"` — a parenthesized tuple of expressions forming one row.
+
+**Verbose form:**
+
+```text
+"Read:Virtual" "[" "_" "=>" named_column_list "]"
+  ("+ Row" "[" expression ("," expression)* "]")*
+```
+
+The `+ Row` lines are addenda attached to the `Read:Virtual` relation (same structural role as `+ Enh:` / `+ Opt:` lines). They must appear before any child relations.
+
+Both forms are always accepted by the parser. The textifier uses inline form when `rows * columns <= 8`, and verbose form otherwise.
+
+**Mixed form (accepted, not recommended):** If a `Read:Virtual` has both inline rows and `+ Row` addenda, the inline rows come first, followed by the addendum rows. The textifier will never produce mixed form.
+
+#### Components
+
+- `virtual_row` - parenthesized tuple of expressions, one per row
+- `expression` - any expression (literal, field reference, function call)
+- `named_column_list` - output column names with type annotations
+- `_` - empty marker (no inline rows; rows provided via `+ Row` addenda)
+
+#### Examples
+
+Inline form with two rows:
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+Verbose form with `+ Row` addenda:
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]
+    + Row[1, 'alice']
+    + Row[2, 'bob']
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+Empty virtual table (no rows):
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ### Filter Relation
 
 #### Syntax

@@ -467,3 +467,144 @@ Root[result]
 
     roundtrip_plan(plan);
 }
+
+// === VirtualTable Read tests ===
+
+#[test]
+fn test_virtual_read_inline_single_row() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_inline_multi_row() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_verbose_parses() {
+    // Verbose form with a small table (4 cells) parses correctly and
+    // produces the canonical inline form.
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]"#;
+
+    let verbose = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]
+    + Row[1, 'alice']
+    + Row[2, 'bob']"#;
+
+    assert_roundtrip_canonical(inline, verbose);
+}
+
+#[test]
+fn test_virtual_read_empty() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_single_column() {
+    let plan = r#"
+=== Plan
+Root[id]
+  Read:Virtual[(1), (2), (3) => id:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_large_table_uses_verbose() {
+    // 3 rows * 3 columns = 9, which is > 8, so verbose is canonical.
+    let verbose = r#"
+=== Plan
+Root[a, b, c]
+  Read:Virtual[_ => a:i64, b:i64, c:i64]
+    + Row[1, 2, 3]
+    + Row[4, 5, 6]
+    + Row[7, 8, 9]"#;
+
+    let inline = r#"
+=== Plan
+Root[a, b, c]
+  Read:Virtual[(1, 2, 3), (4, 5, 6), (7, 8, 9) => a:i64, b:i64, c:i64]"#;
+
+    assert_roundtrip_canonical(verbose, inline);
+}
+
+#[test]
+fn test_virtual_read_in_plan_context() {
+    // VirtualTable as input to Filter and Project
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[name]
+  Filter[gt($0, 1) => $0, $1]
+    Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_addendum_on_root_rejected() {
+    let plan = r#"
+=== Plan
+Root[id]
+  + Row[1]
+  Read:Virtual[_ => id:i64]"#;
+
+    let result = Parser::parse(plan);
+    assert!(result.is_err(), "addenda on Root should be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("not supported on Root"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_row_addendum_on_non_virtual_rejected() {
+    // + Row on a regular Read should be rejected with a line number.
+    let plan = r#"
+=== Plan
+Root[id]
+  Read[data => id:i64]
+    + Row[1]"#;
+
+    let result = Parser::parse(plan);
+    assert!(
+        result.is_err(),
+        "+ Row on non-VirtualTable should be rejected"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("+ Row addenda can only be attached to Read:Virtual"),
+        "unexpected error: {err}"
+    );
+    // Error should report the line number of the offending + Row line.
+    assert!(
+        err.contains("line 5"),
+        "expected line number in error: {err}"
+    );
+}

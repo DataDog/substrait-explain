@@ -53,6 +53,10 @@ pub struct OutputOptions {
     /// Show the binary values for literal types as hex strings. Normally, they
     /// are shown as '{{binary}}'
     pub show_literal_binaries: bool,
+    /// Maximum number of cells (rows * columns) for a VirtualTable to use
+    /// inline form. Tables exceeding this use verbose `+ Row` form.
+    /// Chosen to keep inline form roughly within one 80-column line.
+    pub virtual_table_inline_threshold: usize,
 }
 
 impl Default for OutputOptions {
@@ -68,6 +72,7 @@ impl Default for OutputOptions {
             nullability: false,
             indent: "  ".to_string(),
             show_literal_binaries: false,
+            virtual_table_inline_threshold: 8,
         }
     }
 }
@@ -88,6 +93,8 @@ impl OutputOptions {
             nullability: true,
             indent: "  ".to_string(),
             show_literal_binaries: true,
+            // Always use verbose (+ Row) form in verbose mode
+            virtual_table_inline_threshold: 0,
         }
     }
 }

@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use pest::iterators::Pair;
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
@@ -21,7 +22,7 @@ use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AdvExtInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
-use crate::parser::relations::RelationParsingContext;
+use crate::parser::relations::{RelationParsingContext, parse_virtual_read};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
@@ -56,16 +57,41 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
 /// grammar rule directly (already unwrapped from the outer `planNode`).
 #[derive(Debug, Clone)]
 pub struct AdvExt<'a> {
-    pub pair: pest::iterators::Pair<'a, Rule>, // Rule::adv_extension
+    pub pair: Pair<'a, Rule>, // Rule::adv_extension
     pub line_no: i64,
+}
+
+/// A row addendum (`+ Row[expr, expr, ...]`) for VirtualTable reads.
+#[derive(Debug, Clone)]
+pub struct RowNode<'a> {
+    pub pair: Pair<'a, Rule>, // Rule::row_addendum
+    pub line_no: i64,
+}
+
+/// A `+`-prefixed addendum attached to a relation node. Addenda appear at
+/// the same indentation as child relations but before them, and carry
+/// metadata or data belonging to the parent relation.
+#[derive(Debug, Clone)]
+pub enum Addendum<'a> {
+    AdvExt(AdvExt<'a>),
+    Row(RowNode<'a>),
+}
+
+impl<'a> Addendum<'a> {
+    fn line_no(&self) -> i64 {
+        match self {
+            Addendum::AdvExt(a) => a.line_no,
+            Addendum::Row(r) => r.line_no,
+        }
+    }
 }
 
 /// A relation node in the plan tree, before conversion to a Substrait proto.
 #[derive(Debug, Clone)]
 pub struct RelationNode<'a> {
-    pub pair: pest::iterators::Pair<'a, Rule>,
+    pub pair: Pair<'a, Rule>,
     pub line_no: i64,
-    pub adv_extensions: Vec<AdvExt<'a>>,
+    pub addenda: Vec<Addendum<'a>>,
     pub children: Vec<RelationNode<'a>>,
 }
 
@@ -78,7 +104,7 @@ impl<'a> RelationNode<'a> {
     }
 }
 
-/// A parsed plan line: either a relation or an advanced-extension annotation.
+/// A parsed plan line: either a relation or an addendum (`+`-prefixed line).
 ///
 /// Classification happens at construction time by inspecting the inner grammar
 /// rule, so downstream code can use standard Rust pattern matching rather than
@@ -86,7 +112,7 @@ impl<'a> RelationNode<'a> {
 #[derive(Debug, Clone)]
 pub enum LineNode<'a> {
     Relation(RelationNode<'a>),
-    AdvExt(AdvExt<'a>),
+    Addendum(Addendum<'a>),
 }
 
 impl<'a> LineNode<'a> {
@@ -106,18 +132,21 @@ impl<'a> LineNode<'a> {
         assert!(pairs.next().is_none()); // Should be exactly one pair
         let inner = unwrap_single_pair(outer);
 
-        Ok(if inner.as_rule() == Rule::adv_extension {
-            LineNode::AdvExt(AdvExt {
+        Ok(match inner.as_rule() {
+            Rule::adv_extension => LineNode::Addendum(Addendum::AdvExt(AdvExt {
                 pair: inner,
                 line_no,
-            })
-        } else {
-            LineNode::Relation(RelationNode {
+            })),
+            Rule::row_addendum => LineNode::Addendum(Addendum::Row(RowNode {
                 pair: inner,
                 line_no,
-                adv_extensions: Vec::new(),
+            })),
+            _ => LineNode::Relation(RelationNode {
+                pair: inner,
+                line_no,
+                addenda: Vec::new(),
                 children: Vec::new(),
-            })
+            }),
         })
     }
 
@@ -147,16 +176,25 @@ impl<'a> LineNode<'a> {
             inner // root_relation
         };
 
-        // planNode can technically include adv_extension; surface it as AdvExt so
+        // planNode can include addenda (+Enh:, +Opt:, +Row); surface them so
         // TreeBuilder::add_line can produce the appropriate depth-0 error.
-        if pair.as_rule() == Rule::adv_extension {
-            return Ok(LineNode::AdvExt(AdvExt { pair, line_no })); // Where is the error produced or checked???
+        match pair.as_rule() {
+            Rule::adv_extension => {
+                return Ok(LineNode::Addendum(Addendum::AdvExt(AdvExt {
+                    pair,
+                    line_no,
+                })));
+            }
+            Rule::row_addendum => {
+                return Ok(LineNode::Addendum(Addendum::Row(RowNode { pair, line_no })));
+            }
+            _ => {} // Normal relation rule — fall through
         }
 
         Ok(LineNode::Relation(RelationNode {
             pair,
             line_no,
-            adv_extensions: Vec::new(),
+            addenda: Vec::new(),
             children: Vec::new(),
         }))
     }
@@ -331,19 +369,19 @@ impl<'a> TreeBuilder<'a> {
 
                 parent.children.push(rel_node);
             }
-            LineNode::AdvExt(adv_ext) => {
+            LineNode::Addendum(addendum) => {
+                let line_no = addendum.line_no();
                 if depth == 0 {
                     return Err(ParseError::ValidationError(format!(
-                        "line {}: advanced extension annotations cannot appear at the top level",
-                        adv_ext.line_no
+                        "line {line_no}: addenda (+ Enh: / + Opt: / + Row) \
+                         cannot appear at the top level",
                     )));
                 }
 
                 let parent = match self.get_at_depth(depth - 1) {
                     None => {
                         return Err(ParseError::ValidationError(format!(
-                            "line {}: no parent found for advanced extension at depth {depth}",
-                            adv_ext.line_no
+                            "line {line_no}: no parent found for addendum at depth {depth}",
                         )));
                     }
                     Some(parent) => parent,
@@ -351,13 +389,12 @@ impl<'a> TreeBuilder<'a> {
 
                 if !parent.children.is_empty() {
                     return Err(ParseError::ValidationError(format!(
-                        "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
+                        "line {line_no}: addenda (+ Enh: / + Opt: / + Row) must \
                          appear before child relations, not after",
-                        adv_ext.line_no
                     )));
                 }
 
-                parent.adv_extensions.push(adv_ext);
+                parent.addenda.push(addendum);
             }
         }
         Ok(())
@@ -411,7 +448,7 @@ impl<'a> RelationParser<'a> {
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         line_no: i64,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
     ) -> Result<(substrait::proto::Rel, usize), ParseError> {
@@ -452,7 +489,7 @@ impl<'a> RelationParser<'a> {
         &self,
         extensions: &SimpleExtensions,
         line_no: i64,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
         input_field_count: usize,
     ) -> Result<(substrait::proto::Rel, usize), ParseError> {
@@ -486,7 +523,7 @@ impl<'a> RelationParser<'a> {
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         line_no: i64,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
         child_relations: Vec<Box<substrait::proto::Rel>>,
     ) -> Result<(substrait::proto::Rel, usize), ParseError> {
         assert_eq!(pair.as_rule(), Rule::extension_relation);
@@ -554,18 +591,55 @@ impl<'a> RelationParser<'a> {
             child_relations.push(Box::new(rel));
         }
 
-        let (mut rel, output_count) = self.parse_relation(
-            extensions,
-            registry,
-            node.line_no,
-            node.pair,
-            child_relations,
-            input_field_count,
-        )?;
+        // Split addenda into adv_extensions and row addenda.
+        let mut adv_exts = Vec::new();
+        let mut row_pairs = Vec::new();
+        let mut first_row_line_no: Option<i64> = None;
+        for addendum in node.addenda {
+            match addendum {
+                Addendum::AdvExt(a) => adv_exts.push(a),
+                Addendum::Row(r) => {
+                    first_row_line_no.get_or_insert(r.line_no);
+                    row_pairs.push(r.pair);
+                }
+            }
+        }
 
-        if !node.adv_extensions.is_empty() {
-            let adv_ext =
-                self.build_advanced_extension(extensions, registry, node.adv_extensions)?;
+        // Validate addenda constraints before dispatch.
+        let is_virtual = node.pair.as_rule() == Rule::virtual_read_relation;
+        if !row_pairs.is_empty() && !is_virtual {
+            let line_no = first_row_line_no.unwrap();
+            return Err(ParseError::ValidationError(format!(
+                "line {line_no}: + Row addenda can only be attached to Read:Virtual relations",
+            )));
+        }
+        if is_virtual && !child_relations.is_empty() {
+            return Err(ParseError::ValidationError(format!(
+                "line {}: Read:Virtual should have no input children",
+                node.line_no
+            )));
+        }
+
+        // VirtualTable reads get a dedicated path: all row data (inline + addenda)
+        // is gathered before construction, so the proto is built in one shot.
+        let (mut rel, output_count) = if is_virtual {
+            let line = node.pair.as_str();
+            parse_virtual_read(extensions, node.pair, row_pairs).map_err(|e| {
+                ParseError::Plan(ParseContext::new(node.line_no, line.to_string()), e)
+            })?
+        } else {
+            self.parse_relation(
+                extensions,
+                registry,
+                node.line_no,
+                node.pair,
+                child_relations,
+                input_field_count,
+            )?
+        };
+
+        if !adv_exts.is_empty() {
+            let adv_ext = self.build_advanced_extension(extensions, registry, adv_exts)?;
             set_advanced_extension(&mut rel, adv_ext);
         }
 
@@ -640,6 +714,15 @@ impl<'a> RelationParser<'a> {
             return Ok(PlanRel {
                 rel_type: Some(plan_rel::RelType::Rel(rel)),
             });
+        }
+
+        // Root relations don't support addenda — reject rather than silently discard.
+        if !node.addenda.is_empty() {
+            let line_no = node.addenda[0].line_no();
+            return Err(ParseError::ValidationError(format!(
+                "line {line_no}: addenda (+ Enh: / + Opt: / + Row) are not \
+                 supported on Root relations",
+            )));
         }
 
         // Named root relation.

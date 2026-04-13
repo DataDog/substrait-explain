@@ -283,6 +283,9 @@ pub struct Relation<'a> {
     ///  Extension relations (`ExtensionLeaf`, `ExtensionSingle`, `ExtensionMulti`)
     /// do not carry this field and always set it to `None`.
     pub advanced_extension: Option<&'a AdvancedExtension>,
+    /// Row data for VirtualTable reads in verbose form. Each inner Vec holds
+    /// the expressions for one `+ Row[...]` line.
+    pub rows: Vec<Vec<Value<'a>>>,
     /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
@@ -294,12 +297,21 @@ impl Textify for Relation<'_> {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         self.write_header(ctx, w)?;
+        let child_scope = ctx.push_indent();
         // Emit any enhancement / optimizations between the header line and the
         // child relations, indented one level deeper than this relation — the
         // same position they occupy in the text format when parsed.
         if let Some(adv_ext) = self.advanced_extension {
-            let child_scope = ctx.push_indent();
             adv_ext.textify(&child_scope, w)?;
+        }
+        // Emit verbose row addenda for VirtualTable reads.
+        for row in &self.rows {
+            write!(
+                w,
+                "\n{}+ Row[{}]",
+                child_scope.indent(),
+                ctx.separated(row, ", ")
+            )?;
         }
         self.write_children(ctx, w)?;
         Ok(())
@@ -366,48 +378,99 @@ impl<'a> Textify for TableName<'a> {
     }
 }
 
-pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], PlanError> {
-    match rel {
-        Some(ReadType::NamedTable(r)) => Ok(r.names.as_slice()),
-        _ => Err(PlanError::unimplemented(
-            "ReadRel",
-            Some("table_name"),
-            format!("Unexpected read type {rel:?}") as String,
-        )),
+impl<'a> Relation<'a> {
+    fn from_read<S: Scope>(rel: &'a ReadRel, ctx: &S) -> Self {
+        let columns = read_columns(rel);
+        let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
+
+        match &rel.read_type {
+            Some(ReadType::NamedTable(table)) => {
+                let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
+                Relation {
+                    name: Cow::Borrowed("Read"),
+                    arguments: Some(Arguments {
+                        positional: vec![table_name],
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    rows: vec![],
+                    children: vec![],
+                }
+            }
+            Some(ReadType::VirtualTable(vt)) => {
+                let col_count = columns.len();
+                let row_count = vt.expressions.len();
+                let threshold = ctx.options().virtual_table_inline_threshold;
+                let use_inline = row_count * col_count <= threshold;
+
+                let (inline, rows_addenda) = if use_inline {
+                    // Inline: rows as tuple arguments
+                    (
+                        vt.expressions
+                            .iter()
+                            .map(|row| {
+                                Value::Tuple(row.fields.iter().map(Value::Expression).collect())
+                            })
+                            .collect(),
+                        vec![],
+                    )
+                } else {
+                    // Verbose: empty arguments, rows as addenda
+                    (
+                        vec![],
+                        vt.expressions
+                            .iter()
+                            .map(|row| row.fields.iter().map(Value::Expression).collect())
+                            .collect(),
+                    )
+                };
+                let arguments = Some(Arguments {
+                    positional: inline,
+                    named: vec![],
+                });
+
+                Relation {
+                    name: Cow::Borrowed("Read:Virtual"),
+                    arguments,
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    rows: rows_addenda,
+                    children: vec![],
+                }
+            }
+            other => {
+                let err = PlanError::unimplemented(
+                    "ReadRel",
+                    Some("read_type"),
+                    format!("Unsupported read type {other:?}"),
+                );
+                Relation {
+                    name: Cow::Borrowed("Read"),
+                    arguments: Some(Arguments {
+                        positional: vec![Value::Missing(err)],
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    rows: vec![],
+                    children: vec![],
+                }
+            }
+        }
     }
 }
 
-impl<'a> Relation<'a> {
-    fn from_read<S: Scope>(rel: &'a ReadRel, _ctx: &S) -> Self {
-        let name = get_table_name(rel.read_type.as_ref());
-        let table_name: Value = match name {
-            Ok(n) => Value::TableName(n.iter().map(|n| Name(n)).collect()),
-            Err(e) => Value::Missing(e),
-        };
-
-        let columns = match rel.base_schema {
-            Some(ref schema) => schema_to_values(schema),
-            None => {
-                let err = PlanError::unimplemented(
-                    "ReadRel",
-                    Some("base_schema"),
-                    "Base schema is required",
-                );
-                vec![Value::Missing(err)]
-            }
-        };
-        let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
-
-        Relation {
-            name: Cow::Borrowed("Read"),
-            arguments: Some(Arguments {
-                positional: vec![table_name],
-                named: vec![],
-            }),
-            columns,
-            emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
-            children: vec![],
+fn read_columns<'a>(rel: &'a ReadRel) -> Vec<Value<'a>> {
+    match rel.base_schema {
+        Some(ref schema) => schema_to_values(schema),
+        None => {
+            let err =
+                PlanError::unimplemented("ReadRel", Some("base_schema"), "Base schema is required");
+            vec![Value::Missing(err)]
         }
     }
 }
@@ -478,6 +541,7 @@ impl<'a> Relation<'a> {
             columns,
             emit,
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }
@@ -498,6 +562,7 @@ impl<'a> Relation<'a> {
             columns,
             emit: get_emit(rel.common.as_ref()),
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }
@@ -527,6 +592,7 @@ impl<'a> Relation<'a> {
                     columns: vec![],
                     emit: None,
                     advanced_extension: None,
+                    rows: vec![],
                     children: vec![],
                 }
             }
@@ -600,6 +666,7 @@ impl<'a> Relation<'a> {
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
                     advanced_extension: None,
+                    rows: vec![],
                     children,
                 }
             }
@@ -615,6 +682,7 @@ impl<'a> Relation<'a> {
                     ))],
                     emit: None,
                     advanced_extension: None,
+                    rows: vec![],
                     children,
                 }
             }
@@ -700,6 +768,7 @@ impl<'a> Relation<'a> {
             columns: all_outputs,
             emit,
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }
@@ -808,6 +877,7 @@ impl<'a> Relation<'a> {
             columns: col_values,
             emit,
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }
@@ -865,6 +935,7 @@ impl<'a> Relation<'a> {
             columns,
             emit,
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }
@@ -976,6 +1047,7 @@ impl<'a> Relation<'a> {
             columns,
             emit,
             advanced_extension: rel.advanced_extension.as_ref(),
+            rows: vec![],
             children,
         }
     }

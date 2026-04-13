@@ -4,7 +4,7 @@ use pest::iterators::Pair;
 use prost::Message;
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
-use substrait::proto::expression::{Literal, RexType};
+use substrait::proto::expression::{Literal, RexType, nested};
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Emit, EmitKind};
@@ -326,19 +326,8 @@ impl RelationParsePair for ReadRel {
         let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
         iter.done();
 
-        let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
-        let struct_ = r#type::Struct {
-            types,
-            type_variation_reference: 0,
-            nullability: r#type::Nullability::Required as i32,
-        };
-        let named_struct = NamedStruct {
-            names,
-            r#struct: Some(struct_),
-        };
-
         let read_rel = ReadRel {
-            base_schema: Some(named_struct),
+            base_schema: Some(build_named_struct(columns)),
             read_type: Some(read_rel::ReadType::NamedTable(read_rel::NamedTable {
                 names: table,
                 advanced_extension: None,
@@ -347,6 +336,92 @@ impl RelationParsePair for ReadRel {
         };
 
         Ok(read_rel)
+    }
+}
+
+/// Parse a `Read:Virtual[...]` relation with optional `+ Row` addenda,
+/// building the `ReadRel` with all row data in one shot.
+///
+/// Not a `RelationParsePair` because it needs additional row addenda data
+/// that the trait interface doesn't support.
+pub(crate) fn parse_virtual_read(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+    row_addenda: Vec<Pair<Rule>>,
+) -> Result<(Rel, usize), MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::virtual_read_relation);
+
+    let mut iter = RuleIter::from(pair.into_inner());
+    let args_pair = iter.pop(Rule::virtual_read_args);
+    let mut rows = parse_virtual_read_args(extensions, args_pair);
+    let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+    iter.done();
+
+    // Append addenda rows after inline rows
+    for addendum_pair in row_addenda {
+        let expression_list = unwrap_single_pair(addendum_pair);
+        assert_eq!(expression_list.as_rule(), Rule::expression_list);
+        rows.push(nested::Struct {
+            fields: parse_expression_list(extensions, expression_list),
+        });
+    }
+
+    // TODO: Validate that each row has the same number of expressions as columns.
+    // Currently no parser-side warning mechanism exists (the parser is fail-fast,
+    // and a width mismatch isn't a syntax error). Consider adding once a warning
+    // collection path is available.
+    let column_count = columns.len();
+    let named_struct = build_named_struct(columns);
+    let rel = Rel {
+        rel_type: Some(RelType::Read(Box::new(ReadRel {
+            base_schema: Some(named_struct),
+            read_type: Some(read_rel::ReadType::VirtualTable(read_rel::VirtualTable {
+                expressions: rows,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }))),
+    };
+
+    Ok((rel, column_count))
+}
+
+/// Build a `NamedStruct` from parsed columns.
+fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
+    let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
+    NamedStruct {
+        names,
+        r#struct: Some(r#type::Struct {
+            types,
+            type_variation_reference: 0,
+            nullability: r#type::Nullability::Required as i32,
+        }),
+    }
+}
+
+/// Parse `virtual_read_args`: either `empty` or a list of row tuples.
+fn parse_virtual_read_args(extensions: &SimpleExtensions, pair: Pair<Rule>) -> Vec<nested::Struct> {
+    assert_eq!(pair.as_rule(), Rule::virtual_read_args);
+    let inner = unwrap_single_pair(pair);
+    match inner.as_rule() {
+        Rule::empty => vec![],
+        Rule::virtual_row_list => inner
+            .into_inner()
+            .map(|row| parse_virtual_row(extensions, row))
+            .collect(),
+        _ => unreachable!(
+            "Unexpected rule in virtual_read_args: {:?}",
+            inner.as_rule()
+        ),
+    }
+}
+
+/// Parse a single `virtual_row` (`(expr, expr, ...)`) into a `nested::Struct`.
+fn parse_virtual_row(extensions: &SimpleExtensions, pair: Pair<Rule>) -> nested::Struct {
+    assert_eq!(pair.as_rule(), Rule::virtual_row);
+    let expression_list = unwrap_single_pair(pair);
+    nested::Struct {
+        fields: parse_expression_list(extensions, expression_list),
     }
 }
 
@@ -605,7 +680,10 @@ fn parse_grouping_set(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Ve
 }
 
 /// Grammar: `expression_list = { expression ~ ("," ~ expression)* }`
-fn parse_expression_list(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+pub(crate) fn parse_expression_list(
+    extensions: &SimpleExtensions,
+    pair: Pair<'_, Rule>,
+) -> Vec<Expression> {
     pair.into_inner()
         .map(|expr_pair| {
             Expression::parse_pair(extensions, expr_pair)
