@@ -7,9 +7,10 @@ use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    ExplainContext, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
+    ExtensionRegistry, ExtensionRelationType, ExtensionValue, SimpleExtensions,
 };
+use substrait_explain::fixtures::parse_type;
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
 
@@ -597,4 +598,82 @@ Root[result]
         !errors.is_empty(),
         "expected at least one format error for unknown extension type URL"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for ExplainContext helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_try_from_expr() {
+    // Construct a simple literal expression
+    let expr = proto::Expression {
+        rex_type: Some(RexType::Literal(proto::expression::Literal {
+            nullable: false,
+            type_variation_reference: 0,
+            literal_type: Some(LiteralType::I64(42)),
+        })),
+    };
+    let val = ExtensionValue::Expression(Expr(Box::new(expr.clone())));
+    let extracted: Expr = Expr::try_from(&val).unwrap();
+    assert_eq!(*extracted.0, expr);
+
+    let wrong = ExtensionValue::Integer(42);
+    assert!(Expr::try_from(&wrong).is_err());
+}
+
+#[test]
+fn test_explain_context_schema_columns_roundtrip() {
+    let ext = SimpleExtensions::default();
+    let ctx = ExplainContext::new(&ext);
+
+    let columns = vec![
+        ExtensionColumn::Named {
+            name: "id".to_string(),
+            r#type: parse_type("i64"),
+        },
+        ExtensionColumn::Named {
+            name: "name".to_string(),
+            r#type: parse_type("string?"),
+        },
+    ];
+
+    let schema = ctx.schema(&columns).unwrap();
+    assert_eq!(schema.names, vec!["id", "name"]);
+
+    let roundtripped = ctx.columns(&schema).unwrap();
+    assert_eq!(roundtripped.len(), 2);
+    match &roundtripped[0] {
+        ExtensionColumn::Named { name, r#type: ty } => {
+            assert_eq!(name, "id");
+            assert_eq!(*ty, parse_type("i64"));
+        }
+        other => panic!("Expected Named, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_explain_context_schema_rejects_references() {
+    let ext = SimpleExtensions::default();
+    let ctx = ExplainContext::new(&ext);
+
+    let columns = vec![ExtensionColumn::Reference(0)];
+    assert!(ctx.schema(&columns).is_err());
+}
+
+#[test]
+fn test_explain_context_columns_rejects_mismatch() {
+    let ext = SimpleExtensions::default();
+    let ctx = ExplainContext::new(&ext);
+
+    // 2 names but 1 type
+    let schema = proto::NamedStruct {
+        names: vec!["a".to_string(), "b".to_string()],
+        r#struct: Some(proto::r#type::Struct {
+            types: vec![parse_type("i64")],
+            type_variation_reference: 0,
+            nullability: Nullability::Required as i32,
+        }),
+    };
+    assert!(ctx.columns(&schema).is_err());
 }
