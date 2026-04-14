@@ -127,7 +127,6 @@ pub fn roundtrip_plan(input: &str) {
         actual.trim()
     );
 }
-
 /// Parse a built-in type string (e.g. `"i64"`, `"string?"`) into a
 /// `proto::Type`. Panics on invalid type names.
 pub fn parse_type(s: &str) -> proto::Type {

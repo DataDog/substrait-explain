@@ -1,10 +1,13 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
 use prost::{Message, Name};
+use substrait::proto;
+use substrait::proto::expression::RexType;
+use substrait::proto::expression::literal::LiteralType;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    EnumValue, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue, TupleValue,
+    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
+    ExtensionRegistry, ExtensionRelationType, ExtensionValue, TupleValue,
 };
 use substrait_explain::fixtures::parse_type;
 use substrait_explain::format_with_registry;
@@ -595,7 +598,6 @@ Root[result]
         "expected at least one format error for unknown extension type URL"
     );
 }
-
 /// An enhancement that carries a single positional tuple of sort-direction enums.
 #[derive(Clone, PartialEq, Message)]
 pub struct TupleSortHint {
@@ -704,4 +706,26 @@ fn test_tuple_sort_hint_from_args_rejects_non_tuple() {
         result.is_err(),
         "expected error when positional arg is not a tuple"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for structured extension argument conversions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_try_from_expr() {
+    // Construct a simple literal expression
+    let expr = proto::Expression {
+        rex_type: Some(RexType::Literal(proto::expression::Literal {
+            nullable: false,
+            type_variation_reference: 0,
+            literal_type: Some(LiteralType::I64(42)),
+        })),
+    };
+    let val = ExtensionValue::Expression(Expr(Box::new(expr.clone())));
+    let extracted: Expr = Expr::try_from(&val).unwrap();
+    assert_eq!(*extracted.0, expr);
+
+    let wrong = ExtensionValue::Integer(42);
+    assert!(Expr::try_from(&wrong).is_err());
 }
