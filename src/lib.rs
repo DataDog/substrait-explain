@@ -65,6 +65,20 @@ pub fn parse(input: &str) -> Result<Plan, ParseError> {
     parser::Parser::parse(input)
 }
 
+/// Parse a Substrait plan from text format with a custom extension registry.
+///
+/// Use this when the plan contains custom extensions registered via
+/// [`extensions::ExtensionRegistry`]. This is the parsing counterpart to
+/// [`format_with_registry`].
+pub fn parse_with_registry(
+    input: &str,
+    registry: &extensions::ExtensionRegistry,
+) -> Result<Plan, ParseError> {
+    parser::Parser::new()
+        .with_extension_registry(registry.clone())
+        .parse_plan(input)
+}
+
 /// Format a Substrait plan as human-readable text.
 ///
 /// This is the main entry point for formatting plans. It uses default

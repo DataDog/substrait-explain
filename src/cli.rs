@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use prost::Message;
 
 use crate::extensions::ExtensionRegistry;
-use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse};
+use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse_with_registry};
 
 /// The outcome of a CLI operation.
 ///
@@ -238,29 +238,19 @@ impl Cli {
         verbose: bool,
         registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
-        let input_text = read_text_input(reader)?;
+        let plan = Format::Text
+            .read_plan(reader, registry)
+            .with_context(|| "Failed to parse input as Substrait text format")?;
 
-        // Parse text to protobuf
-        let plan =
-            parse(&input_text).with_context(|| "Failed to parse input as Substrait text format")?;
+        let outcome = Format::Text
+            .write_plan(writer, &plan, &OutputOptions::default(), registry)
+            .with_context(|| "Failed to format plan as Substrait text format")?;
 
-        // Format back to text
-        let (output_text, errors) =
-            format_with_registry(&plan, &OutputOptions::default(), registry);
-
-        // Write output first (best-effort)
-        write_text_output(writer, &output_text)?;
-
-        if verbose && errors.is_empty() {
+        if verbose && matches!(outcome, Outcome::Success) {
             eprintln!("Successfully validated plan");
         }
 
-        // Return outcome based on whether there were formatting issues
-        if errors.is_empty() {
-            Ok(Outcome::Success)
-        } else {
-            Ok(Outcome::HadFormattingIssues(errors))
-        }
+        Ok(outcome)
     }
 }
 
@@ -371,7 +361,7 @@ impl Format {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
-                Ok(parse(&input_text)?)
+                Ok(parse_with_registry(&input_text, registry)?)
             }
             Format::Json => {
                 let input_text = read_text_input(reader)?;
@@ -503,6 +493,7 @@ mod tests {
     use substrait::proto::rel::RelType;
 
     use super::*;
+    use crate::parse;
 
     const BASIC_PLAN: &str = r#"=== Plan
 Root[result]
