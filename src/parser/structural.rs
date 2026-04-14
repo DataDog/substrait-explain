@@ -14,7 +14,7 @@ use substrait::proto::{
 };
 
 use crate::extensions::{ExtensionRegistry, ExtensionType, SimpleExtensions, simple};
-use crate::parser::common::{MessageParseError, ParsePair};
+use crate::parser::common::{MessageParseError, ParsePair, ScopedParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
 use crate::parser::extensions::{
@@ -359,13 +359,14 @@ impl<'a> RelationParser<'a> {
     ) -> Result<(Rel, usize), ParseError> {
         assert_eq!(ctx.pair.as_rule(), Rule::extension_relation);
         let line_no = ctx.line_no;
-        let line = ctx.pair.as_str();
+        let line = ctx.pair.as_str().to_string();
         let pair_span = ctx.pair.as_span();
 
         let ExtensionInvocation {
             name,
             args: extension_args,
-        } = ExtensionInvocation::parse_pair(ctx.pair);
+        } = ExtensionInvocation::parse_pair(extensions, ctx.pair.clone())
+            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.clone()), e))?;
 
         let child_count = ctx.children.len();
         extension_args
@@ -382,7 +383,7 @@ impl<'a> RelationParser<'a> {
             extensions,
             registry,
             line_no,
-            line,
+            line: &line,
         };
 
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
@@ -458,7 +459,8 @@ impl<'a> RelationParser<'a> {
         for adv_ext in adv_exts {
             let line_no = adv_ext.line_no;
             let line = adv_ext.pair.as_str().to_string();
-            let invocation = AdvExtInvocation::parse_pair(adv_ext.pair);
+            let invocation = AdvExtInvocation::parse_pair(extensions, adv_ext.pair)
+                .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.clone()), e))?;
             let context = RelationParsingContext {
                 extensions,
                 registry,

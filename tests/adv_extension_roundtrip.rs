@@ -8,6 +8,7 @@ use substrait::proto::rel::RelType;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::extensions::registry::ExtensionError;
+use substrait_explain::fixtures::parse_type;
 use substrait_explain::parser::Parser;
 use substrait_explain::{FormatError, format_with_registry};
 
@@ -557,11 +558,11 @@ mod extension_child_fixture {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
-                type_spec: "i64".to_owned(),
+                r#type: super::parse_type("i64"),
             });
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col1".to_owned(),
-                type_spec: "i32".to_owned(),
+                r#type: super::parse_type("i32"),
             });
             Ok(args)
         }
@@ -881,7 +882,7 @@ mod adv_ext_with_columns_fixture {
             // has no "=> columns" clause, so this cannot be round-tripped.
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col".to_owned(),
-                type_spec: "i64".to_owned(),
+                r#type: super::parse_type("i64"),
             });
             Ok(args)
         }

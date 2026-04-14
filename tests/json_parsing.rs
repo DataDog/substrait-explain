@@ -5,6 +5,7 @@
 //! and the compiled descriptor binary are all generated at build time by
 //! `build.rs` using protox and prost-build.
 
+use substrait::proto;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
@@ -51,11 +52,21 @@ impl Explainable for ParquetScanConfig {
         );
         args.output_columns.push(ExtensionColumn::Named {
             name: "customer_id".to_string(),
-            type_spec: "i64".to_string(),
+            r#type: proto::Type {
+                kind: Some(proto::r#type::Kind::I64(proto::r#type::I64 {
+                    nullability: proto::r#type::Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            },
         });
         args.output_columns.push(ExtensionColumn::Named {
             name: "amount".to_string(),
-            type_spec: "fp64".to_string(),
+            r#type: proto::Type {
+                kind: Some(proto::r#type::Kind::Fp64(proto::r#type::Fp64 {
+                    nullability: proto::r#type::Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            },
         });
         Ok(args)
     }

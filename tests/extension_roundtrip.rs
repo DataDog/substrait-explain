@@ -6,6 +6,7 @@ use substrait_explain::extensions::{
     EnumValue, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
     ExtensionRelationType, ExtensionValue, TupleValue,
 };
+use substrait_explain::fixtures::parse_type;
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
 
@@ -93,7 +94,7 @@ impl Explainable for UserTableConfig {
         for column in &self.tracked_columns {
             args.output_columns.push(ExtensionColumn::Named {
                 name: column.clone(),
-                type_spec: "string".to_string(), // Simplified for test
+                r#type: parse_type("string"),
             });
         }
 
@@ -281,7 +282,7 @@ impl Explainable for LiteralConfig {
             .insert("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
         args.output_columns.push(ExtensionColumn::Named {
             name: "value".to_string(),
-            type_spec: "string".to_string(),
+            r#type: parse_type("string"),
         });
         Ok(args)
     }

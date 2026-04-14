@@ -497,6 +497,7 @@ mod tests {
         Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
         ExtensionValue,
     };
+    use crate::fixtures::parse_type;
     use crate::parse;
 
     const BASIC_PLAN: &str = r#"=== Plan
@@ -948,7 +949,7 @@ Root[result]
                 .insert("tag".to_string(), ExtensionValue::String(self.tag.clone()));
             args.output_columns.push(ExtensionColumn::Named {
                 name: "val".to_string(),
-                type_spec: "i64".to_string(),
+                r#type: parse_type("i64"),
             });
             Ok(args)
         }

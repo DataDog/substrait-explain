@@ -223,31 +223,14 @@ trait ExtensionConverter: Send + Sync {
 
 /// Type adapter that implements ExtensionConverter for any type T that implements
 /// both AnyConvertible and Explainable.
-///
-/// This struct exists to solve Rust's "trait object problem": we can't store
-/// `Box<dyn AnyConvertible + Explainable>` because that's two traits, not one.
-/// Instead, we store `Box<dyn ExtensionConverter>` and use this adapter to bridge
-/// from the two user-facing traits to our single internal trait.
-///
-/// The adapter pattern allows us to:
-/// 1. Keep a clean API where users only implement AnyConvertible and Explainable
-/// 2. Store different types in the same HashMap through type erasure
-/// 3. Maintain type safety - the concrete type T is known at registration time
-/// 4. Avoid any runtime type checking or unsafe code
-///
-/// The PhantomData is necessary because we don't actually store a T, but we need
-/// the type information to call T's static methods (from_args, from_any).
 struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
-        // Convert: ExtensionArgs -> T -> Any
         T::from_args(args)?.to_any()
     }
 
     fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
-        // Convert: AnyRef -> Any -> T -> ExtensionArgs
-        // Create an owned Any from the AnyRef to work with existing T::from_any
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
         T::from_any(owned_any.as_ref())?.to_args()
     }
@@ -422,19 +405,11 @@ impl ExtensionRegistry {
     }
 
     /// Decode extension detail to extension name and ExtensionArgs
-    /// This is the primary method for textification - given an AnyRef with extension detail,
-    /// decode it to the extension name and appropriate ExtensionArgs for display
     pub fn decode(&self, detail: AnyRef<'_>) -> Result<(String, ExtensionArgs), ExtensionError> {
         self.decode_with_type(ExtensionType::Relation, detail)
     }
 
     /// Decode enhancement detail to enhancement name and ExtensionArgs
-    ///
-    /// This is the primary method for textification of enhancements - given an AnyRef
-    /// with enhancement detail, decode it to the enhancement name and appropriate
-    /// ExtensionArgs for display.
-    ///
-    /// Looks up the enhancement handler in the enhancement namespace by type URL.
     pub fn decode_enhancement(
         &self,
         detail: AnyRef<'_>,
@@ -443,12 +418,6 @@ impl ExtensionRegistry {
     }
 
     /// Decode optimization detail to optimization name and ExtensionArgs
-    ///
-    /// This is the primary method for textification of optimizations - given an AnyRef
-    /// with optimization detail, decode it to the optimization name and appropriate
-    /// ExtensionArgs for display.
-    ///
-    /// Looks up the optimization handler in the optimization namespace by type URL.
     pub fn decode_optimization(
         &self,
         detail: AnyRef<'_>,
@@ -462,7 +431,6 @@ impl ExtensionRegistry {
         ext_type: ExtensionType,
         detail: AnyRef<'_>,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
-        // Find extension name by type URL in the specified namespace
         let type_url_key = (ext_type, detail.type_url.to_string());
         let extension_name =
             self.type_urls
@@ -651,7 +619,7 @@ mod tests {
         // Add output columns
         args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
-            type_spec: "i32".to_string(),
+            r#type: crate::fixtures::parse_type("i32"),
         });
 
         // Test retrieval - use extractor
