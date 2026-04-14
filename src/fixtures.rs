@@ -1,10 +1,13 @@
 //! Test fixtures for working with Substrait plans and substrait_explain
 
+use substrait::proto;
+
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;
 use crate::parser::{MessageParseError, Parser, ScopedParse};
 use crate::textify::foundation::{ErrorAccumulator, ErrorList};
+use crate::textify::plan::PlanWriter;
 use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
 
 pub struct TestContext {
@@ -124,4 +127,76 @@ pub fn roundtrip_plan(input: &str) {
         input.trim(),
         actual.trim()
     );
+}
+/// Roundtrip a plan and verify that the output is the same as the input, after
+/// being parsed to a Substrait plan and then back to text.
+pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
+    let default_registry = ExtensionRegistry::new();
+
+    // Parse the simple plan
+    let simple_plan = Parser::parse(input).unwrap_or_else(|e| {
+        println!("Error parsing simple plan:\n{e}");
+        panic!("{e}");
+    });
+
+    // Parse the verbose plan
+    let verbose_plan = Parser::parse(verbose_input).unwrap_or_else(|e| {
+        println!("Error parsing verbose plan:\n{e}");
+        panic!("{e}");
+    });
+
+    // Test verbose output from both plans
+    let verbose_options = OutputOptions::verbose();
+    let (simple_verbose_writer, simple_verbose_errors) =
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &simple_plan, &default_registry);
+    let simple_verbose_actual = format!("{simple_verbose_writer}");
+    simple_verbose_errors
+        .errs()
+        .expect("Errors during simple -> verbose conversion");
+
+    let (verbose_verbose_writer, verbose_verbose_errors) =
+        PlanWriter::<ErrorQueue>::new(&verbose_options, &verbose_plan, &default_registry);
+    let verbose_verbose_actual = format!("{verbose_verbose_writer}");
+    verbose_verbose_errors
+        .errs()
+        .expect("Errors during verbose -> verbose conversion");
+
+    assert_eq!(
+        simple_verbose_actual.trim(),
+        verbose_verbose_actual.trim(),
+        "Expected verbose outputs to match:\n---\n{}\n---\n---\n{}\n---",
+        simple_verbose_actual.trim(),
+        verbose_verbose_actual.trim()
+    );
+
+    // Test simple output from both plans
+    let simple_options = OutputOptions::default();
+    let (simple_simple_writer, simple_simple_errors) =
+        PlanWriter::<ErrorQueue>::new(&simple_options, &simple_plan, &default_registry);
+    let simple_simple_actual = format!("{simple_simple_writer}");
+    simple_simple_errors
+        .errs()
+        .expect("Errors during simple -> simple conversion");
+
+    let (verbose_simple_writer, verbose_simple_errors) =
+        PlanWriter::<ErrorQueue>::new(&simple_options, &verbose_plan, &default_registry);
+    let verbose_simple_actual = format!("{verbose_simple_writer}");
+    verbose_simple_errors
+        .errs()
+        .expect("Errors during verbose -> simple conversion");
+
+    assert_eq!(
+        simple_simple_actual.trim(),
+        verbose_simple_actual.trim(),
+        "Expected simple outputs to match:\n---\n{}\n---\n---\n{}\n---",
+        simple_simple_actual.trim(),
+        verbose_simple_actual.trim()
+    );
+}
+
+/// Parse a built-in type string (e.g. `"i64"`, `"string?"`) into a
+/// `proto::Type`. Panics on invalid type names.
+pub fn parse_type(s: &str) -> proto::Type {
+    proto::Type::parse(&SimpleExtensions::default(), s)
+        .unwrap_or_else(|e| panic!("failed to parse type '{s}': {e}"))
 }
