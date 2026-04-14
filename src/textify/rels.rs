@@ -536,7 +536,7 @@ impl<'a> Relation<'a> {
     fn from_extension_leaf<S: Scope>(rel: &'a ExtensionLeafRel, ctx: &S) -> Self {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
+            Some(d) => ctx.extension_registry().decode(d, ctx.extensions()),
             None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
         };
         Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
@@ -545,7 +545,7 @@ impl<'a> Relation<'a> {
     fn from_extension_single<S: Scope>(rel: &'a ExtensionSingleRel, ctx: &S) -> Self {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
+            Some(d) => ctx.extension_registry().decode(d, ctx.extensions()),
             None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
         };
         Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
@@ -554,7 +554,7 @@ impl<'a> Relation<'a> {
     fn from_extension_multi<S: Scope>(rel: &'a ExtensionMultiRel, ctx: &S) -> Self {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
+            Some(d) => ctx.extension_registry().decode(d, ctx.extensions()),
             None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
         };
         let mut child_refs: Vec<Option<&'a Rel>> = vec![];

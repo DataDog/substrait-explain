@@ -1,9 +1,13 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
 use prost::{Message, Name};
+use substrait::proto;
+use substrait::proto::expression::RexType;
+use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
     ExtensionRelationType, ExtensionValue,
 };
 use substrait_explain::format_with_registry;
@@ -43,7 +47,7 @@ impl Explainable for UserTableConfig {
         "UserTable"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         let table_name: &str = extractor.expect_named_arg("name")?;
         let version: i64 = extractor.get_named_or("version", 1)?;
@@ -74,7 +78,7 @@ impl Explainable for UserTableConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments
@@ -93,7 +97,7 @@ impl Explainable for UserTableConfig {
         for column in &self.tracked_columns {
             args.output_columns.push(ExtensionColumn::Named {
                 name: column.clone(),
-                type_spec: "string".to_string(), // Simplified for test
+                r#type: parse_type("string"),
             });
         }
 
@@ -167,7 +171,7 @@ fn test_multiple_extensions_in_plan() {
             "TestFilter"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             let expression: String = extractor.expect_named_arg::<&str>("expr")?.to_string();
             extractor.check_exhausted()?;
@@ -175,7 +179,7 @@ fn test_multiple_extensions_in_plan() {
             Ok(FilterConfig { expression })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
             args.named.insert(
                 "expr".to_string(),
@@ -234,7 +238,7 @@ impl Explainable for LiteralConfig {
         "LiteralTest"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
         let big: i64 = extractor.expect_named_arg("big")?;
@@ -267,7 +271,7 @@ impl Explainable for LiteralConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.named.insert(
             "path".to_string(),
@@ -281,7 +285,7 @@ impl Explainable for LiteralConfig {
             .insert("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
         args.output_columns.push(ExtensionColumn::Named {
             name: "value".to_string(),
-            type_spec: "string".to_string(),
+            r#type: parse_type("string"),
         });
         Ok(args)
     }
@@ -353,7 +357,7 @@ impl Explainable for EmptySource {
         "EmptySource"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         extractor.check_exhausted()?;
         Ok(EmptySource {
@@ -361,7 +365,7 @@ impl Explainable for EmptySource {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
     }
 }
@@ -436,13 +440,13 @@ impl Explainable for PassThroughWrapper {
         "PassThrough"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         extractor.check_exhausted()?;
         Ok(PassThroughWrapper {})
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
         args.output_columns.push(ExtensionColumn::Reference(0));
         Ok(args)
@@ -470,13 +474,13 @@ impl Explainable for BinaryMerge {
         "BinaryMerge"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         extractor.check_exhausted()?;
         Ok(BinaryMerge {})
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Multi);
         args.output_columns.push(ExtensionColumn::Reference(0));
         args.output_columns.push(ExtensionColumn::Reference(1));
