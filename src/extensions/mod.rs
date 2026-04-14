@@ -10,12 +10,12 @@ pub mod registry;
 pub mod simple;
 
 pub use any::{Any, AnyRef};
-pub(crate) use args::RawExpression;
 pub use args::{
-    EnumValue, ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, TupleValue,
+    EnumValue, Expr, ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue,
+    TupleValue,
 };
 pub use registry::{
-    AnyConvertible, Explainable, Extension, ExtensionError, ExtensionRegistry, ExtensionType,
-    RegistrationError,
+    AnyConvertible, ExplainContext, Explainable, Extension, ExtensionError, ExtensionRegistry,
+    ExtensionType, RegistrationError,
 };
 pub use simple::{InsertError, SimpleExtension, SimpleExtensions};

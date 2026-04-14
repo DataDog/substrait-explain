@@ -109,8 +109,14 @@ To use a custom extension type, it must implement:
 The `Explainable` trait defines how your type converts to/from the text format:
 
 - `name()` - The extension name used in text (e.g., `"ParquetScan"`)
-- `from_args(args)` - Parse text arguments into your type
-- `to_args(&self)` - Convert your type to text arguments
+- `from_args(args, ctx)` - Parse text arguments into your type
+- `to_args(&self, ctx)` - Convert your type to text arguments
+
+The `ExplainContext` passed to those methods exposes plan-level extension
+metadata plus helpers for type/schema conversion:
+
+- `ctx.string_to_type("i64?")` / `ctx.type_to_string(&ty)`
+- `ctx.schema(&columns)` / `ctx.columns(&named_struct)`
 
 Use `ArgsExtractor` for convenient argument parsing:
 
@@ -133,7 +139,7 @@ Register extensions to the appropriate namespace:
 ```rust,no_run
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
-#     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+#     ExplainContext, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
 #     ExtensionRelationType,
 # };
 #[derive(Clone, PartialEq, Message)]
@@ -149,8 +155,8 @@ impl Name for MySourceConfig {
 }
 # impl Explainable for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
-#     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
-#     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+#     fn from_args(_: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> { Ok(Self::default()) }
+#     fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
 #         Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
 #     }
 # }

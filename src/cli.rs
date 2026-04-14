@@ -494,9 +494,10 @@ mod tests {
 
     use super::*;
     use crate::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
-        ExtensionValue,
+        ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        ExtensionRelationType, ExtensionValue,
     };
+    use crate::fixtures::parse_type;
     use crate::parse;
 
     const BASIC_PLAN: &str = r#"=== Plan
@@ -933,7 +934,7 @@ Root[result]
             "TestSource"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             let tag: &str = extractor.expect_named_arg("tag")?;
             extractor.check_exhausted()?;
@@ -942,13 +943,13 @@ Root[result]
             })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.named
                 .insert("tag".to_string(), ExtensionValue::String(self.tag.clone()));
             args.output_columns.push(ExtensionColumn::Named {
                 name: "val".to_string(),
-                type_spec: "i64".to_string(),
+                r#type: parse_type("i64"),
             });
             Ok(args)
         }
