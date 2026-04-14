@@ -164,7 +164,8 @@ Root[result]
 mod opt_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType, ExtensionValue,
+        ExplainContext, Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType,
+        ExtensionValue,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -191,14 +192,14 @@ mod opt_fixture {
             "PlanHint"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
             extractor.check_exhausted()?;
             Ok(PlanHint { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.named
                 .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
@@ -521,7 +522,8 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        ExtensionRelationType,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -545,7 +547,7 @@ mod extension_child_fixture {
             "TwoColumnScan"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             extractor.check_exhausted()?;
             // Output columns are validated by the parser; we just ignore them here.
@@ -553,15 +555,15 @@ mod extension_child_fixture {
             Ok(TwoColumnScan {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
-                type_spec: "i64".to_owned(),
+                ty: parse_type("i64"),
             });
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col1".to_owned(),
-                type_spec: "i32".to_owned(),
+                ty: parse_type("i32"),
             });
             Ok(args)
         }
@@ -849,7 +851,8 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        ExtensionRelationType,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -873,19 +876,19 @@ mod adv_ext_with_columns_fixture {
             "EnhancementWithColumns"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             extractor.check_exhausted()?;
             Ok(EnhancementWithColumns {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             // Deliberately populate output_columns — the adv_extension grammar
             // has no "=> columns" clause, so this cannot be round-tripped.
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col".to_owned(),
-                type_spec: "i64".to_owned(),
+                ty: parse_type("i64"),
             });
             Ok(args)
         }

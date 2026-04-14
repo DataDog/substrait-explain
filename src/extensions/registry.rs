@@ -24,8 +24,8 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{
-//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
-//!     ExtensionRelationType, ExtensionValue,
+//!     Any, AnyConvertible, AnyRef, ExplainContext, Explainable, ExtensionArgs, ExtensionError,
+//!     ExtensionRegistry, ExtensionRelationType, ExtensionValue,
 //! };
 //!
 //! // Define a custom extension type
@@ -58,7 +58,7 @@
 //!         "ParquetScan"
 //!     }
 //!
-//!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+//!     fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
 //!         let mut extractor = args.extractor();
 //!         let path: &str = extractor.expect_named_arg("path")?;
 //!         extractor.check_exhausted()?;
@@ -67,7 +67,7 @@
 //!         })
 //!     }
 //!
-//!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+//!     fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
 //!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 //!         args.named.insert(
 //!             "path".to_string(),
@@ -86,10 +86,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use substrait::proto;
+use substrait::proto::NamedStruct;
 use thiserror::Error;
 
 use crate::extensions::any::{Any, AnyRef};
-use crate::extensions::args::ExtensionArgs;
+use crate::extensions::args::{ExtensionArgs, ExtensionColumn};
+use crate::extensions::simple::SimpleExtensions;
 
 /// Type of extension in the registry, used for namespace separation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -189,17 +192,93 @@ where
     }
 }
 
+/// Context provided to [`Explainable::from_args`] and [`Explainable::to_args`],
+/// giving extension implementations access to plan-level metadata and
+/// convenience helpers for schema conversion.
+pub struct ExplainContext<'a> {
+    extensions: &'a SimpleExtensions,
+}
+
+impl<'a> ExplainContext<'a> {
+    /// Create a new context from the plan's simple extensions.
+    pub fn new(extensions: &'a SimpleExtensions) -> Self {
+        Self { extensions }
+    }
+
+    /// Access the plan's simple extensions (URN anchors, function/type mappings).
+    pub fn extensions(&self) -> &SimpleExtensions {
+        self.extensions
+    }
+
+    /// Convert output columns to a [`NamedStruct`].
+    ///
+    /// Each [`ExtensionColumn::Named`] contributes a name and type;
+    /// other column variants produce an error.
+    pub fn schema(&self, columns: &[ExtensionColumn]) -> Result<NamedStruct, ExtensionError> {
+        let mut names = Vec::with_capacity(columns.len());
+        let mut types = Vec::with_capacity(columns.len());
+        for col in columns {
+            match col {
+                ExtensionColumn::Named { name, ty } => {
+                    names.push(name.clone());
+                    types.push(ty.clone());
+                }
+                other => {
+                    return Err(ExtensionError::InvalidArgument(format!(
+                        "Expected named column, got {other:?}"
+                    )));
+                }
+            }
+        }
+        Ok(NamedStruct {
+            names,
+            r#struct: Some(proto::r#type::Struct {
+                types,
+                type_variation_reference: 0,
+                nullability: proto::r#type::Nullability::Required as i32,
+            }),
+        })
+    }
+
+    /// Convert a [`NamedStruct`] to output columns.
+    ///
+    /// Returns an error if the struct's names and types have different lengths.
+    pub fn columns(&self, schema: &NamedStruct) -> Result<Vec<ExtensionColumn>, ExtensionError> {
+        let types = schema
+            .r#struct
+            .as_ref()
+            .map(|s| s.types.as_slice())
+            .unwrap_or_default();
+        if schema.names.len() != types.len() {
+            return Err(ExtensionError::InvalidArgument(format!(
+                "NamedStruct has {} names but {} types",
+                schema.names.len(),
+                types.len()
+            )));
+        }
+        Ok(schema
+            .names
+            .iter()
+            .zip(types.iter())
+            .map(|(name, ty)| ExtensionColumn::Named {
+                name: name.clone(),
+                ty: ty.clone(),
+            })
+            .collect())
+    }
+}
+
 /// Trait for types that participate in text explanations.
 pub trait Explainable: Sized {
     /// Canonical textual name for this extension. This is what appears in
     /// Substrait text plans and how the registry identifies the type.
     fn name() -> &'static str;
 
-    /// Parse extension arguments into this type
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
+    /// Parse extension arguments into this type.
+    fn from_args(args: &ExtensionArgs, ctx: &ExplainContext) -> Result<Self, ExtensionError>;
 
-    /// Convert this type to extension arguments
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
+    /// Convert this type to extension arguments.
+    fn to_args(&self, ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -216,40 +295,39 @@ pub trait Explainable: Sized {
 /// This design allows the registry to work with any type while maintaining type safety
 /// through the AnyConvertible and Explainable traits that users implement.
 trait ExtensionConverter: Send + Sync {
-    fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError>;
+    fn parse_detail(
+        &self,
+        args: &ExtensionArgs,
+        ctx: &ExplainContext,
+    ) -> Result<Any, ExtensionError>;
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError>;
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        ctx: &ExplainContext,
+    ) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Type adapter that implements ExtensionConverter for any type T that implements
 /// both AnyConvertible and Explainable.
-///
-/// This struct exists to solve Rust's "trait object problem": we can't store
-/// `Box<dyn AnyConvertible + Explainable>` because that's two traits, not one.
-/// Instead, we store `Box<dyn ExtensionConverter>` and use this adapter to bridge
-/// from the two user-facing traits to our single internal trait.
-///
-/// The adapter pattern allows us to:
-/// 1. Keep a clean API where users only implement AnyConvertible and Explainable
-/// 2. Store different types in the same HashMap through type erasure
-/// 3. Maintain type safety - the concrete type T is known at registration time
-/// 4. Avoid any runtime type checking or unsafe code
-///
-/// The PhantomData is necessary because we don't actually store a T, but we need
-/// the type information to call T's static methods (from_args, from_any).
 struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
-    fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
-        // Convert: ExtensionArgs -> T -> Any
-        T::from_args(args)?.to_any()
+    fn parse_detail(
+        &self,
+        args: &ExtensionArgs,
+        ctx: &ExplainContext,
+    ) -> Result<Any, ExtensionError> {
+        T::from_args(args, ctx)?.to_any()
     }
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
-        // Convert: AnyRef -> Any -> T -> ExtensionArgs
-        // Create an owned Any from the AnyRef to work with existing T::from_any
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        ctx: &ExplainContext,
+    ) -> Result<ExtensionArgs, ExtensionError> {
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
-        T::from_any(owned_any.as_ref())?.to_args()
+        T::from_any(owned_any.as_ref())?.to_args(ctx)
     }
 }
 
@@ -376,8 +454,9 @@ impl ExtensionRegistry {
         &self,
         extension_name: &str,
         args: &ExtensionArgs,
+        extensions: &SimpleExtensions,
     ) -> Result<Any, ExtensionError> {
-        self.parse_with_type(ExtensionType::Relation, extension_name, args)
+        self.parse_with_type(ExtensionType::Relation, extension_name, args, extensions)
     }
 
     /// Parse enhancement arguments into a protobuf Any message
@@ -388,8 +467,14 @@ impl ExtensionRegistry {
         &self,
         enhancement_name: &str,
         args: &ExtensionArgs,
+        extensions: &SimpleExtensions,
     ) -> Result<Any, ExtensionError> {
-        self.parse_with_type(ExtensionType::Enhancement, enhancement_name, args)
+        self.parse_with_type(
+            ExtensionType::Enhancement,
+            enhancement_name,
+            args,
+            extensions,
+        )
     }
 
     /// Parse optimization arguments into a protobuf Any message
@@ -400,8 +485,14 @@ impl ExtensionRegistry {
         &self,
         optimization_name: &str,
         args: &ExtensionArgs,
+        extensions: &SimpleExtensions,
     ) -> Result<Any, ExtensionError> {
-        self.parse_with_type(ExtensionType::Optimization, optimization_name, args)
+        self.parse_with_type(
+            ExtensionType::Optimization,
+            optimization_name,
+            args,
+            extensions,
+        )
     }
 
     /// Internal method to parse extension arguments with a specific ExtensionType
@@ -410,7 +501,9 @@ impl ExtensionRegistry {
         ext_type: ExtensionType,
         name: &str,
         args: &ExtensionArgs,
+        extensions: &SimpleExtensions,
     ) -> Result<Any, ExtensionError> {
+        let ctx = ExplainContext::new(extensions);
         let key = (ext_type, name.to_string());
         let handler = self
             .handlers
@@ -418,42 +511,34 @@ impl ExtensionRegistry {
             .ok_or_else(|| ExtensionError::NotFound {
                 name: name.to_string(),
             })?;
-        handler.parse_detail(args)
+        handler.parse_detail(args, &ctx)
     }
 
     /// Decode extension detail to extension name and ExtensionArgs
-    /// This is the primary method for textification - given an AnyRef with extension detail,
-    /// decode it to the extension name and appropriate ExtensionArgs for display
-    pub fn decode(&self, detail: AnyRef<'_>) -> Result<(String, ExtensionArgs), ExtensionError> {
-        self.decode_with_type(ExtensionType::Relation, detail)
+    pub fn decode(
+        &self,
+        detail: AnyRef<'_>,
+        extensions: &SimpleExtensions,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type(ExtensionType::Relation, detail, extensions)
     }
 
     /// Decode enhancement detail to enhancement name and ExtensionArgs
-    ///
-    /// This is the primary method for textification of enhancements - given an AnyRef
-    /// with enhancement detail, decode it to the enhancement name and appropriate
-    /// ExtensionArgs for display.
-    ///
-    /// Looks up the enhancement handler in the enhancement namespace by type URL.
     pub fn decode_enhancement(
         &self,
         detail: AnyRef<'_>,
+        extensions: &SimpleExtensions,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
-        self.decode_with_type(ExtensionType::Enhancement, detail)
+        self.decode_with_type(ExtensionType::Enhancement, detail, extensions)
     }
 
     /// Decode optimization detail to optimization name and ExtensionArgs
-    ///
-    /// This is the primary method for textification of optimizations - given an AnyRef
-    /// with optimization detail, decode it to the optimization name and appropriate
-    /// ExtensionArgs for display.
-    ///
-    /// Looks up the optimization handler in the optimization namespace by type URL.
     pub fn decode_optimization(
         &self,
         detail: AnyRef<'_>,
+        extensions: &SimpleExtensions,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
-        self.decode_with_type(ExtensionType::Optimization, detail)
+        self.decode_with_type(ExtensionType::Optimization, detail, extensions)
     }
 
     /// Internal method to decode extension detail with a specific ExtensionType
@@ -461,8 +546,9 @@ impl ExtensionRegistry {
         &self,
         ext_type: ExtensionType,
         detail: AnyRef<'_>,
+        extensions: &SimpleExtensions,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
-        // Find extension name by type URL in the specified namespace
+        let ctx = ExplainContext::new(extensions);
         let type_url_key = (ext_type, detail.type_url.to_string());
         let extension_name =
             self.type_urls
@@ -471,7 +557,6 @@ impl ExtensionRegistry {
                     name: detail.type_url.to_string(),
                 })?;
 
-        // Get handler and textify the detail
         let name_key = (ext_type, extension_name.clone());
         let handler = self
             .handlers
@@ -480,7 +565,7 @@ impl ExtensionRegistry {
                 name: extension_name.clone(),
             })?;
 
-        let args = handler.textify_detail(detail)?;
+        let args = handler.textify_detail(detail, &ctx)?;
 
         Ok((extension_name.clone(), args))
     }
@@ -571,7 +656,7 @@ mod tests {
             "TestExtension"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
             let batch_size: i64 = extractor.expect_named_arg("batch_size")?;
@@ -583,7 +668,7 @@ mod tests {
             })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.named.insert(
                 "path".to_string(),
@@ -621,11 +706,14 @@ mod tests {
         args.named
             .insert("batch_size".to_string(), ExtensionValue::Integer(2048));
 
-        let any = registry.parse_extension("TestExtension", &args).unwrap();
+        let ext = SimpleExtensions::default();
+        let any = registry
+            .parse_extension("TestExtension", &args, &ext)
+            .unwrap();
         assert_eq!(any.type_url, "test.TestExtension");
 
         let any_ref = any.as_ref();
-        let result = registry.decode(any_ref).unwrap();
+        let result = registry.decode(any_ref, &ext).unwrap();
         assert_eq!(result.0, "TestExtension");
         match result.1.named.get("path") {
             Some(ExtensionValue::String(s)) => assert_eq!(s, "test.parquet"), // Due to our simple test impl
@@ -651,7 +739,7 @@ mod tests {
         // Add output columns
         args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
-            type_spec: "i32".to_string(),
+            ty: crate::fixtures::parse_type("i32"),
         });
 
         // Test retrieval - use extractor
@@ -680,7 +768,8 @@ mod tests {
 
         // Extension not found
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        let result = registry.parse_extension("NonExistent", &args);
+        let ext = SimpleExtensions::default();
+        let result = registry.parse_extension("NonExistent", &args, &ext);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
 
         // Missing argument
@@ -737,14 +826,14 @@ mod tests {
             "TestEnhancement"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
             let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_string();
             extractor.check_exhausted()?;
             Ok(TestEnhancement { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
             args.named.insert(
                 "hint".to_string(),
@@ -772,6 +861,7 @@ mod tests {
         );
 
         // Test that extension namespace works
+        let ext = SimpleExtensions::default();
         let mut ext_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         ext_args.named.insert(
             "path".to_string(),
@@ -782,7 +872,7 @@ mod tests {
             .insert("batch_size".to_string(), ExtensionValue::Integer(2048));
 
         let ext_any = registry
-            .parse_extension("TestExtension", &ext_args)
+            .parse_extension("TestExtension", &ext_args, &ext)
             .unwrap();
         assert_eq!(ext_any.type_url, "test.TestExtension");
 
@@ -794,13 +884,13 @@ mod tests {
         );
 
         let enh_any = registry
-            .parse_enhancement("TestEnhancement", &enh_args)
+            .parse_enhancement("TestEnhancement", &enh_args, &ext)
             .unwrap();
         assert_eq!(enh_any.type_url, "test.TestExtension"); // Same type URL!
 
         // Test decode_enhancement
         let enh_ref = enh_any.as_ref();
-        let (name, args) = registry.decode_enhancement(enh_ref).unwrap();
+        let (name, args) = registry.decode_enhancement(enh_ref, &ext).unwrap();
         assert_eq!(name, "TestEnhancement");
         match args.named.get("hint") {
             Some(ExtensionValue::String(s)) => assert_eq!(s, "test_hint"), // Due to test impl
@@ -823,7 +913,8 @@ mod tests {
     fn test_enhancement_not_found_error() {
         let registry = ExtensionRegistry::new();
         let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        let result = registry.parse_enhancement("NonExistentEnhancement", &args);
+        let ext = SimpleExtensions::default();
+        let result = registry.parse_enhancement("NonExistentEnhancement", &args, &ext);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
     }
 
@@ -851,11 +942,11 @@ mod tests {
             "ConflictingExtension"
         }
 
-        fn from_args(_args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(_args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
             Ok(ConflictingExtension)
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
             Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
         }
     }
