@@ -5,7 +5,7 @@ use substrait::proto;
 use super::Textify;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::parser::PLAN_HEADER;
-use crate::textify::foundation::ErrorAccumulator;
+use crate::textify::foundation::{ErrorAccumulator, FormatError, FormatErrorType, PlanError};
 use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
@@ -29,6 +29,10 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         let errors = E::default();
         for err in errs {
             errors.push(err.into());
+        }
+
+        for err in check_deprecated_uri_fields(plan) {
+            errors.push(err);
         }
 
         let relations = plan.relations.as_slice();
@@ -83,6 +87,69 @@ impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
         writeln!(f)?;
         Ok(())
     }
+}
+
+/// Check for deprecated URI-based extension fields in a plan.
+///
+/// Substrait migrated from URI-based extensions (YAML file paths identified by
+/// `extensionUris` / `extensionUriReference`) to URN-based extensions (structured
+/// identifiers using `extensionUrns` / `extensionUrnReference`). Plans from older
+/// producers may still use the URI fields; we report them clearly so users know
+/// what to update.
+#[allow(deprecated)]
+fn check_deprecated_uri_fields(plan: &proto::Plan) -> Vec<FormatError> {
+    use substrait::proto::extensions::simple_extension_declaration::MappingType;
+
+    let mut errors = Vec::new();
+
+    if !plan.extension_uris.is_empty() {
+        let n = plan.extension_uris.len();
+        let noun = if n == 1 { "entry" } else { "entries" };
+        errors.push(FormatError::Format(PlanError {
+            message: "extensions",
+            lookup: Some("extensionUris".into()),
+            description: format!(
+                "Plan uses unsupported deprecated extensionUris ({n} {noun}). \
+                 Update the input JSON to use extensionUrns (URN-based identifiers) \
+                 instead of extensionUris (YAML file paths)."
+            )
+            .into(),
+            error_type: FormatErrorType::InvalidValue,
+        }));
+    }
+
+    let deprecated_refs: Vec<String> = plan
+        .extensions
+        .iter()
+        .filter_map(|ext| match &ext.mapping_type {
+            Some(MappingType::ExtensionFunction(f)) if f.extension_uri_reference != 0 => {
+                Some(format!("function #{}", f.function_anchor))
+            }
+            Some(MappingType::ExtensionType(t)) if t.extension_uri_reference != 0 => {
+                Some(format!("type #{}", t.type_anchor))
+            }
+            Some(MappingType::ExtensionTypeVariation(v)) if v.extension_uri_reference != 0 => {
+                Some(format!("type variation #{}", v.type_variation_anchor))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if !deprecated_refs.is_empty() {
+        errors.push(FormatError::Format(PlanError {
+            message: "extensions",
+            lookup: Some("extensionUriReference".into()),
+            description: format!(
+                "Extension declarations use unsupported deprecated extensionUriReference \
+                 instead of extensionUrnReference: {}",
+                deprecated_refs.join(", ")
+            )
+            .into(),
+            error_type: FormatErrorType::InvalidValue,
+        }));
+    }
+
+    errors
 }
 
 #[cfg(test)]
@@ -219,117 +286,6 @@ Functions:
 === Plan
 Project[$0, $1, add($0, $1)]
   Read[table1 => col1:i32?, col2:i32?]
-"#
-        .trim_start();
-
-        assert_eq!(
-            output, expected,
-            "Output:\n---\n{output}\n---\nExpected:\n---\n{expected}\n---"
-        );
-    }
-
-    /// Reproduces #96: when a plan only has the deprecated `extension_uri_reference`
-    /// field set (not `extension_urn_reference`), the formatter should still resolve
-    /// the correct URN anchor.
-    #[test]
-    fn test_deprecated_extension_uri_reference() {
-        let mut plan = proto::Plan::default();
-
-        // Add extension URN with anchor 1
-        plan.extension_urns.push(pext::SimpleExtensionUrn {
-            extension_urn_anchor: 1,
-            urn: "/functions_comparison.yaml".to_string(),
-        });
-
-        // Use ONLY the deprecated extension_uri_reference field (tag 1),
-        // leaving extension_urn_reference (tag 4) at default 0.
-        // This is what happens when deserializing JSON from older producers.
-        plan.extensions.push(pext::SimpleExtensionDeclaration {
-            #[allow(deprecated)]
-            mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
-                extension_urn_reference: 0,
-                extension_uri_reference: 1,
-                function_anchor: 1,
-                name: "is_not_null:any".to_string(),
-            })),
-        });
-
-        // Create a simple Read
-        let read_rel = ReadRel {
-            read_type: Some(ReadType::NamedTable(NamedTable {
-                names: vec!["my_table".to_string()],
-                ..Default::default()
-            })),
-            base_schema: Some(NamedStruct {
-                names: vec!["x".to_string()],
-                r#struct: Some(Struct {
-                    types: vec![Type {
-                        kind: Some(Kind::I64(proto::r#type::I64 {
-                            nullability: Nullability::Nullable as i32,
-                            type_variation_reference: 0,
-                        })),
-                    }],
-                    ..Default::default()
-                }),
-            }),
-            ..Default::default()
-        };
-
-        // Create a Filter using the function
-        let filter_rel = proto::FilterRel {
-            input: Some(Box::new(proto::Rel {
-                rel_type: Some(proto::rel::RelType::Read(Box::new(read_rel))),
-            })),
-            condition: Some(Box::new(Expression {
-                rex_type: Some(RexType::ScalarFunction(ScalarFunction {
-                    function_reference: 1,
-                    arguments: vec![FunctionArgument {
-                        arg_type: Some(ArgType::Value(Expression {
-                            rex_type: Some(RexType::Selection(Box::new(
-                                FieldIndex(0).to_field_reference(),
-                            ))),
-                        })),
-                    }],
-                    output_type: None,
-                    options: vec![],
-                    #[allow(deprecated)]
-                    args: vec![],
-                })),
-            })),
-            common: None,
-            advanced_extension: None,
-        };
-
-        // Wrap in Root
-        plan.relations.push(proto::PlanRel {
-            rel_type: Some(proto::plan_rel::RelType::Root(proto::RelRoot {
-                input: Some(proto::Rel {
-                    rel_type: Some(proto::rel::RelType::Filter(Box::new(filter_rel))),
-                }),
-                names: vec!["x".to_string()],
-            })),
-        });
-
-        let options = OutputOptions::default();
-        let extension_registry = ExtensionRegistry::new();
-        let (writer, errors) = PlanWriter::<ErrorQueue>::new(&options, &plan, &extension_registry);
-        let mut output = String::new();
-        write!(output, "{writer}").unwrap();
-
-        let errors: Vec<_> = errors.into();
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-
-        let expected = r#"
-=== Extensions
-URNs:
-  @  1: /functions_comparison.yaml
-Functions:
-  #  1 @  1: is_not_null:any
-
-=== Plan
-Root[x]
-  Filter[is_not_null($0) => $0]
-    Read[my_table => x:i64?]
 "#
         .trim_start();
 
