@@ -1,5 +1,7 @@
 //! Test fixtures for working with Substrait plans and substrait_explain
 
+use substrait::proto;
+
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::format;
@@ -191,4 +193,10 @@ pub fn roundtrip_plan_with_verbose(input: &str, verbose_input: &str) {
         simple_simple_actual.trim(),
         verbose_simple_actual.trim()
     );
+}
+
+/// Parse a type string (e.g. `"i64"`, `"string?"`) into a `proto::Type`.
+pub fn parse_type(s: &str) -> proto::Type {
+    proto::Type::parse(&SimpleExtensions::default(), s)
+        .unwrap_or_else(|e| panic!("failed to parse type '{s}': {e}"))
 }

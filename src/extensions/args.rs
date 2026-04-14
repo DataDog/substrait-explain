@@ -17,12 +17,6 @@ use crate::textify::types::escaped;
 #[derive(Debug, Clone)]
 pub struct Expr(pub Box<proto::Expression>);
 
-impl fmt::Display for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<expression>")
-    }
-}
-
 /// Represents the arguments and output columns for an extension relation.
 ///
 /// Named arguments are stored in an [`IndexMap`] whose iteration order
@@ -176,7 +170,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
             ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
-            ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
+            ExtensionValue::Expression(_) => write!(f, "Expression(...)"),
         }
     }
 }

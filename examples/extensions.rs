@@ -18,6 +18,7 @@ use substrait_explain::extensions::{
     AnyConvertible, ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     ExtensionRegistry, ExtensionRelationType, ExtensionValue,
 };
+use substrait_explain::fixtures::parse_type;
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
 

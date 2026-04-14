@@ -525,6 +525,7 @@ mod extension_child_fixture {
         ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
         ExtensionRelationType,
     };
+    use substrait_explain::fixtures::parse_type;
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct TwoColumnScan {}
@@ -854,6 +855,7 @@ mod adv_ext_with_columns_fixture {
         ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
         ExtensionRelationType,
     };
+    use substrait_explain::fixtures::parse_type;
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct EnhancementWithColumns {}
