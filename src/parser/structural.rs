@@ -9,7 +9,6 @@ use std::fmt;
 use pest::iterators::Pair;
 use substrait::proto::expression::nested;
 use substrait::proto::extensions::AdvancedExtension;
-use substrait::proto::rel::RelType;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
     SortRel, plan_rel,
@@ -23,7 +22,7 @@ use crate::parser::extensions::{
     AdvExtInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
 use crate::parser::relations::{
-    ParsedVirtualReadRel, RelationAddenda, RelationParsingContext, parse_row_addendum,
+    RelationAddenda, RelationParsingContext, VirtualReadRel, parse_row_addendum,
 };
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
@@ -80,11 +79,12 @@ pub enum Addendum<'a> {
 }
 
 impl<'a> Addendum<'a> {
-    fn line_no(&self) -> i64 {
-        match self {
-            Addendum::AdvExt(a) => a.line_no,
-            Addendum::Row(r) => r.line_no,
-        }
+    fn context(&self) -> ParseContext {
+        let (line_no, pair) = match self {
+            Addendum::AdvExt(a) => (a.line_no, &a.pair),
+            Addendum::Row(r) => (r.line_no, &r.pair),
+        };
+        ParseContext::new(line_no, pair.as_str().to_string())
     }
 }
 
@@ -202,30 +202,6 @@ impl<'a> LineNode<'a> {
     }
 }
 
-/// Set the `advanced_extension` field on a [`Rel`], covering all standard
-/// relation variants that carry the field directly.
-fn set_advanced_extension(rel: &mut Rel, adv_ext: AdvancedExtension) {
-    match &mut rel.rel_type {
-        Some(RelType::Read(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Filter(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Project(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Aggregate(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Sort(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Fetch(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::Join(r)) => r.advanced_extension = Some(adv_ext),
-        Some(RelType::ExtensionLeaf(_)) => {
-            unreachable!("Extension types do not have advanced extensions defined on them")
-        }
-        Some(RelType::ExtensionSingle(_)) => {
-            unreachable!("Extension types do not have advanced extensions defined on them")
-        }
-        Some(RelType::ExtensionMulti(_)) => {
-            unreachable!("Extension types do not have advanced extensions defined on them")
-        }
-        _ => {}
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum State {
     // The initial state, before we have parsed any lines.
@@ -290,28 +266,31 @@ impl<'a> TreeBuilder<'a> {
                 parent.children.push(rel_node);
             }
             LineNode::Addendum(addendum) => {
-                let line_no = addendum.line_no();
                 if depth == 0 {
-                    return Err(ParseError::ValidationError(format!(
-                        "line {line_no}: addenda (+ Enh: / + Opt: / + Row) \
-                         cannot appear at the top level",
-                    )));
+                    return Err(ParseError::ValidationError(
+                        addendum.context(),
+                        "addenda (+ Enh: / + Opt: / + Row) cannot appear at the top level"
+                            .to_string(),
+                    ));
                 }
 
                 let parent = match self.get_at_depth(depth - 1) {
                     None => {
-                        return Err(ParseError::ValidationError(format!(
-                            "line {line_no}: no parent found for addendum at depth {depth}",
-                        )));
+                        return Err(ParseError::ValidationError(
+                            addendum.context(),
+                            format!("no parent found for addendum at depth {depth}"),
+                        ));
                     }
                     Some(parent) => parent,
                 };
 
                 if !parent.children.is_empty() {
-                    return Err(ParseError::ValidationError(format!(
-                        "line {line_no}: addenda (+ Enh: / + Opt: / + Row) must \
-                         appear before child relations, not after",
-                    )));
+                    return Err(ParseError::ValidationError(
+                        addendum.context(),
+                        "addenda (+ Enh: / + Opt: / + Row) must appear before child relations, \
+                         not after"
+                            .to_string(),
+                    ));
                 }
 
                 parent.addenda.push(addendum);
@@ -374,17 +353,19 @@ impl<'a> RelationParser<'a> {
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         ctx: RelationContext,
-    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
+    ) -> Result<(Rel, usize), ParseError> {
         let rule = ctx.pair.as_rule();
         if !ctx.rows.is_empty() && rule != Rule::virtual_read_relation {
-            return Err(ParseError::ValidationError(format!(
-                "line {}: + Row addenda can only be attached to Read:Virtual relations",
-                ctx.line_no
-            )));
+            // TODO: this is at the wrong layer of abstraction; this should probably
+            // be part of `RelationParsePair::into_rel`
+            return Err(ParseError::ValidationError(
+                ParseContext::new(ctx.line_no, ctx.pair.as_str().to_string()),
+                "+ Row addenda can only be attached to Read:Virtual relations".to_string(),
+            ));
         }
 
         match rule {
-            Rule::virtual_read_relation => self.parse_rel::<ParsedVirtualReadRel>(extensions, ctx),
+            Rule::virtual_read_relation => self.parse_rel::<VirtualReadRel>(extensions, ctx),
             Rule::read_relation => self.parse_rel::<ReadRel>(extensions, ctx),
             Rule::filter_relation => self.parse_rel::<FilterRel>(extensions, ctx),
             Rule::project_relation => self.parse_rel::<ProjectRel>(extensions, ctx),
@@ -464,7 +445,7 @@ impl<'a> RelationParser<'a> {
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
         let output_column_count = extension_args.output_columns.len();
 
-        let mut rel = extension_args
+        let rel = extension_args
             .relation_type
             .create_rel(detail, ctx.children)
             .map_err(|e| {
@@ -474,8 +455,12 @@ impl<'a> RelationParser<'a> {
                 )
             })?;
 
-        if let Some(adv_ext) = ctx.advanced_extension {
-            set_advanced_extension(&mut rel, adv_ext);
+        if ctx.advanced_extension.is_some() {
+            return Err(ParseError::ValidationError(
+                ParseContext::new(line_no, line.to_string()),
+                "extension relations do not support advanced extensions (+ Enh / + Opt)"
+                    .to_string(),
+            ));
         }
         Ok((rel, output_column_count))
     }
@@ -489,7 +474,7 @@ impl<'a> RelationParser<'a> {
         extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         node: RelationNode,
-    ) -> Result<(substrait::proto::Rel, usize), ParseError> {
+    ) -> Result<(Rel, usize), ParseError> {
         let mut children: Vec<Box<Rel>> = Vec::new();
         let mut input_field_count: usize = 0;
         for child in node.children {
@@ -556,6 +541,7 @@ impl<'a> RelationParser<'a> {
                     )?;
                     if enhancement.is_some() {
                         return Err(ParseError::ValidationError(
+                            ParseContext::new(line_no, line.clone()),
                             "at most one enhancement per relation is allowed".to_string(),
                         ));
                     }
@@ -598,11 +584,10 @@ impl<'a> RelationParser<'a> {
 
         // Root relations don't support addenda — reject rather than silently discard.
         if !node.addenda.is_empty() {
-            let line_no = node.addenda[0].line_no();
-            return Err(ParseError::ValidationError(format!(
-                "line {line_no}: addenda (+ Enh: / + Opt: / + Row) are not \
-                 supported on Root relations",
-            )));
+            return Err(ParseError::ValidationError(
+                node.addenda[0].context(),
+                "addenda (+ Enh: / + Opt: / + Row) are not supported on Root relations".to_string(),
+            ));
         }
 
         // Named root relation.
@@ -941,6 +926,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use substrait::proto::extensions::simple_extension_declaration::MappingType;
+    use substrait::proto::rel::RelType;
 
     use super::*;
     use crate::extensions::simple::ExtensionKind;

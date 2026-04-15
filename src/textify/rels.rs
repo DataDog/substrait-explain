@@ -310,7 +310,7 @@ impl Textify for Relation<'_> {
                 w,
                 "\n{}+ Row[{}]",
                 child_scope.indent(),
-                ctx.separated(row, ", ")
+                child_scope.separated(row, ", ")
             )?;
         }
         self.write_children(ctx, w)?;

@@ -212,6 +212,9 @@ named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
 planNode = {
+    // virtual_read_relation must precede read_relation: both start with "Read",
+    // and PEG tries alternatives in order — the longer "Read:Virtual" prefix
+    // must be attempted first.
     virtual_read_relation
   | read_relation
   | filter_relation

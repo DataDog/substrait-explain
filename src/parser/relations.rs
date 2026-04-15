@@ -15,9 +15,7 @@ use substrait::proto::{
     RelCommon, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, r#type,
 };
 
-use super::{
-    ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
-};
+use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
 use crate::extensions::any::Any;
 use crate::extensions::registry::{ExtensionError, ExtensionType};
 use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
@@ -89,10 +87,25 @@ impl<'a> RelationParsingContext<'a> {
 /// relation. Carried from `build_rel` into [`RelationParsePair::into_rel`]
 /// so each relation type can apply its own advanced extension and row
 /// handling.
+#[derive(Default)]
 pub struct RelationAddenda {
-    /// Pre-parsed `+ Row` data. Only consumed by [`ParsedVirtualReadRel`].
+    /// Pre-parsed `+ Row` data. Only consumed by [`ReadRel`]s with a
+    /// [`VirtualTable`](`substrait::proto::read_rel::ReadType::VirtualTable`).
     pub rows: Vec<nested::Struct>,
     pub advanced_extension: Option<AdvancedExtension>,
+}
+
+impl RelationAddenda {
+    /// Assert that no row addenda were attached. Call this in every
+    /// [`RelationParsePair::into_rel`] implementation that does not consume
+    /// rows (i.e., everything except a `Read:Virtual`).
+    pub fn assert_no_rows(&self) {
+        assert!(
+            self.rows.is_empty(),
+            "row addenda are only valid on Read:Virtual relations; got {} row(s)",
+            self.rows.len()
+        );
+    }
 }
 
 /// A trait for parsing relations with full context for tree building.
@@ -316,6 +329,7 @@ impl RelationParsePair for ReadRel {
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
+        // ReadRel is a leaf node - it should have no input children and 0 input fields
         if !input_children.is_empty() {
             return Err(MessageParseError::invalid(
                 Self::message(),
@@ -324,16 +338,10 @@ impl RelationParsePair for ReadRel {
             ));
         }
         if input_field_count != 0 {
-            let error = pest::error::Error::new_from_span(
-                pest::error::ErrorVariant::CustomError {
-                    message: "ReadRel should have 0 input fields".to_string(),
-                },
-                pair.as_span(),
-            );
-            return Err(MessageParseError::new(
+            return Err(MessageParseError::invalid(
                 "ReadRel",
-                ErrorKind::InvalidValue,
-                Box::new(error),
+                pair.as_span(),
+                "ReadRel should have 0 input fields",
             ));
         }
 
@@ -357,6 +365,7 @@ impl RelationParsePair for ReadRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Read(Box::new(self))),
@@ -380,9 +389,9 @@ pub(crate) fn parse_row_addendum(
 /// Parsed `Read:Virtual[rows => columns]` relation. Needs a newtype because
 /// the proto type is `ReadRel` (same as NamedTable), but the grammar rule and
 /// addenda handling differ.
-pub(crate) struct ParsedVirtualReadRel(ReadRel);
+pub(crate) struct VirtualReadRel(ReadRel);
 
-impl RelationParsePair for ParsedVirtualReadRel {
+impl RelationParsePair for VirtualReadRel {
     fn rule() -> Rule {
         Rule::virtual_read_relation
     }
@@ -418,7 +427,7 @@ impl RelationParsePair for ParsedVirtualReadRel {
         // collection path is available.
         let output_count = columns.len();
         Ok((
-            ParsedVirtualReadRel(ReadRel {
+            VirtualReadRel(ReadRel {
                 base_schema: Some(build_named_struct(columns)),
                 read_type: Some(read_rel::ReadType::VirtualTable(read_rel::VirtualTable {
                     expressions: rows,
@@ -434,6 +443,8 @@ impl RelationParsePair for ParsedVirtualReadRel {
         // Extend inline rows with addenda rows from `+ Row` lines.
         if let Some(read_rel::ReadType::VirtualTable(ref mut vt)) = self.0.read_type {
             vt.expressions.extend(addenda.rows);
+        } else {
+            unreachable!("Constructed Read:Virtual with no VirtualTable")
         }
         self.0.advanced_extension = addenda.advanced_extension;
         Rel {
@@ -455,7 +466,7 @@ fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
     }
 }
 
-/// Parse `virtual_read_args`: either `empty` or a list of row tuples.
+/// `Read:Virtual` positional args: either `empty` or a list of row tuples.
 fn parse_virtual_read_args(extensions: &SimpleExtensions, pair: Pair<Rule>) -> Vec<nested::Struct> {
     assert_eq!(pair.as_rule(), Rule::virtual_read_args);
     let inner = unwrap_single_pair(pair);
@@ -476,6 +487,7 @@ fn parse_virtual_read_args(extensions: &SimpleExtensions, pair: Pair<Rule>) -> V
 fn parse_virtual_row(extensions: &SimpleExtensions, pair: Pair<Rule>) -> nested::Struct {
     assert_eq!(pair.as_rule(), Rule::virtual_row);
     let expression_list = unwrap_single_pair(pair);
+    assert_eq!(expression_list.as_rule(), Rule::expression_list);
     nested::Struct {
         fields: parse_expression_list(extensions, expression_list),
     }
@@ -491,6 +503,7 @@ impl RelationParsePair for FilterRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Filter(Box::new(self))),
@@ -507,6 +520,7 @@ impl RelationParsePair for FilterRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
+        // references (which become the emit)
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
@@ -540,6 +554,7 @@ impl RelationParsePair for ProjectRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Project(Box::new(self))),
@@ -607,6 +622,7 @@ impl RelationParsePair for AggregateRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Aggregate(Box::new(self))),
@@ -850,6 +866,7 @@ impl RelationParsePair for SortRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Sort(Box::new(self))),
@@ -1010,6 +1027,7 @@ impl RelationParsePair for FetchRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Fetch(Box::new(self))),
@@ -1026,6 +1044,9 @@ impl RelationParsePair for FetchRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
 
+        // Extract all pairs before any validation: RuleIter's Drop panics on
+        // incomplete consumption, so we must exhaust the iterator before any
+        // early return. Validation runs after iter.done() below.
         let (limit_pair, offset_pair) = match iter.try_pop(Rule::fetch_named_arg_list) {
             None => {
                 iter.pop(Rule::empty);
@@ -1110,6 +1131,7 @@ impl RelationParsePair for JoinRel {
     }
 
     fn into_rel(mut self, addenda: RelationAddenda) -> Rel {
+        addenda.assert_no_rows();
         self.advanced_extension = addenda.advanced_extension;
         Rel {
             rel_type: Some(RelType::Join(Box::new(self))),
@@ -1230,12 +1252,9 @@ mod tests {
         let filter = FilterRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::filter_relation, "Filter[$1 => $0, $1, $2]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1254,12 +1273,9 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1283,12 +1299,9 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             5, // Assume 5 input fields
         )
         .unwrap()
@@ -1321,12 +1334,9 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1), _ => sum($2), $0, count($2)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1368,12 +1378,9 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[$0 => sum($1), $0, count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1409,12 +1416,9 @@ mod tests {
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1)]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1440,12 +1444,9 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[_ => sum($0), count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1496,10 +1497,7 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
             ),
-            vec![Box::new(read_rel.into_rel(RelationAddenda {
-                rows: vec![],
-                advanced_extension: None,
-            }))],
+            vec![Box::new(read_rel.into_rel(RelationAddenda::default()))],
             4,
         )
         .unwrap()
@@ -1526,12 +1524,9 @@ mod tests {
         let fetch_rel = FetchRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::fetch_relation, "Fetch[limit=10, offset=5 => $0]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         )
         .unwrap()
@@ -1561,12 +1556,9 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel(
-                        RelationAddenda {
-                            rows: vec![],
-                            advanced_extension: None,
-                        },
-                    ))],
+                    vec![Box::new(
+                        example_read_relation().into_rel(RelationAddenda::default()),
+                    )],
                     3,
                 );
                 assert!(result.is_err());
@@ -1597,12 +1589,9 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel(
-                        RelationAddenda {
-                            rows: vec![],
-                            advanced_extension: None,
-                        },
-                    ))],
+                    vec![Box::new(
+                        example_read_relation().into_rel(RelationAddenda::default()),
+                    )],
                     3,
                 );
                 assert!(result.is_err());
@@ -1625,14 +1614,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
-        let right_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
+        let left_rel = example_read_relation().into_rel(RelationAddenda::default());
+        let right_rel = example_read_relation().into_rel(RelationAddenda::default());
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1672,14 +1655,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
-        let right_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
+        let left_rel = example_read_relation().into_rel(RelationAddenda::default());
+        let right_rel = example_read_relation().into_rel(RelationAddenda::default());
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1709,14 +1686,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
-        let right_rel = example_read_relation().into_rel(RelationAddenda {
-            rows: vec![],
-            advanced_extension: None,
-        });
+        let left_rel = example_read_relation().into_rel(RelationAddenda::default());
+        let right_rel = example_read_relation().into_rel(RelationAddenda::default());
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1756,12 +1727,9 @@ mod tests {
         let result = JoinRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
-            vec![Box::new(example_read_relation().into_rel(
-                RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                },
-            ))],
+            vec![Box::new(
+                example_read_relation().into_rel(RelationAddenda::default()),
+            )],
             3,
         );
         assert!(result.is_err());
@@ -1771,18 +1739,9 @@ mod tests {
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
             vec![
-                Box::new(example_read_relation().into_rel(RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                })),
-                Box::new(example_read_relation().into_rel(RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                })),
-                Box::new(example_read_relation().into_rel(RelationAddenda {
-                    rows: vec![],
-                    advanced_extension: None,
-                })),
+                Box::new(example_read_relation().into_rel(RelationAddenda::default())),
+                Box::new(example_read_relation().into_rel(RelationAddenda::default())),
+                Box::new(example_read_relation().into_rel(RelationAddenda::default())),
             ],
             9,
         );
