@@ -602,9 +602,153 @@ Root[id]
         err.contains("+ Row addenda can only be attached to Read:Virtual"),
         "unexpected error: {err}"
     );
-    // Error should report the line number of the offending + Row line.
+    // Error reports the relation's line number (the Read, line 4), not the + Row line.
     assert!(
-        err.contains("line 5"),
+        err.contains("line 4"),
         "expected line number in error: {err}"
     );
+}
+
+// === Emit / output-field-count propagation tests ===
+//
+// These exercise the pipeline: child's output_field_count → parent's
+// input_field_count → correct emit indices for expressions in Project.
+// If any relation type returns the wrong output count, the Project's emit
+// mapping will be offset incorrectly and the roundtrip will fail.
+
+#[test]
+fn test_emit_read_to_project_with_expression() {
+    // Read outputs 2 columns. Project has expression add($0,$1) → emit index should be 2.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_filter_to_project_with_expression() {
+    // Read outputs 3, Filter emits 2 ($0, $1). Project sees 2 inputs.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: add
+  # 11 @  2: gt
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Filter[gt($2, 0) => $0, $1]
+      Read[t => a:i64, b:i64, c:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_sort_to_project_with_expression() {
+    // Sort is passthrough — its output count should equal its input's.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Sort[($0, &AscNullsFirst) => $0, $1]
+      Read[t => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_fetch_to_project_with_expression() {
+    // Fetch is passthrough — its output count should equal its input's.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Fetch[limit=10, offset=0 => $0, $1]
+      Read[t => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_join_to_project_with_expression() {
+    // Join: left has 2 cols, right has 2 cols → 4 total. Project sees 4.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: add
+  # 11 @  2: eq
+
+=== Plan
+Root[sum]
+  Project[add($1, $3)]
+    Join[&Inner, eq($0, $2) => $0, $1, $2, $3]
+      Read[users => id:i64, age:i64]
+      Read[orders => user_id:i64, amount:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_aggregate_to_project_with_expression() {
+    // Aggregate: 1 grouping field + 1 measure = 2 output columns.
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+  @  2: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: add
+  # 11 @  2: sum
+
+=== Plan
+Root[total]
+  Project[add($0, $1)]
+    Aggregate[$0 => $0, sum($1)]
+      Read[t => category:i64, amount:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_virtual_read_to_project_with_expression() {
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Read:Virtual[(1, 2), (3, 4) => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
 }

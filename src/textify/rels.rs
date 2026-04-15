@@ -883,7 +883,7 @@ impl<'a> Relation<'a> {
     }
 
     fn from_fetch<S: Scope>(rel: &'a FetchRel, ctx: &S) -> Self {
-        let (children, _) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let mut named_args: Vec<NamedArg> = vec![];
         match &rel.count_mode {
             Some(CountMode::CountExpr(expr)) => {
@@ -920,12 +920,10 @@ impl<'a> Relation<'a> {
         }
 
         let emit = get_emit(rel.common.as_ref());
-        let mut columns = vec![];
-        if let Some(EmitKind::Emit(e)) = emit {
-            for &i in &e.output_mapping {
-                columns.push(Value::Reference(i));
-            }
-        }
+        // Fetch is passthrough — direct output is all input columns.
+        let columns: Vec<Value> = (0..input_columns)
+            .map(|i| Value::Reference(i as i32))
+            .collect();
         Relation {
             name: Cow::Borrowed("Fetch"),
             arguments: Some(Arguments {
