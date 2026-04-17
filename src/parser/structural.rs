@@ -332,29 +332,36 @@ impl<'a> TreeBuilder<'a> {
                 parent.children.push(rel_node);
             }
             LineNode::AdvExt(adv_ext) => {
+                let context = ParseContext::new(
+                    adv_ext.line_no,
+                    adv_ext.pair.as_str().to_string(),
+                );
                 if depth == 0 {
-                    return Err(ParseError::ValidationError(format!(
-                        "line {}: advanced extension annotations cannot appear at the top level",
-                        adv_ext.line_no
-                    )));
+                    return Err(ParseError::ValidationError(
+                        context,
+                        "advanced extension annotations (+ Enh: / + Opt:) cannot appear at \
+                         the top level"
+                            .to_string(),
+                    ));
                 }
 
                 let parent = match self.get_at_depth(depth - 1) {
                     None => {
-                        return Err(ParseError::ValidationError(format!(
-                            "line {}: no parent found for advanced extension at depth {depth}",
-                            adv_ext.line_no
-                        )));
+                        return Err(ParseError::ValidationError(
+                            context,
+                            format!("no parent found for advanced extension at depth {depth}"),
+                        ));
                     }
                     Some(parent) => parent,
                 };
 
                 if !parent.children.is_empty() {
-                    return Err(ParseError::ValidationError(format!(
-                        "line {}: advanced extension annotations (+ Enh: / + Opt:) must \
-                         appear before child relations, not after",
-                        adv_ext.line_no
-                    )));
+                    return Err(ParseError::ValidationError(
+                        context,
+                        "advanced extension annotations (+ Enh: / + Opt:) must appear before \
+                         child relations, not after"
+                            .to_string(),
+                    ));
                 }
 
                 parent.adv_extensions.push(adv_ext);
