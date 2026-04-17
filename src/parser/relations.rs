@@ -40,7 +40,7 @@ impl<'a> RelationParsingContext<'a> {
     ) -> Result<Option<Any>, ParseError> {
         let detail = self
             .registry
-            .parse_extension(extension_name, extension_args);
+            .parse_extension(extension_name, extension_args, self.extensions);
 
         match detail {
             Ok(any) => Ok(Some(any)),
@@ -67,8 +67,13 @@ impl<'a> RelationParsingContext<'a> {
         args: &ExtensionArgs,
     ) -> Result<Any, ParseError> {
         let result = match ext_type {
-            ExtensionType::Enhancement => self.registry.parse_enhancement(name, args),
-            ExtensionType::Optimization => self.registry.parse_optimization(name, args),
+            ExtensionType::Enhancement => {
+                self.registry.parse_enhancement(name, args, self.extensions)
+            }
+            ExtensionType::Optimization => {
+                self.registry
+                    .parse_optimization(name, args, self.extensions)
+            }
             ExtensionType::Relation => unreachable!("Relation is not an advanced extension type"),
         };
         result.map_err(|err| match err {

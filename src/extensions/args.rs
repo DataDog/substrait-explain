@@ -1,36 +1,21 @@
-//! Core extension data structures without parser dependencies
-//!
-//! This module contains the core data structures for extension arguments,
-//! values, and columns without any parser or textify dependencies.
+//! Core extension data structures for extension arguments, values, and columns.
 
 use std::collections::HashSet;
 use std::fmt;
 
 use indexmap::IndexMap;
+use substrait::proto;
 
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
 use crate::textify::types::escaped;
 
-/// Placeholder for a future expression implementation.
-/// Holds the raw text of the parsed expression. The inner field is private —
-/// this type will be replaced with a proper expression AST in the future.
+/// A Substrait expression carried as an extension argument or output column.
+///
+/// Boxed because `proto::Expression` is large (multiple `Vec` fields in
+/// variants like `ScalarFunction`).
 #[derive(Debug, Clone)]
-pub(crate) struct RawExpression {
-    text: String,
-}
-
-impl RawExpression {
-    pub fn new(text: String) -> Self {
-        Self { text }
-    }
-}
-
-impl fmt::Display for RawExpression {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.text)
-    }
-}
+pub struct Expr(pub Box<proto::Expression>);
 
 /// Represents the arguments and output columns for an extension relation.
 ///
@@ -153,7 +138,7 @@ impl Drop for ArgsExtractor<'_> {
     }
 }
 
-/// Represents a value in extension arguments
+/// Represents a value in extension arguments.
 #[derive(Debug, Clone)]
 pub enum ExtensionValue {
     /// String literal value
@@ -166,12 +151,14 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// Field reference ($0, $1, etc.)
     Reference(i32),
-    /// Enum value (e.g. &CORE, &Inner) — Uses the wrapper EnumValue. the string holds the identifier without the `&` prefix
+    /// Enum value (e.g. &CORE, &Inner) — the string holds the identifier
+    /// without the `&` prefix
     Enum(String),
-    /// Expression (function call, etc.) — not yet fully supported, hence the
-    /// private interface.
-    #[allow(private_interfaces)]
-    Expression(RawExpression),
+    /// A Substrait expression (e.g. `add($0, $1)`)
+    Expression(Expr),
+    // TODO: Consider adding support for types as arguments. May need dedicated
+    // syntax (`:typename`, perhaps?), as type names may not be distinguishable
+    // from identifiers
 }
 
 impl fmt::Display for ExtensionValue {
@@ -183,7 +170,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
             ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
-            ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
+            ExtensionValue::Expression(_) => write!(f, "Expression(...)"),
         }
     }
 }
@@ -282,17 +269,28 @@ impl TryFrom<&ExtensionValue> for Reference {
     }
 }
 
-/// Represents an output column specification
+impl TryFrom<&ExtensionValue> for Expr {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<Expr, Self::Error> {
+        match value {
+            ExtensionValue::Expression(e) => Ok(e.clone()),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected expression, got {v}",
+            ))),
+        }
+    }
+}
+
+/// Represents an output column specification.
 #[derive(Debug, Clone)]
 pub enum ExtensionColumn {
-    /// Named column with type (name:type)
-    Named { name: String, type_spec: String },
+    /// Named column with a parsed Substrait type (e.g. `name:i64?`)
+    Named { name: String, ty: proto::Type },
     /// Field reference ($0, $1, etc.)
     Reference(i32),
-    /// Expression column — not yet fully supported, hence the private
-    /// interface.
-    #[allow(private_interfaces)]
-    Expression(RawExpression),
+    /// Expression column
+    Expression(Expr),
 }
 
 /// Extension relation types

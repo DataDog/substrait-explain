@@ -15,9 +15,10 @@ use prost::{Message, Name};
 use substrait::proto::{plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
-    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    AnyConvertible, ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+    ExtensionRegistry, ExtensionRelationType, ExtensionValue,
 };
+use substrait_explain::fixtures::parse_type;
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
 
@@ -55,7 +56,7 @@ impl Explainable for ParquetScanConfig {
         "TypedParquetScan"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         // path is required
         let path: &str = extractor.expect_named_arg("path")?;
@@ -86,7 +87,7 @@ impl Explainable for ParquetScanConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments from the message
@@ -107,7 +108,7 @@ impl Explainable for ParquetScanConfig {
         for column_name in &self.selected_columns {
             args.output_columns.push(ExtensionColumn::Named {
                 name: column_name.clone(),
-                type_spec: "string?".to_string(), // Default type for this example
+                ty: parse_type("string?"),
             });
         }
 

@@ -13,7 +13,7 @@
 //! number of partitions (`0` / absent means "let the executor decide").
 
 use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionRelationType, ExtensionValue};
-use crate::extensions::registry::{Explainable, ExtensionError};
+use crate::extensions::registry::{ExplainContext, Explainable, ExtensionError};
 
 // ---------------------------------------------------------------------------
 // PartitionStrategy enum
@@ -117,7 +117,7 @@ impl Explainable for PartitionHint {
         "PartitionHint"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         // Positional arguments are PartitionStrategy enum values.
         let strategies: Result<Vec<i32>, ExtensionError> = args
             .positional
@@ -145,7 +145,7 @@ impl Explainable for PartitionHint {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         for &raw in &self.strategies {
             let s = PartitionStrategy::try_from(raw).unwrap_or(PartitionStrategy::Unspecified);
@@ -163,6 +163,7 @@ impl Explainable for PartitionHint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::simple::SimpleExtensions;
     use crate::extensions::{AnyConvertible, ExtensionRegistry};
 
     fn make_hint(strategies: Vec<PartitionStrategy>, count: i64) -> PartitionHint {
@@ -183,7 +184,9 @@ mod tests {
     #[test]
     fn to_args_produces_enum_and_named() {
         let hint = make_hint(vec![PartitionStrategy::Hash], 8);
-        let args = hint.to_args().unwrap();
+        let args = hint
+            .to_args(&ExplainContext::new(&SimpleExtensions::default()))
+            .unwrap();
         assert_eq!(args.positional.len(), 1);
         assert!(matches!(&args.positional[0], ExtensionValue::Enum(s) if s == "HASH"));
         assert!(matches!(
@@ -195,15 +198,21 @@ mod tests {
     #[test]
     fn to_args_omits_zero_count() {
         let hint = make_hint(vec![PartitionStrategy::Broadcast], 0);
-        let args = hint.to_args().unwrap();
+        let args = hint
+            .to_args(&ExplainContext::new(&SimpleExtensions::default()))
+            .unwrap();
         assert!(args.named.is_empty(), "count=0 should be omitted");
     }
 
     #[test]
     fn from_args_round_trip() {
         let original = make_hint(vec![PartitionStrategy::Hash, PartitionStrategy::Range], 16);
-        let args = original.to_args().unwrap();
-        let decoded = PartitionHint::from_args(&args).unwrap();
+        let args = original
+            .to_args(&ExplainContext::new(&SimpleExtensions::default()))
+            .unwrap();
+        let decoded =
+            PartitionHint::from_args(&args, &ExplainContext::new(&SimpleExtensions::default()))
+                .unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -212,7 +221,10 @@ mod tests {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.positional
             .push(ExtensionValue::Enum("BOGUS".to_owned()));
-        assert!(PartitionHint::from_args(&args).is_err());
+        assert!(
+            PartitionHint::from_args(&args, &ExplainContext::new(&SimpleExtensions::default()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -220,7 +232,8 @@ mod tests {
         // An integer positional arg where an enum is expected should fail.
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.positional.push(ExtensionValue::Integer(1));
-        let result = PartitionHint::from_args(&args);
+        let result =
+            PartitionHint::from_args(&args, &ExplainContext::new(&SimpleExtensions::default()));
         assert!(
             result.is_err(),
             "expected error for non-enum positional arg, got {result:?}"
@@ -233,7 +246,8 @@ mod tests {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.named
             .insert("unknown_key".to_owned(), ExtensionValue::Integer(99));
-        let result = PartitionHint::from_args(&args);
+        let result =
+            PartitionHint::from_args(&args, &ExplainContext::new(&SimpleExtensions::default()));
         assert!(
             result.is_err(),
             "expected error for unknown named arg, got {result:?}"
@@ -243,8 +257,12 @@ mod tests {
     #[test]
     fn from_args_empty_strategies_roundtrip() {
         let original = make_hint(vec![], 0);
-        let args = original.to_args().unwrap();
-        let decoded = PartitionHint::from_args(&args).unwrap();
+        let args = original
+            .to_args(&ExplainContext::new(&SimpleExtensions::default()))
+            .unwrap();
+        let decoded =
+            PartitionHint::from_args(&args, &ExplainContext::new(&SimpleExtensions::default()))
+                .unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.strategies.is_empty());
         assert_eq!(decoded.count, 0);
@@ -258,14 +276,15 @@ mod tests {
         let original = make_hint(vec![PartitionStrategy::Hash], 4);
         let any = original.to_any().unwrap();
 
+        let ext = SimpleExtensions::default();
         let (name, args) = registry
-            .decode_enhancement(any.as_ref())
+            .decode_enhancement(any.as_ref(), &ext)
             .expect("decode_enhancement");
         assert_eq!(name, "PartitionHint");
         assert_eq!(args.positional.len(), 1);
 
         let any2 = registry
-            .parse_enhancement("PartitionHint", &args)
+            .parse_enhancement("PartitionHint", &args, &ext)
             .expect("parse_enhancement");
         let decoded = PartitionHint::from_any(any2.as_ref()).unwrap();
         assert_eq!(original, decoded);

@@ -5,9 +5,10 @@
 //! and the compiled descriptor binary are all generated at build time by
 //! `build.rs` using protox and prost-build.
 
+use substrait::proto;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
-    Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    ExplainContext, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
     ExtensionRelationType, ExtensionValue,
 };
 use substrait_explain::json::{build_descriptor_pool, parse_json};
@@ -28,7 +29,7 @@ impl Explainable for ParquetScanConfig {
         "ParquetScan"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+    fn from_args(args: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> {
         let mut x = args.extractor();
         let path: &str = x.expect_named_arg("path")?;
         let batch_size: i64 = x.get_named_or("batch_size", 1024)?;
@@ -39,7 +40,7 @@ impl Explainable for ParquetScanConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
         args.named.insert(
             "path".to_string(),
@@ -51,11 +52,21 @@ impl Explainable for ParquetScanConfig {
         );
         args.output_columns.push(ExtensionColumn::Named {
             name: "customer_id".to_string(),
-            type_spec: "i64".to_string(),
+            ty: proto::Type {
+                kind: Some(proto::r#type::Kind::I64(proto::r#type::I64 {
+                    nullability: proto::r#type::Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            },
         });
         args.output_columns.push(ExtensionColumn::Named {
             name: "amount".to_string(),
-            type_spec: "fp64".to_string(),
+            ty: proto::Type {
+                kind: Some(proto::r#type::Kind::Fp64(proto::r#type::Fp64 {
+                    nullability: proto::r#type::Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            },
         });
         Ok(args)
     }

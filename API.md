@@ -133,7 +133,7 @@ Register extensions to the appropriate namespace:
 ```rust,no_run
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
-#     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+#     ExplainContext, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
 #     ExtensionRelationType,
 # };
 #[derive(Clone, PartialEq, Message)]
@@ -149,8 +149,8 @@ impl Name for MySourceConfig {
 }
 # impl Explainable for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
-#     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
-#     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+#     fn from_args(_: &ExtensionArgs, _ctx: &ExplainContext) -> Result<Self, ExtensionError> { Ok(Self::default()) }
+#     fn to_args(&self, _ctx: &ExplainContext) -> Result<ExtensionArgs, ExtensionError> {
 #         Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
 #     }
 # }
