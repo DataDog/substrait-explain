@@ -607,14 +607,10 @@ Root[result]
         .as_ref()
         .and_then(|c| c.emit_kind.as_ref())
         .expect("ProjectRel must have an emit");
-    let output_mapping = match emit_kind {
-        EmitKind::Emit(e) => &e.output_mapping,
-        EmitKind::Direct(_) => panic!("expected Emit, got Direct"),
-    };
-    assert_eq!(
-        output_mapping,
-        &[0_i32, 1, 2],
-        "emit mapping should be [0, 1, 2]; without fix it would be [0, 1, 0]"
+    // Identity mapping [0, 1, 2] over 3 direct outputs → Direct
+    assert!(
+        matches!(emit_kind, EmitKind::Direct(_)),
+        "Expected Direct for identity emit, got {emit_kind:?}"
     );
 
     // --- round-trip ---

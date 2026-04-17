@@ -5,18 +5,17 @@ use prost::Message;
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{Literal, RexType};
+use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
-use substrait::proto::rel_common::{Emit, EmitKind};
+use substrait::proto::rel_common::{Direct, Emit, EmitKind};
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
     AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel, ReadRel, Rel,
     RelCommon, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, r#type,
 };
 
-use super::{
-    ErrorKind, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair,
-};
+use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
 use crate::extensions::any::Any;
 use crate::extensions::registry::{ExtensionError, ExtensionType};
 use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
@@ -84,28 +83,26 @@ impl<'a> RelationParsingContext<'a> {
     }
 }
 
-/// A trait for parsing relations with full context needed for tree building.
-/// This includes extensions, the parsed pair, input children, and output field count.
+/// A trait for parsing relations with full context for tree building.
 pub trait RelationParsePair: Sized {
     fn rule() -> Rule;
-
     fn message() -> &'static str;
 
-    /// Parse a relation with full context for tree building.
+    /// Parse the grammar pair into this relation type and its output field
+    /// count.
     ///
-    /// Args:
-    /// - extensions: The extensions context
-    /// - pair: The parsed pest pair
-    /// - input_children: The input relations (for wiring)
-    /// - input_field_count: Number of output fields from input children (for output mapping)
+    /// Returns `(Self, usize)` where `usize` is the output field count —
+    /// computed during parsing when `input_field_count` is available.
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError>;
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError>;
 
-    fn into_rel(self) -> Rel;
+    /// Consume this parsed relation, apply the advanced extension, and produce
+    /// the final `Rel`.
+    fn into_rel(self, adv_ext: Option<AdvancedExtension>) -> Rel;
 }
 
 pub struct TableName(Vec<String>);
@@ -210,13 +207,27 @@ pub(crate) fn expect_one_child(
 }
 
 /// Parse a reference list Pair and return an EmitKind::Emit.
-fn parse_reference_emit(pair: Pair<Rule>) -> EmitKind {
+/// Parse a reference list into field indices for emit mapping.
+fn parse_output_mapping(pair: Pair<Rule>) -> Vec<i32> {
     assert_eq!(pair.as_rule(), Rule::reference_list);
-    let output_mapping = pair
-        .into_inner()
+    pair.into_inner()
         .map(|p| FieldIndex::parse_pair(p).0)
-        .collect::<Vec<i32>>();
-    EmitKind::Emit(Emit { output_mapping })
+        .collect()
+}
+
+/// Build an emit: `Direct` if the mapping is the identity `[0, 1, ..., N-1]`
+/// (where N = `direct_output_count`), otherwise `Emit` with the explicit mapping.
+fn make_emit(output_mapping: Vec<i32>, direct_output_count: usize) -> EmitKind {
+    let is_identity = output_mapping.len() == direct_output_count
+        && output_mapping
+            .iter()
+            .enumerate()
+            .all(|(i, &v)| v == i as i32);
+    if is_identity {
+        EmitKind::Direct(Direct {})
+    } else {
+        EmitKind::Emit(Emit { output_mapping })
+    }
 }
 
 /// Extracts named arguments from pest pairs with duplicate detection and completeness checking.
@@ -286,18 +297,12 @@ impl RelationParsePair for ReadRel {
         "ReadRel"
     }
 
-    fn into_rel(self) -> Rel {
-        Rel {
-            rel_type: Some(RelType::Read(Box::new(self))),
-        }
-    }
-
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         // ReadRel is a leaf node - it should have no input children and 0 input fields
         if !input_children.is_empty() {
@@ -307,17 +312,11 @@ impl RelationParsePair for ReadRel {
                 "ReadRel should have no input children",
             ));
         }
-        if _input_field_count != 0 {
-            let error = pest::error::Error::new_from_span(
-                pest::error::ErrorVariant::CustomError {
-                    message: "ReadRel should have 0 input fields".to_string(),
-                },
-                pair.as_span(),
-            );
-            return Err(MessageParseError::new(
+        if input_field_count != 0 {
+            return Err(MessageParseError::invalid(
                 "ReadRel",
-                ErrorKind::InvalidValue,
-                Box::new(error),
+                pair.as_span(),
+                "ReadRel should have 0 input fields",
             ));
         }
 
@@ -326,27 +325,38 @@ impl RelationParsePair for ReadRel {
         let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
         iter.done();
 
-        let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
-        let struct_ = r#type::Struct {
+        let output_count = columns.len();
+        Ok((
+            ReadRel {
+                base_schema: Some(build_named_struct(columns)),
+                read_type: Some(read_rel::ReadType::NamedTable(read_rel::NamedTable {
+                    names: table,
+                    advanced_extension: None,
+                })),
+                ..Default::default()
+            },
+            output_count,
+        ))
+    }
+
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
+        Rel {
+            rel_type: Some(RelType::Read(Box::new(self))),
+        }
+    }
+}
+
+/// Build a `NamedStruct` from parsed columns.
+fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
+    let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
+    NamedStruct {
+        names,
+        r#struct: Some(r#type::Struct {
             types,
             type_variation_reference: 0,
             nullability: r#type::Nullability::Required as i32,
-        };
-        let named_struct = NamedStruct {
-            names,
-            r#struct: Some(struct_),
-        };
-
-        let read_rel = ReadRel {
-            base_schema: Some(named_struct),
-            read_type: Some(read_rel::ReadType::NamedTable(read_rel::NamedTable {
-                names: table,
-                advanced_extension: None,
-            })),
-            ..Default::default()
-        };
-
-        Ok(read_rel)
+        }),
     }
 }
 
@@ -359,7 +369,8 @@ impl RelationParsePair for FilterRel {
         "FilterRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Filter(Box::new(self))),
         }
@@ -369,31 +380,33 @@ impl RelationParsePair for FilterRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
-        // Form: Filter[condition => references]
-
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
-        // condition
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
         // references (which become the emit)
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        let emit = parse_reference_emit(references_pair);
+        let output_mapping = parse_output_mapping(references_pair);
+        let output_count = output_mapping.len();
+        let emit = make_emit(output_mapping, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
 
-        Ok(FilterRel {
-            input: Some(input),
-            condition: Some(Box::new(condition)),
-            common: Some(common),
-            advanced_extension: None,
-        })
+        Ok((
+            FilterRel {
+                input: Some(input),
+                condition: Some(Box::new(condition)),
+                common: Some(common),
+                advanced_extension: None,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -406,7 +419,8 @@ impl RelationParsePair for ProjectRel {
         "ProjectRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Project(Box::new(self))),
         }
@@ -416,49 +430,50 @@ impl RelationParsePair for ProjectRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
 
-        // Get the argument list (contains references and expressions)
         let arguments_pair = unwrap_single_pair(pair);
 
         let mut expressions = Vec::new();
         let mut output_mapping = Vec::new();
 
-        // Process each argument (can be either a reference or expression)
         for arg in arguments_pair.into_inner() {
             let inner_arg = unwrap_single_pair(arg);
             match inner_arg.as_rule() {
                 Rule::reference => {
-                    // Parse reference like "$0" -> 0
                     let field_index = FieldIndex::parse_pair(inner_arg);
                     output_mapping.push(field_index.0);
                 }
                 Rule::expression => {
-                    // Parse as expression (e.g., 42, add($0, $1))
-                    let _expr = Expression::parse_pair(extensions, inner_arg)?;
-                    expressions.push(_expr);
-                    // Expression: index after all input fields
-                    output_mapping.push(_input_field_count as i32 + (expressions.len() as i32 - 1));
+                    let expr = Expression::parse_pair(extensions, inner_arg)?;
+                    expressions.push(expr);
+                    // Index into the combined schema: [input fields][computed expressions].
+                    output_mapping.push(input_field_count as i32 + (expressions.len() as i32 - 1));
                 }
                 _ => panic!("Unexpected inner argument rule: {:?}", inner_arg.as_rule()),
             }
         }
 
-        let emit = EmitKind::Emit(Emit { output_mapping });
+        let output_count = output_mapping.len();
+        let direct_count = input_field_count + expressions.len();
+        let emit = make_emit(output_mapping, direct_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
 
-        Ok(ProjectRel {
-            input: Some(input),
-            expressions,
-            common: Some(common),
-            advanced_extension: None,
-        })
+        Ok((
+            ProjectRel {
+                input: Some(input),
+                expressions,
+                common: Some(common),
+                advanced_extension: None,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -471,7 +486,8 @@ impl RelationParsePair for AggregateRel {
         "AggregateRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Aggregate(Box::new(self))),
         }
@@ -482,7 +498,7 @@ impl RelationParsePair for AggregateRel {
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
         _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
@@ -501,20 +517,25 @@ impl RelationParsePair for AggregateRel {
         let (measures, output_mapping) =
             parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
 
-        let emit = EmitKind::Emit(Emit { output_mapping });
+        let output_count = output_mapping.len();
+        let direct_count = grouping_expressions.len() + measures.len();
+        let emit = make_emit(output_mapping, direct_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
 
-        Ok(AggregateRel {
-            input: Some(input),
-            grouping_expressions,
-            groupings,
-            measures,
-            common: Some(common),
-            advanced_extension: None,
-        })
+        Ok((
+            AggregateRel {
+                input: Some(input),
+                grouping_expressions,
+                groupings,
+                measures,
+                common: Some(common),
+                advanced_extension: None,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -705,7 +726,8 @@ impl RelationParsePair for SortRel {
         "SortRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Sort(Box::new(self))),
         }
@@ -715,8 +737,8 @@ impl RelationParsePair for SortRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
@@ -727,18 +749,23 @@ impl RelationParsePair for SortRel {
             let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
             sorts.push(sort_field);
         }
-        let emit = parse_reference_emit(reference_list_pair);
+        let output_mapping = parse_output_mapping(reference_list_pair);
+        let output_count = output_mapping.len();
+        let emit = make_emit(output_mapping, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
         iter.done();
-        Ok(SortRel {
-            input: Some(input),
-            sorts,
-            common: Some(common),
-            advanced_extension: None,
-        })
+        Ok((
+            SortRel {
+                input: Some(input),
+                sorts,
+                common: Some(common),
+                advanced_extension: None,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -859,7 +886,8 @@ impl RelationParsePair for FetchRel {
         "FetchRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Fetch(Box::new(self))),
         }
@@ -869,16 +897,17 @@ impl RelationParsePair for FetchRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
 
-        // Extract all pairs first, then do validation
+        // Extract all pairs before any validation: RuleIter's Drop panics on
+        // incomplete consumption, so we must exhaust the iterator before any
+        // early return. Validation runs after iter.done() below.
         let (limit_pair, offset_pair) = match iter.try_pop(Rule::fetch_named_arg_list) {
             None => {
-                // If there are no arguments, it should be empty
                 iter.pop(Rule::empty);
                 (None, None)
             }
@@ -893,27 +922,31 @@ impl RelationParsePair for FetchRel {
         };
 
         let reference_list_pair = iter.pop(Rule::reference_list);
-        let emit = parse_reference_emit(reference_list_pair);
+        let output_mapping = parse_output_mapping(reference_list_pair);
+        let output_count = output_mapping.len();
+        let emit = make_emit(output_mapping, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
         iter.done();
 
-        // Now do validation after iterator is fully consumed
         let count_mode = limit_pair
             .map(|pair| CountMode::parse_pair(extensions, pair))
             .transpose()?;
         let offset_mode = offset_pair
             .map(|pair| OffsetMode::parse_pair(extensions, pair))
             .transpose()?;
-        Ok(FetchRel {
-            input: Some(input),
-            common: Some(common),
-            advanced_extension: None,
-            offset_mode,
-            count_mode,
-        })
+        Ok((
+            FetchRel {
+                input: Some(input),
+                common: Some(common),
+                advanced_extension: None,
+                offset_mode,
+                count_mode,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -956,7 +989,8 @@ impl RelationParsePair for JoinRel {
         "JoinRel"
     }
 
-    fn into_rel(self) -> Rel {
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
         Rel {
             rel_type: Some(RelType::Join(Box::new(self))),
         }
@@ -966,11 +1000,10 @@ impl RelationParsePair for JoinRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
-        _input_field_count: usize,
-    ) -> Result<Self, MessageParseError> {
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
-        // Join requires exactly 2 input children
         if input_children.len() != 2 {
             return Err(MessageParseError::invalid(
                 Self::message(),
@@ -987,32 +1020,31 @@ impl RelationParsePair for JoinRel {
         let right = children_iter.next().unwrap();
 
         let mut iter = RuleIter::from(pair.into_inner());
-
-        // Parse join type
         let join_type = iter.parse_next::<join_rel::JoinType>();
-
-        // Parse join condition expression
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-
-        // Parse output references (which become the emit)
         let reference_list_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        let emit = parse_reference_emit(reference_list_pair);
+        let output_mapping = parse_output_mapping(reference_list_pair);
+        let output_count = output_mapping.len();
+        let emit = make_emit(output_mapping, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
 
-        Ok(JoinRel {
-            common: Some(common),
-            left: Some(left),
-            right: Some(right),
-            expression: Some(Box::new(condition)),
-            post_join_filter: None, // Not supported in grammar yet
-            r#type: join_type as i32,
-            advanced_extension: None,
-        })
+        Ok((
+            JoinRel {
+                common: Some(common),
+                left: Some(left),
+                right: Some(right),
+                expression: Some(Box::new(condition)),
+                post_join_filter: None, // not yet represented in the grammar
+                r#type: join_type as i32,
+                advanced_extension: None,
+            },
+            output_count,
+        ))
     }
 }
 
@@ -1038,7 +1070,8 @@ mod tests {
             vec![],
             0,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let names = match &read.read_type {
             Some(read_rel::ReadType::NamedTable(table)) => &table.names,
             _ => panic!("Expected NamedTable"),
@@ -1068,6 +1101,7 @@ mod tests {
             0,
         )
         .unwrap()
+        .0
     }
 
     #[test]
@@ -1076,16 +1110,17 @@ mod tests {
         let filter = FilterRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::filter_relation, "Filter[$1 => $0, $1, $2]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
-        let emit_kind = &filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        assert_eq!(emit, &[0, 1, 2]);
+        .unwrap()
+        .0;
+        // Identity mapping [0, 1, 2] over 3 inputs → Direct
+        let emit_kind = filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected Direct for identity emit, got {emit_kind:?}"
+        );
     }
 
     #[test]
@@ -1094,10 +1129,11 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should have 1 expression (42) and 2 references ($0, $1)
         assert_eq!(project.expressions.len(), 1);
@@ -1117,10 +1153,11 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             5, // Assume 5 input fields
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should have 2 expressions (42, 100) and 3 references ($0, $2, $1)
         assert_eq!(project.expressions.len(), 2);
@@ -1149,10 +1186,11 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1), _ => sum($2), $0, count($2)]",
             ),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should have 2 group-by sets ($0, $1) and an empty group, and emit 2 measures (sum($2), count($2))
         assert_eq!(aggregate.grouping_expressions.len(), 2);
@@ -1190,10 +1228,11 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[$0 => sum($1), $0, count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should have 1 group-by field ($0) and 2 measures (sum($1), count($1))
         assert_eq!(aggregate.grouping_expressions.len(), 1);
@@ -1225,10 +1264,11 @@ mod tests {
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1)]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         assert_eq!(aggregate.grouping_expressions.len(), 2);
         assert_eq!(aggregate.groupings.len(), 1);
@@ -1250,10 +1290,11 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[_ => sum($0), count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should have 0 group-by fields and 2 measures
         assert_eq!(aggregate.grouping_expressions.len(), 0);
@@ -1261,19 +1302,18 @@ mod tests {
         assert_eq!(aggregate.groupings[0].expression_references.len(), 0);
         assert_eq!(aggregate.measures.len(), 2);
 
-        let emit_kind = &aggregate
+        // Identity mapping [0, 1] over 2 outputs (0 grouping + 2 measures) → Direct
+        let emit_kind = aggregate
             .common
             .as_ref()
             .unwrap()
             .emit_kind
             .as_ref()
             .unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        // Output mapping should be [0, 1] (measures only, no group-by fields)
-        assert_eq!(emit, &[0, 1]);
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected Direct for identity emit, got {emit_kind:?}"
+        );
     }
 
     #[test]
@@ -1292,7 +1332,8 @@ mod tests {
             vec![],
             0,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
@@ -1300,10 +1341,11 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
             ),
-            vec![Box::new(read_rel.into_rel())],
+            vec![Box::new(read_rel.into_rel(None))],
             4,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         assert_eq!(aggregate.grouping_expressions.len(), 3);
         assert_eq!(aggregate.groupings.len(), 4);
@@ -1326,10 +1368,11 @@ mod tests {
         let fetch_rel = FetchRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::fetch_relation, "Fetch[limit=10, offset=5 => $0]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Verify the limit and offset values are correct
         assert_eq!(
@@ -1355,7 +1398,7 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel())],
+                    vec![Box::new(example_read_relation().into_rel(None))],
                     3,
                 );
                 assert!(result.is_err());
@@ -1386,7 +1429,7 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel())],
+                    vec![Box::new(example_read_relation().into_rel(None))],
                     3,
                 );
                 assert!(result.is_err());
@@ -1409,8 +1452,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel();
-        let right_rel = example_read_relation().into_rel();
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1421,7 +1464,8 @@ mod tests {
             vec![Box::new(left_rel), Box::new(right_rel)],
             6, // left (3) + right (3) = 6 total input fields
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should be an Inner join
         assert_eq!(join.r#type, join_rel::JoinType::Inner as i32);
@@ -1449,8 +1493,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel();
-        let right_rel = example_read_relation().into_rel();
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1458,7 +1502,8 @@ mod tests {
             vec![Box::new(left_rel), Box::new(right_rel)],
             6,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should be a Left join
         assert_eq!(join.r#type, join_rel::JoinType::Left as i32);
@@ -1479,8 +1524,8 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        let left_rel = example_read_relation().into_rel();
-        let right_rel = example_read_relation().into_rel();
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
@@ -1488,7 +1533,8 @@ mod tests {
             vec![Box::new(left_rel), Box::new(right_rel)],
             6,
         )
-        .unwrap();
+        .unwrap()
+        .0;
 
         // Should be a LeftSemi join
         assert_eq!(join.r#type, join_rel::JoinType::LeftSemi as i32);
@@ -1519,7 +1565,7 @@ mod tests {
         let result = JoinRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
-            vec![Box::new(example_read_relation().into_rel())],
+            vec![Box::new(example_read_relation().into_rel(None))],
             3,
         );
         assert!(result.is_err());
@@ -1529,9 +1575,9 @@ mod tests {
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
             vec![
-                Box::new(example_read_relation().into_rel()),
-                Box::new(example_read_relation().into_rel()),
-                Box::new(example_read_relation().into_rel()),
+                Box::new(example_read_relation().into_rel(None)),
+                Box::new(example_read_relation().into_rel(None)),
+                Box::new(example_read_relation().into_rel(None)),
             ],
             9,
         );
