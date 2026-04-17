@@ -527,6 +527,57 @@ Root[result2]
 # assert_eq!(plan.relations.len(), 2);
 ```
 
+### VirtualTable Read Relation
+
+A VirtualTable read embeds inline data directly in the plan, similar to SQL's `VALUES` clause. Instead of referencing a catalog table, the data rows are specified as part of the relation.
+
+The `Read:Virtual` relation uses the same `ReadRel` protobuf message with `ReadType::VirtualTable`, where each row is a `nested::Struct` containing expressions.
+
+#### Syntax
+
+`"Read:Virtual" "[" (virtual_row ("," virtual_row)*)? "=>" named_column_list "]"`
+
+Where `virtual_row := "(" expression ("," expression)* ")"` — a parenthesized tuple of expressions forming one row. Use `_` in place of rows for an empty virtual table.
+
+#### Components
+
+- `virtual_row` - parenthesized tuple of expressions, one per row
+- `expression` - any expression (literal, field reference, function call)
+- `named_column_list` - output column names with type annotations
+- `_` - empty marker (no rows)
+
+#### Examples
+
+Inline form with two rows:
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+Empty virtual table (no rows):
+
+```rust
+# use substrait_explain::parser::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ### Filter Relation
 
 #### Syntax

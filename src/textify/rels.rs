@@ -386,6 +386,25 @@ impl<'a> Relation<'a> {
                     children: vec![],
                 }
             }
+            Some(ReadType::VirtualTable(vt)) => {
+                let positional = vt
+                    .expressions
+                    .iter()
+                    .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
+                    .collect();
+
+                Relation {
+                    name: Cow::Borrowed("Read:Virtual"),
+                    arguments: Some(Arguments {
+                        positional,
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    children: vec![],
+                }
+            }
             other => {
                 let err = PlanError::unimplemented(
                     "ReadRel",
