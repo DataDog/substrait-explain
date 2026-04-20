@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use prost::Message;
 
 use crate::extensions::ExtensionRegistry;
-use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse};
+use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse_with_registry};
 
 /// The outcome of a CLI operation.
 ///
@@ -238,29 +238,19 @@ impl Cli {
         verbose: bool,
         registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
-        let input_text = read_text_input(reader)?;
+        let plan = Format::Text
+            .read_plan(reader, registry)
+            .with_context(|| "Failed to parse input as Substrait text format")?;
 
-        // Parse text to protobuf
-        let plan =
-            parse(&input_text).with_context(|| "Failed to parse input as Substrait text format")?;
+        let outcome = Format::Text
+            .write_plan(writer, &plan, &OutputOptions::default(), registry)
+            .with_context(|| "Failed to format plan as Substrait text format")?;
 
-        // Format back to text
-        let (output_text, errors) =
-            format_with_registry(&plan, &OutputOptions::default(), registry);
-
-        // Write output first (best-effort)
-        write_text_output(writer, &output_text)?;
-
-        if verbose && errors.is_empty() {
+        if verbose && matches!(outcome, Outcome::Success) {
             eprintln!("Successfully validated plan");
         }
 
-        // Return outcome based on whether there were formatting issues
-        if errors.is_empty() {
-            Ok(Outcome::Success)
-        } else {
-            Ok(Outcome::HadFormattingIssues(errors))
-        }
+        Ok(outcome)
     }
 }
 
@@ -371,7 +361,7 @@ impl Format {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
-                Ok(parse(&input_text)?)
+                Ok(parse_with_registry(&input_text, registry)?)
             }
             Format::Json => {
                 let input_text = read_text_input(reader)?;
@@ -503,6 +493,11 @@ mod tests {
     use substrait::proto::rel::RelType;
 
     use super::*;
+    use crate::extensions::{
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        ExtensionValue,
+    };
+    use crate::parse;
 
     const BASIC_PLAN: &str = r#"=== Plan
 Root[result]
@@ -908,6 +903,156 @@ Root[result]
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
         assert!(output_content.contains("Read[data => a:i64, b:string]"));
+    }
+
+    // -----------------------------------------------------------------
+    // Minimal test extension for verifying registry-aware CLI parsing
+    // -----------------------------------------------------------------
+
+    /// A minimal ExtensionLeaf with one named argument, used to verify
+    /// that CLI commands pass the registry through to the text parser.
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct TestSource {
+        #[prost(string, tag = "1")]
+        tag: String,
+    }
+
+    impl prost::Name for TestSource {
+        const NAME: &'static str = "TestSource";
+        const PACKAGE: &'static str = "test";
+        fn full_name() -> String {
+            "test.TestSource".to_string()
+        }
+        fn type_url() -> String {
+            "type.googleapis.com/test.TestSource".to_string()
+        }
+    }
+
+    impl Explainable for TestSource {
+        fn name() -> &'static str {
+            "TestSource"
+        }
+
+        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+            let mut extractor = args.extractor();
+            let tag: &str = extractor.expect_named_arg("tag")?;
+            extractor.check_exhausted()?;
+            Ok(TestSource {
+                tag: tag.to_string(),
+            })
+        }
+
+        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            args.named
+                .insert("tag".to_string(), ExtensionValue::String(self.tag.clone()));
+            args.output_columns.push(ExtensionColumn::Named {
+                name: "val".to_string(),
+                type_spec: "i64".to_string(),
+            });
+            Ok(args)
+        }
+    }
+
+    fn make_extension_registry() -> ExtensionRegistry {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestSource>().unwrap();
+        registry
+    }
+
+    const PLAN_WITH_CUSTOM_EXTENSION: &str = r#"=== Plan
+Root[val]
+  ExtensionLeaf:TestSource[tag='hello' => val:i64]
+"#;
+
+    #[test]
+    fn test_convert_text_to_text_with_extension_registry() {
+        let registry = make_extension_registry();
+        let input = Cursor::new(PLAN_WITH_CUSTOM_EXTENSION);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.substrait".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Text),
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        cli.run_with_io(input, &mut output, &registry).unwrap();
+
+        let output_content = String::from_utf8(output).unwrap();
+        assert_eq!(output_content, PLAN_WITH_CUSTOM_EXTENSION);
+    }
+
+    #[test]
+    fn test_convert_text_to_json_with_extension_registry() {
+        let registry = make_extension_registry();
+        let input = Cursor::new(PLAN_WITH_CUSTOM_EXTENSION);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.substrait".to_string(),
+                output: "output.json".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Json),
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        cli.run_with_io(input, &mut output, &registry).unwrap();
+
+        let output_content = String::from_utf8(output).unwrap();
+        assert!(output_content.contains("\"extensionLeaf\""));
+    }
+
+    #[test]
+    fn test_validate_with_extension_registry() {
+        let registry = make_extension_registry();
+        let input = Cursor::new(PLAN_WITH_CUSTOM_EXTENSION);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Validate {
+                input: String::new(),
+                output: String::new(),
+                verbose: false,
+            },
+        };
+
+        cli.run_with_io(input, &mut output, &registry).unwrap();
+
+        let output_content = String::from_utf8(output).unwrap();
+        assert_eq!(output_content, PLAN_WITH_CUSTOM_EXTENSION);
+    }
+
+    #[test]
+    fn test_convert_text_fails_without_extension_registry() {
+        // Without the registry, parsing a plan with custom extensions should fail
+        let input = Cursor::new(PLAN_WITH_CUSTOM_EXTENSION);
+        let mut output = Vec::new();
+
+        let cli = Cli {
+            command: Commands::Convert {
+                input: "input.substrait".to_string(),
+                output: "output.substrait".to_string(),
+                from: Some(Format::Text),
+                to: Some(Format::Text),
+                show_literal_types: false,
+                show_expression_types: false,
+                verbose: false,
+            },
+        };
+
+        let result = cli.run_with_io(input, &mut output, &ExtensionRegistry::default());
+        assert!(result.is_err());
     }
 
     /// Creates a plan with an invalid function reference that will cause formatting errors.
