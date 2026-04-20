@@ -230,6 +230,14 @@ fn make_emit(output_mapping: Vec<i32>, direct_output_count: usize) -> EmitKind {
     }
 }
 
+/// Parse a reference list into an emit and output field count.
+fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKind, usize) {
+    let output_mapping = parse_output_mapping(reference_list);
+    let output_count = output_mapping.len();
+    let emit = make_emit(output_mapping, direct_output_count);
+    (emit, output_count)
+}
+
 /// Extracts named arguments from pest pairs with duplicate detection and completeness checking.
 ///
 /// Usage: `extractor.pop("limit", Rule::fetch_value).0.pop("offset", Rule::fetch_value).0.done()`
@@ -390,9 +398,7 @@ impl RelationParsePair for FilterRel {
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        let output_mapping = parse_output_mapping(references_pair);
-        let output_count = output_mapping.len();
-        let emit = make_emit(output_mapping, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -497,6 +503,8 @@ impl RelationParsePair for AggregateRel {
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
         input_children: Vec<Box<Rel>>,
+        // Aggregate defines its own output schema (grouping keys + measures),
+        // so the input field count isn't needed for emit construction.
         _input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -749,9 +757,7 @@ impl RelationParsePair for SortRel {
             let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
             sorts.push(sort_field);
         }
-        let output_mapping = parse_output_mapping(reference_list_pair);
-        let output_count = output_mapping.len();
-        let emit = make_emit(output_mapping, input_field_count);
+        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -922,9 +928,7 @@ impl RelationParsePair for FetchRel {
         };
 
         let reference_list_pair = iter.pop(Rule::reference_list);
-        let output_mapping = parse_output_mapping(reference_list_pair);
-        let output_count = output_mapping.len();
-        let emit = make_emit(output_mapping, input_field_count);
+        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1025,9 +1029,10 @@ impl RelationParsePair for JoinRel {
         let reference_list_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        let output_mapping = parse_output_mapping(reference_list_pair);
-        let output_count = output_mapping.len();
-        let emit = make_emit(output_mapping, input_field_count);
+        // TODO: For semi/anti joins, the direct output width differs from
+        // left+right — `input_field_count` would misclassify the emit as Direct.
+        // Revisit when those join types are supported.
+        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
