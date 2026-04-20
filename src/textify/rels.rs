@@ -294,11 +294,11 @@ impl Textify for Relation<'_> {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         self.write_header(ctx, w)?;
+        let child_scope = ctx.push_indent();
         // Emit any enhancement / optimizations between the header line and the
         // child relations, indented one level deeper than this relation — the
         // same position they occupy in the text format when parsed.
         if let Some(adv_ext) = self.advanced_extension {
-            let child_scope = ctx.push_indent();
             adv_ext.textify(&child_scope, w)?;
         }
         self.write_children(ctx, w)?;
@@ -366,48 +366,55 @@ impl<'a> Textify for TableName<'a> {
     }
 }
 
-pub fn get_table_name(rel: Option<&ReadType>) -> Result<&[String], PlanError> {
-    match rel {
-        Some(ReadType::NamedTable(r)) => Ok(r.names.as_slice()),
-        _ => Err(PlanError::unimplemented(
-            "ReadRel",
-            Some("table_name"),
-            format!("Unexpected read type {rel:?}") as String,
-        )),
+impl<'a> Relation<'a> {
+    fn from_read<S: Scope>(rel: &'a ReadRel, _ctx: &S) -> Self {
+        let columns = read_columns(rel);
+        let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
+
+        match &rel.read_type {
+            Some(ReadType::NamedTable(table)) => {
+                let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
+                Relation {
+                    name: Cow::Borrowed("Read"),
+                    arguments: Some(Arguments {
+                        positional: vec![table_name],
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    children: vec![],
+                }
+            }
+            other => {
+                let err = PlanError::unimplemented(
+                    "ReadRel",
+                    Some("read_type"),
+                    format!("Unsupported read type {other:?}"),
+                );
+                Relation {
+                    name: Cow::Borrowed("Read"),
+                    arguments: Some(Arguments {
+                        positional: vec![Value::Missing(err)],
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    children: vec![],
+                }
+            }
+        }
     }
 }
 
-impl<'a> Relation<'a> {
-    fn from_read<S: Scope>(rel: &'a ReadRel, _ctx: &S) -> Self {
-        let name = get_table_name(rel.read_type.as_ref());
-        let table_name: Value = match name {
-            Ok(n) => Value::TableName(n.iter().map(|n| Name(n)).collect()),
-            Err(e) => Value::Missing(e),
-        };
-
-        let columns = match rel.base_schema {
-            Some(ref schema) => schema_to_values(schema),
-            None => {
-                let err = PlanError::unimplemented(
-                    "ReadRel",
-                    Some("base_schema"),
-                    "Base schema is required",
-                );
-                vec![Value::Missing(err)]
-            }
-        };
-        let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
-
-        Relation {
-            name: Cow::Borrowed("Read"),
-            arguments: Some(Arguments {
-                positional: vec![table_name],
-                named: vec![],
-            }),
-            columns,
-            emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
-            children: vec![],
+fn read_columns<'a>(rel: &'a ReadRel) -> Vec<Value<'a>> {
+    match rel.base_schema {
+        Some(ref schema) => schema_to_values(schema),
+        None => {
+            let err =
+                PlanError::unimplemented("ReadRel", Some("base_schema"), "Base schema is required");
+            vec![Value::Missing(err)]
         }
     }
 }
@@ -813,7 +820,7 @@ impl<'a> Relation<'a> {
     }
 
     fn from_fetch<S: Scope>(rel: &'a FetchRel, ctx: &S) -> Self {
-        let (children, _) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let mut named_args: Vec<NamedArg> = vec![];
         match &rel.count_mode {
             Some(CountMode::CountExpr(expr)) => {
@@ -850,12 +857,10 @@ impl<'a> Relation<'a> {
         }
 
         let emit = get_emit(rel.common.as_ref());
-        let mut columns = vec![];
-        if let Some(EmitKind::Emit(e)) = emit {
-            for &i in &e.output_mapping {
-                columns.push(Value::Reference(i));
-            }
-        }
+        // Fetch is passthrough — direct output is all input columns.
+        let columns: Vec<Value> = (0..input_columns)
+            .map(|i| Value::Reference(i as i32))
+            .collect();
         Relation {
             name: Cow::Borrowed("Fetch"),
             arguments: Some(Arguments {

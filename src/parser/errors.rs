@@ -53,8 +53,8 @@ pub enum ParseError {
     #[error("Unknown extension relation type: {0}")]
     UnknownExtensionRelationType(String),
 
-    #[error("Validation error: {0}")]
-    ValidationError(String),
+    #[error("Invalid input at {0}: {1}")]
+    ValidationError(ParseContext, String),
 
     #[error("Error parsing section header on line {0}: {1}")]
     Initial(ParseContext, #[source] MessageParseError),
