@@ -4,7 +4,7 @@ use pest::iterators::Pair;
 use prost::Message;
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
-use substrait::proto::expression::{Literal, RexType};
+use substrait::proto::expression::{Literal, RexType, nested};
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
@@ -355,6 +355,69 @@ impl RelationParsePair for ReadRel {
     }
 }
 
+/// Parsed `Read:Virtual[rows => columns]` relation. Needs a newtype because the
+/// proto type is `ReadRel` (same as `NamedTable`), but the grammar and handling
+/// are different.
+pub(crate) struct VirtualReadRel(ReadRel);
+
+impl RelationParsePair for VirtualReadRel {
+    fn rule() -> Rule {
+        Rule::virtual_read_relation
+    }
+
+    fn message() -> &'static str {
+        "VirtualReadRel"
+    }
+
+    fn parse_pair_with_context(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        _input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        if !input_children.is_empty() {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                "Read:Virtual should have no input children",
+            ));
+        }
+
+        let mut iter = RuleIter::from(pair.into_inner());
+        let args_pair = iter.pop(Rule::virtual_read_args);
+        let columns_pair = iter.pop(Rule::named_column_list);
+        iter.done();
+
+        let rows = parse_virtual_read_args(extensions, args_pair)?;
+        let columns = NamedColumnList::parse_pair(extensions, columns_pair)?.0;
+
+        // TODO: Validate that each row has the same number of expressions as
+        // columns. Currently no parser-side warning mechanism exists, and while
+        // this is an invalid plan, it is constructible as Substrait. Consider
+        // adding once a warning collection path is available.
+        let output_count = columns.len();
+        Ok((
+            VirtualReadRel(ReadRel {
+                base_schema: Some(build_named_struct(columns)),
+                read_type: Some(read_rel::ReadType::VirtualTable(read_rel::VirtualTable {
+                    expressions: rows,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            output_count,
+        ))
+    }
+
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.0.advanced_extension = adv_ext;
+        Rel {
+            rel_type: Some(RelType::Read(Box::new(self.0))),
+        }
+    }
+}
+
 /// Build a `NamedStruct` from parsed columns.
 fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
     let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
@@ -366,6 +429,43 @@ fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
             nullability: r#type::Nullability::Required as i32,
         }),
     }
+}
+
+/// `Read:Virtual` positional args: either `empty` or a list of row tuples.
+fn parse_virtual_read_args(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Vec<nested::Struct>, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::virtual_read_args);
+    let inner = unwrap_single_pair(pair);
+    match inner.as_rule() {
+        Rule::empty => Ok(vec![]),
+        Rule::virtual_row_list => inner
+            .into_inner()
+            .map(|row| parse_virtual_row(extensions, row))
+            .collect(),
+        _ => unreachable!(
+            "Unexpected rule in virtual_read_args: {:?}",
+            inner.as_rule()
+        ),
+    }
+}
+
+/// Parse a single `virtual_row` (`(expr, expr, ...)` or `()`) into a `nested::Struct`.
+fn parse_virtual_row(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<nested::Struct, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::virtual_row);
+    let fields = match pair.into_inner().next() {
+        Some(expression_list) => {
+            assert_eq!(expression_list.as_rule(), Rule::expression_list);
+            parse_expression_list(extensions, expression_list)?
+        }
+        // Empty virtual row. An unusual but valid case.
+        None => vec![],
+    };
+    Ok(nested::Struct { fields })
 }
 
 impl RelationParsePair for FilterRel {
@@ -519,7 +619,7 @@ impl RelationParsePair for AggregateRel {
             .next()
             .expect("aggregate_group_by must have one inner item");
 
-        let grouping_sets = parse_grouping_sets(extensions, inner);
+        let grouping_sets = parse_grouping_sets(extensions, inner)?;
         let (groupings, grouping_expressions) = build_grouping_fields(&grouping_sets);
 
         let (measures, output_mapping) =
@@ -593,7 +693,7 @@ fn parse_aggregate_measures(
 fn parse_grouping_sets(
     extensions: &SimpleExtensions,
     inner: Pair<'_, Rule>,
-) -> Vec<Vec<Expression>> {
+) -> Result<Vec<Vec<Expression>>, MessageParseError> {
     assert!(
         matches!(
             inner.as_rule(),
@@ -603,9 +703,7 @@ fn parse_grouping_sets(
         inner.as_rule()
     );
     match inner.as_rule() {
-        Rule::expression_list => {
-            vec![parse_expression_list(extensions, inner)]
-        }
+        Rule::expression_list => Ok(vec![parse_expression_list(extensions, inner)?]),
         Rule::grouping_set_list => inner
             .into_inner()
             .map(|pair| parse_grouping_set(extensions, pair))
@@ -620,26 +718,29 @@ fn parse_grouping_sets(
 /// Parses a single grouping set, e.g. `($0, $1)` or `_`.
 ///
 /// Grammar: `grouping_set = { ("(" ~ expression_list ~ ")") | empty }`
-fn parse_grouping_set(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+fn parse_grouping_set(
+    extensions: &SimpleExtensions,
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<Expression>, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::grouping_set);
     let inner = pair
         .into_inner()
         .next()
         .expect("grouping_set must have one inner item");
     match inner.as_rule() {
-        Rule::empty => vec![],
+        Rule::empty => Ok(vec![]),
         Rule::expression_list => parse_expression_list(extensions, inner),
         _ => unreachable!("Unexpected item in grouping_set: {:?}", inner.as_rule()),
     }
 }
 
 /// Grammar: `expression_list = { expression ~ ("," ~ expression)* }`
-fn parse_expression_list(extensions: &SimpleExtensions, pair: Pair<'_, Rule>) -> Vec<Expression> {
+pub(crate) fn parse_expression_list(
+    extensions: &SimpleExtensions,
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<Expression>, MessageParseError> {
     pair.into_inner()
-        .map(|expr_pair| {
-            Expression::parse_pair(extensions, expr_pair)
-                .expect("By the grammar rule, only expressions should be parsed")
-        })
+        .map(|expr_pair| Expression::parse_pair(extensions, expr_pair))
         .collect()
 }
 

@@ -20,7 +20,7 @@ use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AdvExtInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
-use crate::parser::relations::RelationParsingContext;
+use crate::parser::relations::{RelationParsingContext, VirtualReadRel};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
@@ -312,6 +312,7 @@ impl<'a> RelationParser<'a> {
         ctx: RelationContext,
     ) -> Result<(Rel, usize), ParseError> {
         match ctx.pair.as_rule() {
+            Rule::virtual_read_relation => self.parse_rel::<VirtualReadRel>(extensions, ctx),
             Rule::read_relation => self.parse_rel::<ReadRel>(extensions, ctx),
             Rule::filter_relation => self.parse_rel::<FilterRel>(extensions, ctx),
             Rule::project_relation => self.parse_rel::<ProjectRel>(extensions, ctx),

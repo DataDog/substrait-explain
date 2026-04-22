@@ -375,7 +375,7 @@ fn test_extension_empty_args_roundtrip() {
     let plan_text = r#"
 === Plan
 Root[result]
-  ExtensionLeaf:EmptySource[_]
+  ExtensionLeaf:EmptySource[_ => ]
 "#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());

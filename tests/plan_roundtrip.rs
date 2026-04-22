@@ -468,6 +468,93 @@ Root[result]
     roundtrip_plan(plan);
 }
 
+// === VirtualTable Read tests ===
+
+#[test]
+fn test_virtual_read_inline_single_row() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_inline_multi_row() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_empty() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_single_column() {
+    let plan = r#"
+=== Plan
+Root[id]
+  Read:Virtual[(1), (2), (3) => id:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_in_plan_context() {
+    // VirtualTable as input to Filter and Project
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[name]
+  Filter[gt($0, 1) => $0, $1]
+    Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_no_columns() {
+    // Degenerate table with zero columns and empty rows.
+    let plan = r#"
+=== Plan
+Root[]
+  Read:Virtual[(), () => ]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_invalid_expression_returns_error() {
+    // A function call referencing an undeclared extension should produce
+    // a parse error, not a panic.
+    let plan = r#"
+=== Plan
+Root[result]
+  Read:Virtual[(unknown_func(1)) => result:i64]"#;
+
+    let result = Parser::parse(plan);
+    assert!(
+        result.is_err(),
+        "undeclared function in VirtualTable row should fail"
+    );
+}
+
 // === Emit / output-field-count propagation tests ===
 //
 // These exercise the pipeline: child's output_field_count → parent's
@@ -591,6 +678,23 @@ Root[total]
   Project[add($0, $1)]
     Aggregate[$0 => $0, sum($1)]
       Read[t => category:i64, amount:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_emit_virtual_read_to_project_with_expression() {
+    let plan = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1)]
+    Read:Virtual[(1, 2), (3, 4) => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
 }

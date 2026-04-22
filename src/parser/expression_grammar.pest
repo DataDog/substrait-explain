@@ -212,7 +212,11 @@ named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
 planNode = {
-    read_relation
+    // virtual_read_relation must precede read_relation: both start with "Read",
+    // and PEG tries alternatives in order — the longer "Read:Virtual" prefix
+    // must be attempted first.
+    virtual_read_relation
+  | read_relation
   | filter_relation
   | project_relation
   | aggregate_relation
@@ -233,6 +237,13 @@ root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
 root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
 
 read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]" }
+
+// VirtualTable read: Read:Virtual[rows => columns] or Read:Virtual[_ => columns]
+// Rows are parenthesized tuples; _ means empty (no rows).
+virtual_read_relation = { "Read:Virtual" ~ "[" ~ virtual_read_args ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]" }
+virtual_read_args     = { virtual_row_list | empty }
+virtual_row_list      = { virtual_row ~ (sp ~ "," ~ sp ~ virtual_row)* }
+virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }
 
 filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 reference_list  = { (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
@@ -306,7 +317,7 @@ extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extens
 extension_named_argument  = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 
 // Output columns - can mix named columns, references, and expressions
-extension_columns = { extension_column ~ (sp ~ "," ~ sp ~ extension_column)* }
+extension_columns = { (extension_column ~ (sp ~ "," ~ sp ~ extension_column)*)? }
 extension_column  = { named_column | reference | expression }
 
 // Advanced extensions: enhancements and optimizations attached to relations

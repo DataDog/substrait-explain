@@ -321,11 +321,7 @@ impl Relation<'_> {
             }
             Some(args) => {
                 let args = ctx.display(args);
-                if self.columns.is_empty() && self.emit.is_none() {
-                    write!(w, "{indent}{name}[{args}]")
-                } else {
-                    write!(w, "{indent}{name}[{args} => {cols}]")
-                }
+                write!(w, "{indent}{name}[{args} => {cols}]")
             }
         }
     }
@@ -378,6 +374,25 @@ impl<'a> Relation<'a> {
                     name: Cow::Borrowed("Read"),
                     arguments: Some(Arguments {
                         positional: vec![table_name],
+                        named: vec![],
+                    }),
+                    columns,
+                    emit,
+                    advanced_extension: rel.advanced_extension.as_ref(),
+                    children: vec![],
+                }
+            }
+            Some(ReadType::VirtualTable(vt)) => {
+                let positional = vt
+                    .expressions
+                    .iter()
+                    .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
+                    .collect();
+
+                Relation {
+                    name: Cow::Borrowed("Read:Virtual"),
+                    arguments: Some(Arguments {
+                        positional,
                         named: vec![],
                     }),
                     columns,
