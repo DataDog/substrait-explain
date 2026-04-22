@@ -537,14 +537,13 @@ The `Read:Virtual` relation uses the same `ReadRel` protobuf message with `ReadT
 
 `"Read:Virtual" "[" (virtual_row ("," virtual_row)*)? "=>" named_column_list "]"`
 
-Where `virtual_row := "(" expression ("," expression)* ")"` — a parenthesized tuple of expressions forming one row. Use `_` in place of rows for an empty virtual table.
+Where `virtual_row := "(" (expression ("," expression)*)? ")"` — a parenthesized tuple of expressions forming one row. Rows may be empty (`()`) for zero-column tables. For an empty virtual table, write `_` in place of the entire row list, e.g. `Read:Virtual[_ => id:i64]` for zero rows.
 
 #### Components
 
-- `virtual_row` - parenthesized tuple of expressions, one per row
+- `virtual_row` - parenthesized tuple of expressions, one per row; `()` for zero-column rows
 - `expression` - any expression (literal, field reference, function call)
 - `named_column_list` - output column names with type annotations
-- `_` - empty marker (no rows)
 
 #### Examples
 
@@ -758,9 +757,11 @@ positional_args := extension_arg ("," extension_arg)*
 extension_arg := reference / literal / expression
 named_args := named_arg ("," named_arg)*
 named_arg := name "=" extension_arg
-extension_columns := extension_column ("," extension_column)*
+extension_columns := (extension_column ("," extension_column)*)?
 extension_column := named_column / reference / expression
 ```
+
+Note: the parser also accepts the `=>` section being omitted entirely (e.g. `ExtensionLeaf:Foo[_]`), treating it as zero output columns. The canonical form always includes `=>`.
 
 #### Components
 
@@ -782,13 +783,13 @@ Root[result]
 Extension with positional arguments and no output columns:
 
 ```text
-ExtensionSingle:VectorNormalize[$0, $1, method='l2']
+ExtensionSingle:VectorNormalize[$0, $1, method='l2' => ]
 ```
 
 Extension with no arguments:
 
 ```text
-ExtensionLeaf:EmptySource[_]
+ExtensionLeaf:EmptySource[_ => ]
 ```
 
 #### Custom Extension Types

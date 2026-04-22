@@ -451,17 +451,21 @@ fn parse_virtual_read_args(
     }
 }
 
-/// Parse a single `virtual_row` (`(expr, expr, ...)`) into a `nested::Struct`.
+/// Parse a single `virtual_row` (`(expr, expr, ...)` or `()`) into a `nested::Struct`.
 fn parse_virtual_row(
     extensions: &SimpleExtensions,
     pair: Pair<Rule>,
 ) -> Result<nested::Struct, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::virtual_row);
-    let expression_list = unwrap_single_pair(pair);
-    assert_eq!(expression_list.as_rule(), Rule::expression_list);
-    Ok(nested::Struct {
-        fields: parse_expression_list(extensions, expression_list)?,
-    })
+    let fields = match pair.into_inner().next() {
+        Some(expression_list) => {
+            assert_eq!(expression_list.as_rule(), Rule::expression_list);
+            parse_expression_list(extensions, expression_list)?
+        }
+        // Empty virtual row. An unusual but valid case.
+        None => vec![],
+    };
+    Ok(nested::Struct { fields })
 }
 
 impl RelationParsePair for FilterRel {

@@ -529,6 +529,17 @@ Root[name]
 }
 
 #[test]
+fn test_virtual_read_no_columns() {
+    // Degenerate table with zero columns and empty rows.
+    let plan = r#"
+=== Plan
+Root[]
+  Read:Virtual[(), () => ]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_virtual_read_invalid_expression_returns_error() {
     // A function call referencing an undeclared extension should produce
     // a parse error, not a panic.

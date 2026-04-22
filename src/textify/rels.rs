@@ -321,11 +321,7 @@ impl Relation<'_> {
             }
             Some(args) => {
                 let args = ctx.display(args);
-                if self.columns.is_empty() && self.emit.is_none() {
-                    write!(w, "{indent}{name}[{args}]")
-                } else {
-                    write!(w, "{indent}{name}[{args} => {cols}]")
-                }
+                write!(w, "{indent}{name}[{args} => {cols}]")
             }
         }
     }
