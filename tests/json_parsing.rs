@@ -5,6 +5,7 @@
 //! and the compiled descriptor binary are all generated at build time by
 //! `build.rs` using protox and prost-build.
 
+use substrait::proto::Plan;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
@@ -68,7 +69,7 @@ fn build_registry() -> ExtensionRegistry {
     r
 }
 
-fn format_plan(plan: &substrait::proto::Plan) -> String {
+fn format_plan(plan: &Plan) -> String {
     let registry = build_registry();
     let (text, errors) = format_with_registry(plan, &OutputOptions::default(), &registry);
     assert!(
@@ -259,4 +260,63 @@ fn test_cli_parses_standard_plan_json() {
 
     let result = String::from_utf8(output).unwrap();
     assert!(result.contains("Read[data => a:i64, b:string?]"));
+}
+
+/// Reproduces #96: JSON plans using the deprecated `extensionUris` and
+/// `extensionUriReference` fields should produce a clear error, not a
+/// mysterious "Missing URN anchor 0" message.
+#[test]
+fn test_deprecated_extension_uris_produces_clear_error() {
+    let json = r#"{
+      "extensionUris": [
+        { "extensionUriAnchor": 3, "uri": "/functions_comparison.yaml" }
+      ],
+      "extensions": [{
+        "extensionFunction": {
+          "extensionUriReference": 3,
+          "functionAnchor": 7,
+          "name": "is_not_null:any"
+        }
+      }],
+      "relations": [{
+        "root": {
+          "input": {
+            "read": {
+              "common": { "direct": {} },
+              "baseSchema": {
+                "names": ["x"],
+                "struct": {
+                  "types": [{ "i64": { "nullability": "NULLABILITY_NULLABLE" } }],
+                  "nullability": "NULLABILITY_REQUIRED"
+                }
+              },
+              "namedTable": { "names": ["my_table"] }
+            }
+          },
+          "names": ["x"]
+        }
+      }]
+    }"#;
+
+    let plan: Plan = serde_json::from_str(json).unwrap();
+    let (text, errors) = substrait_explain::format(&plan);
+
+    // Should still produce best-effort output (relations render fine)
+    assert!(
+        text.contains("Read[my_table => x:i64?]"),
+        "Expected best-effort plan output, got:\n{text}"
+    );
+
+    // Should produce clear errors about both deprecated fields
+    let error_text = format!("{errors:?}");
+
+    assert!(false);
+    assert!(
+        error_text.contains("deprecated extensionUris"),
+        "Expected error about deprecated extensionUris, got:\n{error_text}"
+    );
+    assert!(
+        error_text.contains("deprecated extensionUriReference"),
+        "Expected error about deprecated extensionUriReference, got:\n{error_text}"
+    );
 }

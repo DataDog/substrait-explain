@@ -134,6 +134,31 @@ pub struct SimpleExtensions {
     extensions: BTreeMap<(u32, ExtensionKind), (u32, CompoundName)>,
 }
 
+/// Extract the kind, URN reference, anchor, and name from an extension mapping.
+fn extract_mapping(mapping: &Option<MappingType>) -> Option<(ExtensionKind, u32, u32, String)> {
+    match mapping {
+        Some(MappingType::ExtensionType(t)) => Some((
+            ExtensionKind::Type,
+            t.extension_urn_reference,
+            t.type_anchor,
+            t.name.clone(),
+        )),
+        Some(MappingType::ExtensionFunction(f)) => Some((
+            ExtensionKind::Function,
+            f.extension_urn_reference,
+            f.function_anchor,
+            f.name.clone(),
+        )),
+        Some(MappingType::ExtensionTypeVariation(v)) => Some((
+            ExtensionKind::TypeVariation,
+            v.extension_urn_reference,
+            v.type_variation_anchor,
+            v.name.clone(),
+        )),
+        None => None,
+    }
+}
+
 impl SimpleExtensions {
     pub fn new() -> Self {
         Self::default()
@@ -157,34 +182,9 @@ impl SimpleExtensions {
         }
 
         for extension in extensions {
-            match &extension.mapping_type {
-                Some(MappingType::ExtensionType(t)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::Type,
-                        t.extension_urn_reference,
-                        t.type_anchor,
-                        t.name.clone(),
-                    ) {
-                        errors.push(e);
-                    }
-                }
-                Some(MappingType::ExtensionFunction(f)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::Function,
-                        f.extension_urn_reference,
-                        f.function_anchor,
-                        f.name.clone(),
-                    ) {
-                        errors.push(e);
-                    }
-                }
-                Some(MappingType::ExtensionTypeVariation(v)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::TypeVariation,
-                        v.extension_urn_reference,
-                        v.type_variation_anchor,
-                        v.name.clone(),
-                    ) {
+            match extract_mapping(&extension.mapping_type) {
+                Some((kind, urn_ref, anchor, name)) => {
+                    if let Err(e) = exts.add_extension(kind, urn_ref, anchor, name) {
                         errors.push(e);
                     }
                 }

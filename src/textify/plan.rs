@@ -5,7 +5,7 @@ use substrait::proto;
 use super::Textify;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
 use crate::parser::PLAN_HEADER;
-use crate::textify::foundation::ErrorAccumulator;
+use crate::textify::foundation::{ErrorAccumulator, FormatError, FormatErrorType, PlanError};
 use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
@@ -29,6 +29,10 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         let errors = E::default();
         for err in errs {
             errors.push(err.into());
+        }
+
+        for err in check_deprecated_uri_fields(plan) {
+            errors.push(err);
         }
 
         let relations = plan.relations.as_slice();
@@ -83,6 +87,69 @@ impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
         writeln!(f)?;
         Ok(())
     }
+}
+
+/// Check for deprecated URI-based extension fields in a plan.
+///
+/// Substrait migrated from URI-based extensions (YAML file paths identified by
+/// `extensionUris` / `extensionUriReference`) to URN-based extensions (structured
+/// identifiers using `extensionUrns` / `extensionUrnReference`). Plans from older
+/// producers may still use the URI fields; we report them clearly so users know
+/// what to update.
+#[allow(deprecated)]
+fn check_deprecated_uri_fields(plan: &proto::Plan) -> Vec<FormatError> {
+    use substrait::proto::extensions::simple_extension_declaration::MappingType;
+
+    let mut errors = Vec::new();
+
+    if !plan.extension_uris.is_empty() {
+        let n = plan.extension_uris.len();
+        let noun = if n == 1 { "entry" } else { "entries" };
+        errors.push(FormatError::Format(PlanError {
+            message: "extensions",
+            lookup: None,
+            description: format!(
+                "Plan uses deprecated extensionUris ({n} {noun}). \
+                 Substrait now uses extensionUrns (URN-based identifiers) \
+                 instead of extensionUris (YAML file paths)."
+            )
+            .into(),
+            error_type: FormatErrorType::InvalidValue,
+        }));
+    }
+
+    let deprecated_refs: Vec<String> = plan
+        .extensions
+        .iter()
+        .filter_map(|ext| match &ext.mapping_type {
+            Some(MappingType::ExtensionFunction(f)) if f.extension_uri_reference != 0 => {
+                Some(format!("function #{}", f.function_anchor))
+            }
+            Some(MappingType::ExtensionType(t)) if t.extension_uri_reference != 0 => {
+                Some(format!("type #{}", t.type_anchor))
+            }
+            Some(MappingType::ExtensionTypeVariation(v)) if v.extension_uri_reference != 0 => {
+                Some(format!("type variation #{}", v.type_variation_anchor))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if !deprecated_refs.is_empty() {
+        errors.push(FormatError::Format(PlanError {
+            message: "extensions",
+            lookup: None,
+            description: format!(
+                "Extension declarations use deprecated extensionUriReference \
+                 instead of extensionUrnReference: {}",
+                deprecated_refs.join(", ")
+            )
+            .into(),
+            error_type: FormatErrorType::InvalidValue,
+        }));
+    }
+
+    errors
 }
 
 #[cfg(test)]
