@@ -168,6 +168,8 @@ pub enum ExtensionValue {
     Reference(i32),
     /// Enum value (e.g. &CORE, &Inner) — Uses the wrapper EnumValue. the string holds the identifier without the `&` prefix
     Enum(String),
+    /// Tuple of values, e.g. (&HASH, &RANGE) or (42, 'hello')
+    Tuple(Vec<ExtensionValue>),
     /// Expression (function call, etc.) — not yet fully supported, hence the
     /// private interface.
     #[allow(private_interfaces)]
@@ -183,6 +185,16 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
             ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
+            ExtensionValue::Tuple(items) => {
+                write!(f, "Tuple(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, ")")
+            }
             ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
     }
@@ -225,6 +237,22 @@ impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
             ExtensionValue::Enum(s) => Ok(EnumValue(s.clone())),
             v => Err(ExtensionError::InvalidArgument(format!(
                 "Expected enum, got {v}",
+            ))),
+        }
+    }
+}
+
+/// Helper for extracting the elements from an [`ExtensionValue::Tuple`].
+pub struct TupleValue(pub Vec<ExtensionValue>);
+
+impl TryFrom<&ExtensionValue> for TupleValue {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<TupleValue, Self::Error> {
+        match value {
+            ExtensionValue::Tuple(items) => Ok(TupleValue(items.clone())),
+            v => Err(ExtensionError::InvalidArgument(format!(
+                "Expected tuple, got {v}",
             ))),
         }
     }

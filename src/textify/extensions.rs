@@ -21,7 +21,7 @@ impl Textify for ExtensionValue {
         "ExtensionValue"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
             ExtensionValue::String(s) => write!(w, "'{}'", escaped(s)),
             ExtensionValue::Integer(i) => write!(w, "{i}"),
@@ -29,6 +29,16 @@ impl Textify for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Reference(r) => write!(w, "${r}"),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
+            ExtensionValue::Tuple(items) => {
+                write!(w, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(w, ", ")?;
+                    }
+                    item.textify(ctx, w)?;
+                }
+                write!(w, ")")
+            }
             ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
     }

@@ -297,9 +297,11 @@ extension_name = { extension_type ~ ":" ~ name }
 extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 
 arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
-// Positional arguments (expressions, literals, references, enums)
+// Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
-extension_argument  = { enum_value | reference | literal | expression }
+// tuple must come after expression due to overlapping grammar definitions 
+tuple = { "(" ~ sp ~ (extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)*)? ~ sp ~ ")" }
+extension_argument  = { enum_value | reference | literal | expression | tuple }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }

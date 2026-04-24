@@ -311,6 +311,10 @@ impl ParsePair for ExtensionValue {
                 let bool_val = inner.as_str() == "true";
                 ExtensionValue::Boolean(bool_val)
             }
+            Rule::tuple => {
+                let elements = inner.into_inner().map(ExtensionValue::parse_pair).collect();
+                ExtensionValue::Tuple(elements)
+            }
             Rule::expression => {
                 ExtensionValue::Expression(RawExpression::new(inner.as_str().to_string()))
             }
@@ -560,6 +564,8 @@ impl ExtensionRelationType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::ExtensionValue;
+    use crate::fixtures::TestContext;
     use crate::parser::Parser;
 
     #[test]
@@ -684,5 +690,71 @@ Functions:
         );
         // Text output must reproduce the input exactly
         assert_eq!(extensions.to_string("  "), input);
+    }
+
+    #[test]
+    fn test_tuple_mixed_types_parses() {
+        // tuple has overlapping grammar syntax with expression.
+        let val = ExtensionValue::parse_str("(&HASH, 8, 'hello')").unwrap();
+        let ExtensionValue::Tuple(items) = val else {
+            panic!("expected Tuple, got {val:?}");
+        };
+        assert_eq!(items.len(), 3);
+        assert!(matches!(&items[0], ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(&items[1], ExtensionValue::Integer(8)));
+        assert!(matches!(&items[2], ExtensionValue::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_empty_tuple_parses() {
+        let val = ExtensionValue::parse_str("()").unwrap();
+        let ExtensionValue::Tuple(items) = val else {
+            panic!("expected Tuple, got {val:?}");
+        };
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_nested_tuple_parses() {
+        let val = ExtensionValue::parse_str("((&HASH, &RANGE), 8)").unwrap();
+        let ExtensionValue::Tuple(outer) = val else {
+            panic!("expected Tuple, got {val:?}");
+        };
+        assert_eq!(outer.len(), 2);
+        let ExtensionValue::Tuple(inner) = &outer[0] else {
+            panic!("expected inner Tuple");
+        };
+        assert_eq!(inner.len(), 2);
+        assert!(matches!(&inner[0], ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(&outer[1], ExtensionValue::Integer(8)));
+    }
+
+    #[test]
+    fn test_tuple_in_adv_extension_parses() {
+        let inv = AdvExtInvocation::parse_str("+ Enh:Foo[(&HASH, &RANGE), count=8]").unwrap();
+        assert_eq!(inv.name, "Foo");
+        assert_eq!(inv.args.positional.len(), 1);
+        let ExtensionValue::Tuple(items) = &inv.args.positional[0] else {
+            panic!("expected Tuple positional arg");
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(&items[0], ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(&items[1], ExtensionValue::Enum(s) if s == "RANGE"));
+        assert_eq!(inv.args.named.len(), 1);
+    }
+
+    #[test]
+    fn test_tuple_textify_roundtrip() {
+        let ctx = TestContext::new();
+        for text in &[
+            "(&HASH, &RANGE)",
+            "(&HASH, 8, 'hello')",
+            "()",
+            "((&HASH, &RANGE), 8)",
+        ] {
+            let val = ExtensionValue::parse_str(text).unwrap();
+            let rendered = ctx.textify_no_errors(&val);
+            assert_eq!(&rendered, text, "roundtrip failed for {text}");
+        }
     }
 }
