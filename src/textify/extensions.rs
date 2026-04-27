@@ -12,9 +12,26 @@ use substrait::proto::extensions::AdvancedExtension;
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
 use crate::extensions::registry::ExtensionType;
-use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue};
+use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
 use crate::textify::foundation::{PlanError, Scope, Textify};
 use crate::textify::types::escaped;
+
+impl Textify for TupleValue {
+    fn name() -> &'static str {
+        "TupleValue"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "(")?;
+        if self.len() == 1 {
+            self.iter().next().unwrap().textify(ctx, w)?;
+            write!(w, ",")?;
+        } else {
+            write!(w, "{}", ctx.separated(self, ", "))?;
+        }
+        write!(w, ")")
+    }
+}
 
 impl Textify for ExtensionValue {
     fn name() -> &'static str {
@@ -29,16 +46,7 @@ impl Textify for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Reference(r) => write!(w, "${r}"),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
-            ExtensionValue::Tuple(items) => {
-                write!(w, "(")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(w, ", ")?;
-                    }
-                    item.textify(ctx, w)?;
-                }
-                write!(w, ")")
-            }
+            ExtensionValue::Tuple(tv) => tv.textify(ctx, w),
             ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
     }

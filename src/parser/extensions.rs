@@ -8,7 +8,7 @@ use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    RawExpression, SimpleExtensions,
+    RawExpression, SimpleExtensions, TupleValue,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -312,8 +312,11 @@ impl ParsePair for ExtensionValue {
                 ExtensionValue::Boolean(bool_val)
             }
             Rule::tuple => {
-                let elements = inner.into_inner().map(ExtensionValue::parse_pair).collect();
-                ExtensionValue::Tuple(elements)
+                let tv = inner
+                    .into_inner()
+                    .map(ExtensionValue::parse_pair)
+                    .collect::<TupleValue>();
+                ExtensionValue::Tuple(tv)
             }
             Rule::expression => {
                 ExtensionValue::Expression(RawExpression::new(inner.as_str().to_string()))
@@ -700,9 +703,10 @@ Functions:
             panic!("expected Tuple, got {val:?}");
         };
         assert_eq!(items.len(), 3);
-        assert!(matches!(&items[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(&items[1], ExtensionValue::Integer(8)));
-        assert!(matches!(&items[2], ExtensionValue::String(s) if s == "hello"));
+        let items: Vec<&ExtensionValue> = items.iter().collect();
+        assert!(matches!(items[0], ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(items[1], ExtensionValue::Integer(8)));
+        assert!(matches!(items[2], ExtensionValue::String(s) if s == "hello"));
     }
 
     #[test]
@@ -721,12 +725,15 @@ Functions:
             panic!("expected Tuple, got {val:?}");
         };
         assert_eq!(outer.len(), 2);
-        let ExtensionValue::Tuple(inner) = &outer[0] else {
+        let ExtensionValue::Tuple(inner) = outer.iter().next().unwrap() else {
             panic!("expected inner Tuple");
         };
         assert_eq!(inner.len(), 2);
-        assert!(matches!(&inner[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(&outer[1], ExtensionValue::Integer(8)));
+        assert!(matches!(inner.iter().next().unwrap(), ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(
+            outer.iter().nth(1).unwrap(),
+            ExtensionValue::Integer(8)
+        ));
     }
 
     #[test]
@@ -738,8 +745,9 @@ Functions:
             panic!("expected Tuple positional arg");
         };
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(&items[1], ExtensionValue::Enum(s) if s == "RANGE"));
+        let items: Vec<&ExtensionValue> = items.iter().collect();
+        assert!(matches!(items[0], ExtensionValue::Enum(s) if s == "HASH"));
+        assert!(matches!(items[1], ExtensionValue::Enum(s) if s == "RANGE"));
         assert_eq!(inv.args.named.len(), 1);
     }
 
@@ -750,6 +758,7 @@ Functions:
             "(&HASH, &RANGE)",
             "(&HASH, 8, 'hello')",
             "()",
+            "(&HASH,)",
             "((&HASH, &RANGE), 8)",
         ] {
             let val = ExtensionValue::parse_str(text).unwrap();

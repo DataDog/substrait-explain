@@ -153,6 +153,69 @@ impl Drop for ArgsExtractor<'_> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TupleValue(Vec<ExtensionValue>);
+
+impl TupleValue {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, ExtensionValue> {
+        self.0.iter()
+    }
+}
+
+impl fmt::Display for TupleValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(")?;
+        for (i, item) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{item}")?;
+        }
+        if self.0.len() == 1 {
+            write!(f, ",")?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl<'a> IntoIterator for &'a TupleValue {
+    type Item = &'a ExtensionValue;
+    type IntoIter = std::slice::Iter<'a, ExtensionValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for TupleValue {
+    type Item = ExtensionValue;
+    type IntoIter = std::vec::IntoIter<ExtensionValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<ExtensionValue> for TupleValue {
+    fn from_iter<I: IntoIterator<Item = ExtensionValue>>(iter: I) -> Self {
+        TupleValue(iter.into_iter().collect())
+    }
+}
+
+impl From<Vec<ExtensionValue>> for TupleValue {
+    fn from(items: Vec<ExtensionValue>) -> Self {
+        TupleValue(items)
+    }
+}
+
 /// Represents a value in extension arguments
 #[derive(Debug, Clone)]
 pub enum ExtensionValue {
@@ -169,7 +232,7 @@ pub enum ExtensionValue {
     /// Enum value (e.g. &CORE, &Inner) — Uses the wrapper EnumValue. the string holds the identifier without the `&` prefix
     Enum(String),
     /// Tuple of values, e.g. (&HASH, &RANGE) or (42, 'hello')
-    Tuple(Vec<ExtensionValue>),
+    Tuple(TupleValue),
     /// Expression (function call, etc.) — not yet fully supported, hence the
     /// private interface.
     #[allow(private_interfaces)]
@@ -185,16 +248,7 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
             ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
             ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
-            ExtensionValue::Tuple(items) => {
-                write!(f, "Tuple(")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{item}")?;
-                }
-                write!(f, ")")
-            }
+            ExtensionValue::Tuple(tv) => write!(f, "Tuple{tv}"),
             ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
     }
@@ -242,15 +296,12 @@ impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
     }
 }
 
-/// Helper for extracting the elements from an [`ExtensionValue::Tuple`].
-pub struct TupleValue(pub Vec<ExtensionValue>);
-
-impl TryFrom<&ExtensionValue> for TupleValue {
+impl<'a> TryFrom<&'a ExtensionValue> for &'a TupleValue {
     type Error = ExtensionError;
 
-    fn try_from(value: &ExtensionValue) -> Result<TupleValue, Self::Error> {
+    fn try_from(value: &'a ExtensionValue) -> Result<&'a TupleValue, Self::Error> {
         match value {
-            ExtensionValue::Tuple(items) => Ok(TupleValue(items.clone())),
+            ExtensionValue::Tuple(tv) => Ok(tv),
             v => Err(ExtensionError::InvalidArgument(format!(
                 "Expected tuple, got {v}",
             ))),

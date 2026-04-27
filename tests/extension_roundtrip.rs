@@ -628,8 +628,8 @@ impl Explainable for TupleSortHint {
                 args.positional.len()
             )));
         }
-        let TupleValue(items) = TupleValue::try_from(&args.positional[0])?;
-        let directions = items
+        let tv = <&TupleValue>::try_from(&args.positional[0])?;
+        let directions = tv
             .iter()
             .map(|v| {
                 let EnumValue(s) = EnumValue::try_from(v)?;
@@ -643,12 +643,12 @@ impl Explainable for TupleSortHint {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        let items: Vec<ExtensionValue> = self
+        let tv: TupleValue = self
             .directions
             .iter()
             .map(|d| ExtensionValue::Enum(d.clone()))
             .collect();
-        args.positional.push(ExtensionValue::Tuple(items));
+        args.positional.push(ExtensionValue::Tuple(tv));
         Ok(args)
     }
 }

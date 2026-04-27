@@ -299,8 +299,15 @@ extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
-// tuple must come after expression due to overlapping grammar definitions 
-tuple = { "(" ~ sp ~ (extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)*)? ~ sp ~ ")" }
+// Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
+// expressions: `()` is a 0-tuple, `(x,)` is a 1-tuple, and `(x, y)` / `(x, y,)` are 2+-tuples.
+// tuple must come after expression in extension_argument because cast_expression starts with "("
+// and must be tried first — otherwise "(78:i32)" would be consumed as a 1-element tuple.
+tuple = {
+    "(" ~ sp ~ ")"
+  | "(" ~ sp ~ extension_argument ~ sp ~ "," ~ sp ~ ")"
+  | "(" ~ sp ~ extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)+ ~ (sp ~ ",")? ~ sp ~ ")"
+}
 extension_argument  = { enum_value | reference | literal | expression | tuple }
 
 // Named arguments (name=value pairs)
