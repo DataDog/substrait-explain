@@ -300,7 +300,16 @@ arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_a
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
 // tuple must come after expression due to overlapping grammar definitions 
-tuple = { "(" ~ sp ~ (extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)*)? ~ sp ~ ")" }
+tuple = {
+        // empty tuple (0-tuple)
+        "(" ~ sp ~ ")"
+        // Single element (1-tuple) - uses trailing comma to distinguish from expression
+        | "(" ~ sp ~ extension_argument ~ sp ~ "," ~ sp ~ ")"
+        // Multi-element tuple. Trailing comma optional.
+        | "(" ~ sp ~ extension_argument
+              ~ (sp ~ "," ~ sp ~ extension_argument)+
+              ~ (sp ~ ",")? ~ sp ~ ")"
+        }
 extension_argument  = { enum_value | reference | literal | expression | tuple }
 
 // Named arguments (name=value pairs)
