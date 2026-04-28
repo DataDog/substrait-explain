@@ -463,16 +463,25 @@ Arguments in relations can be literals, expressions, enums, or tuples thereof.
 #### Syntax
 
 ```text
-argument := literal / expression / enum / tuple
-tuple := "(" argument ("," argument)* ")"
+argument := enum / reference / literal / expression / tuple
+tuple := "(" ")"                                        // 0-tuple
+       / "(" argument "," ")"                           // 1-tuple (trailing comma required)
+       / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
 ```
 
+Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
+expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to
+form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and
+`(x, y,)` are equivalent.
+
 #### Examples
 
 - Simple arguments: `$0`, `42`, `'hello'`, `&AscNullsFirst`
-- Tuple arguments: `($0, &AscNullsFirst)`, `(limit=10, offset=5)`
+- 0-tuple: `()`
+- 1-tuple: `(&HASH,)` — trailing comma required
+- 2+-tuple: `($0, &AscNullsFirst)`, `(&HASH, &RANGE,)`
 - Named arguments: `limit=10`, `offset=5`
 
 ### Root Relation
@@ -704,7 +713,7 @@ extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>
 extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
 extension_args := (positional_args ("," named_args)?) / named_args
 positional_args := extension_arg ("," extension_arg)*
-extension_arg := reference / literal / expression
+extension_arg := enum / reference / literal / expression / tuple
 named_args := named_arg ("," named_arg)*
 named_arg := name "=" extension_arg
 extension_columns := extension_column ("," extension_column)*
@@ -716,7 +725,7 @@ extension_column := named_column / reference / expression
 - **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
 - **`name`** - The extension name (registered with `ExtensionRegistry`)
 - **`empty`** (`_`) - Explicitly marks an extension with no arguments
-- **`extension_args`** - Positional arguments (references, literals, expressions) and/or named arguments (`key=value` pairs); both are optional
+- **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
 - **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
 #### Examples
