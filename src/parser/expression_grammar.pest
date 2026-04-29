@@ -300,8 +300,6 @@ arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_a
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
 
-// tuple must come after expression in extension_argument because cast_expression starts with "("
-// and must be tried first — otherwise "(78:i32)" would be consumed as a 1-element tuple.
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.
 tuple = {
