@@ -3,8 +3,8 @@
 use prost::{Message, Name};
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    EnumValue, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    ExtensionRelationType, ExtensionValue, TupleValue,
 };
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
@@ -592,5 +592,115 @@ Root[result]
     assert!(
         !errors.is_empty(),
         "expected at least one format error for unknown extension type URL"
+    );
+}
+
+/// An enhancement that carries a single positional tuple of sort-direction enums.
+#[derive(Clone, PartialEq, Message)]
+pub struct TupleSortHint {
+    /// Sort direction identifiers, e.g. ["ASC", "DESC"].
+    #[prost(string, repeated, tag = "1")]
+    pub directions: Vec<String>,
+}
+
+impl Name for TupleSortHint {
+    const NAME: &'static str = "TupleSortHint";
+    const PACKAGE: &'static str = "test";
+
+    fn full_name() -> String {
+        "test.TupleSortHint".to_string()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/test.TupleSortHint".to_string()
+    }
+}
+
+impl Explainable for TupleSortHint {
+    fn name() -> &'static str {
+        "TupleSortHint"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        if args.positional.len() != 1 {
+            return Err(ExtensionError::InvalidArgument(format!(
+                "expected 1 positional tuple arg, got {}",
+                args.positional.len()
+            )));
+        }
+        let tv = <&TupleValue>::try_from(&args.positional[0])?;
+        let directions = tv
+            .iter()
+            .map(|v| {
+                let EnumValue(s) = EnumValue::try_from(v)?;
+                Ok(s)
+            })
+            .collect::<Result<Vec<_>, ExtensionError>>()?;
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(TupleSortHint { directions })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let tv: TupleValue = self
+            .directions
+            .iter()
+            .map(|d| ExtensionValue::Enum(d.clone()))
+            .collect();
+        args.positional.push(ExtensionValue::Tuple(tv));
+        Ok(args)
+    }
+}
+
+#[test]
+fn test_tuple_sort_hint_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_enhancement::<TupleSortHint>()
+        .expect("register_enhancement");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:TupleSortHint[(&ASC, &DESC)]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_tuple_sort_hint_empty_tuple_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_enhancement::<TupleSortHint>()
+        .expect("register_enhancement");
+
+    let plan_text = r#"=== Plan
+Root[result]
+  Read[my.table => col:i64]
+    + Enh:TupleSortHint[()]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_tuple_sort_hint_from_args_rejects_non_tuple() {
+    let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+    args.positional
+        .push(ExtensionValue::Enum("ASC".to_string()));
+    let result = TupleSortHint::from_args(&args);
+    assert!(
+        result.is_err(),
+        "expected error when positional arg is not a tuple"
     );
 }
