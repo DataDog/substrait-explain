@@ -9,9 +9,9 @@ Here's what a typical release looks like, step by step:
 ### 1. You merge a PR to `main`
 
 Business as usual. Use [conventional commit](https://www.conventionalcommits.org/)
-messages on individual commits so release-plz knows how to bump the version.
-(release-plz analyzes the commits that land on `main` — with merge commits, that's
-each individual commit in the PR; with squash-and-merge, it's the PR title.)
+messages so release-plz knows how to bump the version. PRs are squash-merged
+(enforced in repository settings), so the **PR title** becomes the commit message
+release-plz analyzes — write the PR title in conventional format.
 
 | Commit prefix                  | Version bump          | Example                               |
 | ------------------------------ | --------------------- | ------------------------------------- |
@@ -31,6 +31,7 @@ Steps, run locally:
    1. `brew install gh` - for Github access
    2. `gh auth login` - login to Github from CLI
    3. `cargo install --locked release-plz` - the CLI for making the Release PR
+   4. `cargo install --locked cargo-semver-checks` - used by release-plz to detect API-breaking changes; without it, release-plz can't choose the right version bump for breaking changes
 2. `git checkout main` - need to be on `main` for a release
 3. `release-plz release-pr --git-token $(gh auth token)` - `release-plz` will analyze the current state, and generate a Changelog, version bump, and PR on Github.
 
@@ -52,8 +53,8 @@ On the push to `main` from the merged Release PR, the **Release** job runs. It:
 
 ### 5. (Optional) Tag and release on GitHub
 
-Requires maintainer permissions (CI tokens cannot create tags due to
-org-wide tag protection rulesets).
+Requires repo admin permissions — the GitHub Maintain role is not sufficient.
+CI tokens are blocked by an org-wide tag protection ruleset.
 
 ```bash
 just release-tag
