@@ -134,6 +134,75 @@ pub struct SimpleExtensions {
     extensions: BTreeMap<(u32, ExtensionKind), (u32, CompoundName)>,
 }
 
+/// Extract the kind, URN reference, anchor, and name from an extension mapping.
+///
+/// Declarations that only use the deprecated URI reference field are skipped
+/// here. Plan-level formatting reports those fields separately; treating their
+/// default URN reference as real would reintroduce the misleading
+/// "Missing URN anchor 0" diagnostic.
+enum ExtractedMapping {
+    Urn(ExtensionKind, u32, u32, String),
+    DeprecatedUriOnly,
+}
+
+#[allow(deprecated)]
+fn extract_mapping(mapping: &Option<MappingType>) -> Option<ExtractedMapping> {
+    match mapping {
+        Some(MappingType::ExtensionType(t)) if t.extension_urn_reference != 0 => {
+            Some(ExtractedMapping::Urn(
+                ExtensionKind::Type,
+                t.extension_urn_reference,
+                t.type_anchor,
+                t.name.clone(),
+            ))
+        }
+        Some(MappingType::ExtensionType(t)) if t.extension_uri_reference != 0 => {
+            Some(ExtractedMapping::DeprecatedUriOnly)
+        }
+        Some(MappingType::ExtensionType(t)) => Some(ExtractedMapping::Urn(
+            ExtensionKind::Type,
+            t.extension_urn_reference,
+            t.type_anchor,
+            t.name.clone(),
+        )),
+        Some(MappingType::ExtensionFunction(f)) if f.extension_urn_reference != 0 => {
+            Some(ExtractedMapping::Urn(
+                ExtensionKind::Function,
+                f.extension_urn_reference,
+                f.function_anchor,
+                f.name.clone(),
+            ))
+        }
+        Some(MappingType::ExtensionFunction(f)) if f.extension_uri_reference != 0 => {
+            Some(ExtractedMapping::DeprecatedUriOnly)
+        }
+        Some(MappingType::ExtensionFunction(f)) => Some(ExtractedMapping::Urn(
+            ExtensionKind::Function,
+            f.extension_urn_reference,
+            f.function_anchor,
+            f.name.clone(),
+        )),
+        Some(MappingType::ExtensionTypeVariation(v)) if v.extension_urn_reference != 0 => {
+            Some(ExtractedMapping::Urn(
+                ExtensionKind::TypeVariation,
+                v.extension_urn_reference,
+                v.type_variation_anchor,
+                v.name.clone(),
+            ))
+        }
+        Some(MappingType::ExtensionTypeVariation(v)) if v.extension_uri_reference != 0 => {
+            Some(ExtractedMapping::DeprecatedUriOnly)
+        }
+        Some(MappingType::ExtensionTypeVariation(v)) => Some(ExtractedMapping::Urn(
+            ExtensionKind::TypeVariation,
+            v.extension_urn_reference,
+            v.type_variation_anchor,
+            v.name.clone(),
+        )),
+        None => None,
+    }
+}
+
 impl SimpleExtensions {
     pub fn new() -> Self {
         Self::default()
@@ -157,37 +226,13 @@ impl SimpleExtensions {
         }
 
         for extension in extensions {
-            match &extension.mapping_type {
-                Some(MappingType::ExtensionType(t)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::Type,
-                        t.extension_urn_reference,
-                        t.type_anchor,
-                        t.name.clone(),
-                    ) {
+            match extract_mapping(&extension.mapping_type) {
+                Some(ExtractedMapping::Urn(kind, urn_ref, anchor, name)) => {
+                    if let Err(e) = exts.add_extension(kind, urn_ref, anchor, name) {
                         errors.push(e);
                     }
                 }
-                Some(MappingType::ExtensionFunction(f)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::Function,
-                        f.extension_urn_reference,
-                        f.function_anchor,
-                        f.name.clone(),
-                    ) {
-                        errors.push(e);
-                    }
-                }
-                Some(MappingType::ExtensionTypeVariation(v)) => {
-                    if let Err(e) = exts.add_extension(
-                        ExtensionKind::TypeVariation,
-                        v.extension_urn_reference,
-                        v.type_variation_anchor,
-                        v.name.clone(),
-                    ) {
-                        errors.push(e);
-                    }
-                }
+                Some(ExtractedMapping::DeprecatedUriOnly) => {}
                 None => {
                     errors.push(InsertError::MissingMappingType);
                 }
@@ -600,6 +645,22 @@ mod tests {
         }
     }
 
+    fn new_ext_fn_uri_only(
+        anchor: u32,
+        uri_ref: u32,
+        name: &str,
+    ) -> pext::SimpleExtensionDeclaration {
+        pext::SimpleExtensionDeclaration {
+            #[allow(deprecated)]
+            mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
+                extension_urn_reference: Default::default(),
+                extension_uri_reference: uri_ref,
+                function_anchor: anchor,
+                name: name.to_string(),
+            })),
+        }
+    }
+
     fn new_ext_type(anchor: u32, urn_ref: u32, name: &str) -> pext::SimpleExtensionDeclaration {
         #[allow(deprecated)]
         pext::SimpleExtensionDeclaration {
@@ -748,6 +809,15 @@ mod tests {
         assert_eq!(errs.len(), 1);
         let err = &errs[0];
         assert_eq!(err, &InsertError::MissingMappingType);
+    }
+
+    #[test]
+    fn test_from_extensions_skips_deprecated_uri_only_mappings() {
+        let extensions = vec![new_ext_fn_uri_only(10, 1, "func")];
+        let (exts, errs) = SimpleExtensions::from_extensions(vec![], &extensions);
+
+        assert_no_errors(&errs);
+        assert!(exts.is_empty());
     }
 
     #[test]

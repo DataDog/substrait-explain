@@ -5,7 +5,8 @@
 //! and the compiled descriptor binary are all generated at build time by
 //! `build.rs` using protox and prost-build.
 
-use substrait_explain::cli::{Cli, Commands, Format};
+use substrait::proto::Plan;
+use substrait_explain::cli::{Cli, Commands, Format, Outcome};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
     ExtensionRelationType, ExtensionValue,
@@ -68,7 +69,7 @@ fn build_registry() -> ExtensionRegistry {
     r
 }
 
-fn format_plan(plan: &substrait::proto::Plan) -> String {
+fn format_plan(plan: &Plan) -> String {
     let registry = build_registry();
     let (text, errors) = format_with_registry(plan, &OutputOptions::default(), &registry);
     assert!(
@@ -81,6 +82,37 @@ fn format_plan(plan: &substrait::proto::Plan) -> String {
 const PLAN_TEXT: &str = include_str!("json_parsing/plan.substrait");
 const PLAN_PBJSON: &str = include_str!("json_parsing/plan_pbjson.json"); // rust json
 const PLAN_PROTOJSON: &str = include_str!("json_parsing/plan_protojson.json"); // go json
+
+const DEPRECATED_EXTENSION_URI_JSON: &str = r#"{
+  "extensionUris": [
+    { "extensionUriAnchor": 3, "uri": "/functions_comparison.yaml" }
+  ],
+  "extensions": [{
+    "extensionFunction": {
+      "extensionUriReference": 3,
+      "functionAnchor": 7,
+      "name": "is_not_null:any"
+    }
+  }],
+  "relations": [{
+    "root": {
+      "input": {
+        "read": {
+          "common": { "direct": {} },
+          "baseSchema": {
+            "names": ["x"],
+            "struct": {
+              "types": [{ "i64": { "nullability": "NULLABILITY_NULLABLE" } }],
+              "nullability": "NULLABILITY_REQUIRED"
+            }
+          },
+          "namedTable": { "names": ["my_table"] }
+        }
+      },
+      "names": ["x"]
+    }
+  }]
+}"#;
 
 #[test]
 fn test_text_path() {
@@ -259,4 +291,76 @@ fn test_cli_parses_standard_plan_json() {
 
     let result = String::from_utf8(output).unwrap();
     assert!(result.contains("Read[data => a:i64, b:string?]"));
+}
+
+/// Reproduces #96: JSON plans using the deprecated `extensionUris` and
+/// `extensionUriReference` fields should produce a clear error, not a
+/// mysterious "Missing URN anchor 0" message.
+#[test]
+fn test_deprecated_extension_uris_produces_clear_error() {
+    let plan: Plan = serde_json::from_str(DEPRECATED_EXTENSION_URI_JSON).unwrap();
+    let (text, errors) = substrait_explain::format(&plan);
+
+    // Should still produce best-effort output (relations render fine)
+    assert!(
+        text.contains("Read[my_table => x:i64?]"),
+        "Expected best-effort plan output, got:\n{text}"
+    );
+
+    // Should produce clear errors about both deprecated fields
+    assert!(
+        !errors.is_empty(),
+        "deprecated URI fields should be reported in the error channel"
+    );
+    let error_text = format!("{errors:?}");
+
+    assert!(
+        error_text.contains("deprecated extensionUris"),
+        "Expected error about deprecated extensionUris, got:\n{error_text}"
+    );
+    assert!(
+        error_text.contains("deprecated extensionUriReference"),
+        "Expected error about deprecated extensionUriReference, got:\n{error_text}"
+    );
+    assert!(
+        error_text.contains("function #7"),
+        "Expected deprecated reference error to identify the function anchor, got:\n{error_text}"
+    );
+    assert!(
+        !error_text.contains("Missing URN anchor 0"),
+        "Deprecated URI-only declarations should not also emit the old confusing error:\n{error_text}"
+    );
+}
+
+#[test]
+fn test_cli_reports_deprecated_extension_uris_as_formatting_issues() {
+    let cli = make_cli(Format::Json);
+    let mut output = Vec::new();
+
+    let outcome = cli
+        .run_with_io(
+            std::io::Cursor::new(DEPRECATED_EXTENSION_URI_JSON),
+            &mut output,
+            &ExtensionRegistry::default(),
+        )
+        .expect("CLI should still produce best-effort output");
+
+    let result = String::from_utf8(output).unwrap();
+    assert!(
+        result.contains("Read[my_table => x:i64?]"),
+        "Expected best-effort plan output, got:\n{result}"
+    );
+
+    let Outcome::HadFormattingIssues(errors) = outcome else {
+        panic!("Expected deprecated URI fields to produce formatting issues, got {outcome:?}");
+    };
+    let error_text = format!("{errors:?}");
+    assert!(
+        error_text.contains("deprecated extensionUris"),
+        "Expected error about deprecated extensionUris, got:\n{error_text}"
+    );
+    assert!(
+        error_text.contains("deprecated extensionUriReference"),
+        "Expected error about deprecated extensionUriReference, got:\n{error_text}"
+    );
 }
