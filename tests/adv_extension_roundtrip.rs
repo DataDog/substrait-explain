@@ -165,7 +165,7 @@ Root[result]
 mod opt_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType, ExtensionValue,
+        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -201,8 +201,7 @@ mod opt_fixture {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-            args.named
-                .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
+            args.insert("hint", self.hint.clone());
             Ok(args)
         }
     }

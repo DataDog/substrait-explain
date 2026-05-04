@@ -16,7 +16,7 @@ use substrait::proto::{self, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
     AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    ExtensionRelationType,
 };
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
@@ -108,18 +108,9 @@ impl Explainable for ParquetScanConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments from the message
-        args.named.insert(
-            "path".to_string(),
-            ExtensionValue::String(self.path.clone()),
-        );
-        args.named.insert(
-            "batch_size".to_string(),
-            ExtensionValue::Integer(self.batch_size),
-        );
-        args.named.insert(
-            "use_dictionary".to_string(),
-            ExtensionValue::Boolean(self.use_dictionary),
-        );
+        args.insert("path", self.path.clone());
+        args.insert("batch_size", self.batch_size);
+        args.insert("use_dictionary", self.use_dictionary);
 
         for column in &self.selected_columns {
             let column_type = column.r#type.clone().ok_or_else(|| {

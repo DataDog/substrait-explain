@@ -1,25 +1,151 @@
-//! Core extension data structures for extension arguments, values, and columns.
+//! Text-format data structures used by registered advanced extension handlers.
+//!
+//! These types describe the arguments accepted by custom relation types,
+//! enhancements, and optimization hints. Relation extensions can additionally
+//! describe output columns.
+//!
+//! The interface presented to users is entirely structured; the
+//! parsing/textification is handled entirely by `substrait-explain`, not by
+//! users (and may require some context, e.g. function anchors <-> function
+//! names).
+//!
+//! The extension-facing interface for Substrait objects (e.g. [`proto::Type`])
+//! should map directly to Substrait protobuf concepts. Sometimes that means
+//! storing the protobuf type directly, as named output columns do with
+//! [`proto::Type`]; sometimes it means using a small wrapper, as
+//! expression-compatible arguments do with [`Expr`] around
+//! [`proto::Expression`].
+//!
+//! Untyped scalar literals (e.g. `2`, `2.435`, `'string'`) are kept as
+//! extension scalar values so text rendering can preserve scalar syntax even in
+//! verbose output, while handlers that accept expressions can still widen them
+//! into default Substrait literal expressions.
 
 use std::collections::HashSet;
 use std::fmt;
 
 use indexmap::IndexMap;
 use substrait::proto;
+use substrait::proto::expression::field_reference::ReferenceType;
+use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::{RexType, reference_segment};
 
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
-use crate::textify::types::escaped;
 
 /// A Substrait expression carried as an extension argument or output column.
 ///
 /// Boxed because `proto::Expression` is large (multiple `Vec` fields in
 /// variants like `ScalarFunction`).
 #[derive(Debug, Clone)]
-pub struct Expr(pub Box<proto::Expression>);
+pub struct Expr(Box<proto::Expression>);
 
-impl fmt::Display for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<expression>")
+impl Expr {
+    /// Borrow the underlying Substrait expression protobuf.
+    pub fn as_proto(&self) -> &proto::Expression {
+        self.0.as_ref()
+    }
+
+    /// Clone the underlying Substrait expression protobuf.
+    pub fn to_proto(&self) -> proto::Expression {
+        self.as_proto().clone()
+    }
+
+    /// If this expression is a direct field reference (`$N`), return it.
+    pub fn as_direct_reference(&self) -> Option<Reference> {
+        let Some(RexType::Selection(field_ref)) = self.as_proto().rex_type.as_ref() else {
+            return None;
+        };
+        let Some(ReferenceType::DirectReference(segment)) = field_ref.reference_type.as_ref()
+        else {
+            return None;
+        };
+        let Some(reference_segment::ReferenceType::StructField(field)) =
+            segment.reference_type.as_ref()
+        else {
+            return None;
+        };
+        if field.child.is_some() {
+            return None;
+        }
+        Some(Reference(field.field))
+    }
+}
+
+impl From<proto::Expression> for Expr {
+    fn from(expr: proto::Expression) -> Self {
+        Expr(Box::new(expr))
+    }
+}
+
+impl From<proto::expression::Literal> for Expr {
+    fn from(literal: proto::expression::Literal) -> Self {
+        proto::Expression {
+            rex_type: Some(RexType::Literal(literal)),
+        }
+        .into()
+    }
+}
+
+impl From<Reference> for Expr {
+    fn from(reference: Reference) -> Self {
+        proto::Expression::from(reference).into()
+    }
+}
+
+impl From<Expr> for proto::Expression {
+    fn from(expr: Expr) -> Self {
+        *expr.0
+    }
+}
+
+impl From<i64> for Expr {
+    fn from(value: i64) -> Self {
+        proto::expression::Literal {
+            literal_type: Some(LiteralType::I64(value)),
+            nullable: false,
+            type_variation_reference: 0,
+        }
+        .into()
+    }
+}
+
+impl From<f64> for Expr {
+    fn from(value: f64) -> Self {
+        proto::expression::Literal {
+            literal_type: Some(LiteralType::Fp64(value)),
+            nullable: false,
+            type_variation_reference: 0,
+        }
+        .into()
+    }
+}
+
+impl From<bool> for Expr {
+    fn from(value: bool) -> Self {
+        proto::expression::Literal {
+            literal_type: Some(LiteralType::Boolean(value)),
+            nullable: false,
+            type_variation_reference: 0,
+        }
+        .into()
+    }
+}
+
+impl From<String> for Expr {
+    fn from(value: String) -> Self {
+        proto::expression::Literal {
+            literal_type: Some(LiteralType::String(value)),
+            nullable: false,
+            type_variation_reference: 0,
+        }
+        .into()
+    }
+}
+
+impl From<&str> for Expr {
+    fn from(value: &str) -> Self {
+        value.to_string().into()
     }
 }
 
@@ -31,7 +157,7 @@ impl fmt::Display for Expr {
 /// appear in the text format.
 #[derive(Debug, Clone)]
 pub struct ExtensionArgs {
-    /// Positional arguments (expressions, literals, references)
+    /// Positional arguments.
     pub positional: Vec<ExtensionValue>,
     /// Named arguments, displayed in the order they were inserted
     pub named: IndexMap<String, ExtensionValue>,
@@ -161,22 +287,6 @@ impl TupleValue {
     }
 }
 
-impl fmt::Display for TupleValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(")?;
-        for (i, item) in self.0.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{item}")?;
-        }
-        if self.0.len() == 1 {
-            write!(f, ",")?;
-        }
-        write!(f, ")")
-    }
-}
-
 impl<'a> IntoIterator for &'a TupleValue {
     type Item = &'a ExtensionValue;
     type IntoIter = std::slice::Iter<'a, ExtensionValue>;
@@ -210,40 +320,129 @@ impl From<Vec<ExtensionValue>> for TupleValue {
 /// Represents a value in extension arguments.
 #[derive(Debug, Clone)]
 pub enum ExtensionValue {
-    /// String literal value
+    /// Untyped literals. These are not input or output with types (e.g. `2`,
+    /// not `2:i64`), and suitable for protobuf extension fields that are not
+    /// substrait types.
     String(String),
-    /// Integer literal value
     Integer(i64),
-    /// Float literal value
     Float(f64),
-    /// Boolean literal value
     Boolean(bool),
-    /// Field reference ($0, $1, etc.)
-    Reference(i32),
+
+    /// Substrait expression value, including typed literals and field references.
+    ///
+    /// Use `TryFrom<&ExtensionValue> for Expr` when a handler accepts either an
+    /// expression or a scalar value widened into an expression.
+    Expr(Expr),
     /// Enum value (e.g. &CORE, &Inner) — the string holds the identifier
     /// without the `&` prefix
     Enum(String),
     /// Tuple of values, e.g. (&HASH, &RANGE) or (42, 'hello')
     Tuple(TupleValue),
-    /// A Substrait expression (e.g. `add($0, $1)`)
-    Expression(Expr),
     // TODO: Consider adding support for types as arguments. May need dedicated
     // syntax (`:typename`, perhaps?), as type names may not be distinguishable
     // from identifiers
 }
 
-impl fmt::Display for ExtensionValue {
+/// The variant kind of an [`ExtensionValue`], used in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionValueKind {
+    String,
+    Integer,
+    Float,
+    Boolean,
+    Reference,
+    Enum,
+    Tuple,
+    Expression,
+}
+
+impl fmt::Display for ExtensionValueKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExtensionValue::String(s) => write!(f, "String({})", escaped(s)),
-            ExtensionValue::Integer(i) => write!(f, "Integer({})", i),
-            ExtensionValue::Float(n) => write!(f, "Float({})", n),
-            ExtensionValue::Boolean(b) => write!(f, "Boolean({})", b),
-            ExtensionValue::Reference(r) => write!(f, "Reference({})", r),
-            ExtensionValue::Enum(e) => write!(f, "Enum(&{})", e),
-            ExtensionValue::Tuple(tv) => write!(f, "Tuple{tv}"),
-            ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
+            ExtensionValueKind::String => write!(f, "string"),
+            ExtensionValueKind::Integer => write!(f, "integer"),
+            ExtensionValueKind::Float => write!(f, "float"),
+            ExtensionValueKind::Boolean => write!(f, "boolean"),
+            ExtensionValueKind::Reference => write!(f, "reference"),
+            ExtensionValueKind::Enum => write!(f, "enum"),
+            ExtensionValueKind::Tuple => write!(f, "tuple"),
+            ExtensionValueKind::Expression => write!(f, "expression"),
         }
+    }
+}
+
+impl ExtensionValue {
+    pub fn kind(&self) -> ExtensionValueKind {
+        match self {
+            ExtensionValue::String(_) => ExtensionValueKind::String,
+            ExtensionValue::Integer(_) => ExtensionValueKind::Integer,
+            ExtensionValue::Float(_) => ExtensionValueKind::Float,
+            ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
+            ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
+            ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
+            ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
+        }
+    }
+}
+
+impl From<Expr> for ExtensionValue {
+    fn from(expr: Expr) -> Self {
+        ExtensionValue::Expr(expr)
+    }
+}
+
+impl From<proto::Expression> for ExtensionValue {
+    fn from(expr: proto::Expression) -> Self {
+        Expr::from(expr).into()
+    }
+}
+
+impl From<proto::expression::Literal> for ExtensionValue {
+    fn from(literal: proto::expression::Literal) -> Self {
+        Expr::from(literal).into()
+    }
+}
+
+impl From<Reference> for ExtensionValue {
+    fn from(reference: Reference) -> Self {
+        Expr::from(reference).into()
+    }
+}
+
+impl From<i64> for ExtensionValue {
+    fn from(value: i64) -> Self {
+        ExtensionValue::Integer(value)
+    }
+}
+
+impl From<f64> for ExtensionValue {
+    fn from(value: f64) -> Self {
+        ExtensionValue::Float(value)
+    }
+}
+
+impl From<bool> for ExtensionValue {
+    fn from(value: bool) -> Self {
+        ExtensionValue::Boolean(value)
+    }
+}
+
+impl From<String> for ExtensionValue {
+    fn from(value: String) -> Self {
+        ExtensionValue::String(value)
+    }
+}
+
+impl From<&str> for ExtensionValue {
+    fn from(value: &str) -> Self {
+        ExtensionValue::String(value.to_string())
+    }
+}
+
+fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> ExtensionError {
+    ExtensionError::InvalidArgumentType {
+        expected,
+        actual: actual.kind(),
     }
 }
 
@@ -253,9 +452,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a str {
     fn try_from(value: &'a ExtensionValue) -> Result<&'a str, Self::Error> {
         match value {
             ExtensionValue::String(s) => Ok(s),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected string, got {v}",
-            ))),
+            v => Err(invalid_type(ExtensionValueKind::String, v)),
         }
     }
 }
@@ -264,12 +461,7 @@ impl TryFrom<ExtensionValue> for String {
     type Error = ExtensionError;
 
     fn try_from(value: ExtensionValue) -> Result<String, Self::Error> {
-        match value {
-            ExtensionValue::String(s) => Ok(s),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected string, got {v}",
-            ))),
-        }
+        <&str>::try_from(&value).map(ToOwned::to_owned)
     }
 }
 
@@ -282,9 +474,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
     fn try_from(value: &'a ExtensionValue) -> Result<EnumValue, Self::Error> {
         match value {
             ExtensionValue::Enum(s) => Ok(EnumValue(s.clone())),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected enum, got {v}",
-            ))),
+            v => Err(invalid_type(ExtensionValueKind::Enum, v)),
         }
     }
 }
@@ -295,9 +485,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a TupleValue {
     fn try_from(value: &'a ExtensionValue) -> Result<&'a TupleValue, Self::Error> {
         match value {
             ExtensionValue::Tuple(tv) => Ok(tv),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected tuple, got {v}",
-            ))),
+            v => Err(invalid_type(ExtensionValueKind::Tuple, v)),
         }
     }
 }
@@ -307,10 +495,8 @@ impl TryFrom<&ExtensionValue> for i64 {
 
     fn try_from(value: &ExtensionValue) -> Result<i64, Self::Error> {
         match value {
-            &ExtensionValue::Integer(i) => Ok(i),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected integer, got {v}",
-            ))),
+            ExtensionValue::Integer(i) => Ok(*i),
+            v => Err(invalid_type(ExtensionValueKind::Integer, v)),
         }
     }
 }
@@ -320,10 +506,8 @@ impl TryFrom<&ExtensionValue> for f64 {
 
     fn try_from(value: &ExtensionValue) -> Result<f64, Self::Error> {
         match value {
-            &ExtensionValue::Float(f) => Ok(f),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected float, got {v}",
-            ))),
+            ExtensionValue::Float(f) => Ok(*f),
+            v => Err(invalid_type(ExtensionValueKind::Float, v)),
         }
     }
 }
@@ -333,10 +517,8 @@ impl TryFrom<&ExtensionValue> for bool {
 
     fn try_from(value: &ExtensionValue) -> Result<bool, Self::Error> {
         match value {
-            &ExtensionValue::Boolean(b) => Ok(b),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected boolean, got {v}",
-            ))),
+            ExtensionValue::Boolean(b) => Ok(*b),
+            v => Err(invalid_type(ExtensionValueKind::Boolean, v)),
         }
     }
 }
@@ -346,10 +528,10 @@ impl TryFrom<&ExtensionValue> for Reference {
 
     fn try_from(value: &ExtensionValue) -> Result<Reference, Self::Error> {
         match value {
-            &ExtensionValue::Reference(r) => Ok(Reference(r)),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected reference, got {v}",
-            ))),
+            ExtensionValue::Expr(expr) => expr
+                .as_direct_reference()
+                .ok_or_else(|| invalid_type(ExtensionValueKind::Reference, value)),
+            v => Err(invalid_type(ExtensionValueKind::Reference, v)),
         }
     }
 }
@@ -359,10 +541,18 @@ impl TryFrom<&ExtensionValue> for Expr {
 
     fn try_from(value: &ExtensionValue) -> Result<Expr, Self::Error> {
         match value {
-            ExtensionValue::Expression(e) => Ok(e.clone()),
-            v => Err(ExtensionError::InvalidArgument(format!(
-                "Expected expression, got {v}",
-            ))),
+            ExtensionValue::Expr(e) => Ok(e.clone()),
+            // Untyped extension scalars are intentionally expression-compatible:
+            // `arg=2` carries no syntax that distinguishes "configuration
+            // integer" from "i64 literal expression". Scalar-specific
+            // extraction (`i64`, `&str`, `bool`, etc.) still requires the scalar
+            // variants, while expression extraction widens them to default
+            // non-nullable Substrait literal expressions.
+            ExtensionValue::Integer(i) => Ok(Expr::from(*i)),
+            ExtensionValue::Float(f) => Ok(Expr::from(*f)),
+            ExtensionValue::String(s) => Ok(Expr::from(s.as_str())),
+            ExtensionValue::Boolean(b) => Ok(Expr::from(*b)),
+            v => Err(invalid_type(ExtensionValueKind::Expression, v)),
         }
     }
 }
@@ -370,12 +560,17 @@ impl TryFrom<&ExtensionValue> for Expr {
 /// Represents an output column specification.
 #[derive(Debug, Clone)]
 pub enum ExtensionColumn {
-    /// Named column with a parsed Substrait type (e.g. `name:i64?`)
-    Named { name: String, r#type: proto::Type },
-    /// Field reference ($0, $1, etc.)
-    Reference(i32),
-    /// Expression column
-    Expression(Expr),
+    /// Named column with a parsed Substrait type (e.g. `name:i64?`).
+    Named {
+        /// Column name as it appears in the extension relation output.
+        name: String,
+        /// Parsed Substrait type for the column.
+        ///
+        /// This uses the protobuf field name, hence the raw identifier.
+        r#type: proto::Type,
+    },
+    /// Expression-compatible output column, including field references.
+    Expr(Expr),
 }
 
 /// Extension relation types
@@ -455,6 +650,23 @@ impl ExtensionArgs {
         }
     }
 
+    /// Push a positional extension argument.
+    pub fn push<T>(&mut self, value: T)
+    where
+        T: Into<ExtensionValue>,
+    {
+        self.positional.push(value.into());
+    }
+
+    /// Insert a named extension argument, returning any previous value.
+    pub fn insert<K, V>(&mut self, name: K, value: V) -> Option<ExtensionValue>
+    where
+        K: Into<String>,
+        V: Into<ExtensionValue>,
+    {
+        self.named.insert(name.into(), value.into())
+    }
+
     /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
@@ -491,6 +703,19 @@ mod tests {
             ExtensionRelationType::Single
                 .validate_child_count(2)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn extension_args_helpers_convert_values() {
+        let mut args = super::ExtensionArgs::new(ExtensionRelationType::Leaf);
+        args.push(7_i64);
+        args.insert("path", "data.parquet");
+
+        assert_eq!(i64::try_from(&args.positional[0]).unwrap(), 7);
+        assert_eq!(
+            <&str>::try_from(args.named.get("path").unwrap()).unwrap(),
+            "data.parquet"
         );
     }
 }

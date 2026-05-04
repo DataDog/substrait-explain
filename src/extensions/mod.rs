@@ -12,10 +12,10 @@ pub mod simple;
 pub use any::{Any, AnyRef};
 pub use args::{
     EnumValue, Expr, ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue,
-    TupleValue,
+    ExtensionValueKind, TupleValue,
 };
 pub use registry::{
-    AnyConvertible, Explainable, Extension, ExtensionError, ExtensionRegistry, ExtensionType,
-    RegistrationError,
+    AnyConvertible, Explainable, Extension, ExtensionError, ExtensionProtoConvert,
+    ExtensionRegistry, ExtensionType, RegistrationError,
 };
 pub use simple::{InsertError, SimpleExtension, SimpleExtensions};

@@ -9,7 +9,7 @@ use substrait::proto;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    ExtensionRelationType,
 };
 use substrait_explain::json::{build_descriptor_pool, parse_json};
 use substrait_explain::parser::Parser;
@@ -42,14 +42,8 @@ impl Explainable for ParquetScanConfig {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.named.insert(
-            "path".to_string(),
-            ExtensionValue::String(self.path.clone()),
-        );
-        args.named.insert(
-            "batch_size".to_string(),
-            ExtensionValue::Integer(self.batch_size),
-        );
+        args.insert("path", self.path.clone());
+        args.insert("batch_size", self.batch_size);
         args.output_columns.push(ExtensionColumn::Named {
             name: "customer_id".to_string(),
             r#type: proto::Type {

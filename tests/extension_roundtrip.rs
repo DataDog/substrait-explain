@@ -4,14 +4,16 @@ use prost::{Message, Name};
 use substrait::proto;
 use substrait::proto::expression::RexType;
 use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
     EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
-    ExtensionRegistry, ExtensionRelationType, ExtensionValue, TupleValue,
+    ExtensionProtoConvert, ExtensionRegistry, ExtensionRelationType, ExtensionValue, TupleValue,
 };
 use substrait_explain::fixtures::parse_type;
 use substrait_explain::format_with_registry;
 use substrait_explain::parser::Parser;
+use substrait_explain::textify::expressions::Reference;
 
 /// A custom extension configuration for a hypothetical "UserTable" data source.
 /// This differs from the file-based scan in the example by using logical table properties.
@@ -82,16 +84,9 @@ impl Explainable for UserTableConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments
-        args.named.insert(
-            "name".to_string(),
-            ExtensionValue::String(self.table_name.clone()),
-        );
-        args.named
-            .insert("version".to_string(), ExtensionValue::Integer(self.version));
-        args.named.insert(
-            "temp".to_string(),
-            ExtensionValue::Boolean(self.is_temporary),
-        );
+        args.insert("name", self.table_name.clone());
+        args.insert("version", self.version);
+        args.insert("temp", self.is_temporary);
 
         // Add output columns
         for column in &self.tracked_columns {
@@ -181,10 +176,7 @@ fn test_multiple_extensions_in_plan() {
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
-            args.named.insert(
-                "expr".to_string(),
-                ExtensionValue::String(self.expression.clone()),
-            );
+            args.insert("expr", self.expression.clone());
             Ok(args)
         }
     }
@@ -249,7 +241,8 @@ impl Explainable for LiteralConfig {
             Some(ExtensionValue::Integer(i)) => *i as f64,
             Some(v) => {
                 return Err(ExtensionError::InvalidArgument(format!(
-                    "ratio must be a float, got {v}"
+                    "ratio must be a float, got {}",
+                    v.kind()
                 )));
             }
             None => {
@@ -273,16 +266,10 @@ impl Explainable for LiteralConfig {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.named.insert(
-            "path".to_string(),
-            ExtensionValue::String(self.path.clone()),
-        );
-        args.named
-            .insert("big".to_string(), ExtensionValue::Integer(self.big));
-        args.named
-            .insert("ratio".to_string(), ExtensionValue::Float(self.ratio));
-        args.named
-            .insert("enabled".to_string(), ExtensionValue::Boolean(self.enabled));
+        args.insert("path", self.path.clone());
+        args.insert("big", self.big);
+        args.insert("ratio", self.ratio);
+        args.insert("enabled", self.enabled);
         args.output_columns.push(ExtensionColumn::Named {
             name: "value".to_string(),
             r#type: parse_type("string"),
@@ -448,7 +435,8 @@ impl Explainable for PassThroughWrapper {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
-        args.output_columns.push(ExtensionColumn::Reference(0));
+        args.output_columns
+            .push(ExtensionColumn::Expr(Reference(0).into()));
         Ok(args)
     }
 }
@@ -482,8 +470,10 @@ impl Explainable for BinaryMerge {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Multi);
-        args.output_columns.push(ExtensionColumn::Reference(0));
-        args.output_columns.push(ExtensionColumn::Reference(1));
+        args.output_columns
+            .push(ExtensionColumn::Expr(Reference(0).into()));
+        args.output_columns
+            .push(ExtensionColumn::Expr(Reference(1).into()));
         Ok(args)
     }
 }
@@ -651,7 +641,7 @@ impl Explainable for TupleSortHint {
             .iter()
             .map(|d| ExtensionValue::Enum(d.clone()))
             .collect();
-        args.positional.push(ExtensionValue::Tuple(tv));
+        args.push(ExtensionValue::Tuple(tv));
         Ok(args)
     }
 }
@@ -709,7 +699,7 @@ fn test_tuple_sort_hint_from_args_rejects_non_tuple() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests for structured extension argument conversions
+// Tests for extension argument/protobuf conversions
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -722,10 +712,58 @@ fn test_try_from_expr() {
             literal_type: Some(LiteralType::I64(42)),
         })),
     };
-    let val = ExtensionValue::Expression(Expr(Box::new(expr.clone())));
+    let val = ExtensionValue::from(expr.clone());
     let extracted: Expr = Expr::try_from(&val).unwrap();
-    assert_eq!(*extracted.0, expr);
+    assert_eq!(extracted.as_proto(), &expr);
 
-    let wrong = ExtensionValue::Integer(42);
+    let wrong = ExtensionValue::Enum("Wrong".to_string());
     assert!(Expr::try_from(&wrong).is_err());
+}
+
+#[test]
+fn test_extension_proto_convert_schema_columns_roundtrip() {
+    let columns = vec![
+        ExtensionColumn::Named {
+            name: "id".to_string(),
+            r#type: parse_type("i64"),
+        },
+        ExtensionColumn::Named {
+            name: "name".to_string(),
+            r#type: parse_type("string?"),
+        },
+    ];
+
+    let schema: proto::NamedStruct = columns.as_slice().convert().unwrap();
+    assert_eq!(schema.names, vec!["id", "name"]);
+
+    let roundtripped: Vec<ExtensionColumn> = schema.convert().unwrap();
+    assert_eq!(roundtripped.len(), 2);
+    match &roundtripped[0] {
+        ExtensionColumn::Named { name, r#type: ty } => {
+            assert_eq!(name, "id");
+            assert_eq!(*ty, parse_type("i64"));
+        }
+        other => panic!("Expected Named, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_extension_proto_convert_schema_rejects_references() {
+    let columns = vec![ExtensionColumn::Expr(Reference(0).into())];
+    assert!(columns.as_slice().convert().is_err());
+}
+
+#[test]
+fn test_extension_proto_convert_columns_rejects_mismatch() {
+    // 2 names but 1 type
+    let schema = proto::NamedStruct {
+        names: vec!["a".to_string(), "b".to_string()],
+        r#struct: Some(proto::r#type::Struct {
+            types: vec![parse_type("i64")],
+            type_variation_reference: 0,
+            nullability: Nullability::Required as i32,
+        }),
+    };
+    let result: Result<Vec<ExtensionColumn>, _> = schema.convert();
+    assert!(result.is_err());
 }

@@ -8,7 +8,6 @@ use super::{
     MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
     unwrap_single_pair,
 };
-use crate::extensions::args::Expr;
 use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
@@ -253,6 +252,7 @@ impl FromStr for SimpleExtensionDeclaration {
 
 use crate::extensions::any::Any;
 use crate::parser::expressions::{FieldIndex, Name};
+use crate::textify::expressions::Reference;
 
 impl ScopedParsePair for ExtensionValue {
     fn rule() -> Rule {
@@ -278,11 +278,11 @@ impl ScopedParsePair for ExtensionValue {
             }
             Rule::reference => {
                 let field_index = FieldIndex::parse_pair(inner);
-                ExtensionValue::Reference(field_index.0)
+                ExtensionValue::from(Reference(field_index.0))
             }
-            Rule::literal => {
-                let mut literal_inner = inner.into_inner();
-                let value_pair = literal_inner.next().unwrap();
+            Rule::untyped_literal => {
+                // Literal can contain integer, float, boolean, or string_literal
+                let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
                     Rule::integer => {
@@ -292,7 +292,10 @@ impl ScopedParsePair for ExtensionValue {
                         ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
                     }
                     Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
-                    _ => panic!("Unexpected literal value type: {:?}", value_pair.as_rule()),
+                    _ => panic!(
+                        "Unexpected extension scalar literal type: {:?}",
+                        value_pair.as_rule()
+                    ),
                 }
             }
             Rule::tuple => {
@@ -304,7 +307,7 @@ impl ScopedParsePair for ExtensionValue {
             }
             Rule::expression => {
                 let expr = Expression::parse_pair(extensions, inner)?;
-                ExtensionValue::Expression(Expr(Box::new(expr)))
+                ExtensionValue::from(expr)
             }
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
         })
@@ -341,11 +344,11 @@ impl ScopedParsePair for ExtensionColumn {
             }
             Rule::reference => {
                 let field_index = FieldIndex::parse_pair(inner);
-                ExtensionColumn::Reference(field_index.0)
+                ExtensionColumn::Expr(Reference(field_index.0).into())
             }
             Rule::expression => {
                 let expr = Expression::parse_pair(extensions, inner)?;
-                ExtensionColumn::Expression(Expr(Box::new(expr)))
+                ExtensionColumn::Expr(expr.into())
             }
             _ => panic!("Unexpected extension column type: {:?}", inner.as_rule()),
         })
@@ -465,6 +468,10 @@ impl ScopedParsePair for AdvExtInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
+        // Advanced extensions reuse ExtensionArgs, but their text syntax has no
+        // child relations; Leaf is only a placeholder here.
+        //
+        // TODO: this is ugly and misleading
         let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
 
         let arguments_pair = iter.next().unwrap();
@@ -493,8 +500,7 @@ fn arguments_rule_parsing(
             Rule::extension_arguments => {
                 for arg_pair in arg.into_inner() {
                     assert_eq!(arg_pair.as_rule(), Rule::extension_argument);
-                    args.positional
-                        .push(ExtensionValue::parse_pair(extensions, arg_pair)?);
+                    args.push(ExtensionValue::parse_pair(extensions, arg_pair)?);
                 }
             }
             Rule::extension_named_arguments => {
@@ -505,7 +511,7 @@ fn arguments_rule_parsing(
                     let value_p = arg_iter.next().unwrap();
                     let key = Name::parse_pair(name_p).0.to_string();
                     let val = ExtensionValue::parse_pair(extensions, value_p)?;
-                    args.named.insert(key, val);
+                    args.insert(key, val);
                 }
             }
             Rule::empty => {}
@@ -562,8 +568,13 @@ impl ExtensionRelationType {
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto;
+    use substrait::proto::expression::RexType;
+    use substrait::proto::expression::literal::LiteralType;
+
     use super::*;
-    use crate::extensions::ExtensionValue;
+    use crate::OutputOptions;
+    use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
     use crate::parser::{Parser, ScopedParse};
 
@@ -705,8 +716,8 @@ Functions:
         assert_eq!(items.len(), 3);
         let items: Vec<&ExtensionValue> = items.iter().collect();
         assert!(matches!(items[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(items[1], ExtensionValue::Integer(8)));
-        assert!(matches!(items[2], ExtensionValue::String(s) if s == "hello"));
+        assert_eq!(i64::try_from(items[1]).unwrap(), 8);
+        assert_eq!(<&str>::try_from(items[2]).unwrap(), "hello");
     }
 
     #[test]
@@ -730,10 +741,7 @@ Functions:
         };
         assert_eq!(inner.len(), 2);
         assert!(matches!(inner.iter().next().unwrap(), ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(
-            outer.iter().nth(1).unwrap(),
-            ExtensionValue::Integer(8)
-        ));
+        assert_eq!(i64::try_from(outer.iter().nth(1).unwrap()).unwrap(), 8);
     }
 
     #[test]
@@ -769,5 +777,49 @@ Functions:
             let rendered = ctx.textify_no_errors(&val);
             assert_eq!(&rendered, text, "roundtrip failed for {text}");
         }
+    }
+
+    #[test]
+    fn test_literal_expression_value_textifies_to_canonical_literal() {
+        let expr = proto::Expression {
+            rex_type: Some(RexType::Literal(proto::expression::Literal {
+                literal_type: Some(LiteralType::I64(42)),
+                nullable: false,
+                type_variation_reference: 0,
+            })),
+        };
+        let value = ExtensionValue::from(expr.clone());
+        let ctx = TestContext::new();
+
+        let rendered = ctx.textify_no_errors(&value);
+        assert_eq!(rendered, "42");
+
+        let parsed = parse_extension_value(&rendered);
+        let parsed_expr = Expr::try_from(&parsed).unwrap();
+        assert_eq!(parsed_expr.as_proto(), &expr);
+    }
+
+    #[test]
+    fn test_extension_scalar_literals_stay_scalar_in_verbose_output() {
+        let ctx = TestContext::new().with_options(OutputOptions::verbose());
+
+        let scalar = ExtensionValue::from(42_i64);
+        assert_eq!(ctx.textify_no_errors(&scalar), "42");
+
+        let expression = ExtensionValue::from(Expr::from(42_i64));
+        assert_eq!(ctx.textify_no_errors(&expression), "42:i64");
+    }
+
+    #[test]
+    fn test_typed_extension_literal_parses_as_expression() {
+        let value = parse_extension_value("42:i16");
+        assert!(i64::try_from(&value).is_err());
+
+        let expr = Expr::try_from(&value).unwrap();
+        assert_eq!(ctx_text(&expr), "42:i16");
+    }
+
+    fn ctx_text(value: &Expr) -> String {
+        TestContext::new().textify_no_errors(value)
     }
 }

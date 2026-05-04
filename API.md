@@ -112,6 +112,17 @@ The `Explainable` trait defines how your type converts to/from the text format:
 - `from_args(args)` - Parse text arguments into your type
 - `to_args(&self)` - Convert your type to text arguments
 
+The extension API works across three representations:
+
+- **Text** - the human-readable Substrait-explain syntax
+- **Extension arguments** - structured values passed to `Explainable`, such as
+  `ExtensionArgs`, `ExtensionValue`, and `ExtensionColumn`
+- **Protobuf** - Substrait protobuf values and extension `Any` payloads
+
+- `ExtensionProtoConvert` converts between extension arguments and Substrait
+  protobuf values in either direction, such as output columns and relation
+  `NamedStruct`s
+
 Use `ArgsExtractor` for convenient argument parsing:
 
 - `extractor.expect_named_arg::<T>(name)` - Required argument
