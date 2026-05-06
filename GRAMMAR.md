@@ -780,6 +780,14 @@ Note: the parser also accepts the `=>` section being omitted entirely (e.g. `Ext
 - **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
 - **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
+Untyped scalar extension arguments such as `2`, `2.4`, `true`, and `'path'`
+are treated as extension scalar values and render without expression type
+suffixes, even in verbose output. They can still be consumed by extension
+handlers as expressions, in which case they widen to default non-nullable
+Substrait literal expressions. Typed literals such as `2:i16` or
+`'2024-01-01':date`, field references, function calls, and casts are expression
+values.
+
 #### Examples
 
 ```text
@@ -803,7 +811,7 @@ ExtensionLeaf:EmptySource[_ => ]
 
 #### Custom Extension Types
 
-To use extension relations with custom protobuf payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
+To use custom relation types with protobuf `detail` payloads, register them with an `ExtensionRegistry`. See the API documentation for details on implementing the `Explainable` trait.
 
 ## Advanced Extensions
 
@@ -906,8 +914,18 @@ Root[result]
 
 The collected `FormatError` carries the full detail:
 
-```text
-FormatError::Extension(ExtensionError::NotFound { type_url: "type.googleapis.com/acme.PartitionHint" })
+```rust
+# use substrait_explain::extensions::ExtensionError;
+# use substrait_explain::FormatError;
+# let error =
+FormatError::Extension(ExtensionError::NotFound {
+    name: "type.googleapis.com/acme.PartitionHint".to_string(),
+})
+# ;
+# assert_eq!(
+#     format!("{error}"),
+#     "Extension error: Extension 'type.googleapis.com/acme.PartitionHint' not found in registry"
+# );
 ```
 
 The `Read` line and everything else in the plan are textified normally; only the unrecognized enhancement line degrades to the failure token.

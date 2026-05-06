@@ -588,6 +588,7 @@ Root[result]
         "expected at least one format error for unknown extension type URL"
     );
 }
+
 /// An enhancement that carries a single positional tuple of sort-direction enums.
 #[derive(Clone, PartialEq, Message)]
 pub struct TupleSortHint {

@@ -149,21 +149,31 @@ impl From<&str> for Expr {
     }
 }
 
-/// Represents the arguments and output columns for an extension relation.
+/// Represents text-format arguments for a registered advanced extension.
 ///
 /// Named arguments are stored in an [`IndexMap`] whose iteration order
 /// determines display order. Extension [`super::Explainable::to_args()`]
 /// implementations should insert named arguments in the order they should
 /// appear in the text format.
+///
+/// The [`relation_type`](Self::relation_type) and
+/// [`output_columns`](Self::output_columns) fields are meaningful for custom
+/// relation types. Enhancements and optimization hints use the same argument
+/// representation, but their text grammar does not include output columns.
 #[derive(Debug, Clone)]
 pub struct ExtensionArgs {
     /// Positional arguments.
     pub positional: Vec<ExtensionValue>,
     /// Named arguments, displayed in the order they were inserted
     pub named: IndexMap<String, ExtensionValue>,
-    /// Output columns (named columns, references, or expressions)
+    /// Output columns for custom relation types.
+    ///
+    /// These are ignored by enhancement and optimization text syntax.
     pub output_columns: Vec<ExtensionColumn>,
-    /// The type of extension relation (Leaf/Single/Multi)
+    /// The type of custom relation being represented.
+    ///
+    /// For enhancements and optimization hints this is currently carried as an
+    /// implementation detail because they share the same argument container.
     pub relation_type: ExtensionRelationType,
 }
 
@@ -270,6 +280,10 @@ impl Drop for ArgsExtractor<'_> {
     }
 }
 
+/// A tuple-valued extension argument.
+///
+/// Tuple values preserve positional order and can be iterated by value or by
+/// reference.
 #[derive(Debug, Clone)]
 pub struct TupleValue(Vec<ExtensionValue>);
 
@@ -318,6 +332,10 @@ impl From<Vec<ExtensionValue>> for TupleValue {
 }
 
 /// Represents a value in extension arguments.
+///
+/// These values are the structured form of text-format extension arguments,
+/// fully resolved - i.e. any additional context (such as function anchors etc)
+/// are part of this struct itself.
 #[derive(Debug, Clone)]
 pub enum ExtensionValue {
     /// Untyped literals. These are not input or output with types (e.g. `2`,
@@ -372,6 +390,7 @@ impl fmt::Display for ExtensionValueKind {
 }
 
 impl ExtensionValue {
+    /// Return the variant kind of this value for structured diagnostics.
     pub fn kind(&self) -> ExtensionValueKind {
         match self {
             ExtensionValue::String(_) => ExtensionValueKind::String,
@@ -558,6 +577,10 @@ impl TryFrom<&ExtensionValue> for Expr {
 }
 
 /// Represents an output column specification.
+///
+/// These values mirror the text-format output column forms. Named columns keep
+/// the parsed Substrait type protobuf so handlers can convert directly to
+/// relation schemas.
 #[derive(Debug, Clone)]
 pub enum ExtensionColumn {
     /// Named column with a parsed Substrait type (e.g. `name:i64?`).

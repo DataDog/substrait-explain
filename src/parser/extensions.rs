@@ -273,10 +273,12 @@ impl ScopedParsePair for ExtensionValue {
 
         Ok(match inner.as_rule() {
             Rule::enum_value => {
+                // Strip leading '&' and store the identifier
                 let s = inner.as_str().trim_start_matches('&').to_string();
                 ExtensionValue::Enum(s)
             }
             Rule::reference => {
+                // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
                 ExtensionValue::from(Reference(field_index.0))
             }
@@ -343,6 +345,7 @@ impl ScopedParsePair for ExtensionColumn {
                 ExtensionColumn::Named { name, r#type: ty }
             }
             Rule::reference => {
+                // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
                 ExtensionColumn::Expr(Reference(field_index.0).into())
             }
@@ -465,6 +468,7 @@ impl ScopedParsePair for AdvExtInvocation {
             other => unreachable!("Unexpected adv_ext_type: {other}"),
         };
 
+        // Second token: name
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 

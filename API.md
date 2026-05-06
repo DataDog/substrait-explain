@@ -94,7 +94,9 @@ match parse("=== Plan\nInvalidRelation[invalid]") {
 
 ## Custom Extension Types
 
-The library supports custom extension relations with user-defined protobuf payloads, enabling round-trip conversion of plans with custom data sources or specialized operations.
+The library supports Substrait advanced extensions with user-defined protobuf
+payloads, enabling round-trip conversion for custom relation types, relation
+enhancements, and optimization hints.
 
 ### Requirements
 
@@ -119,9 +121,16 @@ The extension API works across three representations:
   `ExtensionArgs`, `ExtensionValue`, and `ExtensionColumn`
 - **Protobuf** - Substrait protobuf values and extension `Any` payloads
 
-- `ExtensionProtoConvert` converts between extension arguments and Substrait
-  protobuf values in either direction, such as output columns and relation
-  `NamedStruct`s
+Untyped scalar extension literals such as `2` or `'path'` are represented as
+scalar `ExtensionValue` variants and render without expression type suffixes,
+even in verbose output. The same values can still be requested as `Expr` through
+`ArgsExtractor`, which widens them to default non-nullable Substrait literal
+expressions. Typed literals, field references, function calls, and casts are
+represented as expression values.
+
+`ExtensionProtoConvert` converts between extension arguments and Substrait
+protobuf values in either direction, such as output columns and relation
+`NamedStruct`s.
 
 Use `ArgsExtractor` for convenient argument parsing:
 
@@ -133,9 +142,13 @@ Use `ArgsExtractor` for convenient argument parsing:
 
 Extensions are organized into namespaces by their type:
 
-- **Relation** - Custom relation types (ExtensionLeaf, ExtensionSingle, ExtensionMulti)
-- **Enhancement** - Metadata attached to relations (displayed with `+ Enh:` prefix)
-- **Optimization** - Optimization hints (displayed with `+ Opt:` prefix)
+- **Relation** - Custom relation types (`ExtensionLeafRel`,
+  `ExtensionSingleRel`, `ExtensionMultiRel`), displayed as `ExtensionLeaf`,
+  `ExtensionSingle`, and `ExtensionMulti` in this text format
+- **Enhancement** - Semantic metadata attached to relations, displayed with the
+  `+ Enh:` prefix
+- **Optimization** - Non-semantic optimization hints, displayed with the
+  `+ Opt:` prefix
 
 ### Using the ExtensionRegistry
 

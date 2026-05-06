@@ -167,7 +167,7 @@ substrait-explain validate -i example-plans/basic.substrait
 
 For detailed examples and API documentation, see the [API documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md).
 
-*Note: the CLI doesn't support advanced extensions(Enhancements, Optimizations) on Relations, nor does it support Extensions suchs as ExtensionMulit, ExtensionLeaf and ExtensionSingle. The proto defintion is required and can't be passed in using the CLI. 
+*Note: the CLI does not support registered advanced extension handlers for relation enhancements, optimization hints, or custom relation types such as `ExtensionMulti`, `ExtensionLeaf`, and `ExtensionSingle`. The protobuf definition is required and cannot be passed in through the CLI.*
 
 ## Installation
 

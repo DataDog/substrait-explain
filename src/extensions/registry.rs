@@ -1,17 +1,19 @@
-//! Extension Registry for Custom Substrait Extension Relations
+//! Registry for custom Substrait advanced extension payloads.
 //!
-//! This module provides a registry system for custom Substrait extension
-//! relations, allowing users to register their own extension types with custom
-//! parsing and textification logic.
+//! This module lets users register handlers for advanced extensions that carry
+//! `google.protobuf.Any` detail payloads: custom relation types, relation
+//! enhancements, and optimization hints.
 //!
 //! # Overview
 //!
 //! The extension registry allows users to:
-//! - Register custom extension handlers for specific extension names
+//! - Register custom extension handlers in relation, enhancement, or
+//!   optimization namespaces
 //! - Parse extension arguments/named arguments into `google.protobuf.Any`
 //!   detail fields
 //! - Textify extension detail fields back into readable text format
-//! - Support both compile-time and runtime extension registration
+//! - Keep each registered payload's protobuf type URL associated with its
+//!   canonical text-format name
 //!
 //! # Architecture
 //!
@@ -236,8 +238,9 @@ impl ExtensionProtoConvert<NamedStruct> for [ExtensionColumn] {
             r#struct: Some(Struct {
                 types,
                 type_variation_reference: 0,
-                // The schema of a type is necessarily non-nullable; you can
-                // have an empty schema (no columns), but not a null schema
+                // In Substrait, the schema of a type is defined as
+                // non-nullable; you can have an empty schema (no columns), but
+                // not a null schema.
                 nullability: Nullability::Required as i32,
             }),
         })
@@ -292,7 +295,7 @@ pub trait Explainable: Sized {
 ///
 /// The ExtensionConverter acts as a bridge between:
 /// - The text format representation (ExtensionArgs) used by the parser/formatter
-/// - The protobuf Any messages stored in Substrait extension relations
+/// - The protobuf Any messages stored in Substrait advanced extension payloads
 ///
 /// This design allows the registry to work with any type while maintaining type safety
 /// through the AnyConvertible and Explainable traits that users implement.
