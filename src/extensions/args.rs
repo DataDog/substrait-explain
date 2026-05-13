@@ -6,7 +6,9 @@
 use std::collections::HashSet;
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use prost_types::{Duration as ProtoDuration, Timestamp};
 
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
@@ -239,6 +241,165 @@ pub enum ExtensionValue {
     Expression(RawExpression),
 }
 
+fn invalid_argument(kind: &str, details: impl Into<String>) -> ExtensionError {
+    ExtensionError::InvalidArgument(format!("{kind}: {}", details.into()))
+}
+
+fn format_protobuf_timestamp(timestamp: &Timestamp) -> Result<String, ExtensionError> {
+    if !(0..1_000_000_000).contains(&timestamp.nanos) {
+        return Err(invalid_argument(
+            "timestamp",
+            format!("nanos out of range [0, 999999999]: {}", timestamp.nanos),
+        ));
+    }
+
+    let datetime =
+        DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32).ok_or_else(|| {
+            invalid_argument(
+                "timestamp",
+                format!(
+                    "seconds/nanos cannot be represented: seconds={}, nanos={}",
+                    timestamp.seconds, timestamp.nanos
+                ),
+            )
+        })?;
+
+    Ok(datetime.to_rfc3339())
+}
+
+fn parse_protobuf_timestamp(value: &str) -> Result<Timestamp, ExtensionError> {
+    let parsed = DateTime::parse_from_rfc3339(value).map_err(|e| {
+        invalid_argument("timestamp", format!("invalid RFC3339 value '{value}': {e}"))
+    })?;
+
+    let utc = parsed.with_timezone(&Utc);
+    Ok(Timestamp {
+        seconds: utc.timestamp(),
+        nanos: utc.timestamp_subsec_nanos() as i32,
+    })
+}
+
+fn format_protobuf_duration(duration: &ProtoDuration) -> Result<String, ExtensionError> {
+    if duration.nanos < -999_999_999 || duration.nanos > 999_999_999 {
+        return Err(invalid_argument(
+            "duration",
+            format!(
+                "nanos out of range [-999999999, 999999999]: {}",
+                duration.nanos
+            ),
+        ));
+    }
+
+    if duration.seconds > 0 && duration.nanos < 0 {
+        return Err(invalid_argument(
+            "duration",
+            format!(
+                "seconds and nanos must have the same sign: seconds={}, nanos={}",
+                duration.seconds, duration.nanos
+            ),
+        ));
+    }
+    if duration.seconds < 0 && duration.nanos > 0 {
+        return Err(invalid_argument(
+            "duration",
+            format!(
+                "seconds and nanos must have the same sign: seconds={}, nanos={}",
+                duration.seconds, duration.nanos
+            ),
+        ));
+    }
+
+    let total_nanos = duration.seconds as i128 * 1_000_000_000i128 + duration.nanos as i128;
+    let sign = if total_nanos < 0 { "-" } else { "" };
+    let abs_nanos = total_nanos.abs();
+    let secs = abs_nanos / 1_000_000_000i128;
+    let nanos = abs_nanos % 1_000_000_000i128;
+
+    if nanos == 0 {
+        return Ok(format!("{sign}{secs}s"));
+    }
+
+    let frac = format!("{nanos:09}");
+    let frac = frac.trim_end_matches('0');
+    Ok(format!("{sign}{secs}.{frac}s"))
+}
+
+fn parse_protobuf_duration(value: &str) -> Result<ProtoDuration, ExtensionError> {
+    let Some(seconds_str) = value.strip_suffix('s') else {
+        return Err(invalid_argument(
+            "duration",
+            format!("invalid protobuf duration '{value}': missing trailing 's'"),
+        ));
+    };
+
+    if seconds_str.is_empty() {
+        return Err(invalid_argument(
+            "duration",
+            format!("invalid protobuf duration '{value}': empty value"),
+        ));
+    }
+
+    let negative = seconds_str.starts_with('-');
+    let signed = if negative || seconds_str.starts_with('+') {
+        &seconds_str[1..]
+    } else {
+        seconds_str
+    };
+
+    if signed.is_empty() {
+        return Err(invalid_argument(
+            "duration",
+            format!("invalid protobuf duration '{value}': missing digits"),
+        ));
+    }
+
+    let (whole_part, frac_part) = match signed.split_once('.') {
+        Some((whole, frac)) => (whole, Some(frac)),
+        None => (signed, None),
+    };
+
+    if whole_part.is_empty() || !whole_part.chars().all(|c| c.is_ascii_digit()) {
+        return Err(invalid_argument(
+            "duration",
+            format!("invalid protobuf duration '{value}': invalid seconds component"),
+        ));
+    }
+
+    let mut seconds = whole_part.parse::<i64>().map_err(|e| {
+        invalid_argument(
+            "duration",
+            format!("seconds out of range in '{value}': {e}"),
+        )
+    })?;
+    let mut nanos = 0i32;
+
+    if let Some(frac) = frac_part {
+        if frac.is_empty() || frac.len() > 9 || !frac.chars().all(|c| c.is_ascii_digit()) {
+            return Err(invalid_argument(
+                "duration",
+                format!("invalid protobuf duration '{value}': fractional part must be 1-9 digits"),
+            ));
+        }
+        let mut padded = frac.to_string();
+        while padded.len() < 9 {
+            padded.push('0');
+        }
+        nanos = padded.parse::<i32>().map_err(|e| {
+            invalid_argument(
+                "duration",
+                format!("fractional nanos out of range in '{value}': {e}"),
+            )
+        })?;
+    }
+
+    if negative {
+        seconds = -seconds;
+        nanos = -nanos;
+    }
+
+    Ok(ProtoDuration { seconds, nanos })
+}
+
 impl fmt::Display for ExtensionValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -251,6 +412,33 @@ impl fmt::Display for ExtensionValue {
             ExtensionValue::Tuple(tv) => write!(f, "Tuple{tv}"),
             ExtensionValue::Expression(e) => write!(f, "Expression({})", e),
         }
+    }
+}
+
+impl ExtensionValue {
+    /// Build an [`ExtensionValue::String`] from a protobuf [`Timestamp`]
+    /// encoded as RFC3339.
+    pub fn from_timestamp(timestamp: &Timestamp) -> Result<Self, ExtensionError> {
+        Ok(Self::String(format_protobuf_timestamp(timestamp)?))
+    }
+
+    /// Parse this value as a protobuf [`Timestamp`] from an RFC3339 string.
+    pub fn try_to_timestamp(&self) -> Result<Timestamp, ExtensionError> {
+        let s = <&str>::try_from(self)?;
+        parse_protobuf_timestamp(s)
+    }
+
+    /// Build an [`ExtensionValue::String`] from a protobuf [`ProtoDuration`]
+    /// encoded with protobuf JSON duration syntax (e.g. `1.5s`).
+    pub fn from_duration(duration: &ProtoDuration) -> Result<Self, ExtensionError> {
+        Ok(Self::String(format_protobuf_duration(duration)?))
+    }
+
+    /// Parse this value as a protobuf [`ProtoDuration`] from protobuf JSON
+    /// duration syntax.
+    pub fn try_to_duration(&self) -> Result<ProtoDuration, ExtensionError> {
+        let s = <&str>::try_from(self)?;
+        parse_protobuf_duration(s)
     }
 }
 
@@ -361,6 +549,38 @@ impl TryFrom<&ExtensionValue> for Reference {
     }
 }
 
+impl TryFrom<&ExtensionValue> for Timestamp {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<Self, Self::Error> {
+        value.try_to_timestamp()
+    }
+}
+
+impl TryFrom<&Timestamp> for ExtensionValue {
+    type Error = ExtensionError;
+
+    fn try_from(value: &Timestamp) -> Result<Self, Self::Error> {
+        ExtensionValue::from_timestamp(value)
+    }
+}
+
+impl TryFrom<&ExtensionValue> for ProtoDuration {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<Self, Self::Error> {
+        value.try_to_duration()
+    }
+}
+
+impl TryFrom<&ProtoDuration> for ExtensionValue {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ProtoDuration) -> Result<Self, Self::Error> {
+        ExtensionValue::from_duration(value)
+    }
+}
+
 /// Represents an output column specification
 #[derive(Debug, Clone)]
 pub enum ExtensionColumn {
@@ -459,7 +679,8 @@ impl ExtensionArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::ExtensionRelationType;
+    use super::{ExtensionRelationType, ExtensionValue};
+    use prost_types::{Duration, Timestamp};
 
     #[test]
     fn extension_multi_allows_zero_children() {
@@ -488,5 +709,59 @@ mod tests {
                 .validate_child_count(2)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn timestamp_roundtrip_as_extension_value() {
+        let timestamp = Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 123_000_000,
+        };
+
+        let value = ExtensionValue::from_timestamp(&timestamp).expect("timestamp to value");
+        let decoded = value.try_to_timestamp().expect("value to timestamp");
+
+        assert_eq!(decoded, timestamp);
+    }
+
+    #[test]
+    fn timestamp_parse_error_includes_context() {
+        let value = ExtensionValue::String("not-a-timestamp".to_string());
+        let err = value.try_to_timestamp().expect_err("invalid timestamp");
+
+        match err {
+            crate::extensions::ExtensionError::InvalidArgument(message) => {
+                assert!(message.contains("timestamp"));
+                assert!(message.contains("RFC3339"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duration_roundtrip_as_extension_value() {
+        let duration = Duration {
+            seconds: 123,
+            nanos: 456_000_000,
+        };
+
+        let value = ExtensionValue::from_duration(&duration).expect("duration to value");
+        let decoded = value.try_to_duration().expect("value to duration");
+
+        assert_eq!(decoded, duration);
+    }
+
+    #[test]
+    fn duration_parse_error_includes_context() {
+        let value = ExtensionValue::String("12.1234567890s".to_string());
+        let err = value.try_to_duration().expect_err("invalid duration");
+
+        match err {
+            crate::extensions::ExtensionError::InvalidArgument(message) => {
+                assert!(message.contains("duration"));
+                assert!(message.contains("fractional"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
