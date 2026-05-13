@@ -241,36 +241,6 @@ pub enum ExtensionValue {
     Expression(RawExpression),
 }
 
-fn format_protobuf_timestamp(timestamp: &Timestamp) -> Result<String, ExtensionError> {
-    timestamp
-        .try_normalize()
-        .map(|normalized| normalized.to_string())
-        .map_err(|original| {
-            ExtensionError::InvalidArgument(format!(
-                "timestamp: out of range or overflow (seconds={}, nanos={})",
-                original.seconds, original.nanos
-            ))
-        })
-}
-
-fn parse_protobuf_timestamp(value: &str) -> Result<Timestamp, ExtensionError> {
-    Timestamp::from_str(value).map_err(|e| {
-        ExtensionError::InvalidArgument(format!("timestamp: invalid RFC3339 value '{value}': {e}"))
-    })
-}
-
-fn format_protobuf_duration(duration: &ProtoDuration) -> Result<String, ExtensionError> {
-    Ok(duration.normalized().to_string())
-}
-
-fn parse_protobuf_duration(value: &str) -> Result<ProtoDuration, ExtensionError> {
-    ProtoDuration::from_str(value).map_err(|e| {
-        ExtensionError::InvalidArgument(format!(
-            "duration: invalid protobuf JSON duration '{value}': {e}"
-        ))
-    })
-}
-
 impl fmt::Display for ExtensionValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -290,26 +260,40 @@ impl ExtensionValue {
     /// Build an [`ExtensionValue::String`] from a protobuf [`Timestamp`]
     /// encoded as RFC3339.
     pub fn from_timestamp(timestamp: &Timestamp) -> Result<Self, ExtensionError> {
-        Ok(Self::String(format_protobuf_timestamp(timestamp)?))
+        timestamp
+            .try_normalize()
+            .map(|normalized| Self::String(normalized.to_string()))
+            .map_err(|original| {
+                ExtensionError::InvalidArgument(format!(
+                    "timestamp: out of range or overflow (seconds={}, nanos={})",
+                    original.seconds, original.nanos
+                ))
+            })
     }
 
     /// Parse this value as a protobuf [`Timestamp`] from an RFC3339 string.
     pub fn try_to_timestamp(&self) -> Result<Timestamp, ExtensionError> {
         let s = <&str>::try_from(self)?;
-        parse_protobuf_timestamp(s)
+        Timestamp::from_str(s).map_err(|e| {
+            ExtensionError::InvalidArgument(format!("timestamp: invalid RFC3339 value '{s}': {e}"))
+        })
     }
 
     /// Build an [`ExtensionValue::String`] from a protobuf [`ProtoDuration`]
     /// encoded with protobuf JSON duration syntax (e.g. `1.5s`).
     pub fn from_duration(duration: &ProtoDuration) -> Result<Self, ExtensionError> {
-        Ok(Self::String(format_protobuf_duration(duration)?))
+        Ok(Self::String(duration.normalized().to_string()))
     }
 
     /// Parse this value as a protobuf [`ProtoDuration`] from protobuf JSON
     /// duration syntax.
     pub fn try_to_duration(&self) -> Result<ProtoDuration, ExtensionError> {
         let s = <&str>::try_from(self)?;
-        parse_protobuf_duration(s)
+        ProtoDuration::from_str(s).map_err(|e| {
+            ExtensionError::InvalidArgument(format!(
+                "duration: invalid protobuf JSON duration '{s}': {e}"
+            ))
+        })
     }
 }
 
