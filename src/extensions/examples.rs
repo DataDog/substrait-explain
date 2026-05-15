@@ -13,7 +13,7 @@
 //! number of partitions (`0` / absent means "let the executor decide").
 
 use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionRelationType, ExtensionValue};
-use crate::extensions::registry::{Explainable, ExtensionError};
+use crate::extensions::registry::{Explainable, ExtensionError, ExtensionRegistry};
 
 // ---------------------------------------------------------------------------
 // PartitionStrategy enum
@@ -68,12 +68,11 @@ impl PartitionStrategy {
 /// # Text Format
 ///
 /// ```rust
-/// # use substrait_explain::extensions::{ExtensionRegistry, examples::PartitionHint};
+/// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
 /// # use substrait_explain::parser::Parser;
 /// #
-/// # let mut registry = ExtensionRegistry::new();
-/// # registry.register_enhancement::<PartitionHint>().unwrap();
+/// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());
 /// #
 /// # let plan_text = r#"
@@ -159,10 +158,93 @@ impl Explainable for PartitionHint {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PlanHint
+// ---------------------------------------------------------------------------
+
+/// Optimization hint that carries a planner directive as a string.
+///
+/// Attach this to any standard relation via `register_optimization` to convey
+/// planner choices without changing relation semantics.
+///
+/// # Text Format
+///
+/// ```rust
+/// # use substrait_explain::extensions::examples;
+/// # use substrait_explain::format_with_registry;
+/// # use substrait_explain::parser::Parser;
+/// #
+/// # let registry = examples::registry();
+/// # let parser = Parser::new().with_extension_registry(registry.clone());
+/// #
+/// # let plan_text = r#"
+/// === Plan
+/// Root[result]
+///   Read[data => col:i64]
+///     + Opt:PlanHint[hint='use_index']
+/// # "#;
+/// #
+/// # let plan = parser.parse_plan(plan_text).unwrap();
+/// # let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+/// # assert!(errors.is_empty());
+/// # assert_eq!(formatted.trim(), plan_text.trim());
+/// ```
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PlanHint {
+    /// Planner directive. The text format stores this as `hint='...'`.
+    #[prost(string, tag = "1")]
+    pub hint: String,
+}
+
+impl prost::Name for PlanHint {
+    const PACKAGE: &'static str = "example";
+    const NAME: &'static str = "PlanHint";
+
+    fn full_name() -> String {
+        "example.PlanHint".to_owned()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/example.PlanHint".to_owned()
+    }
+}
+
+impl Explainable for PlanHint {
+    fn name() -> &'static str {
+        "PlanHint"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
+        extractor.check_exhausted()?;
+        Ok(PlanHint { hint })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        args.named
+            .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
+        Ok(args)
+    }
+}
+
+/// Create an [`ExtensionRegistry`] preloaded with the example extension types.
+pub fn registry() -> ExtensionRegistry {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_enhancement::<PartitionHint>()
+        .expect("register PartitionHint example enhancement");
+    registry
+        .register_optimization::<PlanHint>()
+        .expect("register PlanHint example optimization");
+    registry
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::{AnyConvertible, ExtensionRegistry};
+    use crate::extensions::AnyConvertible;
 
     fn make_hint(strategies: Vec<PartitionStrategy>, count: i64) -> PartitionHint {
         PartitionHint {
@@ -248,8 +330,7 @@ mod tests {
 
     #[test]
     fn registry_roundtrip() {
-        let mut registry = ExtensionRegistry::new();
-        registry.register_enhancement::<PartitionHint>().unwrap();
+        let registry = registry();
 
         let original = make_hint(vec![PartitionStrategy::Hash], 4);
         let any = original.to_any().unwrap();
@@ -264,6 +345,37 @@ mod tests {
             .parse_enhancement("PartitionHint", &args)
             .expect("parse_enhancement");
         let decoded = PartitionHint::from_any(any2.as_ref()).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn plan_hint_args_round_trip() {
+        let original = PlanHint {
+            hint: "use_index".to_owned(),
+        };
+        let args = original.to_args().unwrap();
+        let decoded = PlanHint::from_args(&args).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn plan_hint_registry_roundtrip() {
+        let registry = registry();
+
+        let original = PlanHint {
+            hint: "parallel".to_owned(),
+        };
+        let any = original.to_any().unwrap();
+
+        let (name, args) = registry
+            .decode_optimization(any.as_ref())
+            .expect("decode_optimization");
+        assert_eq!(name, "PlanHint");
+
+        let any2 = registry
+            .parse_optimization("PlanHint", &args)
+            .expect("parse_optimization");
+        let decoded = PlanHint::from_any(any2.as_ref()).unwrap();
         assert_eq!(original, decoded);
     }
 }
