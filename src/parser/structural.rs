@@ -363,14 +363,14 @@ impl<'a> RelationParser<'a> {
         let pair_span = ctx.pair.as_span();
 
         let ExtensionInvocation {
+            relation_kind,
             name,
             args: extension_args,
         } = ExtensionInvocation::parse_pair(extensions, ctx.pair.clone())
             .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.clone()), e))?;
 
         let child_count = ctx.children.len();
-        extension_args
-            .relation_type
+        relation_kind
             .validate_child_count(child_count)
             .map_err(|e| {
                 ParseError::Plan(
@@ -389,15 +389,8 @@ impl<'a> RelationParser<'a> {
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
         let output_column_count = extension_args.output_columns.len();
 
-        let rel = extension_args
-            .relation_type
-            .create_rel(detail, ctx.children)
-            .map_err(|e| {
-                ParseError::Plan(
-                    ParseContext::new(line_no, line.to_string()),
-                    MessageParseError::invalid("extension_relation", pair_span, e),
-                )
-            })?;
+        let children = ctx.children.into_iter().map(|child| *child).collect();
+        let rel = relation_kind.create_rel(detail, children);
 
         if ctx.advanced_extension.is_some() {
             return Err(ParseError::ValidationError(

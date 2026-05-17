@@ -164,9 +164,7 @@ Root[result]
 /// A minimal Explainable + prost::Message used to register as an optimization.
 mod opt_fixture {
     use prost::Name;
-    use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType,
-    };
+    use substrait_explain::extensions::{Explainable, ExtensionArgs, ExtensionError};
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct PlanHint {
@@ -200,7 +198,7 @@ mod opt_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
         }
@@ -521,7 +519,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -554,7 +552,7 @@ mod extension_child_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
                 r#type: super::parse_type("i64"),
@@ -845,7 +843,7 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -876,7 +874,7 @@ mod adv_ext_with_columns_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             // Deliberately populate output_columns — the adv_extension grammar
             // has no "=> columns" clause, so this cannot be round-tripped.
             args.output_columns.push(ExtensionColumn::Named {

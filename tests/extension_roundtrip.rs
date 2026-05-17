@@ -8,7 +8,7 @@ use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
     EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
-    ExtensionProtoConvert, ExtensionRegistry, ExtensionRelationType, ExtensionValue, TupleValue,
+    ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
 use substrait_explain::fixtures::parse_type;
 use substrait_explain::format_with_registry;
@@ -81,7 +81,7 @@ impl Explainable for UserTableConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
 
         // Add named arguments
         args.insert("name", self.table_name.clone());
@@ -175,7 +175,7 @@ fn test_multiple_extensions_in_plan() {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
+            let mut args = ExtensionArgs::default();
             args.insert("expr", self.expression.clone());
             Ok(args)
         }
@@ -265,7 +265,7 @@ impl Explainable for LiteralConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.insert("path", self.path.clone());
         args.insert("big", self.big);
         args.insert("ratio", self.ratio);
@@ -353,7 +353,7 @@ impl Explainable for EmptySource {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+        Ok(ExtensionArgs::default())
     }
 }
 
@@ -434,7 +434,7 @@ impl Explainable for PassThroughWrapper {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Single);
+        let mut args = ExtensionArgs::default();
         args.output_columns
             .push(ExtensionColumn::Expr(Reference(0).into()));
         Ok(args)
@@ -469,7 +469,7 @@ impl Explainable for BinaryMerge {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Multi);
+        let mut args = ExtensionArgs::default();
         args.output_columns
             .push(ExtensionColumn::Expr(Reference(0).into()));
         args.output_columns
@@ -636,7 +636,7 @@ impl Explainable for TupleSortHint {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         let tv: TupleValue = self
             .directions
             .iter()
@@ -689,7 +689,7 @@ Root[result]
 
 #[test]
 fn test_tuple_sort_hint_from_args_rejects_non_tuple() {
-    let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+    let mut args = ExtensionArgs::default();
     args.positional
         .push(ExtensionValue::Enum("ASC".to_string()));
     let result = TupleSortHint::from_args(&args);
