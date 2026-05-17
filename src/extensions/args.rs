@@ -37,6 +37,26 @@ use substrait::proto::expression::{RexType, reference_segment};
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
 
+/// Kind of relation addendum in the text format.
+///
+/// Addenda are `+`-prefixed lines attached to relations. They are syntax-level
+/// constructs, distinct from [`crate::extensions::registry::ExtensionType`],
+/// which describes registry namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddendumKind {
+    Enhancement,
+    Optimization,
+}
+
+impl AddendumKind {
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            AddendumKind::Enhancement => "Enh",
+            AddendumKind::Optimization => "Opt",
+        }
+    }
+}
+
 /// A Substrait expression carried as an extension argument or output column.
 ///
 /// Boxed because `proto::Expression` is large (multiple `Vec` fields in

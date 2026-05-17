@@ -8,11 +8,10 @@ use super::{
     MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
     unwrap_single_pair,
 };
-use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
-    ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    SimpleExtensions, TupleValue,
+    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue,
+    InsertError, SimpleExtensions, TupleValue,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -431,25 +430,21 @@ impl ScopedParsePair for ExtensionInvocation {
     }
 }
 
-/// A parsed `+ Enh:Name[args]` or `+ Opt:Name[args]` line.
+/// A parsed `+` addendum line.
 #[derive(Debug, Clone)]
-pub struct AdvExtInvocation {
-    /// Whether this is an enhancement (`ExtensionType::Enhancement`) or
-    /// optimization (`ExtensionType::Optimization`).  The grammar restricts
-    /// the value to those two variants; `ExtensionType::Relation` will never
-    /// appear here.
-    pub ext_type: ExtensionType,
-    pub name: String,
-    pub args: ExtensionArgs,
+pub(crate) struct AddendumInvocation {
+    pub(crate) kind: AddendumKind,
+    pub(crate) name: String,
+    pub(crate) args: ExtensionArgs,
 }
 
-impl ScopedParsePair for AdvExtInvocation {
+impl ScopedParsePair for AddendumInvocation {
     fn rule() -> Rule {
         Rule::adv_extension
     }
 
     fn message() -> &'static str {
-        "AdvExtInvocation"
+        "AddendumInvocation"
     }
 
     fn parse_pair(
@@ -462,9 +457,9 @@ impl ScopedParsePair for AdvExtInvocation {
 
         // First token: adv_ext_type — grammar guarantees "Enh" or "Opt"
         let type_pair = iter.next().unwrap(); // Grammar guarantees adv_ext_type exists
-        let ext_type = match type_pair.as_str() {
-            "Enh" => ExtensionType::Enhancement,
-            "Opt" => ExtensionType::Optimization,
+        let kind = match type_pair.as_str() {
+            "Enh" => AddendumKind::Enhancement,
+            "Opt" => AddendumKind::Optimization,
             other => unreachable!("Unexpected adv_ext_type: {other}"),
         };
 
@@ -472,10 +467,8 @@ impl ScopedParsePair for AdvExtInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Advanced extensions reuse ExtensionArgs, but their text syntax has no
-        // child relations; Leaf is only a placeholder here.
-        //
-        // TODO: this is ugly and misleading
+        // Remaining token: arguments — grammar guarantees it is always present.
+        // Use Leaf as the relation_type placeholder — addenda don't have children.
         let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
 
         let arguments_pair = iter.next().unwrap();
@@ -483,14 +476,10 @@ impl ScopedParsePair for AdvExtInvocation {
             Rule::arguments => {
                 arguments_rule_parsing(extensions, arguments_pair, &mut args)?;
             }
-            r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+            r => unreachable!("Unexpected rule in AddendumInvocation args: {r:?}"),
         }
 
-        Ok(AdvExtInvocation {
-            ext_type,
-            name,
-            args,
-        })
+        Ok(AddendumInvocation { kind, name, args })
     }
 }
 
@@ -750,11 +739,12 @@ Functions:
 
     #[test]
     fn test_tuple_in_adv_extension_parses() {
-        let inv = AdvExtInvocation::parse(
+        let inv = AddendumInvocation::parse(
             &SimpleExtensions::default(),
             "+ Enh:Foo[(&HASH, &RANGE), count=8]",
         )
         .unwrap();
+        assert_eq!(inv.kind, AddendumKind::Enhancement);
         assert_eq!(inv.name, "Foo");
         assert_eq!(inv.args.positional.len(), 1);
         let ExtensionValue::Tuple(items) = &inv.args.positional[0] else {
