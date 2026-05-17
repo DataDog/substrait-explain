@@ -46,6 +46,7 @@ use crate::textify::expressions::Reference;
 pub(crate) enum AddendumKind {
     Enhancement,
     Optimization,
+    ExtensionTable,
 }
 
 impl AddendumKind {
@@ -53,6 +54,7 @@ impl AddendumKind {
         match self {
             AddendumKind::Enhancement => "Enh",
             AddendumKind::Optimization => "Opt",
+            AddendumKind::ExtensionTable => "Ext",
         }
     }
 }

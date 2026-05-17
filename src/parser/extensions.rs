@@ -544,6 +544,7 @@ impl ScopedParsePair for AddendumInvocation {
         let kind = match type_pair.as_str() {
             "Enh" => AddendumKind::Enhancement,
             "Opt" => AddendumKind::Optimization,
+            "Ext" => AddendumKind::ExtensionTable,
             other => unreachable!("Unexpected addendum_type: {other}"),
         };
 
