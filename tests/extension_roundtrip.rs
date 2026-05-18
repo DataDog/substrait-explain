@@ -5,7 +5,7 @@ use substrait::proto;
 use substrait::proto::expression::RexType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::r#type::Nullability;
-use substrait_explain::extensions::examples::PartitionHint;
+use substrait_explain::extensions::examples::{self, PartitionHint};
 use substrait_explain::extensions::{
     EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
@@ -213,6 +213,48 @@ Root[id]
             );
         }
     }
+}
+
+#[test]
+fn test_extension_table_read_roundtrip() {
+    let registry = examples::registry();
+
+    let plan_text = r#"
+=== Plan
+Root[id, payload]
+  Read:Extension[id:i64, payload:string]
+    + Ext:BlobStoreRead['path/to/file', limit=100, include_archived=true]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_extension_table_read_with_advanced_extensions_roundtrip() {
+    let registry = examples::registry();
+
+    let plan_text = r#"
+=== Plan
+Root[id]
+  Read:Extension[id:i64]
+    + Ext:BlobStoreRead['path/to/file']
+    + Enh:PartitionHint[&HASH, count=8]
+    + Opt:PlanHint[hint='parallel']
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+
+    assert_eq!(formatted.trim(), plan_text.trim());
 }
 
 #[test]

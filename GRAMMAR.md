@@ -13,17 +13,22 @@ The Substrait text format consists of two main sections:
 
 The grammar is designed around several concrete choices that make it practical and consistent:
 
-### 1. Single-Line, Structured Relations
+### 1. Structured Relations
 
-All relations follow the same structure: `Name[arguments => columns]`
+Relation headers use one of two bracket forms:
+
+```text
+Name[arguments => columns]
+Name[columns]
+```
 
 - **Name**: The relation type (Read, Filter, Project, etc.)
 - **Arguments**: Relation-specific: input expressions, field references, or function calls
   - Arguments follow a regular pattern (tuple, input expression, etc.) or combination, and should map directly to Substrait proto fields. Uses tuples for compound arguments, with literals, expressions, and enums for values.
 - **Arrow**: `=>` separates arguments from output columns
-- **Columns**: Output column names and types
+- **Columns**: Output columns, in the form of names and types or expressions depending on the relation.
 
-Every relation fits on one line with indentation showing hierarchy. This uniform pattern makes it easy to parse any relation, understand input/output structure, and add new relation types.
+Every relation header fits on one line with indentation showing hierarchy. This uniform pattern makes it easy to parse any relation, understand input/output structure, and add new relation types.
 
 ### 2. SQL-Like References, Literals, and Enums
 
@@ -425,36 +430,36 @@ Relations represent the operations in a query plan. Each relation is displayed o
 
 ### General Relation Grammar
 
-All relations follow this general pattern:
+Relation headers use one of two forms: `Name[arguments => columns]`, or `Name[columns]` when the relation has no arguments.
 
 #### Syntax
 
 ```text
-relation := name "[" (arguments ("," named_arguments)? ("=>" columns)?)? "]"
-columns := name ("," name)* / reference_list
+relation := relation_with_args / relation_without_args
+relation_with_args := name "[" arguments "=>" columns "]"
+relation_without_args := name "[" columns "]"
+columns := column ("," column)*
+column := named_column / reference / expression / name
+named_column := name ":" type
 ```
 
 Where:
 
 - **`name`**: The type of operation (Read, Filter, Project, Root, etc.)
-- **`arguments`**: Input expressions, field references, function calls, or other parameters (optional)
-- **`named_arguments`**: Named arguments (optional)
-- **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
-- **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
+- **`arguments`**: Relation-specific parameters, such as input expressions, field references, function calls, or named arguments
+- **`=>`**: Separator between arguments and output columns
+- **`columns`**: A relation-specific output list. Individual relation sections restrict which column forms are accepted.
 
-#### Example
+#### Examples
 
 ```text
-RelationName[arguments, named_arguments => columns]
+RelationWithArgs[arguments, named_arguments => columns]
+RelationWithoutArgs[columns]
 ```
 
-#### Special cases
+#### Relations without arguments
 
-- **Root relation**: Only specifies output column names, no arguments or `=>` separator
-- **Project relation**: Only specifies expressions, no `=>` separator or output columns
-- Some relations may use '...' instead of column names when they pass through all fields
-
-The exact structure varies by relation type, but all follow this basic pattern.
+Relations that have no separate argument section omit `=>` and put their relation-specific output list directly in brackets. Examples include `Root[name_list]` and `Project[expression_list]`.
 
 ### Arguments
 
@@ -467,7 +472,8 @@ argument := enum / reference / literal / expression / tuple
 tuple := "(" ")"                                        // 0-tuple
        / "(" argument "," ")"                           // 1-tuple (trailing comma required)
        / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
-arguments := argument ("," argument)*
+positional_arguments := argument ("," argument)*
+arguments := positional_arguments ("," named_arguments)? / named_arguments
 named_arguments := name "=" argument ("," name "=" argument)*
 ```
 
@@ -584,6 +590,73 @@ Root[id, name]
 #
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 1);
+```
+
+### `ExtensionTable` Read Relation
+
+An `ExtensionTable` read uses `ReadRel` with `ReadType::ExtensionTable`. The relation header carries the read output schema, while a required `+ Ext:` addendum carries the custom table detail payload.
+
+#### Syntax
+
+```text
+extension_table_read_relation := "Read:Extension" "[" named_column_list "]"
+extension_table_detail        := "+" "Ext" ":" name "[" (empty / extension_args)? "]"
+```
+
+The `+ Ext:` line is indented one level deeper than the `Read:Extension` line. It is required, and addendum lines must appear before any child relations. Canonical formatting writes `+ Ext:` first, followed by `+ Enh:` and `+ Opt:` lines when present.
+
+#### Components
+
+- `named_column_list` - output column names with type annotations, stored in `ReadRel.base_schema`
+- `name` - the extension name registered with `ExtensionRegistry`
+- `extension_args` - positional and/or named arguments encoded into the `ExtensionTable.detail: Any`
+
+#### Example
+
+```rust
+# use substrait_explain::extensions::examples;
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let registry = examples::registry();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
+=== Plan
+Root[id, payload]
+  Read:Extension[id:i64, payload:string]
+    + Ext:BlobStoreRead['path/to/file', limit=100, include_archived=true]
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
+```
+
+Relation-level advanced extensions can still be attached to the same read relation:
+
+```rust
+# use substrait_explain::extensions::examples;
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let registry = examples::registry();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
+=== Plan
+Root[id]
+  Read:Extension[id:i64]
+    + Ext:BlobStoreRead['path/to/file']
+    + Enh:PartitionHint[&HASH, count=8]
+    + Opt:PlanHint[hint='parallel']
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
 ```
 
 ### Filter Relation
@@ -828,20 +901,20 @@ Each relation can carry:
 
 ```text
 addendum      := "+" addendum_type ":" name "[" (empty | extension_args)? "]"
-addendum_type := "Enh" | "Opt"
+addendum_type := "Enh" | "Opt" | "Ext"
 ```
 
 Where:
 
-- **`addendum_type`** — `Enh` for an enhancement, `Opt` for an optimization
+- **`addendum_type`** — `Enh` for an enhancement, `Opt` for an optimization, or `Ext` for an `ExtensionTable` detail on `Read:Extension`
 - **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty
 
-Addendum lines are **indented one level deeper** than the relation they annotate, just like child relations. Enhancement and optimization lines MUST appear **before** any child relations.
+Addendum lines are **indented one level deeper** than the relation they annotate, just like child relations. They MUST appear **before** any child relations. `+ Enh:` and `+ Opt:` lines attach advanced extensions to standard relations. `+ Ext:` lines are only valid under `Read:Extension`; extension relations (`ExtensionLeaf`, `ExtensionSingle`, and `ExtensionMulti`) do not support addenda.
 
 ### Argument Syntax
 
-Extension arguments follow the same rules as extension-relation arguments.  Enum values are written with a `&` prefix:
+Extension arguments follow the same rules as extension-relation arguments. Enum values are written with a `&` prefix:
 
 ```text
 enum_value := "&" identifier
