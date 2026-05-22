@@ -311,6 +311,12 @@ arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_a
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
 
+// Untyped scalar extension literals render independently of expression literal
+// verbosity. Typed literals (for example, 2:i16 or '2024-01-01':date) fall
+// through to expression parsing so their Substrait type information is
+// preserved.
+untyped_literal = { (float | integer | boolean | string_literal) ~ !(":") }
+
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.
 tuple = {
@@ -323,7 +329,7 @@ tuple = {
               ~ (sp ~ "," ~ sp ~ extension_argument)+
               ~ (sp ~ ",")? ~ sp ~ ")"
         }
-extension_argument  = { enum_value | reference | literal | expression | tuple }
+extension_argument  = { enum_value | untyped_literal | reference | expression | tuple }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }

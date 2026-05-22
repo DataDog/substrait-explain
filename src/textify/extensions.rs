@@ -12,9 +12,9 @@ use substrait::proto::extensions::AdvancedExtension;
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
 use crate::extensions::registry::ExtensionType;
-use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
+use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
 use crate::textify::foundation::{PlanError, Scope, Textify};
-use crate::textify::types::escaped;
+use crate::textify::types::{Name, escaped};
 
 impl Textify for TupleValue {
     fn name() -> &'static str {
@@ -44,11 +44,20 @@ impl Textify for ExtensionValue {
             ExtensionValue::Integer(i) => write!(w, "{i}"),
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
-            ExtensionValue::Reference(r) => write!(w, "${r}"),
+            ExtensionValue::Expr(expr) => expr.textify(ctx, w),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Tuple(tv) => tv.textify(ctx, w),
-            ExtensionValue::Expression(e) => write!(w, "{e}"),
         }
+    }
+}
+
+impl Textify for Expr {
+    fn name() -> &'static str {
+        "Expr"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.display(self.as_proto()))
     }
 }
 
@@ -57,11 +66,12 @@ impl Textify for ExtensionColumn {
         "ExtensionColumn"
     }
 
-    fn textify<S: Scope, W: fmt::Write>(&self, _ctx: &S, w: &mut W) -> fmt::Result {
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            ExtensionColumn::Named { name, type_spec } => write!(w, "{name}:{type_spec}"),
-            ExtensionColumn::Reference(r) => write!(w, "${r}"),
-            ExtensionColumn::Expression(e) => write!(w, "{e}"),
+            ExtensionColumn::Named { name, r#type: ty } => {
+                write!(w, "{}:{}", Name(name), ctx.display(ty))
+            }
+            ExtensionColumn::Expr(expr) => expr.textify(ctx, w),
         }
     }
 }
@@ -108,9 +118,9 @@ impl Textify for ExtensionArgs {
 
 /// Textify a single enhancement or optimization line.
 ///
-/// Emits one of:
-/// - `{indent}+ Enh:Name[args]`
-/// - `{indent}+ Opt:Name[args]`
+/// Successful lines include the registered extension name, e.g.
+/// `{indent}+ Enh:Name[args]`; decode failures fall back to a failure token so
+/// the surrounding relation can still be rendered.
 fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     ctx: &S,
     w: &mut W,
@@ -151,10 +161,8 @@ impl Textify for AdvancedExtension {
         "AdvancedExtension"
     }
 
-    /// Textify all enhancement and optimization lines for an [`AdvancedExtension`].
-    ///
-    /// Writes one `+ Enh:` line (if an enhancement is present) followed by zero
-    /// or more `+ Opt:` lines, each preceded by a newline.
+    /// Writes the enhancement line first, if present, followed by optimization
+    /// lines in protobuf order.
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         if let Some(enhancement) = &self.enhancement {
             writeln!(w)?;

@@ -12,17 +12,21 @@
 //! implementation following the same pattern shown for `Explainable`.
 
 use prost::{Message, Name};
-use substrait::proto::{plan_rel, rel};
+use substrait::proto::{self, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
     AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType, ExtensionValue,
+    ExtensionRelationType,
 };
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
 
-/// Custom protobuf message for our ParquetScan extension configuration.
-/// In a real implementation, this would be generated from a .proto file.
+/// Custom protobuf message for a ParquetScan extension configuration. In a real
+/// implementation, this would be generated from a .proto file.
+///
+/// Also note: this would probably make more sense as a `ReadRel` with an
+/// `ExtensionTable` rather than a full `ExtensionLeafRel`, but the registry
+/// does not yet support `ExtensionTable` — see #114.
 #[derive(Clone, PartialEq, Message)]
 pub struct ParquetScanConfig {
     #[prost(string, tag = "1")]
@@ -31,8 +35,19 @@ pub struct ParquetScanConfig {
     pub batch_size: i64,
     #[prost(bool, tag = "3")]
     pub use_dictionary: bool,
-    #[prost(string, repeated, tag = "4")]
-    pub selected_columns: Vec<String>,
+    // A collection of (name, type) pairs, one per selected column. Conceptually
+    // mirrors Substrait's `NamedStruct` (names + types bundled together)
+    #[prost(message, repeated, tag = "4")]
+    pub selected_columns: Vec<ParquetColumn>,
+}
+
+/// One selected column in a `ParquetScanConfig`: a (name, type) pair.
+#[derive(Clone, PartialEq, Message)]
+pub struct ParquetColumn {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(message, optional, tag = "2")]
+    pub r#type: Option<proto::Type>,
 }
 
 // Manually implement Name trait for our custom message
@@ -70,12 +85,15 @@ impl Explainable for ParquetScanConfig {
             .output_columns
             .iter()
             .map(|column| match column {
-                ExtensionColumn::Named { name, .. } => Ok(name.clone()),
+                ExtensionColumn::Named { name, r#type } => Ok(ParquetColumn {
+                    name: name.clone(),
+                    r#type: Some(r#type.clone()),
+                }),
                 _ => Err(ExtensionError::InvalidArgument(format!(
                     "expected named columns only: {column:?}"
                 ))),
             })
-            .collect::<Result<Vec<String>, ExtensionError>>()?;
+            .collect::<Result<Vec<ParquetColumn>, ExtensionError>>()?;
 
         Ok(ParquetScanConfig {
             path: path.to_string(),
@@ -90,24 +108,20 @@ impl Explainable for ParquetScanConfig {
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
 
         // Add named arguments from the message
-        args.named.insert(
-            "path".to_string(),
-            ExtensionValue::String(self.path.clone()),
-        );
-        args.named.insert(
-            "batch_size".to_string(),
-            ExtensionValue::Integer(self.batch_size),
-        );
-        args.named.insert(
-            "use_dictionary".to_string(),
-            ExtensionValue::Boolean(self.use_dictionary),
-        );
+        args.insert("path", self.path.clone());
+        args.insert("batch_size", self.batch_size);
+        args.insert("use_dictionary", self.use_dictionary);
 
-        // Add output columns from selected columns
-        for column_name in &self.selected_columns {
+        for column in &self.selected_columns {
+            let column_type = column.r#type.clone().ok_or_else(|| {
+                ExtensionError::InvalidArgument(format!(
+                    "column '{}' is missing a type",
+                    column.name
+                ))
+            })?;
             args.output_columns.push(ExtensionColumn::Named {
-                name: column_name.clone(),
-                type_spec: "string?".to_string(), // Default type for this example
+                name: column.name.clone(),
+                r#type: column_type,
             });
         }
 

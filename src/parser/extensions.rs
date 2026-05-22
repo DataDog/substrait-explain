@@ -1,14 +1,18 @@
 use std::fmt;
 use std::str::FromStr;
 
+use substrait::proto::{Expression, Type};
 use thiserror::Error;
 
-use super::{ParsePair, Rule, RuleIter, unescape_string, unwrap_single_pair};
+use super::{
+    MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
+    unwrap_single_pair,
+};
 use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    RawExpression, SimpleExtensions, TupleValue,
+    SimpleExtensions, TupleValue,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -248,8 +252,9 @@ impl FromStr for SimpleExtensionDeclaration {
 
 use crate::extensions::any::Any;
 use crate::parser::expressions::{FieldIndex, Name};
+use crate::textify::expressions::Reference;
 
-impl ParsePair for ExtensionValue {
+impl ScopedParsePair for ExtensionValue {
     fn rule() -> Rule {
         Rule::extension_argument
     }
@@ -258,12 +263,15 @@ impl ParsePair for ExtensionValue {
         "ExtensionValue"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let inner = unwrap_single_pair(pair); // Extract the actual content
 
-        match inner.as_rule() {
+        Ok(match inner.as_rule() {
             Rule::enum_value => {
                 // Strip leading '&' and store the identifier
                 let s = inner.as_str().trim_start_matches('&').to_string();
@@ -272,61 +280,43 @@ impl ParsePair for ExtensionValue {
             Rule::reference => {
                 // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
-                ExtensionValue::Reference(field_index.0)
+                ExtensionValue::from(Reference(field_index.0))
             }
-            Rule::literal => {
+            Rule::untyped_literal => {
                 // Literal can contain integer, float, boolean, or string_literal
-                let mut literal_inner = inner.into_inner();
-                let value_pair = literal_inner.next().unwrap();
+                let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
                     Rule::integer => {
-                        let int_val = value_pair.as_str().parse::<i64>().unwrap();
-                        ExtensionValue::Integer(int_val)
+                        ExtensionValue::Integer(value_pair.as_str().parse::<i64>().unwrap())
                     }
                     Rule::float => {
-                        let float_val = value_pair.as_str().parse::<f64>().unwrap();
-                        ExtensionValue::Float(float_val)
+                        ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
                     }
-                    Rule::boolean => {
-                        let bool_val = value_pair.as_str() == "true";
-                        ExtensionValue::Boolean(bool_val)
-                    }
-                    _ => panic!("Unexpected literal value type: {:?}", value_pair.as_rule()),
+                    Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
+                    _ => panic!(
+                        "Unexpected extension scalar literal type: {:?}",
+                        value_pair.as_rule()
+                    ),
                 }
-            }
-            Rule::string_literal => ExtensionValue::String(unescape_string(inner)),
-            Rule::integer => {
-                // Direct integer (not wrapped in literal rule)
-                let int_val = inner.as_str().parse::<i64>().unwrap();
-                ExtensionValue::Integer(int_val)
-            }
-            Rule::float => {
-                // Direct float (not wrapped in literal rule)
-                let float_val = inner.as_str().parse::<f64>().unwrap();
-                ExtensionValue::Float(float_val)
-            }
-            Rule::boolean => {
-                // Direct boolean (not wrapped in literal rule)
-                let bool_val = inner.as_str() == "true";
-                ExtensionValue::Boolean(bool_val)
             }
             Rule::tuple => {
                 let tv = inner
                     .into_inner()
-                    .map(ExtensionValue::parse_pair)
-                    .collect::<TupleValue>();
+                    .map(|pair| ExtensionValue::parse_pair(extensions, pair))
+                    .collect::<Result<TupleValue, MessageParseError>>()?;
                 ExtensionValue::Tuple(tv)
             }
             Rule::expression => {
-                ExtensionValue::Expression(RawExpression::new(inner.as_str().to_string()))
+                let expr = Expression::parse_pair(extensions, inner)?;
+                ExtensionValue::from(expr)
             }
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
-        }
+        })
     }
 }
 
-impl ParsePair for ExtensionColumn {
+impl ScopedParsePair for ExtensionColumn {
     fn rule() -> Rule {
         Rule::extension_column
     }
@@ -335,32 +325,36 @@ impl ParsePair for ExtensionColumn {
         "ExtensionColumn"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let inner = unwrap_single_pair(pair); // Extract the actual content
 
-        match inner.as_rule() {
+        Ok(match inner.as_rule() {
             Rule::named_column => {
                 let mut iter = inner.into_inner();
-                let name_pair = iter.next().unwrap(); // Grammar guarantees name exists
+                let name_pair = iter.next().unwrap(); // Grammar guarantees type exists
                 let type_pair = iter.next().unwrap(); // Grammar guarantees type exists
 
                 let name = Name::parse_pair(name_pair).0.to_string(); // Reuse existing Name parser
-                let type_spec = type_pair.as_str().to_string(); // Types are complex, store as string for now
+                let ty = Type::parse_pair(extensions, type_pair)?;
 
-                ExtensionColumn::Named { name, type_spec }
+                ExtensionColumn::Named { name, r#type: ty }
             }
             Rule::reference => {
                 // Reuse the existing FieldIndex parser, then extract the i32
                 let field_index = FieldIndex::parse_pair(inner);
-                ExtensionColumn::Reference(field_index.0)
+                ExtensionColumn::Expr(Reference(field_index.0).into())
             }
             Rule::expression => {
-                ExtensionColumn::Expression(RawExpression::new(inner.as_str().to_string()))
+                let expr = Expression::parse_pair(extensions, inner)?;
+                ExtensionColumn::Expr(expr.into())
             }
             _ => panic!("Unexpected extension column type: {:?}", inner.as_rule()),
-        }
+        })
     }
 }
 
@@ -372,7 +366,7 @@ pub struct ExtensionInvocation {
     pub args: ExtensionArgs,
 }
 
-impl ParsePair for ExtensionInvocation {
+impl ScopedParsePair for ExtensionInvocation {
     fn rule() -> Rule {
         Rule::extension_relation
     }
@@ -381,7 +375,10 @@ impl ParsePair for ExtensionInvocation {
         "ExtensionInvocation"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let mut iter = pair.into_inner();
@@ -406,7 +403,7 @@ impl ParsePair for ExtensionInvocation {
         let ext_arguments = iter.next().unwrap();
         match ext_arguments.as_rule() {
             Rule::arguments => {
-                arguments_rule_parsing(ext_arguments, &mut args);
+                arguments_rule_parsing(extensions, ext_arguments, &mut args)?;
             }
             r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
         }
@@ -418,7 +415,7 @@ impl ParsePair for ExtensionInvocation {
                 Rule::extension_columns => {
                     for col_pair in value.into_inner() {
                         if col_pair.as_rule() == Rule::extension_column {
-                            let column = ExtensionColumn::parse_pair(col_pair);
+                            let column = ExtensionColumn::parse_pair(extensions, col_pair)?;
                             args.output_columns.push(column);
                         }
                     }
@@ -427,10 +424,10 @@ impl ParsePair for ExtensionInvocation {
             }
         }
 
-        ExtensionInvocation {
+        Ok(ExtensionInvocation {
             name: custom_name,
             args,
-        }
+        })
     }
 }
 
@@ -446,7 +443,7 @@ pub struct AdvExtInvocation {
     pub args: ExtensionArgs,
 }
 
-impl ParsePair for AdvExtInvocation {
+impl ScopedParsePair for AdvExtInvocation {
     fn rule() -> Rule {
         Rule::adv_extension
     }
@@ -455,7 +452,10 @@ impl ParsePair for AdvExtInvocation {
         "AdvExtInvocation"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let mut iter = pair.into_inner();
@@ -472,34 +472,39 @@ impl ParsePair for AdvExtInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Remaining token: arguments — grammar guarantees it is always present
-        // Use Leaf as the relation_type placeholder — adv_extensions don't have children
+        // Advanced extensions reuse ExtensionArgs, but their text syntax has no
+        // child relations; Leaf is only a placeholder here.
+        //
+        // TODO: this is ugly and misleading
         let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
 
         let arguments_pair = iter.next().unwrap();
         match arguments_pair.as_rule() {
             Rule::arguments => {
-                arguments_rule_parsing(arguments_pair, &mut args);
+                arguments_rule_parsing(extensions, arguments_pair, &mut args)?;
             }
             r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
         }
 
-        AdvExtInvocation {
+        Ok(AdvExtInvocation {
             ext_type,
             name,
             args,
-        }
+        })
     }
 }
 
-fn arguments_rule_parsing(inner_pair: pest::iterators::Pair<'_, Rule>, args: &mut ExtensionArgs) {
+fn arguments_rule_parsing(
+    extensions: &SimpleExtensions,
+    inner_pair: pest::iterators::Pair<'_, Rule>,
+    args: &mut ExtensionArgs,
+) -> Result<(), MessageParseError> {
     for arg in inner_pair.into_inner() {
         match arg.as_rule() {
             Rule::extension_arguments => {
-                // Parse positional arguments
                 for arg_pair in arg.into_inner() {
                     assert_eq!(arg_pair.as_rule(), Rule::extension_argument);
-                    args.positional.push(ExtensionValue::parse_pair(arg_pair));
+                    args.push(ExtensionValue::parse_pair(extensions, arg_pair)?);
                 }
             }
             Rule::extension_named_arguments => {
@@ -509,14 +514,15 @@ fn arguments_rule_parsing(inner_pair: pest::iterators::Pair<'_, Rule>, args: &mu
                     let name_p = arg_iter.next().unwrap();
                     let value_p = arg_iter.next().unwrap();
                     let key = Name::parse_pair(name_p).0.to_string();
-                    let val = ExtensionValue::parse_pair(value_p);
-                    args.named.insert(key, val);
+                    let val = ExtensionValue::parse_pair(extensions, value_p)?;
+                    args.insert(key, val);
                 }
             }
             Rule::empty => {}
             r => unreachable!("Unexpected rule in extension args: {r:?}"),
         }
     }
+    Ok(())
 }
 
 impl ExtensionRelationType {
@@ -566,10 +572,19 @@ impl ExtensionRelationType {
 
 #[cfg(test)]
 mod tests {
+    use substrait::proto;
+    use substrait::proto::expression::RexType;
+    use substrait::proto::expression::literal::LiteralType;
+
     use super::*;
-    use crate::extensions::ExtensionValue;
+    use crate::OutputOptions;
+    use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
-    use crate::parser::Parser;
+    use crate::parser::{Parser, ScopedParse};
+
+    fn parse_extension_value(text: &str) -> ExtensionValue {
+        ExtensionValue::parse(&SimpleExtensions::default(), text).unwrap()
+    }
 
     #[test]
     fn test_parse_urn_extension_declaration() {
@@ -698,20 +713,20 @@ Functions:
     #[test]
     fn test_tuple_mixed_types_parses() {
         // tuple has overlapping grammar syntax with expression.
-        let val = ExtensionValue::parse_str("(&HASH, 8, 'hello')").unwrap();
+        let val = parse_extension_value("(&HASH, 8, 'hello')");
         let ExtensionValue::Tuple(items) = val else {
             panic!("expected Tuple, got {val:?}");
         };
         assert_eq!(items.len(), 3);
         let items: Vec<&ExtensionValue> = items.iter().collect();
         assert!(matches!(items[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(items[1], ExtensionValue::Integer(8)));
-        assert!(matches!(items[2], ExtensionValue::String(s) if s == "hello"));
+        assert_eq!(i64::try_from(items[1]).unwrap(), 8);
+        assert_eq!(<&str>::try_from(items[2]).unwrap(), "hello");
     }
 
     #[test]
     fn test_empty_tuple_parses() {
-        let val = ExtensionValue::parse_str("()").unwrap();
+        let val = parse_extension_value("()");
         let ExtensionValue::Tuple(items) = val else {
             panic!("expected Tuple, got {val:?}");
         };
@@ -720,7 +735,7 @@ Functions:
 
     #[test]
     fn test_nested_tuple_parses() {
-        let val = ExtensionValue::parse_str("((&HASH, &RANGE), 8)").unwrap();
+        let val = parse_extension_value("((&HASH, &RANGE), 8)");
         let ExtensionValue::Tuple(outer) = val else {
             panic!("expected Tuple, got {val:?}");
         };
@@ -730,15 +745,16 @@ Functions:
         };
         assert_eq!(inner.len(), 2);
         assert!(matches!(inner.iter().next().unwrap(), ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(
-            outer.iter().nth(1).unwrap(),
-            ExtensionValue::Integer(8)
-        ));
+        assert_eq!(i64::try_from(outer.iter().nth(1).unwrap()).unwrap(), 8);
     }
 
     #[test]
     fn test_tuple_in_adv_extension_parses() {
-        let inv = AdvExtInvocation::parse_str("+ Enh:Foo[(&HASH, &RANGE), count=8]").unwrap();
+        let inv = AdvExtInvocation::parse(
+            &SimpleExtensions::default(),
+            "+ Enh:Foo[(&HASH, &RANGE), count=8]",
+        )
+        .unwrap();
         assert_eq!(inv.name, "Foo");
         assert_eq!(inv.args.positional.len(), 1);
         let ExtensionValue::Tuple(items) = &inv.args.positional[0] else {
@@ -761,9 +777,53 @@ Functions:
             "(&HASH,)",
             "((&HASH, &RANGE), 8)",
         ] {
-            let val = ExtensionValue::parse_str(text).unwrap();
+            let val = parse_extension_value(text);
             let rendered = ctx.textify_no_errors(&val);
             assert_eq!(&rendered, text, "roundtrip failed for {text}");
         }
+    }
+
+    #[test]
+    fn test_literal_expression_value_textifies_to_canonical_literal() {
+        let expr = proto::Expression {
+            rex_type: Some(RexType::Literal(proto::expression::Literal {
+                literal_type: Some(LiteralType::I64(42)),
+                nullable: false,
+                type_variation_reference: 0,
+            })),
+        };
+        let value = ExtensionValue::from(expr.clone());
+        let ctx = TestContext::new();
+
+        let rendered = ctx.textify_no_errors(&value);
+        assert_eq!(rendered, "42");
+
+        let parsed = parse_extension_value(&rendered);
+        let parsed_expr = Expr::try_from(&parsed).unwrap();
+        assert_eq!(parsed_expr.as_proto(), &expr);
+    }
+
+    #[test]
+    fn test_extension_scalar_literals_stay_scalar_in_verbose_output() {
+        let ctx = TestContext::new().with_options(OutputOptions::verbose());
+
+        let scalar = ExtensionValue::from(42_i64);
+        assert_eq!(ctx.textify_no_errors(&scalar), "42");
+
+        let expression = ExtensionValue::from(Expr::from(42_i64));
+        assert_eq!(ctx.textify_no_errors(&expression), "42:i64");
+    }
+
+    #[test]
+    fn test_typed_extension_literal_parses_as_expression() {
+        let value = parse_extension_value("42:i16");
+        assert!(i64::try_from(&value).is_err());
+
+        let expr = Expr::try_from(&value).unwrap();
+        assert_eq!(ctx_text(&expr), "42:i16");
+    }
+
+    fn ctx_text(value: &Expr) -> String {
+        TestContext::new().textify_no_errors(value)
     }
 }

@@ -153,8 +153,7 @@ impl Explainable for PartitionHint {
                 .push(ExtensionValue::Enum(s.as_str_name().to_owned()));
         }
         if self.count != 0 {
-            args.named
-                .insert("count".to_owned(), ExtensionValue::Integer(self.count));
+            args.insert("count", self.count);
         }
         Ok(args)
     }
@@ -186,10 +185,8 @@ mod tests {
         let args = hint.to_args().unwrap();
         assert_eq!(args.positional.len(), 1);
         assert!(matches!(&args.positional[0], ExtensionValue::Enum(s) if s == "HASH"));
-        assert!(matches!(
-            args.named.get("count"),
-            Some(ExtensionValue::Integer(8))
-        ));
+        let count = args.named.get("count").expect("count arg");
+        assert_eq!(i64::try_from(count).unwrap(), 8);
     }
 
     #[test]
@@ -219,7 +216,7 @@ mod tests {
     fn from_args_rejects_non_enum_positional() {
         // An integer positional arg where an enum is expected should fail.
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.positional.push(ExtensionValue::Integer(1));
+        args.push(1_i64);
         let result = PartitionHint::from_args(&args);
         assert!(
             result.is_err(),
@@ -231,8 +228,7 @@ mod tests {
     fn from_args_rejects_extra_named_args() {
         // check_exhausted should reject unknown named args.
         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.named
-            .insert("unknown_key".to_owned(), ExtensionValue::Integer(99));
+        args.insert("unknown_key", 99_i64);
         let result = PartitionHint::from_args(&args);
         assert!(
             result.is_err(),

@@ -1,5 +1,9 @@
 #![doc = include_str!("../API.md")]
 
+// Used as links in API.md
+#[cfg(doc)]
+pub use extensions::{AnyConvertible, Explainable, ExtensionRegistry};
+
 pub mod extensions;
 pub mod fixtures;
 pub mod grammar;
