@@ -5,7 +5,6 @@ use std::fmt;
 use std::fmt::Debug;
 
 use prost::{Message, UnknownEnumValue};
-use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -18,6 +17,7 @@ use substrait::proto::{
     Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
 };
 
+use super::addenda::AddendumLines;
 use super::expressions::Reference;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
@@ -277,12 +277,9 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
-    /// The advanced extension (enhancement and/or optimizations) attached to
-    /// this relation, if any.  Mirrors the `advanced_extension` field carried
-    /// by standard relation types in the protobuf (Read, Filter, Project, etc...)
-    ///  Extension relations (`ExtensionLeaf`, `ExtensionSingle`, `ExtensionMulti`)
-    /// do not carry this field and always set it to `None`.
-    pub advanced_extension: Option<&'a AdvancedExtension>,
+    /// `+`-prefixed addendum lines to emit between this relation's header and
+    /// children.
+    addenda: AddendumLines,
     /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
 }
@@ -295,12 +292,7 @@ impl Textify for Relation<'_> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         self.write_header(ctx, w)?;
         let child_scope = ctx.push_indent();
-        // Emit any enhancement / optimizations between the header line and the
-        // child relations, indented one level deeper than this relation — the
-        // same position they occupy in the text format when parsed.
-        if let Some(adv_ext) = self.advanced_extension {
-            adv_ext.textify(&child_scope, w)?;
-        }
+        self.addenda.textify(&child_scope, w)?;
         self.write_children(ctx, w)?;
         Ok(())
     }
@@ -309,7 +301,7 @@ impl Textify for Relation<'_> {
 impl Relation<'_> {
     /// Write the single header line for this relation, e.g. `Filter[$0 => $0]`.
     /// Does not write a trailing newline; callers are responsible for any
-    /// newline that follows (either from adv_ext or from the next child).
+    /// newline that follows (either from an addendum or from the next child).
     pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
@@ -363,7 +355,7 @@ impl<'a> Textify for TableName<'a> {
 }
 
 impl<'a> Relation<'a> {
-    fn from_read<S: Scope>(rel: &'a ReadRel, _ctx: &S) -> Self {
+    fn from_read<S: Scope>(rel: &'a ReadRel, ctx: &S) -> Self {
         let columns = read_columns(rel);
         let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
 
@@ -378,7 +370,7 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    advanced_extension: rel.advanced_extension.as_ref(),
+                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
                     children: vec![],
                 }
             }
@@ -397,7 +389,7 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    advanced_extension: rel.advanced_extension.as_ref(),
+                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
                     children: vec![],
                 }
             }
@@ -415,7 +407,7 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    advanced_extension: rel.advanced_extension.as_ref(),
+                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
                     children: vec![],
                 }
             }
@@ -499,7 +491,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -519,7 +511,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -548,7 +540,7 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns: vec![],
                     emit: None,
-                    advanced_extension: None,
+                    addenda: AddendumLines::none(),
                     children: vec![],
                 }
             }
@@ -621,7 +613,7 @@ impl<'a> Relation<'a> {
                     // Extension relations use `detail` rather than
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
-                    advanced_extension: None,
+                    addenda: AddendumLines::none(),
                     children,
                 }
             }
@@ -636,7 +628,7 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
-                    advanced_extension: None,
+                    addenda: AddendumLines::none(),
                     children,
                 }
             }
@@ -721,7 +713,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -829,7 +821,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -884,7 +876,7 @@ impl<'a> Relation<'a> {
             }),
             columns,
             emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -995,7 +987,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            advanced_extension: rel.advanced_extension.as_ref(),
+            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }

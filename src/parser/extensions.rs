@@ -524,7 +524,7 @@ pub(crate) struct AddendumInvocation {
 
 impl ScopedParsePair for AddendumInvocation {
     fn rule() -> Rule {
-        Rule::adv_extension
+        Rule::addendum
     }
 
     fn message() -> &'static str {
@@ -539,12 +539,12 @@ impl ScopedParsePair for AddendumInvocation {
 
         let mut iter = pair.into_inner();
 
-        // First token: adv_ext_type — grammar guarantees "Enh" or "Opt"
-        let type_pair = iter.next().unwrap(); // Grammar guarantees adv_ext_type exists
+        // First token: addendum_type - grammar guarantees a known addendum prefix.
+        let type_pair = iter.next().unwrap(); // Grammar guarantees addendum_type exists
         let kind = match type_pair.as_str() {
             "Enh" => AddendumKind::Enhancement,
             "Opt" => AddendumKind::Optimization,
-            other => unreachable!("Unexpected adv_ext_type: {other}"),
+            other => unreachable!("Unexpected addendum_type: {other}"),
         };
 
         // Second token: name
@@ -776,7 +776,7 @@ Functions:
     }
 
     #[test]
-    fn test_tuple_in_adv_extension_parses() {
+    fn test_tuple_in_addendum_parses() {
         let inv = AddendumInvocation::parse(
             &SimpleExtensions::default(),
             "+ Enh:Foo[(&HASH, &RANGE), count=8]",

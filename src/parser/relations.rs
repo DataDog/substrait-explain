@@ -54,9 +54,9 @@ impl<'a> RelationParsingContext<'a> {
         }
     }
 
-    /// Resolve an advanced-extension detail (enhancement or optimization) using the registry.
+    /// Resolve an addendum detail using the appropriate registry namespace.
     /// Any failure is treated as a hard parse error.
-    pub(crate) fn resolve_adv_ext_detail(
+    pub(crate) fn resolve_addendum_detail(
         &self,
         kind: AddendumKind,
         name: &str,
