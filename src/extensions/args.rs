@@ -4,10 +4,14 @@
 //! enhancements, and optimization hints. Relation extensions can additionally
 //! describe output columns.
 //!
-//! The interface presented to users is entirely structured; the
-//! parsing/textification is handled entirely by `substrait-explain`, not by
-//! users (and may require some context, e.g. function anchors <-> function
-//! names).
+//! The interface presented to extension handlers is structured rather than
+//! textual: handlers read and write values such as [`ExtensionArgs`], [`Expr`],
+//! and [`proto::Type`]. `substrait-explain` handles the surrounding
+//! parsing/textification. Some values need plan context before they reach a
+//! handler; for example, an expression argument like `add($0, $1)` is parsed
+//! using [`SimpleExtensions`](crate::extensions::SimpleExtensions) to resolve
+//! the text function name to the protobuf function anchor, and formatted by
+//! resolving that anchor back to a text name.
 //!
 //! The extension-facing interface for Substrait objects (e.g. [`proto::Type`])
 //! should map directly to Substrait protobuf concepts. Sometimes that means
