@@ -1,6 +1,6 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
-use substrait::proto::expression::field_reference::ReferenceType;
+use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
@@ -38,7 +38,7 @@ impl FieldIndex {
                     },
                 ))),
             })),
-            root_type: None,
+            root_type: Some(RootType::RootReference(RootReference {})),
         }
     }
 }
