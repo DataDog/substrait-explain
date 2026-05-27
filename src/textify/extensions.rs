@@ -11,8 +11,9 @@ use substrait::proto::extensions::AdvancedExtension;
 
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::registry::ExtensionType;
-use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
+use crate::extensions::{
+    AddendumKind, Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue,
+};
 use crate::textify::foundation::{PlanError, Scope, Textify};
 use crate::textify::types::{Name, escaped};
 
@@ -124,15 +125,15 @@ impl Textify for ExtensionArgs {
 fn format_adv_ext_line<S: Scope, W: fmt::Write>(
     ctx: &S,
     w: &mut W,
-    ext_type: ExtensionType,
+    kind: AddendumKind,
     detail: AnyRef<'_>,
 ) -> fmt::Result {
     let indent = ctx.indent();
     let registry = ctx.extension_registry();
-    let (prefix, decode_result) = match ext_type {
-        ExtensionType::Enhancement => ("Enh", registry.decode_enhancement(detail)),
-        ExtensionType::Optimization => ("Opt", registry.decode_optimization(detail)),
-        ExtensionType::Relation => unreachable!("Relation extensions don't use adv_ext lines"),
+    let prefix = kind.prefix();
+    let decode_result = match kind {
+        AddendumKind::Enhancement => registry.decode_enhancement(detail),
+        AddendumKind::Optimization => registry.decode_optimization(detail),
     };
     match decode_result {
         Ok((name, args)) => {
@@ -166,19 +167,14 @@ impl Textify for AdvancedExtension {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         if let Some(enhancement) = &self.enhancement {
             writeln!(w)?;
-            format_adv_ext_line(
-                ctx,
-                w,
-                ExtensionType::Enhancement,
-                AnyRef::from(enhancement),
-            )?;
+            format_adv_ext_line(ctx, w, AddendumKind::Enhancement, AnyRef::from(enhancement))?;
         }
         for optimization in &self.optimization {
             writeln!(w)?;
             format_adv_ext_line(
                 ctx,
                 w,
-                ExtensionType::Optimization,
+                AddendumKind::Optimization,
                 AnyRef::from(optimization),
             )?;
         }

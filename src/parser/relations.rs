@@ -17,8 +17,8 @@ use substrait::proto::{
 
 use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
 use crate::extensions::any::Any;
-use crate::extensions::registry::{ExtensionError, ExtensionType};
-use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
+use crate::extensions::registry::ExtensionError;
+use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
 use crate::parser::errors::{ParseContext, ParseError};
 use crate::parser::expressions::{FieldIndex, Name};
 
@@ -56,19 +56,15 @@ impl<'a> RelationParsingContext<'a> {
 
     /// Resolve an advanced-extension detail (enhancement or optimization) using the registry.
     /// Any failure is treated as a hard parse error.
-    ///
-    /// `ext_type` must be `Enhancement` or `Optimization`; `Relation` is not valid here and
-    /// will panic via the unreachable branch in the dispatch below.
-    pub fn resolve_adv_ext_detail(
+    pub(crate) fn resolve_adv_ext_detail(
         &self,
-        ext_type: ExtensionType,
+        kind: AddendumKind,
         name: &str,
         args: &ExtensionArgs,
     ) -> Result<Any, ParseError> {
-        let result = match ext_type {
-            ExtensionType::Enhancement => self.registry.parse_enhancement(name, args),
-            ExtensionType::Optimization => self.registry.parse_optimization(name, args),
-            ExtensionType::Relation => unreachable!("Relation is not an advanced extension type"),
+        let result = match kind {
+            AddendumKind::Enhancement => self.registry.parse_enhancement(name, args),
+            AddendumKind::Optimization => self.registry.parse_optimization(name, args),
         };
         result.map_err(|err| match err {
             ExtensionError::NotFound { .. } => ParseError::UnregisteredExtension {

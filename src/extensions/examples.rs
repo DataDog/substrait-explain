@@ -12,7 +12,7 @@
 //! the `&` enum prefix.  The optional named argument `count` gives the target
 //! number of partitions (`0` / absent means "let the executor decide").
 
-use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionRelationType, ExtensionValue};
+use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionValue};
 use crate::extensions::registry::{Explainable, ExtensionError, ExtensionRegistry};
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ impl Explainable for PartitionHint {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         for &raw in &self.strategies {
             let s = PartitionStrategy::try_from(raw).unwrap_or(PartitionStrategy::Unspecified);
             args.positional
@@ -228,7 +228,7 @@ impl Explainable for PlanHint {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.named
             .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
         Ok(args)
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn from_args_rejects_unknown_strategy() {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.positional
             .push(ExtensionValue::Enum("BOGUS".to_owned()));
         assert!(PartitionHint::from_args(&args).is_err());
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn from_args_rejects_non_enum_positional() {
         // An integer positional arg where an enum is expected should fail.
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.push(1_i64);
         let result = PartitionHint::from_args(&args);
         assert!(
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn from_args_rejects_extra_named_args() {
         // check_exhausted should reject unknown named args.
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.insert("unknown_key", 99_i64);
         let result = PartitionHint::from_args(&args);
         assert!(

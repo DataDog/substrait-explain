@@ -27,7 +27,6 @@
 //! ```rust
 //! use substrait_explain::extensions::{
 //!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
-//!     ExtensionRelationType,
 //! };
 //!
 //! // Define a custom extension type
@@ -70,7 +69,7 @@
 //!     }
 //!
 //!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-//!         let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+//!         let mut args = ExtensionArgs::default();
 //!         args.insert("path", self.path.clone());
 //!         Ok(args)
 //!     }
@@ -607,7 +606,7 @@ impl fmt::Debug for ExtensionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::{ExtensionColumn, ExtensionRelationType};
+    use crate::extensions::ExtensionColumn;
 
     // Mock type for testing
     struct TestExtension {
@@ -665,7 +664,7 @@ mod tests {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.insert("path", self.path.clone());
             args.insert("batch_size", self.batch_size);
             Ok(args)
@@ -688,7 +687,7 @@ mod tests {
         assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
 
         // Test parse and textify
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.insert("path", "data.parquet");
         args.insert("batch_size", 2048_i64);
 
@@ -706,7 +705,7 @@ mod tests {
 
     #[test]
     fn test_extension_args() {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
 
         // Add named args
         args.insert("path", "data/*.parquet");
@@ -742,19 +741,19 @@ mod tests {
         let registry = ExtensionRegistry::new();
 
         // Extension not found
-        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let args = ExtensionArgs::default();
         let result = registry.parse_extension("NonExistent", &args);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
 
         // Missing argument
-        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let args = ExtensionArgs::default();
         let mut extractor = args.extractor();
         let result = extractor.get_named_arg("missing");
         assert!(result.is_none());
         assert!(extractor.check_exhausted().is_ok());
 
         // Type check example
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
         args.insert("test", 42_i64);
         let mut extractor = args.extractor();
         let result = extractor.get_named_arg("test");
@@ -804,7 +803,7 @@ mod tests {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
         }
@@ -828,7 +827,7 @@ mod tests {
         );
 
         // Test that extension namespace works
-        let mut ext_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut ext_args = ExtensionArgs::default();
         ext_args.insert("path", "data.parquet");
         ext_args.insert("batch_size", 2048_i64);
 
@@ -838,7 +837,7 @@ mod tests {
         assert_eq!(ext_any.type_url, "test.TestExtension");
 
         // Test that enhancement namespace works
-        let mut enh_args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut enh_args = ExtensionArgs::default();
         enh_args.insert("hint", "optimize");
 
         let enh_any = registry
@@ -870,7 +869,7 @@ mod tests {
     #[test]
     fn test_enhancement_not_found_error() {
         let registry = ExtensionRegistry::new();
-        let args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let args = ExtensionArgs::default();
         let result = registry.parse_enhancement("NonExistentEnhancement", &args);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
     }
@@ -904,7 +903,7 @@ mod tests {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+            Ok(ExtensionArgs::default())
         }
     }
 
