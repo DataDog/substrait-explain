@@ -7,14 +7,8 @@
 
 use std::fmt;
 
-use substrait::proto::extensions::AdvancedExtension;
-
-use crate::FormatError;
-use crate::extensions::any::AnyRef;
-use crate::extensions::{
-    AddendumKind, Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue,
-};
-use crate::textify::foundation::{PlanError, Scope, Textify};
+use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
+use crate::textify::foundation::{Scope, Textify};
 use crate::textify::types::{Name, escaped};
 
 impl Textify for TupleValue {
@@ -113,71 +107,6 @@ impl Textify for ExtensionArgs {
             write!(w, " => {}", ctx.separated(self.output_columns.iter(), ", "))?;
         }
 
-        Ok(())
-    }
-}
-
-/// Textify a single enhancement or optimization line.
-///
-/// Successful lines include the registered extension name, e.g.
-/// `{indent}+ Enh:Name[args]`; decode failures fall back to a failure token so
-/// the surrounding relation can still be rendered.
-fn format_adv_ext_line<S: Scope, W: fmt::Write>(
-    ctx: &S,
-    w: &mut W,
-    kind: AddendumKind,
-    detail: AnyRef<'_>,
-) -> fmt::Result {
-    let indent = ctx.indent();
-    let registry = ctx.extension_registry();
-    let prefix = kind.prefix();
-    let decode_result = match kind {
-        AddendumKind::Enhancement => registry.decode_enhancement(detail),
-        AddendumKind::Optimization => registry.decode_optimization(detail),
-    };
-    match decode_result {
-        Ok((name, args)) => {
-            if !args.output_columns.is_empty() {
-                write!(
-                    w,
-                    "{indent}+ {prefix}[{}]",
-                    ctx.failure(FormatError::Format(PlanError::invalid(
-                        "adv_extension",
-                        Some(name),
-                        "output_columns cannot be represented in adv_extension syntax",
-                    )))
-                )
-            } else {
-                write!(w, "{indent}+ {prefix}:{name}[{}]", ctx.display(&args))
-            }
-        }
-        Err(error) => {
-            write!(w, "{indent}+ {prefix}[{}]", ctx.failure(error))
-        }
-    }
-}
-
-impl Textify for AdvancedExtension {
-    fn name() -> &'static str {
-        "AdvancedExtension"
-    }
-
-    /// Writes the enhancement line first, if present, followed by optimization
-    /// lines in protobuf order.
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        if let Some(enhancement) = &self.enhancement {
-            writeln!(w)?;
-            format_adv_ext_line(ctx, w, AddendumKind::Enhancement, AnyRef::from(enhancement))?;
-        }
-        for optimization in &self.optimization {
-            writeln!(w)?;
-            format_adv_ext_line(
-                ctx,
-                w,
-                AddendumKind::Optimization,
-                AnyRef::from(optimization),
-            )?;
-        }
         Ok(())
     }
 }

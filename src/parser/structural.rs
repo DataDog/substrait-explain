@@ -54,7 +54,7 @@ impl<'a> From<&'a str> for IndentedLine<'a> {
 /// the grammar rule directly (already unwrapped from the outer `planNode`).
 #[derive(Debug, Clone)]
 pub struct Addendum<'a> {
-    pub pair: Pair<'a, Rule>, // Rule::adv_extension
+    pub pair: Pair<'a, Rule>, // Rule::addendum
     pub line_no: i64,
 }
 
@@ -105,7 +105,7 @@ impl<'a> LineNode<'a> {
         let inner = unwrap_single_pair(outer);
 
         Ok(match inner.as_rule() {
-            Rule::adv_extension => LineNode::Addendum(Addendum {
+            Rule::addendum => LineNode::Addendum(Addendum {
                 pair: inner,
                 line_no,
             }),
@@ -146,7 +146,7 @@ impl<'a> LineNode<'a> {
 
         // planNode can include addenda (+Enh:, +Opt:); surface them so
         // TreeBuilder::add_line can produce the appropriate depth-0 error.
-        if pair.as_rule() == Rule::adv_extension {
+        if pair.as_rule() == Rule::addendum {
             return Ok(LineNode::Addendum(Addendum { pair, line_no }));
         }
 
@@ -270,15 +270,135 @@ impl<'a> TreeBuilder<'a> {
 }
 
 /// Intermediate state for relation parsing: the structural tree data
-/// (children, addenda) has been processed into proto types, but the
-/// relation's own grammar pair hasn't been parsed yet.
+/// (children, addenda) has been parsed, but the relation's own grammar pair
+/// hasn't been converted to a protobuf relation yet.
 struct RelationContext<'a> {
     pair: Pair<'a, Rule>,
     line_no: i64,
     #[allow(clippy::vec_box)]
     children: Vec<Box<Rel>>,
     input_field_count: usize,
-    advanced_extension: Option<AdvancedExtension>,
+    addenda: Addenda<'a>,
+}
+
+/// A parsed addendum line plus enough source location to build later errors.
+#[derive(Debug, Clone)]
+struct ParsedAddendum<'a> {
+    line_no: i64,
+    line: &'a str,
+    invocation: AddendumInvocation,
+}
+
+impl<'a> ParsedAddendum<'a> {
+    fn parse(extensions: &SimpleExtensions, addendum: Addendum<'a>) -> Result<Self, ParseError> {
+        let line_no = addendum.line_no;
+        let line = addendum.pair.as_str();
+        let invocation = AddendumInvocation::parse_pair(extensions, addendum.pair)
+            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.to_string()), e))?;
+        Ok(Self {
+            line_no,
+            line,
+            invocation,
+        })
+    }
+
+    fn context(&self) -> ParseContext {
+        ParseContext::new(self.line_no, self.line.to_string())
+    }
+
+    fn relation_context<'b>(
+        &'b self,
+        extensions: &'b SimpleExtensions,
+        registry: &'b ExtensionRegistry,
+    ) -> RelationParsingContext<'b> {
+        RelationParsingContext {
+            extensions,
+            registry,
+            line_no: self.line_no,
+            line: self.line,
+        }
+    }
+
+    fn resolve_detail(
+        &self,
+        extensions: &SimpleExtensions,
+        registry: &ExtensionRegistry,
+    ) -> Result<crate::extensions::any::Any, ParseError> {
+        self.relation_context(extensions, registry)
+            .resolve_addendum_detail(
+                self.invocation.kind,
+                &self.invocation.name,
+                &self.invocation.args,
+            )
+    }
+}
+
+/// Parsed `+` lines attached to a relation.
+#[derive(Debug, Clone, Default)]
+struct Addenda<'a> {
+    items: Vec<ParsedAddendum<'a>>,
+}
+
+impl<'a> Addenda<'a> {
+    fn parse(
+        extensions: &SimpleExtensions,
+        addenda: Vec<Addendum<'a>>,
+    ) -> Result<Self, ParseError> {
+        let items = addenda
+            .into_iter()
+            .map(|addendum| ParsedAddendum::parse(extensions, addendum))
+            .collect::<Result<Vec<_>, ParseError>>()?;
+        Ok(Self { items })
+    }
+
+    fn first(&self) -> Option<&ParsedAddendum<'a>> {
+        self.items.first()
+    }
+
+    fn reject_all(&self, message: &'static str) -> Result<(), ParseError> {
+        if let Some(addendum) = self.first() {
+            return Err(ParseError::ValidationError(
+                addendum.context(),
+                message.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn into_standard_advanced_extension(
+        self,
+        extensions: &SimpleExtensions,
+        registry: &ExtensionRegistry,
+    ) -> Result<Option<AdvancedExtension>, ParseError> {
+        let mut enhancement = None;
+        let mut optimizations = Vec::new();
+
+        for addendum in self.items {
+            match addendum.invocation.kind {
+                AddendumKind::Enhancement => {
+                    if enhancement.is_some() {
+                        return Err(ParseError::ValidationError(
+                            addendum.context(),
+                            "at most one enhancement per relation is allowed".to_string(),
+                        ));
+                    }
+                    enhancement = Some(addendum.resolve_detail(extensions, registry)?.into());
+                }
+                AddendumKind::Optimization => {
+                    optimizations.push(addendum.resolve_detail(extensions, registry)?.into());
+                }
+            }
+        }
+
+        if enhancement.is_none() && optimizations.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(AdvancedExtension {
+            enhancement,
+            optimization: optimizations,
+        }))
+    }
 }
 
 // Relation parsing component - handles converting LineNodes to Relations
@@ -312,14 +432,16 @@ impl<'a> RelationParser<'a> {
         ctx: RelationContext,
     ) -> Result<(Rel, usize), ParseError> {
         match ctx.pair.as_rule() {
-            Rule::virtual_read_relation => self.parse_rel::<VirtualReadRel>(extensions, ctx),
-            Rule::read_relation => self.parse_rel::<ReadRel>(extensions, ctx),
-            Rule::filter_relation => self.parse_rel::<FilterRel>(extensions, ctx),
-            Rule::project_relation => self.parse_rel::<ProjectRel>(extensions, ctx),
-            Rule::aggregate_relation => self.parse_rel::<AggregateRel>(extensions, ctx),
-            Rule::sort_relation => self.parse_rel::<SortRel>(extensions, ctx),
-            Rule::fetch_relation => self.parse_rel::<FetchRel>(extensions, ctx),
-            Rule::join_relation => self.parse_rel::<JoinRel>(extensions, ctx),
+            Rule::virtual_read_relation => {
+                self.parse_rel::<VirtualReadRel>(extensions, registry, ctx)
+            }
+            Rule::read_relation => self.parse_rel::<ReadRel>(extensions, registry, ctx),
+            Rule::filter_relation => self.parse_rel::<FilterRel>(extensions, registry, ctx),
+            Rule::project_relation => self.parse_rel::<ProjectRel>(extensions, registry, ctx),
+            Rule::aggregate_relation => self.parse_rel::<AggregateRel>(extensions, registry, ctx),
+            Rule::sort_relation => self.parse_rel::<SortRel>(extensions, registry, ctx),
+            Rule::fetch_relation => self.parse_rel::<FetchRel>(extensions, registry, ctx),
+            Rule::join_relation => self.parse_rel::<JoinRel>(extensions, registry, ctx),
             Rule::extension_relation => self.parse_extension_relation(extensions, registry, ctx),
             _ => unreachable!("unhandled relation rule: {:?}", ctx.pair.as_rule()),
         }
@@ -332,15 +454,22 @@ impl<'a> RelationParser<'a> {
     fn parse_rel<T: RelationParsePair>(
         &self,
         extensions: &SimpleExtensions,
+        registry: &ExtensionRegistry,
         ctx: RelationContext,
     ) -> Result<(Rel, usize), ParseError> {
-        assert_eq!(ctx.pair.as_rule(), T::rule());
-        let line_no = ctx.line_no;
-        let line = ctx.pair.as_str();
+        let RelationContext {
+            pair,
+            line_no,
+            children,
+            input_field_count,
+            addenda,
+        } = ctx;
+        assert_eq!(pair.as_rule(), T::rule());
+        let line = pair.as_str();
+        let advanced_extension = addenda.into_standard_advanced_extension(extensions, registry)?;
 
-        match T::parse_pair_with_context(extensions, ctx.pair, ctx.children, ctx.input_field_count)
-        {
-            Ok((parsed, count)) => Ok((parsed.into_rel(ctx.advanced_extension), count)),
+        match T::parse_pair_with_context(extensions, pair, children, input_field_count) {
+            Ok((parsed, count)) => Ok((parsed.into_rel(advanced_extension), count)),
             Err(e) => Err(ParseError::Plan(
                 ParseContext::new(line_no, line.to_string()),
                 e,
@@ -361,6 +490,9 @@ impl<'a> RelationParser<'a> {
         let line_no = ctx.line_no;
         let line = ctx.pair.as_str().to_string();
         let pair_span = ctx.pair.as_span();
+
+        ctx.addenda
+            .reject_all("extension relations do not support addenda (+ Enh / + Opt)")?;
 
         let ExtensionInvocation {
             relation_kind,
@@ -392,13 +524,6 @@ impl<'a> RelationParser<'a> {
         let children = ctx.children.into_iter().map(|child| *child).collect();
         let rel = relation_kind.create_rel(detail, children);
 
-        if ctx.advanced_extension.is_some() {
-            return Err(ParseError::ValidationError(
-                ParseContext::new(line_no, line.to_string()),
-                "extension relations do not support advanced extensions (+ Enh / + Opt)"
-                    .to_string(),
-            ));
-        }
         Ok((rel, output_column_count))
     }
 
@@ -420,11 +545,7 @@ impl<'a> RelationParser<'a> {
             children.push(Box::new(rel));
         }
 
-        let advanced_extension = if node.addenda.is_empty() {
-            None
-        } else {
-            Some(self.build_advanced_extension(extensions, registry, node.addenda)?)
-        };
+        let addenda = Addenda::parse(extensions, node.addenda)?;
 
         self.parse_relation(
             extensions,
@@ -434,63 +555,9 @@ impl<'a> RelationParser<'a> {
                 line_no: node.line_no,
                 children,
                 input_field_count,
-                advanced_extension,
+                addenda,
             },
         )
-    }
-
-    /// Parse enhancement/optimization addenda into an [`AdvancedExtension`] proto.
-    fn build_advanced_extension(
-        &self,
-        extensions: &SimpleExtensions,
-        registry: &ExtensionRegistry,
-        addenda: Vec<Addendum>,
-    ) -> Result<AdvancedExtension, ParseError> {
-        let mut enhancement = None;
-        let mut optimizations = Vec::new();
-
-        for addendum in addenda {
-            let line_no = addendum.line_no;
-            let line = addendum.pair.as_str().to_string();
-            let invocation = AddendumInvocation::parse_pair(extensions, addendum.pair)
-                .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line.clone()), e))?;
-            let context = RelationParsingContext {
-                extensions,
-                registry,
-                line_no,
-                line: &line,
-            };
-
-            match invocation.kind {
-                AddendumKind::Enhancement => {
-                    let detail = context.resolve_adv_ext_detail(
-                        AddendumKind::Enhancement,
-                        &invocation.name,
-                        &invocation.args,
-                    )?;
-                    if enhancement.is_some() {
-                        return Err(ParseError::ValidationError(
-                            ParseContext::new(line_no, line.clone()),
-                            "at most one enhancement per relation is allowed".to_string(),
-                        ));
-                    }
-                    enhancement = Some(detail.into());
-                }
-                AddendumKind::Optimization => {
-                    let detail = context.resolve_adv_ext_detail(
-                        AddendumKind::Optimization,
-                        &invocation.name,
-                        &invocation.args,
-                    )?;
-                    optimizations.push(detail.into());
-                }
-            }
-        }
-
-        Ok(AdvancedExtension {
-            enhancement,
-            optimization: optimizations,
-        })
     }
 
     /// Build a tree of relations.

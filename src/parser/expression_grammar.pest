@@ -224,7 +224,7 @@ planNode = {
   | fetch_relation
   | join_relation
   | extension_relation
-  | adv_extension
+  | addendum
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -339,10 +339,10 @@ extension_named_argument  = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 extension_columns = { (extension_column ~ (sp ~ "," ~ sp ~ extension_column)*)? }
 extension_column  = { named_column | reference | expression }
 
-// Advanced extensions: enhancements and optimizations attached to relations
+// Relation addenda: metadata lines attached to relations.
 // Format: + Enh:Name[args] or + Opt:Name[args]
 // Examples:
 // - + Enh:PartitionHint[&HASH, count=8]
 // - + Opt:SomeOptimization[threshold=100, mode='fast']
-adv_extension = { "+" ~ sp ~ adv_ext_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
-adv_ext_type  = { "Enh" | "Opt" }
+addendum      = { "+" ~ sp ~ addendum_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
+addendum_type = { "Enh" | "Opt" }

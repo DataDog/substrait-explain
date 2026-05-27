@@ -827,17 +827,17 @@ Each relation can carry:
 ### Syntax
 
 ```text
-adv_extension := "+" adv_ext_type ":" name "[" (empty | extension_args)? "]"
-adv_ext_type  := "Enh" | "Opt"
+addendum      := "+" addendum_type ":" name "[" (empty | extension_args)? "]"
+addendum_type := "Enh" | "Opt"
 ```
 
 Where:
 
-- **`adv_ext_type`** — `Enh` for an enhancement, `Opt` for an optimization
+- **`addendum_type`** — `Enh` for an enhancement, `Opt` for an optimization
 - **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty
 
-Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. Enhancement and optimization lines MUST appear **before** any child relations.
+Addendum lines are **indented one level deeper** than the relation they annotate, just like child relations. Enhancement and optimization lines MUST appear **before** any child relations.
 
 ### Argument Syntax
 

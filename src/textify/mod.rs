@@ -1,5 +1,6 @@
 //! Output a plan in text format.
 
+mod addenda;
 pub mod expressions;
 pub mod extensions;
 pub mod foundation;
