@@ -276,28 +276,22 @@ impl SimpleExtensions {
             .map(|((anchor, kind), (urn_ref, name))| {
                 let mapping_type = match kind {
                     ExtensionKind::Function => MappingType::ExtensionFunction(
-                        #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionFunction {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated
                             function_anchor: *anchor,
                             name: name.full().to_string(),
                         },
                     ),
                     ExtensionKind::Type => MappingType::ExtensionType(
-                        #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionType {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated
                             type_anchor: *anchor,
                             name: name.full().to_string(),
                         },
                     ),
                     ExtensionKind::TypeVariation => MappingType::ExtensionTypeVariation(
-                        #[allow(deprecated)]
                         pext::simple_extension_declaration::ExtensionTypeVariation {
                             extension_urn_reference: *urn_ref,
-                            extension_uri_reference: Default::default(), // deprecated
                             type_variation_anchor: *anchor,
                             name: name.full().to_string(),
                         },
@@ -590,10 +584,8 @@ mod tests {
 
     fn new_ext_fn(anchor: u32, urn_ref: u32, name: &str) -> pext::SimpleExtensionDeclaration {
         pext::SimpleExtensionDeclaration {
-            #[allow(deprecated)]
             mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
                 extension_urn_reference: urn_ref,
-                extension_uri_reference: Default::default(), // deprecated
                 function_anchor: anchor,
                 name: name.to_string(),
             })),
@@ -601,11 +593,9 @@ mod tests {
     }
 
     fn new_ext_type(anchor: u32, urn_ref: u32, name: &str) -> pext::SimpleExtensionDeclaration {
-        #[allow(deprecated)]
         pext::SimpleExtensionDeclaration {
             mapping_type: Some(MappingType::ExtensionType(ExtensionType {
                 extension_urn_reference: urn_ref,
-                extension_uri_reference: Default::default(), // deprecated
                 type_anchor: anchor,
                 name: name.to_string(),
             })),
@@ -614,11 +604,9 @@ mod tests {
 
     fn new_type_var(anchor: u32, urn_ref: u32, name: &str) -> pext::SimpleExtensionDeclaration {
         pext::SimpleExtensionDeclaration {
-            #[allow(deprecated)]
             mapping_type: Some(MappingType::ExtensionTypeVariation(
                 ExtensionTypeVariation {
                     extension_urn_reference: urn_ref,
-                    extension_uri_reference: Default::default(), // deprecated
                     type_variation_anchor: anchor,
                     name: name.to_string(),
                 },
