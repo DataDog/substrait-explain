@@ -370,7 +370,10 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+                    addenda: AddendumLines::from_advanced_extension(
+                        ctx,
+                        rel.advanced_extension.as_ref(),
+                    ),
                     children: vec![],
                 }
             }
@@ -389,7 +392,10 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+                    addenda: AddendumLines::from_advanced_extension(
+                        ctx,
+                        rel.advanced_extension.as_ref(),
+                    ),
                     children: vec![],
                 }
             }
@@ -407,7 +413,10 @@ impl<'a> Relation<'a> {
                     }),
                     columns,
                     emit,
-                    addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+                    addenda: AddendumLines::from_advanced_extension(
+                        ctx,
+                        rel.advanced_extension.as_ref(),
+                    ),
                     children: vec![],
                 }
             }
@@ -491,7 +500,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -511,7 +520,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -713,7 +722,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -821,7 +830,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -876,7 +885,7 @@ impl<'a> Relation<'a> {
             }),
             columns,
             emit,
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }
@@ -987,7 +996,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            addenda: AddendumLines::standard(ctx, rel.advanced_extension.as_ref()),
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
     }

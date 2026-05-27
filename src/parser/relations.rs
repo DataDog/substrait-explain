@@ -54,7 +54,7 @@ impl<'a> RelationParsingContext<'a> {
         }
     }
 
-    /// Resolve an addendum detail using the appropriate registry namespace.
+    /// Resolve an addendum detail using the registry entry for its kind.
     /// Any failure is treated as a hard parse error.
     pub(crate) fn resolve_addendum_detail(
         &self,

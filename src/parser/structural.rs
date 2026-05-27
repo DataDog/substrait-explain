@@ -278,7 +278,7 @@ struct RelationContext<'a> {
     #[allow(clippy::vec_box)]
     children: Vec<Box<Rel>>,
     input_field_count: usize,
-    addenda: RelationAddenda<'a>,
+    addenda: Addenda<'a>,
 }
 
 /// A parsed addendum line plus enough source location to build later errors.
@@ -335,11 +335,11 @@ impl<'a> ParsedAddendum<'a> {
 
 /// Parsed `+` lines attached to a relation.
 #[derive(Debug, Clone, Default)]
-struct RelationAddenda<'a> {
+struct Addenda<'a> {
     items: Vec<ParsedAddendum<'a>>,
 }
 
-impl<'a> RelationAddenda<'a> {
+impl<'a> Addenda<'a> {
     fn parse(
         extensions: &SimpleExtensions,
         addenda: Vec<Addendum<'a>>,
@@ -545,7 +545,7 @@ impl<'a> RelationParser<'a> {
             children.push(Box::new(rel));
         }
 
-        let addenda = RelationAddenda::parse(extensions, node.addenda)?;
+        let addenda = Addenda::parse(extensions, node.addenda)?;
 
         self.parse_relation(
             extensions,
