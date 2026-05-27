@@ -215,6 +215,12 @@ impl Explainable for PlanHint {
     }
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        if !args.positional.is_empty() {
+            return Err(ExtensionError::InvalidArgument(
+                "PlanHint does not accept positional arguments".to_owned(),
+            ));
+        }
+
         let mut extractor = args.extractor();
         let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
         extractor.check_exhausted()?;
