@@ -152,7 +152,8 @@ impl ExtensionParser {
         &self.extensions
     }
 
-    pub fn state(&self) -> ExtensionParserState {
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> ExtensionParserState {
         self.state
     }
 }
