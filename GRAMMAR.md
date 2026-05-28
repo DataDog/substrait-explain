@@ -64,7 +64,7 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 ## Basic Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -126,7 +126,7 @@ Relations use indentation to show the query plan hierarchy:
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -250,7 +250,7 @@ From [official Substrait grammar](https://raw.githubusercontent.com/substrait-io
 ##### Examples:
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 
 let plan_text = r#"
 === Plan
@@ -272,7 +272,7 @@ Compound types follow the same syntax as standard Substrait parameterized types.
 // TODO: This example uses `map` type, which is not yet implemented in the parser.
 
 ```text
-use substrait_explain::parser::Parser;
+use substrait_explain::Parser;
 
 let plan_text = r#"
 === Plan
@@ -302,7 +302,7 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 #### Examples
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -349,7 +349,7 @@ Currently, only references to fields in the Relations' input are supported.
 #### Examples
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 # 
 # let plan_text = r#"
 === Plan
@@ -405,7 +405,7 @@ An IfThen expression is a conditional function or logical operator that evaluate
 #### Examples
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 # 
 # let plan_text = r#"
 === Plan
@@ -493,7 +493,7 @@ form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: 
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Plan
@@ -520,7 +520,7 @@ Root[c, d]           // root with output columns c and d
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Plan
@@ -559,7 +559,7 @@ Where `virtual_row := "(" (expression ("," expression)*)? ")"` — a parenthesiz
 Inline form with two rows:
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Plan
@@ -574,7 +574,7 @@ Root[id, name]
 Empty virtual table (no rows):
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Plan
@@ -610,7 +610,7 @@ The `+ Ext:` line is indented one level deeper than the `Read:Extension` line. I
 ```rust
 # use substrait_explain::extensions::examples;
 # use substrait_explain::format_with_registry;
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let registry = examples::registry();
 # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -633,7 +633,7 @@ Relation-level advanced extensions can still be attached to the same read relati
 ```rust
 # use substrait_explain::extensions::examples;
 # use substrait_explain::format_with_registry;
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let registry = examples::registry();
 # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -667,7 +667,7 @@ Root[id]
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -700,7 +700,7 @@ Root[result]
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Plan
@@ -730,7 +730,7 @@ Root[result]
 #### Example
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -791,7 +791,7 @@ For joins, field references map to the combined schema of left and right inputs:
 **Example**:
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions
@@ -924,7 +924,7 @@ enum_value := "&" identifier
 ```rust
 # use substrait_explain::extensions::examples;
 # use substrait_explain::format_with_registry;
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let registry = examples::registry();
 # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -947,7 +947,7 @@ Root[result]
 ```rust
 # use substrait_explain::extensions::examples;
 # use substrait_explain::format_with_registry;
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let registry = examples::registry();
 # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -1014,7 +1014,7 @@ The `Read` line and everything else in the plan are textified normally; only the
 A complete query that joins users and orders tables, calculates total order value, filters for high-value orders, and groups by user to show total revenue per customer:
 
 ```rust
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 #
 # let plan_text = r#"
 === Extensions

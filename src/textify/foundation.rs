@@ -11,7 +11,7 @@ use crate::extensions::registry::ExtensionError;
 use crate::extensions::simple::MissingReference;
 use crate::extensions::{ExtensionRegistry, InsertError, SimpleExtensions};
 
-pub const NONSPECIFIC: Option<&'static str> = None;
+pub(crate) const NONSPECIFIC: Option<&'static str> = None;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Visibility {
@@ -91,12 +91,12 @@ impl OutputOptions {
         }
     }
 }
-pub trait ErrorAccumulator: Clone {
+pub(crate) trait ErrorAccumulator: Clone {
     fn push(&self, e: FormatError);
 }
 
 #[derive(Debug, Clone)]
-pub struct ErrorQueue {
+pub(crate) struct ErrorQueue {
     sender: mpsc::Sender<FormatError>,
     receiver: Rc<mpsc::Receiver<FormatError>>,
 }
@@ -137,7 +137,8 @@ impl fmt::Display for ErrorQueue {
 }
 
 impl ErrorQueue {
-    pub fn errs(self) -> Result<(), ErrorList> {
+    #[cfg(test)]
+    pub(crate) fn errs(self) -> Result<(), ErrorList> {
         let errors: Vec<FormatError> = self.receiver.try_iter().collect();
         if errors.is_empty() {
             Ok(())
@@ -148,20 +149,23 @@ impl ErrorQueue {
 }
 
 // A list of errors, used to return errors from textify operations.
-pub struct ErrorList(pub Vec<FormatError>);
+#[cfg(test)]
+pub(crate) struct ErrorList(pub(crate) Vec<FormatError>);
 
+#[cfg(test)]
 impl ErrorList {
-    pub fn first(&self) -> &FormatError {
+    pub(crate) fn first(&self) -> &FormatError {
         self.0
             .first()
             .expect("Expected at least one error in ErrorList")
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
+#[cfg(test)]
 impl fmt::Display for ErrorList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, e) in self.0.iter().enumerate() {
@@ -174,6 +178,7 @@ impl fmt::Display for ErrorList {
     }
 }
 
+#[cfg(test)]
 impl fmt::Debug for ErrorList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, e) in self.0.iter().enumerate() {
@@ -186,6 +191,7 @@ impl fmt::Debug for ErrorList {
     }
 }
 
+#[cfg(test)]
 impl std::error::Error for ErrorList {}
 
 impl<'e> IntoIterator for &'e ErrorQueue {
@@ -197,7 +203,7 @@ impl<'e> IntoIterator for &'e ErrorQueue {
     }
 }
 
-pub trait IndentTracker {
+pub(crate) trait IndentTracker {
     // TODO: Use this and remove the allow(dead_code)
     #[allow(dead_code)]
     fn indent<W: fmt::Write>(&self, w: &mut W) -> fmt::Result;
@@ -205,7 +211,7 @@ pub trait IndentTracker {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct IndentStack<'a> {
+pub(crate) struct IndentStack<'a> {
     count: u32,
     indent: &'a str,
 }
@@ -220,7 +226,7 @@ impl<'a> fmt::Display for IndentStack<'a> {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct ScopedContext<'a, Err: ErrorAccumulator> {
+pub(crate) struct ScopedContext<'a, Err: ErrorAccumulator> {
     errors: &'a Err,
     options: &'a OutputOptions,
     extensions: &'a SimpleExtensions,
@@ -229,7 +235,7 @@ pub struct ScopedContext<'a, Err: ErrorAccumulator> {
 }
 
 impl<'a> IndentStack<'a> {
-    pub fn new(indent: &'a str) -> Self {
+    pub(crate) fn new(indent: &'a str) -> Self {
         Self { count: 0, indent }
     }
 }
@@ -249,7 +255,7 @@ impl<'a> IndentTracker for IndentStack<'a> {
 }
 
 impl<'a, Err: ErrorAccumulator> ScopedContext<'a, Err> {
-    pub fn new(
+    pub(crate) fn new(
         options: &'a OutputOptions,
         errors: &'a Err,
         extensions: &'a SimpleExtensions,
@@ -386,7 +392,7 @@ impl fmt::Display for PlanError {
 
 #[derive(Debug, Copy, Clone)]
 /// A token used to represent an error in the textified output.
-pub struct ErrorToken(
+pub(crate) struct ErrorToken(
     /// The kind of item this is in place of.
     pub &'static str,
 );
@@ -398,7 +404,7 @@ impl fmt::Display for ErrorToken {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct MaybeToken<V: fmt::Display>(pub Result<V, ErrorToken>);
+pub(crate) struct MaybeToken<V: fmt::Display>(pub(crate) Result<V, ErrorToken>);
 
 impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -413,7 +419,7 @@ impl<V: fmt::Display> fmt::Display for MaybeToken<V> {
 ///
 /// This trait is used to convert a Substrait type into a string representation
 /// that can be written to a text writer.
-pub trait Textify {
+pub(crate) trait Textify {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result;
 
     // TODO: Prost can give this to us if substrait was generated with `enable_type_names`
@@ -431,7 +437,7 @@ pub trait Textify {
 /// - Indent (`&`[`IndentTracker`]) for tracking the current indent level
 ///
 /// The `Scope` trait is used to provide the context for textifying a plan.
-pub trait Scope: Sized {
+pub(crate) trait Scope: Sized {
     /// The type of errors that can occur when textifying a plan.
     type Errors: ErrorAccumulator;
     type Indent: IndentTracker;
@@ -479,16 +485,6 @@ pub trait Scope: Sized {
         }
     }
 
-    fn expect_ok<'a, T: Textify, E: Into<FormatError>>(
-        &'a self,
-        result: Result<&'a T, E>,
-    ) -> MaybeToken<impl fmt::Display + 'a> {
-        MaybeToken(match result {
-            Ok(t) => Ok(self.display(t)),
-            Err(e) => Err(self.failure(e)),
-        })
-    }
-
     fn display<'a, T: Textify>(&'a self, value: &'a T) -> Displayable<'a, Self, T> {
         Displayable { scope: self, value }
     }
@@ -514,10 +510,6 @@ pub trait Scope: Sized {
         }
     }
 
-    fn option<'a, T: Textify>(&'a self, value: Option<&'a T>) -> OptionalDisplayable<'a, Self, T> {
-        OptionalDisplayable { scope: self, value }
-    }
-
     fn optional<'a, T: Textify>(
         &'a self,
         value: &'a T,
@@ -529,7 +521,7 @@ pub trait Scope: Sized {
 }
 
 #[derive(Clone)]
-pub struct Separated<'a, S: Scope, T: Textify + 'a, I: IntoIterator<Item = &'a T> + Clone> {
+pub(crate) struct Separated<'a, S: Scope, T: Textify + 'a, I: IntoIterator<Item = &'a T> + Clone> {
     scope: &'a S,
     items: I,
     separator: &'static str,
@@ -562,7 +554,7 @@ impl<'a, S: Scope, T: Textify, I: IntoIterator<Item = &'a T> + Clone + fmt::Debu
 }
 
 #[derive(Copy, Clone)]
-pub struct Displayable<'a, S: Scope, T: Textify> {
+pub(crate) struct Displayable<'a, S: Scope, T: Textify> {
     scope: &'a S,
     value: &'a T,
 }
@@ -573,21 +565,6 @@ impl<'a, S: Scope, T: Textify + fmt::Debug> fmt::Debug for Displayable<'a, S, T>
     }
 }
 
-impl<'a, S: Scope, T: Textify> Displayable<'a, S, T> {
-    pub fn new(scope: &'a S, value: &'a T) -> Self {
-        Self { scope, value }
-    }
-
-    /// Display only if the option is true, otherwise, do not display anything.
-    pub fn optional(self, option: bool) -> OptionalDisplayable<'a, S, T> {
-        let value = if option { Some(self.value) } else { None };
-        OptionalDisplayable {
-            scope: self.scope,
-            value,
-        }
-    }
-}
-
 impl<'a, S: Scope, T: Textify> fmt::Display for Displayable<'a, S, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.value.textify(self.scope, f)
@@ -595,7 +572,7 @@ impl<'a, S: Scope, T: Textify> fmt::Display for Displayable<'a, S, T> {
 }
 
 #[derive(Copy, Clone)]
-pub struct OptionalDisplayable<'a, S: Scope, T: Textify> {
+pub(crate) struct OptionalDisplayable<'a, S: Scope, T: Textify> {
     scope: &'a S,
     value: Option<&'a T>,
 }

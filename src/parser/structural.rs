@@ -978,7 +978,7 @@ mod tests {
 
     use super::*;
     use crate::extensions::simple::ExtensionKind;
-    use crate::parser::extensions::ExtensionParserState;
+    use crate::parser::extensions::ExpectedExtensionLine;
 
     #[test]
     fn test_parse_basic_block() {
@@ -1037,12 +1037,12 @@ Type Variations:
         // The last significant line in input_block is a TypeVariation declaration.
         assert_eq!(
             parser.state(),
-            ExtensionParserState::ExtensionDeclarations(ExtensionKind::TypeVariation)
+            ExpectedExtensionLine::ExtensionDeclarations(ExtensionKind::TypeVariation)
         );
 
         // Check that a subsequent blank line correctly resets state to Extensions.
         parser.parse_line(IndentedLine(0, "")).unwrap();
-        assert_eq!(parser.state(), ExtensionParserState::Extensions);
+        assert_eq!(parser.state(), ExpectedExtensionLine::Extensions);
     }
 
     /// Test that we can parse a larger extensions block and it matches the input.

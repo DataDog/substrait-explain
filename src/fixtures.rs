@@ -4,10 +4,9 @@ use substrait::proto;
 
 use crate::extensions::simple::ExtensionKind;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
-use crate::format;
-use crate::parser::{MessageParseError, Parser, ScopedParse};
-use crate::textify::foundation::{ErrorAccumulator, ErrorList};
-use crate::textify::{ErrorQueue, OutputOptions, Scope, ScopedContext, Textify};
+use crate::parser::common::test_support::ScopedParse;
+use crate::textify::foundation::{ErrorAccumulator, ErrorList, ErrorQueue};
+use crate::textify::{OutputOptions, Scope, ScopedContext, Textify};
 
 pub struct TestContext {
     pub options: OutputOptions,
@@ -91,42 +90,8 @@ impl TestContext {
         assert!(errs.is_empty(), "{} Errors: {}", errs.0.len(), errs.0[0]);
         s
     }
-
-    pub fn parse<T: ScopedParse>(&self, input: &str) -> Result<T, MessageParseError> {
-        T::parse(&self.extensions, input)
-    }
 }
 
-/// Roundtrip a plan and verify that the output is the same as the input, after
-/// being parsed to a Substrait plan and then back to text.
-pub fn roundtrip_plan(input: &str) {
-    // Parse the plan using the simplified interface
-    let plan = Parser::parse(input).unwrap_or_else(|e| {
-        println!("Error parsing plan:\n{e}");
-        panic!("{e}");
-    });
-
-    // Format the plan back to text using the simplified interface
-    let (actual, errors) = format(&plan);
-
-    // Check for formatting errors
-    if !errors.is_empty() {
-        println!("Formatting errors:");
-        for error in errors {
-            println!("  {error}");
-        }
-        panic!("Formatting errors occurred");
-    }
-
-    // Compare the output with the input, printing the difference.
-    assert_eq!(
-        actual.trim(),
-        input.trim(),
-        "Expected:\n---\n{}\n---\nActual:\n---\n{}\n---",
-        input.trim(),
-        actual.trim()
-    );
-}
 /// Parse a built-in type string (e.g. `"i64"`, `"string?"`) into a
 /// `proto::Type`. Panics on invalid type names.
 pub fn parse_type(s: &str) -> proto::Type {

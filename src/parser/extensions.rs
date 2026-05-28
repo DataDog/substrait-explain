@@ -18,17 +18,19 @@ use crate::parser::structural::IndentedLine;
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
     #[error("Unexpected line, expected {0}")]
-    UnexpectedLine(ExtensionParserState),
+    UnexpectedLine(ExpectedExtensionLine),
     #[error("Error adding extension: {0}")]
     ExtensionError(#[from] InsertError),
     #[error("Error parsing message: {0}")]
     Message(#[from] super::MessageParseError),
 }
 
-/// The state of the extension parser - tracking what section of extension
-/// parsing we are in.
+/// The kind of extension-section line expected next.
+///
+/// `ExtensionParser` also uses this as its internal state, since each parser
+/// state corresponds directly to the next accepted line shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExtensionParserState {
+pub enum ExpectedExtensionLine {
     // The extensions section, after parsing the 'Extensions:' header, before
     // parsing any subsection headers.
     Extensions,
@@ -40,12 +42,12 @@ pub enum ExtensionParserState {
     ExtensionDeclarations(ExtensionKind),
 }
 
-impl fmt::Display for ExtensionParserState {
+impl fmt::Display for ExpectedExtensionLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExtensionParserState::Extensions => write!(f, "Subsection Header, e.g. 'URNs:'"),
-            ExtensionParserState::ExtensionUrns => write!(f, "Extension URNs"),
-            ExtensionParserState::ExtensionDeclarations(kind) => {
+            ExpectedExtensionLine::Extensions => write!(f, "Subsection Header, e.g. 'URNs:'"),
+            ExpectedExtensionLine::ExtensionUrns => write!(f, "Extension URNs"),
+            ExpectedExtensionLine::ExtensionDeclarations(kind) => {
                 write!(f, "Extension Declaration for {kind}")
             }
         }
@@ -60,14 +62,14 @@ impl fmt::Display for ExtensionParserState {
 /// SimpleExtensions::write method.
 #[derive(Debug)]
 pub struct ExtensionParser {
-    state: ExtensionParserState,
+    state: ExpectedExtensionLine,
     extensions: SimpleExtensions,
 }
 
 impl Default for ExtensionParser {
     fn default() -> Self {
         Self {
-            state: ExtensionParserState::Extensions,
+            state: ExpectedExtensionLine::Extensions,
             extensions: SimpleExtensions::new(),
         }
     }
@@ -78,14 +80,14 @@ impl ExtensionParser {
         if line.1.is_empty() {
             // Blank lines are allowed between subsections, so if we see
             // one, we revert out of the subsection.
-            self.state = ExtensionParserState::Extensions;
+            self.state = ExpectedExtensionLine::Extensions;
             return Ok(());
         }
 
         match self.state {
-            ExtensionParserState::Extensions => self.parse_subsection(line),
-            ExtensionParserState::ExtensionUrns => self.parse_extension_urns(line),
-            ExtensionParserState::ExtensionDeclarations(extension_kind) => {
+            ExpectedExtensionLine::Extensions => self.parse_subsection(line),
+            ExpectedExtensionLine::ExtensionUrns => self.parse_extension_urns(line),
+            ExpectedExtensionLine::ExtensionDeclarations(extension_kind) => {
                 self.parse_declarations(line, extension_kind)
             }
         }
@@ -94,20 +96,20 @@ impl ExtensionParser {
     fn parse_subsection(&mut self, line: IndentedLine) -> Result<(), ExtensionParseError> {
         match line {
             IndentedLine(0, simple::EXTENSION_URNS_HEADER) => {
-                self.state = ExtensionParserState::ExtensionUrns;
+                self.state = ExpectedExtensionLine::ExtensionUrns;
                 Ok(())
             }
             IndentedLine(0, simple::EXTENSION_FUNCTIONS_HEADER) => {
-                self.state = ExtensionParserState::ExtensionDeclarations(ExtensionKind::Function);
+                self.state = ExpectedExtensionLine::ExtensionDeclarations(ExtensionKind::Function);
                 Ok(())
             }
             IndentedLine(0, simple::EXTENSION_TYPES_HEADER) => {
-                self.state = ExtensionParserState::ExtensionDeclarations(ExtensionKind::Type);
+                self.state = ExpectedExtensionLine::ExtensionDeclarations(ExtensionKind::Type);
                 Ok(())
             }
             IndentedLine(0, simple::EXTENSION_TYPE_VARIATIONS_HEADER) => {
                 self.state =
-                    ExtensionParserState::ExtensionDeclarations(ExtensionKind::TypeVariation);
+                    ExpectedExtensionLine::ExtensionDeclarations(ExtensionKind::TypeVariation);
                 Ok(())
             }
             _ => Err(ExtensionParseError::UnexpectedLine(self.state)),
@@ -153,7 +155,7 @@ impl ExtensionParser {
     }
 
     #[cfg(test)]
-    pub(crate) fn state(&self) -> ExtensionParserState {
+    pub(crate) fn state(&self) -> ExpectedExtensionLine {
         self.state
     }
 }
@@ -609,7 +611,8 @@ mod tests {
     use crate::OutputOptions;
     use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
-    use crate::parser::{Parser, ScopedParse};
+    use crate::parser::Parser;
+    use crate::parser::common::test_support::ScopedParse;
 
     fn parse_extension_value(text: &str) -> ExtensionValue {
         ExtensionValue::parse(&SimpleExtensions::default(), text).unwrap()
