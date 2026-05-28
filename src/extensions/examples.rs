@@ -235,6 +235,111 @@ impl Explainable for PlanHint {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BlobStoreRead
+// ---------------------------------------------------------------------------
+
+/// ExtensionTable detail for a simple blob-store backed read.
+///
+/// Attach this to `Read:Extension[...]` via `register_extension_table` to
+/// describe a custom table source whose output schema is carried by the
+/// surrounding `ReadRel.base_schema`.
+///
+/// # Text Format
+///
+/// ```rust
+/// # use substrait_explain::extensions::examples;
+/// # use substrait_explain::format_with_registry;
+/// # use substrait_explain::parser::Parser;
+/// #
+/// # let registry = examples::registry();
+/// # let parser = Parser::new().with_extension_registry(registry.clone());
+/// #
+/// # let plan_text = r#"
+/// === Plan
+/// Root[id, payload]
+///   Read:Extension[id:i64, payload:string]
+///     + Ext:BlobStoreRead['path/to/file', limit=100]
+/// # "#;
+/// #
+/// # let plan = parser.parse_plan(plan_text).unwrap();
+/// # let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+/// # assert!(errors.is_empty());
+/// # assert_eq!(formatted.trim(), plan_text.trim());
+/// ```
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct BlobStoreRead {
+    /// Blob path or URI to read.
+    #[prost(string, tag = "1")]
+    pub path: String,
+    /// Optional row limit. `0` means no limit.
+    #[prost(int64, tag = "2")]
+    pub limit: i64,
+    /// Whether archived blobs should be included.
+    #[prost(bool, tag = "3")]
+    pub include_archived: bool,
+}
+
+impl prost::Name for BlobStoreRead {
+    const PACKAGE: &'static str = "example";
+    const NAME: &'static str = "BlobStoreRead";
+
+    fn full_name() -> String {
+        "example.BlobStoreRead".to_owned()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/example.BlobStoreRead".to_owned()
+    }
+}
+
+impl Explainable for BlobStoreRead {
+    fn name() -> &'static str {
+        "BlobStoreRead"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        if args.positional.len() != 1 {
+            return Err(ExtensionError::InvalidArgument(format!(
+                "BlobStoreRead expects exactly 1 positional path argument, got {}",
+                args.positional.len()
+            )));
+        }
+        if !args.output_columns.is_empty() {
+            return Err(ExtensionError::InvalidArgument(
+                "BlobStoreRead output columns belong in Read:Extension[...]".to_owned(),
+            ));
+        }
+
+        let path = <&str>::try_from(&args.positional[0])?.to_owned();
+        let mut extractor = args.extractor();
+        let limit: i64 = extractor.get_named_or("limit", 0)?;
+        let include_archived: bool = extractor.get_named_or("include_archived", false)?;
+        extractor.check_exhausted()?;
+
+        Ok(Self {
+            path,
+            limit,
+            include_archived,
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::default();
+        args.positional
+            .push(ExtensionValue::String(self.path.clone()));
+        if self.limit != 0 {
+            args.named
+                .insert("limit".to_owned(), ExtensionValue::Integer(self.limit));
+        }
+        if self.include_archived {
+            args.named
+                .insert("include_archived".to_owned(), ExtensionValue::Boolean(true));
+        }
+        Ok(args)
+    }
+}
+
 /// Create an [`ExtensionRegistry`] preloaded with the example extension types.
 pub fn registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
@@ -244,6 +349,9 @@ pub fn registry() -> ExtensionRegistry {
     registry
         .register_optimization::<PlanHint>()
         .expect("register PlanHint example optimization");
+    registry
+        .register_extension_table::<BlobStoreRead>()
+        .expect("register BlobStoreRead example extension table");
     registry
 }
 
@@ -382,6 +490,43 @@ mod tests {
             .parse_optimization("PlanHint", &args)
             .expect("parse_optimization");
         let decoded = PlanHint::from_any(any2.as_ref()).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn blob_store_read_args_round_trip() {
+        let original = BlobStoreRead {
+            path: "path/to/file".to_owned(),
+            limit: 100,
+            include_archived: true,
+        };
+
+        let args = original.to_args().unwrap();
+        let decoded = BlobStoreRead::from_args(&args).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn blob_store_read_registry_roundtrip() {
+        let registry = registry();
+
+        let original = BlobStoreRead {
+            path: "path/to/file".to_owned(),
+            limit: 100,
+            include_archived: true,
+        };
+        let any = original.to_any().unwrap();
+
+        let (name, args) = registry
+            .decode_extension_table(any.as_ref())
+            .expect("decode_extension_table");
+        assert_eq!(name, "BlobStoreRead");
+
+        let any2 = registry
+            .parse_extension_table("BlobStoreRead", &args)
+            .expect("parse_extension_table");
+        let decoded = BlobStoreRead::from_any(any2.as_ref()).unwrap();
         assert_eq!(original, decoded);
     }
 }
