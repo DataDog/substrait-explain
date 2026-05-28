@@ -23,7 +23,7 @@ use super::types::Name;
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::{ExtensionColumn, ExtensionValue};
+use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionValue};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -278,7 +278,9 @@ pub struct Relation<'a> {
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
     /// `+`-prefixed addendum lines to emit between this relation's header and
-    /// children.
+    /// children.  This owns the canonical ordering for `+ Ext`, `+ Enh`, and
+    /// `+ Opt` lines rather than making the generic relation shape grow one
+    /// field per addendum kind.
     addenda: AddendumLines,
     /// The input relations.
     pub children: Vec<Option<Relation<'a>>>,
@@ -394,6 +396,25 @@ impl<'a> Relation<'a> {
                     emit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
+                        rel.advanced_extension.as_ref(),
+                    ),
+                    children: vec![],
+                }
+            }
+            Some(ReadType::ExtensionTable(table)) => {
+                let decoded = match table.detail.as_ref().map(AnyRef::from) {
+                    Some(detail) => ctx.extension_registry().decode_extension_table(detail),
+                    None => Err(ExtensionError::MissingDetail),
+                };
+
+                Relation {
+                    name: Cow::Borrowed("Read:Extension"),
+                    arguments: None,
+                    columns,
+                    emit,
+                    addenda: AddendumLines::extension_table(
+                        ctx,
+                        decoded,
                         rel.advanced_extension.as_ref(),
                     ),
                     children: vec![],
@@ -560,7 +581,7 @@ impl<'a> Relation<'a> {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
             Some(d) => ctx.extension_registry().decode(d),
-            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+            None => Err(ExtensionError::MissingDetail),
         };
         Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
     }
@@ -569,7 +590,7 @@ impl<'a> Relation<'a> {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
             Some(d) => ctx.extension_registry().decode(d),
-            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+            None => Err(ExtensionError::MissingDetail),
         };
         Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
     }
@@ -578,7 +599,7 @@ impl<'a> Relation<'a> {
         let detail_ref = rel.detail.as_ref().map(AnyRef::from);
         let decoded = match detail_ref {
             Some(d) => ctx.extension_registry().decode(d),
-            None => Err(crate::extensions::registry::ExtensionError::MissingDetail),
+            None => Err(ExtensionError::MissingDetail),
         };
         let mut child_refs: Vec<Option<&'a Rel>> = vec![];
         for input in &rel.inputs {
@@ -589,10 +610,7 @@ impl<'a> Relation<'a> {
 
     fn from_extension<S: Scope>(
         ext_type: &'static str,
-        decoded: Result<
-            (String, crate::extensions::ExtensionArgs),
-            crate::extensions::registry::ExtensionError,
-        >,
+        decoded: Result<(String, ExtensionArgs), ExtensionError>,
         child_refs: Vec<Option<&'a Rel>>,
         ctx: &S,
     ) -> Self {

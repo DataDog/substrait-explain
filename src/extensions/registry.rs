@@ -96,6 +96,8 @@ use crate::extensions::args::{ExtensionArgs, ExtensionColumn, ExtensionValueKind
 pub enum ExtensionType {
     /// Relation extension (e.g., ExtensionLeaf, ExtensionSingle, ExtensionMulti)
     Relation,
+    /// ExtensionTable detail attached to a ReadRel (uses `+ Ext:` prefix in text format)
+    ExtensionTable,
     /// Enhancement attached to a relation (uses `+ Enh:` prefix in text format)
     Enhancement,
     /// Optimization attached to a relation (uses `+ Opt:` prefix in text format)
@@ -425,6 +427,20 @@ impl ExtensionRegistry {
         self.register::<T>(ExtensionType::Relation)
     }
 
+    /// Register an ExtensionTable detail type that implements both AnyConvertible and Explainable
+    ///
+    /// ExtensionTable details are registered in a separate namespace from
+    /// extension relations, allowing the same type URL to exist in both namespaces
+    /// without conflict.
+    ///
+    /// The canonical textual name comes from `T::name()`.
+    pub fn register_extension_table<T>(&mut self) -> Result<(), RegistrationError>
+    where
+        T: Extension,
+    {
+        self.register::<T>(ExtensionType::ExtensionTable)
+    }
+
     /// Register an enhancement type that implements both AnyConvertible and Explainable
     ///
     /// Enhancements are registered in a separate namespace from relation extensions,
@@ -458,6 +474,18 @@ impl ExtensionRegistry {
         args: &ExtensionArgs,
     ) -> Result<Any, ExtensionError> {
         self.parse_with_type(ExtensionType::Relation, extension_name, args)
+    }
+
+    /// Parse ExtensionTable arguments into a protobuf Any message
+    ///
+    /// Looks up the ExtensionTable detail handler in the ExtensionTable namespace
+    /// and parses the arguments into a protobuf Any message.
+    pub fn parse_extension_table(
+        &self,
+        extension_table_name: &str,
+        args: &ExtensionArgs,
+    ) -> Result<Any, ExtensionError> {
+        self.parse_with_type(ExtensionType::ExtensionTable, extension_table_name, args)
     }
 
     /// Parse enhancement arguments into a protobuf Any message
@@ -506,6 +534,18 @@ impl ExtensionRegistry {
     /// decode it to the extension name and appropriate ExtensionArgs for display
     pub fn decode(&self, detail: AnyRef<'_>) -> Result<(String, ExtensionArgs), ExtensionError> {
         self.decode_with_type(ExtensionType::Relation, detail)
+    }
+
+    /// Decode ExtensionTable detail to extension name and ExtensionArgs
+    ///
+    /// This is the primary method for textification of ExtensionTable reads -
+    /// given an AnyRef with ExtensionTable detail, decode it to the extension
+    /// name and appropriate ExtensionArgs for display.
+    pub fn decode_extension_table(
+        &self,
+        detail: AnyRef<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type(ExtensionType::ExtensionTable, detail)
     }
 
     /// Decode enhancement detail to enhancement name and ExtensionArgs
@@ -677,6 +717,12 @@ mod tests {
 
         // Initially empty
         assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 0);
+        assert_eq!(
+            registry
+                .extension_names(ExtensionType::ExtensionTable)
+                .len(),
+            0
+        );
         assert!(!registry.has_extension(ExtensionType::Relation, "TestExtension"));
 
         // Register extension type
@@ -699,6 +745,37 @@ mod tests {
         assert_eq!(result.0, "TestExtension");
         assert_eq!(
             <&str>::try_from(result.1.named.get("path").unwrap()).unwrap(),
+            "test.parquet"
+        );
+    }
+
+    #[test]
+    fn test_extension_table_registry_basic() {
+        let mut registry = ExtensionRegistry::new();
+
+        registry
+            .register_extension_table::<TestExtension>()
+            .unwrap();
+
+        assert_eq!(
+            registry.extension_names(ExtensionType::ExtensionTable),
+            vec!["TestExtension"]
+        );
+        assert!(registry.has_extension(ExtensionType::ExtensionTable, "TestExtension"));
+
+        let mut args = ExtensionArgs::default();
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+
+        let any = registry
+            .parse_extension_table("TestExtension", &args)
+            .unwrap();
+        assert_eq!(any.type_url, "test.TestExtension");
+
+        let (name, decoded_args) = registry.decode_extension_table(any.as_ref()).unwrap();
+        assert_eq!(name, "TestExtension");
+        assert_eq!(
+            <&str>::try_from(decoded_args.named.get("path").unwrap()).unwrap(),
             "test.parquet"
         );
     }
@@ -813,14 +890,24 @@ mod tests {
     fn test_namespace_separation() {
         let mut registry = ExtensionRegistry::new();
 
-        // Register same type URL in both namespaces - should not conflict
+        // Register same type URL in multiple namespaces - should not conflict
         registry.register_relation::<TestExtension>().unwrap();
+        registry
+            .register_extension_table::<TestExtension>()
+            .unwrap();
         registry.register_enhancement::<TestEnhancement>().unwrap();
 
-        // Verify both are registered
+        // Verify all are registered
         assert!(registry.has_extension(ExtensionType::Relation, "TestExtension"));
+        assert!(registry.has_extension(ExtensionType::ExtensionTable, "TestExtension"));
         assert!(registry.has_extension(ExtensionType::Enhancement, "TestEnhancement"));
         assert_eq!(registry.extension_names(ExtensionType::Relation).len(), 1);
+        assert_eq!(
+            registry
+                .extension_names(ExtensionType::ExtensionTable)
+                .len(),
+            1
+        );
         assert_eq!(
             registry.extension_names(ExtensionType::Enhancement).len(),
             1
@@ -835,6 +922,12 @@ mod tests {
             .parse_extension("TestExtension", &ext_args)
             .unwrap();
         assert_eq!(ext_any.type_url, "test.TestExtension");
+
+        // Test that ExtensionTable namespace works independently
+        let table_any = registry
+            .parse_extension_table("TestExtension", &ext_args)
+            .unwrap();
+        assert_eq!(table_any.type_url, "test.TestExtension");
 
         // Test that enhancement namespace works
         let mut enh_args = ExtensionArgs::default();
@@ -864,6 +957,27 @@ mod tests {
             result,
             Err(RegistrationError::DuplicateName { .. })
         ));
+    }
+
+    #[test]
+    fn test_extension_table_duplicate_registration_returns_error() {
+        let mut registry = ExtensionRegistry::new();
+        registry
+            .register_extension_table::<TestExtension>()
+            .unwrap();
+        let result = registry.register_extension_table::<TestExtension>();
+        assert!(matches!(
+            result,
+            Err(RegistrationError::DuplicateName { .. })
+        ));
+    }
+
+    #[test]
+    fn test_extension_table_not_found_error() {
+        let registry = ExtensionRegistry::new();
+        let args = ExtensionArgs::default();
+        let result = registry.parse_extension_table("NonExistentExtensionTable", &args);
+        assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
     }
 
     #[test]
@@ -924,6 +1038,29 @@ mod tests {
         assert!(!registry.has_extension(ExtensionType::Relation, "ConflictingExtension"));
         assert_eq!(
             registry.extension_names(ExtensionType::Relation),
+            vec!["TestExtension"]
+        );
+    }
+
+    #[test]
+    fn test_extension_table_conflicting_type_url_leaves_registry_unchanged() {
+        let mut registry = ExtensionRegistry::new();
+        registry
+            .register_extension_table::<TestExtension>()
+            .unwrap();
+
+        // Attempt to register a different extension table with the same type URL
+        let result = registry.register_extension_table::<ConflictingExtension>();
+        assert!(matches!(
+            result,
+            Err(RegistrationError::ConflictingTypeUrl { .. })
+        ));
+
+        // Registry should still only know about the original extension table
+        assert!(registry.has_extension(ExtensionType::ExtensionTable, "TestExtension"));
+        assert!(!registry.has_extension(ExtensionType::ExtensionTable, "ConflictingExtension"));
+        assert_eq!(
+            registry.extension_names(ExtensionType::ExtensionTable),
             vec!["TestExtension"]
         );
     }

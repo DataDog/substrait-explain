@@ -17,6 +17,8 @@ use crate::textify::foundation::{PlanError, Scope, Textify};
 /// All addenda associated with a relation, in canonical text-format order.
 #[derive(Default)]
 pub(super) struct AddendumLines {
+    // Addenda are in textification order: extension table first (if it exists),
+    // then enhancements, then optimizations.
     lines: Vec<AddendumLine>,
 }
 
@@ -32,12 +34,26 @@ impl AddendumLines {
         lines
     }
 
+    pub(super) fn extension_table<S: Scope>(
+        ctx: &S,
+        extension_table: Result<(String, ExtensionArgs), ExtensionError>,
+        advanced_extension: Option<&AdvancedExtension>,
+    ) -> Self {
+        let mut lines = Self {
+            lines: vec![AddendumLine::extension_table(extension_table)],
+        };
+        if let Some(advanced_extension) = advanced_extension {
+            lines.extend_from_advanced_extension(ctx, advanced_extension);
+        }
+        lines
+    }
+
     pub(super) fn none() -> Self {
         Self::default()
     }
 
     /// Add [`AddendumLine`]s to this `AddendumLines` instance for each
-    /// enhancement and optimization present in the [`AdvancedExtension`]
+    /// enhancement and optimization present in the [`AdvancedExtension`].
     fn extend_from_advanced_extension<S: Scope>(
         &mut self,
         ctx: &S,
@@ -83,6 +99,10 @@ enum AddendumLine {
 }
 
 impl AddendumLine {
+    fn extension_table(result: Result<(String, ExtensionArgs), ExtensionError>) -> Self {
+        Self::from_decode_result(AddendumKind::ExtensionTable, result)
+    }
+
     fn enhancement<S: Scope>(ctx: &S, detail: AnyRef<'_>) -> Self {
         Self::from_decode_result(
             AddendumKind::Enhancement,
@@ -120,13 +140,23 @@ impl Textify for AddendumLine {
                 let prefix = kind.prefix();
 
                 if !args.output_columns.is_empty() {
+                    let (message, description) = match kind {
+                        AddendumKind::Enhancement | AddendumKind::Optimization => (
+                            "addendum",
+                            "output_columns cannot be represented in addendum syntax",
+                        ),
+                        AddendumKind::ExtensionTable => (
+                            "addendum",
+                            "output_columns cannot be represented in extension table addendum syntax",
+                        ),
+                    };
                     write!(
                         w,
                         "{indent}+ {prefix}[{}]",
                         ctx.failure(FormatError::Format(PlanError::invalid(
-                            "addendum",
+                            message,
                             Some(name.clone()),
-                            "output_columns cannot be represented in addendum syntax",
+                            description,
                         )))
                     )
                 } else {
