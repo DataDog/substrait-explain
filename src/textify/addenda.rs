@@ -23,13 +23,13 @@ pub(super) struct AddendumLines {
 }
 
 impl AddendumLines {
-    pub(super) fn standard<S: Scope>(
+    pub(super) fn from_advanced_extension<S: Scope>(
         ctx: &S,
         advanced_extension: Option<&AdvancedExtension>,
     ) -> Self {
         let mut lines = Self::default();
         if let Some(advanced_extension) = advanced_extension {
-            lines.extend_advanced_extension(ctx, advanced_extension);
+            lines.extend_from_advanced_extension(ctx, advanced_extension);
         }
         lines
     }
@@ -43,7 +43,7 @@ impl AddendumLines {
             lines: vec![AddendumLine::extension_table(extension_table)],
         };
         if let Some(advanced_extension) = advanced_extension {
-            lines.extend_advanced_extension(ctx, advanced_extension);
+            lines.extend_from_advanced_extension(ctx, advanced_extension);
         }
         lines
     }
@@ -52,7 +52,9 @@ impl AddendumLines {
         Self::default()
     }
 
-    fn extend_advanced_extension<S: Scope>(
+    /// Add [`AddendumLine`]s to this `AddendumLines` instance for each
+    /// enhancement and optimization present in the [`AdvancedExtension`].
+    fn extend_from_advanced_extension<S: Scope>(
         &mut self,
         ctx: &S,
         advanced_extension: &AdvancedExtension,
