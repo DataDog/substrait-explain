@@ -1,10 +1,11 @@
 use substrait::proto::expression::{FieldReference, Literal, ScalarFunction};
 use substrait::proto::{Expression, Type};
-use substrait_explain::extensions::SimpleExtensions;
-use substrait_explain::extensions::simple::ExtensionKind;
-use substrait_explain::fixtures::TestContext;
-use substrait_explain::parser::{Parse, ScopedParse};
-use substrait_explain::textify::{ErrorQueue, OutputOptions, Textify};
+
+use crate::extensions::SimpleExtensions;
+use crate::extensions::simple::ExtensionKind;
+use crate::fixtures::TestContext;
+use crate::parser::{Parse, ScopedParse};
+use crate::textify::{ErrorQueue, OutputOptions, Textify};
 
 /// Helper function to parse and check for errors, panicking if either fails
 fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {

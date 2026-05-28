@@ -10,6 +10,9 @@ pub mod grammar;
 pub mod parser;
 pub mod textify;
 
+#[cfg(test)]
+mod types_tests;
+
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(feature = "cli")]

@@ -200,7 +200,7 @@ impl Name for MySourceConfig {
 #         Ok(ExtensionArgs::default())
 #     }
 # }
-# use substrait_explain::parser::Parser;
+# use substrait_explain::Parser;
 # use substrait_explain::format_with_registry;
 
 let mut registry = ExtensionRegistry::new();

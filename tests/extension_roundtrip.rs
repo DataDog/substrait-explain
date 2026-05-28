@@ -1,5 +1,8 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
+mod common;
+
+use common::parse_type;
 use prost::{Message, Name};
 use substrait::proto;
 use substrait::proto::expression::RexType;
@@ -10,9 +13,7 @@ use substrait_explain::extensions::{
     EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
-use substrait_explain::fixtures::parse_type;
-use substrait_explain::format_with_registry;
-use substrait_explain::parser::Parser;
+use substrait_explain::{Parser, format_with_registry};
 
 /// A custom extension configuration for a hypothetical "UserTable" data source.
 /// This differs from the file-based scan in the example by using logical table properties.

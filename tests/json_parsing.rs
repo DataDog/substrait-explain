@@ -11,8 +11,7 @@ use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
 };
 use substrait_explain::json::{build_descriptor_pool, parse_json};
-use substrait_explain::parser::Parser;
-use substrait_explain::{OutputOptions, format_with_registry};
+use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
 // ParquetScanConfig struct + impl prost::Name — generated from parquet_scan.proto by build.rs.
 include!(concat!(env!("OUT_DIR"), "/example.rs"));

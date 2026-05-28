@@ -2,8 +2,7 @@
 //!
 //! This example shows how to parse a Substrait plan and format it with different output options.
 
-use substrait_explain::parser::Parser;
-use substrait_explain::{OutputOptions, format, format_with_options};
+use substrait_explain::{OutputOptions, Parser, format, format_with_options};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Substrait-Explain Basic Usage ===\n");
