@@ -2,7 +2,7 @@ use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate};
 use expr::RexType;
-use substrait::proto::expression::field_reference::ReferenceType;
+use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
@@ -279,7 +279,7 @@ impl From<Reference> for Expression {
                         },
                     ))),
                 })),
-                root_type: None,
+                root_type: Some(RootType::RootReference(RootReference {})),
             }))),
         }
     }
@@ -301,6 +301,43 @@ impl Textify for FieldReference {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match &self.root_type {
+            Some(RootType::RootReference(_)) => {}
+            None => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::invalid(
+                        "FieldReference",
+                        Some("root_type"),
+                        "Required field root_type is missing",
+                    ))
+                );
+            }
+            Some(RootType::Expression(_)) => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "FieldReference",
+                        Some("root_type"),
+                        "FieldReference textification not implemented for Expression root_type",
+                    ))
+                );
+            }
+            Some(RootType::OuterReference(_)) => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "FieldReference",
+                        Some("root_type"),
+                        "FieldReference textification not implemented for OuterReference root_type",
+                    ))
+                );
+            }
+        }
+
         let ref_type = match &self.reference_type {
             None => {
                 return write!(
@@ -942,6 +979,76 @@ mod tests {
                 assert_eq!(e.error_type, FormatErrorType::InvalidValue);
             }
             other => panic!("Expected Format(InvalidValue) for missing type, got: {other}"),
+        }
+    }
+
+    fn struct_field_reference(field: i32) -> FieldReference {
+        FieldReference {
+            reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
+                reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
+                    reference_segment::StructField { field, child: None },
+                ))),
+            })),
+            root_type: Some(RootType::RootReference(RootReference {})),
+        }
+    }
+
+    #[test]
+    fn test_field_reference_missing_root_type() {
+        let ctx = TestContext::new();
+        let mut fr = struct_field_reference(3);
+        fr.root_type = None;
+        let (s, errs) = ctx.textify(&fr);
+        assert_eq!(s, "!{FieldReference}");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "FieldReference");
+                assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+            }
+            other => panic!("Expected Format(InvalidValue) for missing root_type, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_field_reference_root_reference() {
+        let ctx = TestContext::new();
+        let fr = struct_field_reference(3);
+        assert_eq!(ctx.textify_no_errors(&fr), "$3");
+    }
+
+    #[test]
+    fn test_field_reference_outer_reference_unimplemented() {
+        use substrait::proto::expression::field_reference;
+
+        let ctx = TestContext::new();
+        let mut fr = struct_field_reference(3);
+        fr.root_type = Some(RootType::OuterReference(field_reference::OuterReference {
+            steps_out: 1,
+        }));
+        let (s, errs) = ctx.textify(&fr);
+        assert_eq!(s, "!{FieldReference}");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "FieldReference");
+                assert_eq!(e.error_type, FormatErrorType::Unimplemented);
+            }
+            other => panic!("Expected Format(Unimplemented) for OuterReference, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_field_reference_expression_unimplemented() {
+        let ctx = TestContext::new();
+        let mut fr = struct_field_reference(3);
+        fr.root_type = Some(RootType::Expression(Box::new(literal_bool(true))));
+        let (s, errs) = ctx.textify(&fr);
+        assert_eq!(s, "!{FieldReference}");
+        match &errs.0[0] {
+            FormatError::Format(e) => {
+                assert_eq!(e.message, "FieldReference");
+                assert_eq!(e.error_type, FormatErrorType::Unimplemented);
+            }
+            other => panic!("Expected Format(Unimplemented) for Expression, got: {other}"),
         }
     }
 
