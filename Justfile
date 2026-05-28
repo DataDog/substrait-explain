@@ -61,7 +61,7 @@ release-tag:
     fi
 
     # Guard: version should be published on crates.io
-    if ! curl -sf "https://crates.io/api/v1/crates/substrait-explain/${version}" >/dev/null; then
+    if ! cargo info --registry crates-io "substrait-explain@${version}" >/dev/null 2>&1; then
         echo "Error: ${version} not found on crates.io — wait for CI to publish first" >&2
         exit 1
     fi
