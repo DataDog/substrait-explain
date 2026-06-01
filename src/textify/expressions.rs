@@ -136,6 +136,7 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::Date(days) => {
             write!(w, "'{}'", escaped(&days_to_date_string(*days)))
         }
+        #[allow(deprecated)]
         LiteralType::Time(microseconds) => {
             write!(
                 w,
@@ -192,6 +193,7 @@ fn literal_type_suffix(lit: &LiteralType) -> Option<&'static str> {
         LiteralType::String(_) => Some("string"),
         LiteralType::Binary(_) => Some("binary"),
         LiteralType::Date(_) => Some("date"),
+        #[allow(deprecated)]
         LiteralType::Time(_) => Some("time"),
         #[allow(deprecated)]
         LiteralType::Timestamp(_) => Some("timestamp"),
@@ -333,6 +335,17 @@ impl Textify for FieldReference {
                         "FieldReference",
                         Some("root_type"),
                         "FieldReference textification not implemented for OuterReference root_type",
+                    ))
+                );
+            }
+            Some(RootType::LambdaParameterReference(_)) => {
+                return write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "FieldReference",
+                        Some("root_type"),
+                        "FieldReference textification not implemented for LambdaParameterReference root_type",
                     ))
                 );
             }
@@ -593,6 +606,24 @@ impl Textify for RexType {
                     "RexType",
                     Some("Enum"),
                     "Enum textification not implemented",
+                ))
+            ),
+            RexType::Lambda(_) => write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::unimplemented(
+                    "RexType",
+                    Some("Lambda"),
+                    "Lambda textification not implemented",
+                ))
+            ),
+            RexType::LambdaInvocation(_) => write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::unimplemented(
+                    "RexType",
+                    Some("LambdaInvocation"),
+                    "LambdaInvocation textification not implemented",
                 ))
             ),
         }

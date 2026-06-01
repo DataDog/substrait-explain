@@ -161,6 +161,7 @@ fn parse_simple_type(pair: Pair<Rule>) -> Type {
             nullability: nullability.into(),
             type_variation_reference: 0,
         }),
+        #[allow(deprecated)]
         "time" => Kind::Time(proto::r#type::Time {
             nullability: nullability.into(),
             type_variation_reference: 0,

@@ -118,10 +118,8 @@ mod tests {
 
         // Add extension function declaration
         plan.extensions.push(pext::SimpleExtensionDeclaration {
-            #[allow(deprecated)]
             mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
                 extension_urn_reference: 1,
-                extension_uri_reference: Default::default(), // deprecated
                 function_anchor: 10,
                 name: "add".to_string(),
             })),

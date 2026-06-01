@@ -404,6 +404,7 @@ impl Textify for ptype::Kind {
             #[allow(deprecated)]
             ptype::Kind::Timestamp(k) => textify_kind!(ctx, w, k, "timestamp"),
             ptype::Kind::Date(k) => textify_kind!(ctx, w, k, "date"),
+            #[allow(deprecated)]
             ptype::Kind::Time(k) => textify_kind!(ctx, w, k, "time"),
             ptype::Kind::IntervalYear(i) => {
                 textify_kind!(ctx, w, i, "interval_year")
@@ -548,6 +549,17 @@ impl Textify for ptype::Kind {
                     type_parameters: vec![],
                 };
                 ptype::Kind::UserDefined(udf).textify(ctx, w)
+            }
+            ptype::Kind::Func(_f) => {
+                write!(
+                    w,
+                    "{}",
+                    ctx.failure(PlanError::unimplemented(
+                        "FuncType",
+                        Some("Func"),
+                        "Function type textification not implemented",
+                    ))
+                )
             }
             ptype::Kind::Alias(_p) => {
                 write!(
