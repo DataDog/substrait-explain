@@ -33,7 +33,9 @@ Steps, run locally:
    3. `cargo install --locked release-plz` - the CLI for making the Release PR
    4. `cargo install --locked cargo-semver-checks` - used by release-plz to detect API-breaking changes; without it, release-plz can't choose the right version bump for breaking changes
 2. `git checkout main` - need to be on `main` for a release
-3. `release-plz release-pr --git-token $(gh auth token)` - `release-plz` will analyze the current state, and generate a Changelog, version bump, and PR on Github.
+3. Run `just release-pr`
+   - This will in turn call `release-plz release-pr --git-token $(gh auth token)`
+   - `release-plz` will analyze the current state, generate a Changelog, version bump, and PR on Github.
 
 ### 3. You review and merge the Release PR
 
@@ -101,11 +103,11 @@ gh release create v<VERSION> --title "v<VERSION>" --notes "See CHANGELOG.md"
 
 ## Configuration
 
-| File                                | Purpose                                                  |
-| ----------------------------------- | -------------------------------------------------------- |
-| `.github/workflows/release-plz.yml` | GitHub Actions workflow (publish to crates.io)           |
-| `release-plz.toml`                  | release-plz behavior and changelog format                |
-| `CHANGELOG.md`                      | Auto-updated changelog                                   |
+| File                                | Purpose                                        |
+| ----------------------------------- | ---------------------------------------------- |
+| `.github/workflows/release-plz.yml` | GitHub Actions workflow (publish to crates.io) |
+| `release-plz.toml`                  | release-plz behavior and changelog format      |
+| `CHANGELOG.md`                      | Auto-updated changelog                         |
 
 ### Secrets
 

@@ -16,7 +16,6 @@ use substrait::proto::{self, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
     AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
-    ExtensionRelationType,
 };
 use substrait_explain::parser::Parser;
 use substrait_explain::{OutputOptions, format_with_registry};
@@ -105,7 +104,7 @@ impl Explainable for ParquetScanConfig {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+        let mut args = ExtensionArgs::default();
 
         // Add named arguments from the message
         args.insert("path", self.path.clone());

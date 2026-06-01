@@ -493,9 +493,7 @@ mod tests {
     use substrait::proto::rel::RelType;
 
     use super::*;
-    use crate::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
-    };
+    use crate::extensions::{Explainable, ExtensionArgs, ExtensionColumn, ExtensionError};
     use crate::fixtures::parse_type;
     use crate::parse;
 
@@ -943,7 +941,7 @@ Root[result]
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.insert("tag", self.tag.clone());
             args.output_columns.push(ExtensionColumn::Named {
                 name: "val".to_string(),

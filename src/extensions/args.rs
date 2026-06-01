@@ -37,6 +37,28 @@ use substrait::proto::expression::{RexType, reference_segment};
 use super::ExtensionError;
 use crate::textify::expressions::Reference;
 
+/// Kind of relation addendum in the text format.
+///
+/// Addenda are `+`-prefixed lines attached to relations. They are syntax-level
+/// constructs, distinct from [`crate::extensions::registry::ExtensionType`],
+/// which describes registry namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddendumKind {
+    Enhancement,
+    Optimization,
+    ExtensionTable,
+}
+
+impl AddendumKind {
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            AddendumKind::Enhancement => "Enh",
+            AddendumKind::Optimization => "Opt",
+            AddendumKind::ExtensionTable => "Ext",
+        }
+    }
+}
+
 /// A Substrait expression carried as an extension argument or output column.
 ///
 /// Boxed because `proto::Expression` is large (multiple `Vec` fields in
@@ -153,32 +175,20 @@ impl From<&str> for Expr {
     }
 }
 
-/// Represents text-format arguments for a registered advanced extension.
+/// Represents extension arguments plus optional output columns.
 ///
 /// Named arguments are stored in an [`IndexMap`] whose iteration order
 /// determines display order. Extension [`super::Explainable::to_args()`]
 /// implementations should insert named arguments in the order they should
 /// appear in the text format.
-///
-/// The [`relation_type`](Self::relation_type) and
-/// [`output_columns`](Self::output_columns) fields are meaningful for custom
-/// relation types. Enhancements and optimization hints use the same argument
-/// representation, but their text grammar does not include output columns.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExtensionArgs {
     /// Positional arguments.
     pub positional: Vec<ExtensionValue>,
     /// Named arguments, displayed in the order they were inserted
     pub named: IndexMap<String, ExtensionValue>,
     /// Output columns for custom relation types.
-    ///
-    /// These are ignored by enhancement and optimization text syntax.
     pub output_columns: Vec<ExtensionColumn>,
-    /// The type of custom relation being represented.
-    ///
-    /// For enhancements and optimization hints this is currently carried as an
-    /// implementation detail because they share the same argument container.
-    pub relation_type: ExtensionRelationType,
 }
 
 /// Helper struct for extracting named arguments with validation.
@@ -600,83 +610,7 @@ pub enum ExtensionColumn {
     Expr(Expr),
 }
 
-/// Extension relation types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtensionRelationType {
-    /// Extension leaf relation - no input children
-    Leaf,
-    /// Extension single relation - exactly one input child
-    Single,
-    /// Extension multi relation - zero or more input children
-    Multi,
-}
-
-impl std::str::FromStr for ExtensionRelationType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ExtensionLeaf" => Ok(ExtensionRelationType::Leaf),
-            "ExtensionSingle" => Ok(ExtensionRelationType::Single),
-            "ExtensionMulti" => Ok(ExtensionRelationType::Multi),
-            _ => Err(format!("Unknown extension relation type: {}", s)),
-        }
-    }
-}
-
-impl ExtensionRelationType {
-    /// Get the string representation used in the text format
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ExtensionRelationType::Leaf => "ExtensionLeaf",
-            ExtensionRelationType::Single => "ExtensionSingle",
-            ExtensionRelationType::Multi => "ExtensionMulti",
-        }
-    }
-
-    /// Validate that the child count matches this relation type
-    pub fn validate_child_count(&self, child_count: usize) -> Result<(), String> {
-        match self {
-            ExtensionRelationType::Leaf => {
-                if child_count == 0 {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "ExtensionLeaf should have no input children, got {child_count}"
-                    ))
-                }
-            }
-            ExtensionRelationType::Single => {
-                if child_count == 1 {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "ExtensionSingle should have exactly 1 input child, got {child_count}"
-                    ))
-                }
-            }
-            ExtensionRelationType::Multi => {
-                // ExtensionMulti relations accept zero or more children.
-                Ok(())
-            }
-        }
-    }
-}
-
-// Note: create_rel is implemented in parser/extensions.rs to avoid
-// pulling in protobuf dependencies in the core args module
-
 impl ExtensionArgs {
-    /// Create a new empty ExtensionArgs
-    pub fn new(relation_type: ExtensionRelationType) -> Self {
-        Self {
-            positional: Vec::new(),
-            named: IndexMap::new(),
-            output_columns: Vec::new(),
-            relation_type,
-        }
-    }
-
     /// Push a positional extension argument.
     pub fn push<T>(&mut self, value: T)
     where
@@ -697,52 +631,5 @@ impl ExtensionArgs {
     /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ExtensionRelationType;
-
-    #[test]
-    fn extension_multi_allows_zero_children() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(0).is_ok());
-    }
-
-    #[test]
-    fn extension_multi_allows_single_child() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(1).is_ok());
-    }
-
-    #[test]
-    fn extension_multi_allows_multiple_children() {
-        assert!(ExtensionRelationType::Multi.validate_child_count(3).is_ok());
-    }
-
-    #[test]
-    fn extension_single_rejects_wrong_child_counts() {
-        assert!(
-            ExtensionRelationType::Single
-                .validate_child_count(0)
-                .is_err()
-        );
-        assert!(
-            ExtensionRelationType::Single
-                .validate_child_count(2)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn extension_args_helpers_convert_values() {
-        let mut args = super::ExtensionArgs::new(ExtensionRelationType::Leaf);
-        args.push(7_i64);
-        args.insert("path", "data.parquet");
-
-        assert_eq!(i64::try_from(&args.positional[0]).unwrap(), 7);
-        assert_eq!(
-            <&str>::try_from(args.named.get("path").unwrap()).unwrap(),
-            "data.parquet"
-        );
     }
 }

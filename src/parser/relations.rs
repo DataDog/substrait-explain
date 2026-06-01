@@ -17,8 +17,8 @@ use substrait::proto::{
 
 use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
 use crate::extensions::any::Any;
-use crate::extensions::registry::{ExtensionError, ExtensionType};
-use crate::extensions::{ExtensionArgs, ExtensionRegistry, SimpleExtensions};
+use crate::extensions::registry::ExtensionError;
+use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
 use crate::parser::errors::{ParseContext, ParseError};
 use crate::parser::expressions::{FieldIndex, Name};
 
@@ -54,21 +54,18 @@ impl<'a> RelationParsingContext<'a> {
         }
     }
 
-    /// Resolve an advanced-extension detail (enhancement or optimization) using the registry.
+    /// Resolve an addendum detail using the registry entry for its kind.
     /// Any failure is treated as a hard parse error.
-    ///
-    /// `ext_type` must be `Enhancement` or `Optimization`; `Relation` is not valid here and
-    /// will panic via the unreachable branch in the dispatch below.
-    pub fn resolve_adv_ext_detail(
+    pub(crate) fn resolve_addendum_detail(
         &self,
-        ext_type: ExtensionType,
+        kind: AddendumKind,
         name: &str,
         args: &ExtensionArgs,
     ) -> Result<Any, ParseError> {
-        let result = match ext_type {
-            ExtensionType::Enhancement => self.registry.parse_enhancement(name, args),
-            ExtensionType::Optimization => self.registry.parse_optimization(name, args),
-            ExtensionType::Relation => unreachable!("Relation is not an advanced extension type"),
+        let result = match kind {
+            AddendumKind::Enhancement => self.registry.parse_enhancement(name, args),
+            AddendumKind::Optimization => self.registry.parse_optimization(name, args),
+            AddendumKind::ExtensionTable => self.registry.parse_extension_table(name, args),
         };
         result.map_err(|err| match err {
             ExtensionError::NotFound { .. } => ParseError::UnregisteredExtension {
@@ -157,7 +154,7 @@ impl ScopedParsePair for Column {
     }
 }
 
-pub struct NamedColumnList(Vec<Column>);
+pub(crate) struct NamedColumnList(pub(crate) Vec<Column>);
 
 impl ScopedParsePair for NamedColumnList {
     fn rule() -> Rule {
@@ -418,8 +415,71 @@ impl RelationParsePair for VirtualReadRel {
     }
 }
 
+/// Parsed `Read:Extension[columns]` relation. Needs a newtype because the
+/// proto type is `ReadRel` (same as `NamedTable` and `VirtualTable`), but the
+/// read detail is supplied by a required `+ Ext:` addendum.
+pub(crate) struct ExtensionReadRel(ReadRel);
+
+impl ExtensionReadRel {
+    // Clippy allow: normally Vec<Box<…>> is a warning, because Vec is already
+    // on the heap, so Vec<Box<…>> just adds a layer of indirection. Here, the
+    // protobuf generated code already comes with boxes, so not using boxes
+    // would mean copying things around, which would be more wasteful. So we
+    // allow(…) it.
+    #[allow(clippy::vec_box)]
+    pub(crate) fn parse_pair_with_detail(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+        input_children: Vec<Box<Rel>>,
+        input_field_count: usize,
+        detail: Any,
+        advanced_extension: Option<AdvancedExtension>,
+    ) -> Result<(Rel, usize), MessageParseError> {
+        assert_eq!(pair.as_rule(), Rule::extension_read_relation);
+        if !input_children.is_empty() {
+            return Err(MessageParseError::invalid(
+                "ExtensionReadRel",
+                pair.as_span(),
+                "Read:Extension should have no input children",
+            ));
+        }
+        if input_field_count != 0 {
+            return Err(MessageParseError::invalid(
+                "ExtensionReadRel",
+                pair.as_span(),
+                "Read:Extension should have 0 input fields",
+            ));
+        }
+
+        let mut iter = RuleIter::from(pair.into_inner());
+        let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+        iter.done();
+
+        let output_count = columns.len();
+        let rel = ExtensionReadRel(ReadRel {
+            base_schema: Some(build_named_struct(columns)),
+            read_type: Some(read_rel::ReadType::ExtensionTable(
+                read_rel::ExtensionTable {
+                    detail: Some(detail.into()),
+                },
+            )),
+            advanced_extension,
+            ..Default::default()
+        })
+        .into_rel();
+
+        Ok((rel, output_count))
+    }
+
+    fn into_rel(self) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Read(Box::new(self.0))),
+        }
+    }
+}
+
 /// Build a `NamedStruct` from parsed columns.
-fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
+pub(crate) fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
     let (names, types): (Vec<_>, Vec<_>) = columns.into_iter().map(|c| (c.name, c.typ)).unzip();
     NamedStruct {
         names,

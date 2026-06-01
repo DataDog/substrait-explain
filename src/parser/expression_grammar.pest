@@ -212,10 +212,11 @@ named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
 planNode = {
-    // virtual_read_relation must precede read_relation: both start with "Read",
-    // and PEG tries alternatives in order — the longer "Read:Virtual" prefix
+    // Specialized read relations must precede read_relation: all start with
+    // "Read", and PEG tries alternatives in order — the longer prefixes
     // must be attempted first.
-    virtual_read_relation
+    extension_read_relation
+  | virtual_read_relation
   | read_relation
   | filter_relation
   | project_relation
@@ -224,7 +225,7 @@ planNode = {
   | fetch_relation
   | join_relation
   | extension_relation
-  | adv_extension
+  | addendum
 }
 
 // At the top level, we can have a RelRoot, or a regular relation; both are valid.
@@ -237,6 +238,9 @@ root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
 root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
 
 read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]" }
+
+// ExtensionTable read: Read:Extension[columns], with detail in a required + Ext addendum.
+extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
 
 // VirtualTable read: Read:Virtual[rows => columns] or Read:Virtual[_ => columns]
 // Rows are parenthesized tuples; _ means empty (no rows).
@@ -339,10 +343,11 @@ extension_named_argument  = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 extension_columns = { (extension_column ~ (sp ~ "," ~ sp ~ extension_column)*)? }
 extension_column  = { named_column | reference | expression }
 
-// Advanced extensions: enhancements and optimizations attached to relations
-// Format: + Enh:Name[args] or + Opt:Name[args]
+// Relation addenda: metadata/detail lines attached to a relation.
+// Format: + Enh:Name[args], + Opt:Name[args], or + Ext:Name[args]
 // Examples:
 // - + Enh:PartitionHint[&HASH, count=8]
 // - + Opt:SomeOptimization[threshold=100, mode='fast']
-adv_extension = { "+" ~ sp ~ adv_ext_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
-adv_ext_type  = { "Enh" | "Opt" }
+// - + Ext:BlobStoreRead['path/to/file']
+addendum      = { "+" ~ sp ~ addendum_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
+addendum_type = { "Enh" | "Opt" | "Ext" }

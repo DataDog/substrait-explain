@@ -50,9 +50,6 @@ pub enum ParseError {
     #[error("Failed to parse relation on {0}: {1}")]
     RelationParse(ParseContext, String),
 
-    #[error("Unknown extension relation type: {0}")]
-    UnknownExtensionRelationType(String),
-
     #[error("Invalid input at {0}: {1}")]
     ValidationError(ParseContext, String),
 

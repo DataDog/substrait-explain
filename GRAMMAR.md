@@ -586,6 +586,73 @@ Root[id, name]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
+### `ExtensionTable` Read Relation
+
+An `ExtensionTable` read uses `ReadRel` with `ReadType::ExtensionTable`. The relation header carries the read output schema, while a required `+ Ext:` addendum carries the custom table detail payload.
+
+#### Syntax
+
+```text
+extension_table_read_relation := "Read:Extension" "[" named_column_list "]"
+extension_table_detail        := "+" "Ext" ":" name "[" (empty / extension_args)? "]"
+```
+
+The `+ Ext:` line is indented one level deeper than the `Read:Extension` line. It is required, and addendum lines must appear before any child relations. Canonical formatting writes `+ Ext:` first, followed by `+ Enh:` and `+ Opt:` lines when present.
+
+#### Components
+
+- `named_column_list` - output column names with type annotations, stored in `ReadRel.base_schema`
+- `name` - the extension name registered with `ExtensionRegistry`
+- `extension_args` - positional and/or named arguments encoded into the `ExtensionTable.detail: Any`
+
+#### Example
+
+```rust
+# use substrait_explain::extensions::examples;
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let registry = examples::registry();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
+=== Plan
+Root[id, payload]
+  Read:Extension[id:i64, payload:string]
+    + Ext:BlobStoreRead['path/to/file', limit=100, include_archived=true]
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
+```
+
+Relation-level advanced extensions can still be attached to the same read relation:
+
+```rust
+# use substrait_explain::extensions::examples;
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let registry = examples::registry();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
+=== Plan
+Root[id]
+  Read:Extension[id:i64]
+    + Ext:BlobStoreRead['path/to/file']
+    + Enh:PartitionHint[&HASH, count=8]
+    + Opt:PlanHint[hint='parallel']
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
+```
+
 ### Filter Relation
 
 #### Syntax
@@ -827,21 +894,21 @@ Each relation can carry:
 ### Syntax
 
 ```text
-adv_extension := "+" adv_ext_type ":" name "[" (empty | extension_args)? "]"
-adv_ext_type  := "Enh" | "Opt"
+addendum      := "+" addendum_type ":" name "[" (empty | extension_args)? "]"
+addendum_type := "Enh" | "Opt" | "Ext"
 ```
 
 Where:
 
-- **`adv_ext_type`** — `Enh` for an enhancement, `Opt` for an optimization
+- **`addendum_type`** — `Enh` for an enhancement, `Opt` for an optimization, or `Ext` for an `ExtensionTable` detail on `Read:Extension`
 - **`name`** — the registered type name (e.g. `PartitionHint`)
 - **`extension_args`** — positional and/or named arguments; use `_` for empty
 
-Advanced extension lines are **indented one level deeper** than the relation they annotate, just like child relations. Enhancement and optimization lines MUST appear **before** any child relations.
+Addendum lines are **indented one level deeper** than the relation they annotate, just like child relations. They MUST appear **before** any child relations. `+ Enh:` and `+ Opt:` lines attach advanced extensions to standard relations. `+ Ext:` lines are only valid under `Read:Extension`; extension relations (`ExtensionLeaf`, `ExtensionSingle`, and `ExtensionMulti`) do not support addenda.
 
 ### Argument Syntax
 
-Extension arguments follow the same rules as extension-relation arguments.  Enum values are written with a `&` prefix:
+Extension arguments follow the same rules as extension-relation arguments. Enum values are written with a `&` prefix:
 
 ```text
 enum_value := "&" identifier
@@ -855,13 +922,11 @@ enum_value := "&" identifier
 ### Example: Enhancement on a Read Relation
 
 ```rust
-# use substrait_explain::extensions::ExtensionRegistry;
-# use substrait_explain::extensions::examples::PartitionHint;
+# use substrait_explain::extensions::examples;
 # use substrait_explain::format_with_registry;
 # use substrait_explain::parser::Parser;
 #
-# let mut registry = ExtensionRegistry::new();
-# registry.register_enhancement::<PartitionHint>().unwrap();
+# let registry = examples::registry();
 # let parser = Parser::new().with_extension_registry(registry.clone());
 #
 # let plan_text = r#"
@@ -879,13 +944,27 @@ Root[result]
 
 ### Example: Enhancement and Multiple Optimizations
 
-```text
+```rust
+# use substrait_explain::extensions::examples;
+# use substrait_explain::format_with_registry;
+# use substrait_explain::parser::Parser;
+#
+# let registry = examples::registry();
+# let parser = Parser::new().with_extension_registry(registry.clone());
+#
+# let plan_text = r#"
 === Plan
 Root[result]
   Read[data => col:i64]
     + Enh:PartitionHint[&HASH, count=4]
     + Opt:PlanHint[hint='use_index']
     + Opt:PlanHint[hint='parallel']
+# "#;
+#
+# let plan = parser.parse_plan(plan_text).unwrap();
+# let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+# assert!(errors.is_empty());
+# assert_eq!(formatted.trim(), plan_text.trim());
 ```
 
 ### Custom Extension Types

@@ -8,11 +8,10 @@ use super::{
     MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
     unwrap_single_pair,
 };
-use crate::extensions::registry::ExtensionType;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
-    ExtensionArgs, ExtensionColumn, ExtensionRelationType, ExtensionValue, InsertError,
-    SimpleExtensions, TupleValue,
+    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
+    TupleValue,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -358,12 +357,95 @@ impl ScopedParsePair for ExtensionColumn {
     }
 }
 
+/// Relation kind encoded by the text syntax prefix (`ExtensionLeaf`,
+/// `ExtensionSingle`, or `ExtensionMulti`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtensionRelationKind {
+    Leaf,
+    Single,
+    Multi,
+}
+
+impl FromStr for ExtensionRelationKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ExtensionLeaf" => Ok(ExtensionRelationKind::Leaf),
+            "ExtensionSingle" => Ok(ExtensionRelationKind::Single),
+            "ExtensionMulti" => Ok(ExtensionRelationKind::Multi),
+            _ => Err(format!("Unknown extension relation type: {s}")),
+        }
+    }
+}
+
+impl ExtensionRelationKind {
+    pub(crate) fn validate_child_count(self, child_count: usize) -> Result<(), String> {
+        match self {
+            ExtensionRelationKind::Leaf => {
+                if child_count == 0 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "ExtensionLeaf should have no input children, got {child_count}"
+                    ))
+                }
+            }
+            ExtensionRelationKind::Single => {
+                if child_count == 1 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "ExtensionSingle should have exactly 1 input child, got {child_count}"
+                    ))
+                }
+            }
+            ExtensionRelationKind::Multi => Ok(()),
+        }
+    }
+
+    /// Create appropriate relation structure from extension detail and children.
+    pub(crate) fn create_rel(
+        self,
+        detail: Option<Any>,
+        children: Vec<substrait::proto::Rel>,
+    ) -> substrait::proto::Rel {
+        use substrait::proto::rel::RelType;
+        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
+
+        let rel_type = match self {
+            ExtensionRelationKind::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
+                common: None,
+                detail: detail.map(Into::into),
+            }),
+            ExtensionRelationKind::Single => {
+                let input = children.into_iter().next();
+                RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
+                    common: None,
+                    detail: detail.map(Into::into),
+                    input: input.map(Box::new),
+                }))
+            }
+            ExtensionRelationKind::Multi => RelType::ExtensionMulti(ExtensionMultiRel {
+                common: None,
+                detail: detail.map(Into::into),
+                inputs: children,
+            }),
+        };
+
+        substrait::proto::Rel {
+            rel_type: Some(rel_type),
+        }
+    }
+}
+
 /// Fully parsed extension invocation, including the user-supplied name and the
 /// structured argument payload.
 #[derive(Debug, Clone)]
-pub struct ExtensionInvocation {
-    pub name: String,
-    pub args: ExtensionArgs,
+pub(crate) struct ExtensionInvocation {
+    pub(crate) relation_kind: ExtensionRelationKind,
+    pub(crate) name: String,
+    pub(crate) args: ExtensionArgs,
 }
 
 impl ScopedParsePair for ExtensionInvocation {
@@ -396,8 +478,8 @@ impl ScopedParsePair for ExtensionInvocation {
             (full_extension_name, "UnknownExtension".to_string())
         };
 
-        let relation_type = ExtensionRelationType::from_str(relation_type_str).unwrap();
-        let mut args = ExtensionArgs::new(relation_type);
+        let relation_kind = ExtensionRelationKind::from_str(relation_type_str).unwrap();
+        let mut args = ExtensionArgs::default();
 
         // Parse optional arguments
         let ext_arguments = iter.next().unwrap();
@@ -425,31 +507,28 @@ impl ScopedParsePair for ExtensionInvocation {
         }
 
         Ok(ExtensionInvocation {
+            relation_kind,
             name: custom_name,
             args,
         })
     }
 }
 
-/// A parsed `+ Enh:Name[args]` or `+ Opt:Name[args]` line.
+/// A parsed `+` addendum line.
 #[derive(Debug, Clone)]
-pub struct AdvExtInvocation {
-    /// Whether this is an enhancement (`ExtensionType::Enhancement`) or
-    /// optimization (`ExtensionType::Optimization`).  The grammar restricts
-    /// the value to those two variants; `ExtensionType::Relation` will never
-    /// appear here.
-    pub ext_type: ExtensionType,
-    pub name: String,
-    pub args: ExtensionArgs,
+pub(crate) struct AddendumInvocation {
+    pub(crate) kind: AddendumKind,
+    pub(crate) name: String,
+    pub(crate) args: ExtensionArgs,
 }
 
-impl ScopedParsePair for AdvExtInvocation {
+impl ScopedParsePair for AddendumInvocation {
     fn rule() -> Rule {
-        Rule::adv_extension
+        Rule::addendum
     }
 
     fn message() -> &'static str {
-        "AdvExtInvocation"
+        "AddendumInvocation"
     }
 
     fn parse_pair(
@@ -460,37 +539,31 @@ impl ScopedParsePair for AdvExtInvocation {
 
         let mut iter = pair.into_inner();
 
-        // First token: adv_ext_type — grammar guarantees "Enh" or "Opt"
-        let type_pair = iter.next().unwrap(); // Grammar guarantees adv_ext_type exists
-        let ext_type = match type_pair.as_str() {
-            "Enh" => ExtensionType::Enhancement,
-            "Opt" => ExtensionType::Optimization,
-            other => unreachable!("Unexpected adv_ext_type: {other}"),
+        // First token: addendum_type - grammar guarantees a known addendum prefix.
+        let type_pair = iter.next().unwrap(); // Grammar guarantees addendum_type exists
+        let kind = match type_pair.as_str() {
+            "Enh" => AddendumKind::Enhancement,
+            "Opt" => AddendumKind::Optimization,
+            "Ext" => AddendumKind::ExtensionTable,
+            other => unreachable!("Unexpected addendum_type: {other}"),
         };
 
         // Second token: name
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Advanced extensions reuse ExtensionArgs, but their text syntax has no
-        // child relations; Leaf is only a placeholder here.
-        //
-        // TODO: this is ugly and misleading
-        let mut args = ExtensionArgs::new(crate::extensions::ExtensionRelationType::Leaf);
+        // Remaining token: arguments — grammar guarantees it is always present.
+        let mut args = ExtensionArgs::default();
 
         let arguments_pair = iter.next().unwrap();
         match arguments_pair.as_rule() {
             Rule::arguments => {
                 arguments_rule_parsing(extensions, arguments_pair, &mut args)?;
             }
-            r => unreachable!("Unexpected rule in AdvExtInvocation args: {r:?}"),
+            r => unreachable!("Unexpected rule in AddendumInvocation args: {r:?}"),
         }
 
-        Ok(AdvExtInvocation {
-            ext_type,
-            name,
-            args,
-        })
+        Ok(AddendumInvocation { kind, name, args })
     }
 }
 
@@ -523,51 +596,6 @@ fn arguments_rule_parsing(
         }
     }
     Ok(())
-}
-
-impl ExtensionRelationType {
-    /// Create appropriate relation structure from extension detail and children.
-    /// This method handles the structural logic for creating different extension relation types.
-    pub fn create_rel(
-        self,
-        detail: Option<Any>,
-        children: Vec<Box<substrait::proto::Rel>>,
-    ) -> Result<substrait::proto::Rel, String> {
-        use substrait::proto::rel::RelType;
-        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
-
-        // Validate child count matches relation type
-        self.validate_child_count(children.len())?;
-
-        // The output column count is returned alongside the Rel by parse_extension_relation
-        // and flows up the parse tree through Rust return values
-        let rel_type = match self {
-            ExtensionRelationType::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common: None,
-                detail: detail.map(Into::into),
-            }),
-            ExtensionRelationType::Single => {
-                let input = children.into_iter().next().map(|child| *child);
-                RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common: None,
-                    detail: detail.map(Into::into),
-                    input: input.map(Box::new),
-                }))
-            }
-            ExtensionRelationType::Multi => {
-                let inputs = children.into_iter().map(|child| *child).collect();
-                RelType::ExtensionMulti(ExtensionMultiRel {
-                    common: None,
-                    detail: detail.map(Into::into),
-                    inputs,
-                })
-            }
-        };
-
-        Ok(substrait::proto::Rel {
-            rel_type: Some(rel_type),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -749,12 +777,13 @@ Functions:
     }
 
     #[test]
-    fn test_tuple_in_adv_extension_parses() {
-        let inv = AdvExtInvocation::parse(
+    fn test_tuple_in_addendum_parses() {
+        let inv = AddendumInvocation::parse(
             &SimpleExtensions::default(),
             "+ Enh:Foo[(&HASH, &RANGE), count=8]",
         )
         .unwrap();
+        assert_eq!(inv.kind, AddendumKind::Enhancement);
         assert_eq!(inv.name, "Foo");
         assert_eq!(inv.args.positional.len(), 1);
         let ExtensionValue::Tuple(items) = &inv.args.positional[0] else {
@@ -765,6 +794,43 @@ Functions:
         assert!(matches!(items[0], ExtensionValue::Enum(s) if s == "HASH"));
         assert!(matches!(items[1], ExtensionValue::Enum(s) if s == "RANGE"));
         assert_eq!(inv.args.named.len(), 1);
+    }
+
+    #[test]
+    fn extension_relation_kind_parses_text_prefixes() {
+        assert_eq!(
+            ExtensionRelationKind::from_str("ExtensionLeaf").unwrap(),
+            ExtensionRelationKind::Leaf
+        );
+        assert_eq!(
+            ExtensionRelationKind::from_str("ExtensionSingle").unwrap(),
+            ExtensionRelationKind::Single
+        );
+        assert_eq!(
+            ExtensionRelationKind::from_str("ExtensionMulti").unwrap(),
+            ExtensionRelationKind::Multi
+        );
+    }
+
+    #[test]
+    fn extension_multi_allows_any_child_count() {
+        assert!(ExtensionRelationKind::Multi.validate_child_count(0).is_ok());
+        assert!(ExtensionRelationKind::Multi.validate_child_count(1).is_ok());
+        assert!(ExtensionRelationKind::Multi.validate_child_count(3).is_ok());
+    }
+
+    #[test]
+    fn extension_single_rejects_wrong_child_counts() {
+        assert!(
+            ExtensionRelationKind::Single
+                .validate_child_count(0)
+                .is_err()
+        );
+        assert!(
+            ExtensionRelationKind::Single
+                .validate_child_count(2)
+                .is_err()
+        );
     }
 
     #[test]

@@ -181,7 +181,6 @@ Register extensions to the appropriate namespace:
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
 #     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
-#     ExtensionRelationType,
 # };
 #[derive(Clone, PartialEq, Message)]
 pub struct MySourceConfig {
@@ -198,7 +197,7 @@ impl Name for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
 #     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
 #     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-#         Ok(ExtensionArgs::new(ExtensionRelationType::Leaf))
+#         Ok(ExtensionArgs::default())
 #     }
 # }
 # use substrait_explain::parser::Parser;

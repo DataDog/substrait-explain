@@ -164,9 +164,7 @@ Root[result]
 /// A minimal Explainable + prost::Message used to register as an optimization.
 mod opt_fixture {
     use prost::Name;
-    use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionError, ExtensionRelationType,
-    };
+    use substrait_explain::extensions::{Explainable, ExtensionArgs, ExtensionError};
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct PlanHint {
@@ -200,7 +198,7 @@ mod opt_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
         }
@@ -339,7 +337,7 @@ Root[result]
 }
 
 #[test]
-fn test_adv_extension_as_standalone_root_fails_with_error() {
+fn test_addendum_as_standalone_root_fails_with_error() {
     let registry = make_registry();
 
     let plan_text = r#"=== Plan
@@ -349,12 +347,12 @@ fn test_adv_extension_as_standalone_root_fails_with_error() {
     let result = parser.parse_plan(plan_text);
     assert!(
         result.is_err(),
-        "expected parse error for adv_extension as standalone root, but parse succeeded"
+        "expected parse error for addendum as standalone root, but parse succeeded"
     );
 }
 
 #[test]
-fn test_adv_extension_as_roots_only_child_fails_with_error() {
+fn test_addendum_as_roots_only_child_fails_with_error() {
     let registry = make_registry();
 
     let plan_text = r#"=== Plan
@@ -365,7 +363,7 @@ Root[result]
     let result = parser.parse_plan(plan_text);
     assert!(
         result.is_err(),
-        "expected parse error for adv_extension as Root's only child, but parse succeeded"
+        "expected parse error for addendum as Root's only child, but parse succeeded"
     );
 }
 
@@ -521,7 +519,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -554,7 +552,7 @@ mod extension_child_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
+            let mut args = ExtensionArgs::default();
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
                 r#type: super::parse_type("i64"),
@@ -835,17 +833,17 @@ Root[result]
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// output_columns in adv_ext → failure token
+// output_columns in enhancement addendum -> failure token
 // ---------------------------------------------------------------------------
 
 /// A synthetic enhancement whose `to_args()` deliberately returns non-empty
-/// `output_columns`.  The `adv_extension` grammar has no `=> columns` clause,
+/// `output_columns`. The addendum grammar has no `=> columns` clause,
 /// so formatting this would produce text the parser cannot read back.
 /// The formatter must emit a failure token and a `FormatError` instead.
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRelationType,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -876,8 +874,8 @@ mod adv_ext_with_columns_fixture {
         }
 
         fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::new(ExtensionRelationType::Leaf);
-            // Deliberately populate output_columns — the adv_extension grammar
+            let mut args = ExtensionArgs::default();
+            // Deliberately populate output_columns - the addendum grammar
             // has no "=> columns" clause, so this cannot be round-tripped.
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col".to_owned(),
@@ -890,7 +888,7 @@ mod adv_ext_with_columns_fixture {
 
 /// When a registry's `to_args()` returns non-empty `output_columns` for an
 /// enhancement, the formatter must emit a failure token rather than writing
-/// `+ Enh:Name[args => col:type]`, which the `adv_extension` grammar cannot parse.
+/// `+ Enh:Name[args => col:type]`, which the addendum grammar cannot parse.
 #[test]
 fn test_adv_ext_output_columns_produces_failure_token() {
     use adv_ext_with_columns_fixture::EnhancementWithColumns;
@@ -912,18 +910,18 @@ Root[result]
 
     // The enhancement line must contain a failure token, not "=> col:i64".
     assert!(
-        formatted.contains("+ Enh[!{adv_extension}]"),
-        "expected failure token '+ Enh[!{{adv_extension}}]' in output, got:\n{formatted}"
+        formatted.contains("+ Enh[!{addendum}]"),
+        "expected failure token '+ Enh[!{{addendum}}]' in output, got:\n{formatted}"
     );
-    // No adv_extension line may contain "=>" — that syntax is only valid in
-    // extension_relation, not in adv_extension.
-    let adv_ext_line = formatted
+    // No addendum line may contain "=>" - that syntax is only valid in
+    // extension_relation, not in addendum.
+    let addendum_line = formatted
         .lines()
         .find(|l| l.trim_start().starts_with("+ Enh"))
         .expect("expected a '+ Enh' line in output");
     assert!(
-        !adv_ext_line.contains("=>"),
-        "adv_extension line must not contain '=>', got: {adv_ext_line:?}"
+        !addendum_line.contains("=>"),
+        "addendum line must not contain '=>', got: {addendum_line:?}"
     );
 
     // Exactly one FormatError must have been collected.
