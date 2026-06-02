@@ -1,10 +1,10 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use substrait::proto::Type;
 use substrait::proto::expression::Literal;
-use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::literal::{LiteralType, PrecisionTime, PrecisionTimestamp};
 use substrait::proto::r#type::{Kind, Nullability};
 
-use super::{MessageParseError, Rule, ScopedParsePair, unescape_string};
+use super::{MessageParseError, Rule, ScopedParsePair, unescape_string, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 
 #[derive(Debug)]
@@ -95,6 +95,9 @@ enum LiteralTarget {
     Date(LiteralAttrs),
     TimeMicros(LiteralAttrs),
     TimestampMicros(LiteralAttrs),
+    PrecisionTime { attrs: LiteralAttrs, precision: i32 },
+    PrecisionTimestamp { attrs: LiteralAttrs, precision: i32 },
+    PrecisionTimestampTz { attrs: LiteralAttrs, precision: i32 },
     UnsupportedStringFallback,
 }
 
@@ -130,6 +133,18 @@ impl LiteralTarget {
             Kind::Date(k) => {
                 Self::Date(LiteralAttrs::new(k.nullability, k.type_variation_reference))
             }
+            Kind::PrecisionTime(k) => Self::PrecisionTime {
+                attrs: LiteralAttrs::new(k.nullability, k.type_variation_reference),
+                precision: k.precision,
+            },
+            Kind::PrecisionTimestamp(k) => Self::PrecisionTimestamp {
+                attrs: LiteralAttrs::new(k.nullability, k.type_variation_reference),
+                precision: k.precision,
+            },
+            Kind::PrecisionTimestampTz(k) => Self::PrecisionTimestampTz {
+                attrs: LiteralAttrs::new(k.nullability, k.type_variation_reference),
+                precision: k.precision,
+            },
             #[allow(deprecated)]
             Kind::Time(k) => {
                 Self::TimeMicros(LiteralAttrs::new(k.nullability, k.type_variation_reference))
@@ -215,6 +230,27 @@ impl LiteralTarget {
             )),
             Self::TimestampMicros(attrs) => Ok(literal(
                 LiteralType::Timestamp(parse_timestamp_to_microseconds(&value, span)?),
+                attrs,
+            )),
+            Self::PrecisionTime { attrs, precision } => Ok(literal(
+                LiteralType::PrecisionTime(PrecisionTime {
+                    precision,
+                    value: parse_time_to_precision_units(&value, precision, span)?,
+                }),
+                attrs,
+            )),
+            Self::PrecisionTimestamp { attrs, precision } => Ok(literal(
+                LiteralType::PrecisionTimestamp(PrecisionTimestamp {
+                    precision,
+                    value: parse_timestamp_to_precision_units(&value, precision, span)?,
+                }),
+                attrs,
+            )),
+            Self::PrecisionTimestampTz { attrs, precision } => Ok(literal(
+                LiteralType::PrecisionTimestampTz(PrecisionTimestamp {
+                    precision,
+                    value: parse_timestamp_to_precision_units(&value, precision, span)?,
+                }),
                 attrs,
             )),
             Self::UnsupportedStringFallback => Ok(literal(
@@ -306,6 +342,119 @@ fn parse_timestamp_to_microseconds(
     ))
 }
 
+fn precision_scale(precision: i32, span: pest::Span) -> Result<i64, MessageParseError> {
+    if !(0..=12).contains(&precision) {
+        return Err(invalid_literal(
+            span,
+            format!("Invalid temporal precision {precision}; expected 0 through 12"),
+        ));
+    }
+    Ok(10_i64.pow(precision as u32))
+}
+
+fn parse_fraction_units(
+    fraction: Option<&str>,
+    precision: i32,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let Some(fraction) = fraction else {
+        return Ok(0);
+    };
+    if !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return Err(invalid_literal(span, "Fractional seconds must be digits"));
+    }
+    let precision = precision as usize;
+    if fraction.len() > precision {
+        return Err(invalid_literal(
+            span,
+            format!(
+                "Fractional seconds have precision {}, but literal type allows precision {precision}",
+                fraction.len()
+            ),
+        ));
+    }
+    let mut padded = fraction.to_owned();
+    padded.extend(std::iter::repeat_n('0', precision - padded.len()));
+    Ok(if padded.is_empty() {
+        0
+    } else {
+        padded.parse::<i64>().unwrap()
+    })
+}
+
+fn parse_time_parts<'a>(
+    time_str: &'a str,
+    span: pest::Span,
+) -> Result<(NaiveTime, Option<&'a str>), MessageParseError> {
+    let (base, fraction) = match time_str.split_once('.') {
+        Some((base, fraction)) => (base, Some(fraction)),
+        None => (time_str, None),
+    };
+    let time = NaiveTime::parse_from_str(base, "%H:%M:%S").map_err(|_| {
+        invalid_literal(
+            span,
+            format!("Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"),
+        )
+    })?;
+    Ok((time, fraction))
+}
+
+fn parse_time_to_precision_units(
+    time_str: &str,
+    precision: i32,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let scale = precision_scale(precision, span)?;
+    let (time, fraction) = parse_time_parts(time_str, span)?;
+    let seconds = i64::from(time.num_seconds_from_midnight());
+    let units = seconds
+        .checked_mul(scale)
+        .ok_or_else(|| invalid_literal(span, "Time literal overflow"))?;
+    let fraction_units = parse_fraction_units(fraction, precision, span)?;
+    units
+        .checked_add(fraction_units)
+        .ok_or_else(|| invalid_literal(span, "Time literal overflow"))
+}
+
+fn parse_timestamp_to_precision_units(
+    timestamp_str: &str,
+    precision: i32,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let scale = precision_scale(precision, span)?;
+    let (date_part, time_part) = timestamp_str
+        .split_once('T')
+        .or_else(|| timestamp_str.split_once(' '))
+        .ok_or_else(|| {
+            invalid_literal(
+                span,
+                format!(
+                    "Invalid timestamp format: '{timestamp_str}'. Expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS"
+                ),
+            )
+        })?;
+    let date = ["%Y-%m-%d", "%Y/%m/%d"]
+        .iter()
+        .find_map(|format| NaiveDate::parse_from_str(date_part, format).ok())
+        .ok_or_else(|| {
+            invalid_literal(
+                span,
+                format!("Invalid date format: '{date_part}'. Expected YYYY-MM-DD or YYYY/MM/DD"),
+            )
+        })?;
+    let (time, fraction) = parse_time_parts(time_part, span)?;
+    let datetime = date.and_time(time);
+    let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
+    let seconds = datetime.signed_duration_since(epoch).num_seconds();
+    let units = seconds
+        .checked_mul(scale)
+        .ok_or_else(|| invalid_literal(span, "Timestamp literal overflow"))?;
+    let fraction_units = parse_fraction_units(fraction, precision, span)?;
+    units
+        .checked_add(fraction_units)
+        .ok_or_else(|| invalid_literal(span, "Timestamp literal overflow"))
+}
+
 impl ScopedParsePair for Literal {
     fn rule() -> Rule {
         Rule::literal
@@ -320,17 +469,30 @@ impl ScopedParsePair for Literal {
         pair: pest::iterators::Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
-        let mut pairs = pair.into_inner();
-        let value = pairs.next().unwrap();
-        let typ = pairs.next();
-        assert!(pairs.next().is_none());
+        parse_literal_pair(extensions, pair)
+    }
+}
 
-        let syntax = LiteralSyntax::from_pair(value);
-        let typ = match typ {
-            Some(t) => Some(Type::parse_pair(extensions, t)?),
-            None => None,
-        };
-        let target = LiteralTarget::from_type(typ, &syntax)?;
-        target.parse(syntax)
+pub(crate) fn parse_literal_pair(
+    extensions: &SimpleExtensions,
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<Literal, MessageParseError> {
+    match pair.as_rule() {
+        Rule::literal => parse_literal_pair(extensions, unwrap_single_pair(pair)),
+        Rule::typed_literal | Rule::untyped_literal => {
+            let mut pairs = pair.into_inner();
+            let value = pairs.next().unwrap();
+            let typ = pairs.next();
+            assert!(pairs.next().is_none());
+
+            let syntax = LiteralSyntax::from_pair(value);
+            let typ = match typ {
+                Some(t) => Some(Type::parse_pair(extensions, t)?),
+                None => None,
+            };
+            let target = LiteralTarget::from_type(typ, &syntax)?;
+            target.parse(syntax)
+        }
+        _ => unreachable!("Literal unexpected rule: {:?}", pair.as_rule()),
     }
 }

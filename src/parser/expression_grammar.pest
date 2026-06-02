@@ -41,7 +41,9 @@ compound_name = @{ identifier ~ (":" ~ identifier)? }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal = { (float | integer | boolean | string_literal) ~ (":" ~ sp ~ type)? }
+typed_literal = { (float | integer | boolean | string_literal) ~ ":" ~ sp ~ type }
+untyped_literal = { (float | integer | boolean | string_literal) ~ !(":") }
+literal = { typed_literal | untyped_literal }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
@@ -323,9 +325,8 @@ extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument
 
 // Untyped scalar extension literals render independently of expression literal
 // verbosity. Typed literals (for example, 2:i16 or '2024-01-01':date) fall
-// through to expression parsing so their Substrait type information is
-// preserved.
-untyped_literal = { (float | integer | boolean | string_literal) ~ !(":") }
+// through to first-class extension literal parsing when their Substrait literal
+// kind is supported; otherwise they become expression values.
 
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.
@@ -339,7 +340,7 @@ tuple = {
               ~ (sp ~ "," ~ sp ~ extension_argument)+
               ~ (sp ~ ",")? ~ sp ~ ")"
         }
-extension_argument  = { enum_value | untyped_literal | reference | expression | tuple }
+extension_argument  = { enum_value | typed_literal | untyped_literal | reference | expression | tuple }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }

@@ -47,20 +47,42 @@ fn days_to_date_string(days: i32) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
-fn microseconds_to_time_string(microseconds: i64) -> String {
-    let total_seconds = microseconds / 1_000_000;
-    let remaining_micros = microseconds % 1_000_000;
+fn format_fraction(units: i64, precision: i32) -> String {
+    if precision == 0 || units == 0 {
+        return String::new();
+    }
+    let mut fraction = format!("{:0width$}", units, width = precision as usize);
+    while fraction.ends_with('0') {
+        fraction.pop();
+    }
+    if fraction.is_empty() {
+        String::new()
+    } else {
+        format!(".{fraction}")
+    }
+}
+
+fn precision_scale(precision: i32) -> Option<i64> {
+    (0..=12)
+        .contains(&precision)
+        .then(|| 10_i64.pow(precision as u32))
+}
+
+fn precision_time_to_string(value: i64, precision: i32) -> Option<String> {
+    let scale = precision_scale(precision)?;
+    let total_seconds = value.div_euclid(scale);
+    let fraction_units = value.rem_euclid(scale);
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
-    if remaining_micros == 0 {
-        format!("{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        let fraction = format!("{remaining_micros:06}")
-            .trim_end_matches('0')
-            .to_string();
-        format!("{hours:02}:{minutes:02}:{seconds:02}.{fraction}")
-    }
+    Some(format!(
+        "{hours:02}:{minutes:02}:{seconds:02}{}",
+        format_fraction(fraction_units, precision)
+    ))
+}
+
+fn microseconds_to_time_string(microseconds: i64) -> String {
+    precision_time_to_string(microseconds, 6).expect("precision 6 is valid")
 }
 
 fn microseconds_to_timestamp_string(microseconds: i64) -> String {
@@ -76,6 +98,18 @@ fn microseconds_to_timestamp_string(microseconds: i64) -> String {
     } else {
         formatted
     }
+}
+
+fn precision_timestamp_to_string(value: i64, precision: i32) -> Option<String> {
+    let scale = precision_scale(precision)?;
+    let seconds = value.div_euclid(scale);
+    let fraction_units = value.rem_euclid(scale);
+    let datetime = DateTime::from_timestamp(seconds, 0)?.naive_utc();
+    Some(format!(
+        "{}{}",
+        datetime.format("%Y-%m-%dT%H:%M:%S"),
+        format_fraction(fraction_units, precision)
+    ))
 }
 
 fn write_literal_value<S: Scope, W: fmt::Write>(
@@ -115,10 +149,49 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::VarChar(_) => unimplemented_literal("VarChar", ctx, w),
         LiteralType::FixedBinary(_) => unimplemented_literal("FixedBinary", ctx, w),
         LiteralType::Decimal(_) => unimplemented_literal("Decimal", ctx, w),
-        LiteralType::PrecisionTime(_) => unimplemented_literal("PrecisionTime", ctx, w),
-        LiteralType::PrecisionTimestamp(_) => unimplemented_literal("PrecisionTimestamp", ctx, w),
-        LiteralType::PrecisionTimestampTz(_) => {
-            unimplemented_literal("PrecisionTimestampTz", ctx, w)
+        LiteralType::PrecisionTime(value) => {
+            let Some(formatted) = precision_time_to_string(value.value, value.precision) else {
+                return invalid_literal(
+                    "PrecisionTime",
+                    format!(
+                        "invalid precision {} for precision time literal",
+                        value.precision
+                    ),
+                    ctx,
+                    w,
+                );
+            };
+            write!(w, "'{}'", escaped(&formatted))
+        }
+        LiteralType::PrecisionTimestamp(value) => {
+            let Some(formatted) = precision_timestamp_to_string(value.value, value.precision)
+            else {
+                return invalid_literal(
+                    "PrecisionTimestamp",
+                    format!(
+                        "invalid precision {} or out-of-range value {} for precision timestamp literal",
+                        value.precision, value.value
+                    ),
+                    ctx,
+                    w,
+                );
+            };
+            write!(w, "'{}'", escaped(&formatted))
+        }
+        LiteralType::PrecisionTimestampTz(value) => {
+            let Some(formatted) = precision_timestamp_to_string(value.value, value.precision)
+            else {
+                return invalid_literal(
+                    "PrecisionTimestampTz",
+                    format!(
+                        "invalid precision {} or out-of-range value {} for precision timestamp tz literal",
+                        value.precision, value.value
+                    ),
+                    ctx,
+                    w,
+                );
+            };
+            write!(w, "'{}'", escaped(&formatted))
         }
         LiteralType::Struct(_) => unimplemented_literal("Struct", ctx, w),
         LiteralType::Map(_) => unimplemented_literal("Map", ctx, w),
@@ -131,6 +204,23 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::EmptyMap(_) => unimplemented_literal("EmptyMap", ctx, w),
         LiteralType::UserDefined(_) => unimplemented_literal("UserDefined", ctx, w),
     }
+}
+
+fn invalid_literal<S: Scope, W: fmt::Write>(
+    variant: &'static str,
+    description: impl Into<std::borrow::Cow<'static, str>>,
+    ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    write!(
+        w,
+        "{}",
+        ctx.failure(PlanError::invalid(
+            "LiteralType",
+            Some(variant),
+            description
+        ))
+    )
 }
 
 fn literal_type(literal: &expr::Literal) -> Option<Type> {
@@ -192,6 +282,25 @@ fn literal_type(literal: &expr::Literal) -> Option<Type> {
             nullability,
             type_variation_reference,
         }),
+        LiteralType::PrecisionTime(value) => Kind::PrecisionTime(ptype::PrecisionTime {
+            precision: value.precision,
+            nullability,
+            type_variation_reference,
+        }),
+        LiteralType::PrecisionTimestamp(value) => {
+            Kind::PrecisionTimestamp(ptype::PrecisionTimestamp {
+                precision: value.precision,
+                nullability,
+                type_variation_reference,
+            })
+        }
+        LiteralType::PrecisionTimestampTz(value) => {
+            Kind::PrecisionTimestampTz(ptype::PrecisionTimestampTz {
+                precision: value.precision,
+                nullability,
+                type_variation_reference,
+            })
+        }
         _ => return None,
     };
     Some(Type { kind: Some(kind) })
