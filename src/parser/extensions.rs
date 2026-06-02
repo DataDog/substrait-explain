@@ -1,18 +1,20 @@
 use std::fmt;
 use std::str::FromStr;
 
+use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::{Expression, Type};
 use thiserror::Error;
 
 use super::{
     ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
-    unescape_string, unwrap_single_pair,
+    unwrap_single_pair,
 };
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
-    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
-    TupleValue,
+    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionLiteral, ExtensionValue, InsertError,
+    SimpleExtensions, TupleValue,
 };
+use crate::parser::literals::parse_literal_pair;
 use crate::parser::structural::IndentedLine;
 
 #[derive(Debug, Clone, Error)]
@@ -290,24 +292,7 @@ impl ScopedParsePair for ExtensionValue {
                 let field_index = FieldIndex::parse_pair(inner);
                 ExtensionValue::from(Reference(field_index.0))
             }
-            Rule::untyped_literal => {
-                // Literal can contain integer, float, boolean, or string_literal
-                let value_pair = unwrap_single_pair(inner);
-                match value_pair.as_rule() {
-                    Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
-                    Rule::integer => {
-                        ExtensionValue::Integer(value_pair.as_str().parse::<i64>().unwrap())
-                    }
-                    Rule::float => {
-                        ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
-                    }
-                    Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
-                    _ => panic!(
-                        "Unexpected extension scalar literal type: {:?}",
-                        value_pair.as_rule()
-                    ),
-                }
-            }
+            Rule::literal => parse_extension_literal(extensions, inner)?,
             Rule::tuple => {
                 let tv = inner
                     .into_inner()
@@ -322,6 +307,37 @@ impl ScopedParsePair for ExtensionValue {
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
         })
     }
+}
+
+fn parse_extension_literal(
+    extensions: &SimpleExtensions,
+    literal: pest::iterators::Pair<Rule>,
+) -> Result<ExtensionValue, MessageParseError> {
+    assert_eq!(literal.as_rule(), Rule::literal);
+    let span = literal.as_span();
+    let parsed = parse_literal_pair(extensions, literal)?;
+    if parsed.explicit_type.is_none() {
+        return match parsed.literal.literal_type {
+            Some(LiteralType::String(value)) => Ok(ExtensionValue::String(value)),
+            Some(LiteralType::I64(value)) => Ok(ExtensionValue::Integer(value)),
+            Some(LiteralType::Fp64(value)) => Ok(ExtensionValue::Float(value)),
+            Some(LiteralType::Boolean(value)) => Ok(ExtensionValue::Boolean(value)),
+            Some(other) => Err(MessageParseError::invalid(
+                "extension_scalar_literal",
+                span,
+                format!("Unexpected extension scalar literal type: {other:?}"),
+            )),
+            None => Err(MessageParseError::invalid(
+                "extension_scalar_literal",
+                span,
+                "Extension scalar literal is missing literal_type",
+            )),
+        };
+    }
+    Ok(match ExtensionLiteral::try_from(parsed.literal.clone()) {
+        Ok(literal) => ExtensionValue::from(literal),
+        Err(_) => ExtensionValue::from(parsed.literal),
+    })
 }
 
 impl ScopedParsePair for ExtensionColumn {
@@ -614,7 +630,7 @@ mod tests {
     use substrait::proto::expression::literal::LiteralType;
 
     use super::*;
-    use crate::extensions::{Expr, ExtensionValue};
+    use crate::extensions::{Expr, ExtensionLiteral, ExtensionValue};
     use crate::fixtures::TestContext;
     use crate::parser::Parser;
     use crate::parser::common::test_support::ScopedParse;
@@ -1007,9 +1023,29 @@ Functions:
     }
 
     #[test]
+    fn test_temporal_extension_literals_parse_as_extension_literals() {
+        let ctx = TestContext::new();
+        for text in [
+            "'2023-12-25':date",
+            "'14:30:45':time",
+            "'2023-01-01T12:00:00':timestamp",
+            "'14:30:45.123':precisiontime<3>",
+            "'2023-01-01T12:00:00.123456':precisiontimestamp<6>",
+            "'2023-01-01T12:00:00.123456789':precisiontimestamptz<9>",
+        ] {
+            let value = parse_extension_value(text);
+            let literal = ExtensionLiteral::try_from(&value).expect("temporal literal");
+            assert_eq!(ctx.textify_no_errors(&literal), text);
+            let expr = Expr::try_from(&value).expect("temporal literal should widen to Expr");
+            assert_eq!(ctx.textify_no_errors(&expr), text);
+        }
+    }
+
+    #[test]
     fn test_typed_extension_literal_parses_as_expression() {
         let value = parse_extension_value("42:i16");
         assert!(i64::try_from(&value).is_err());
+        assert!(ExtensionLiteral::try_from(&value).is_err());
 
         let expr = Expr::try_from(&value).unwrap();
         assert_eq!(ctx_text(&expr), "42:i16");
