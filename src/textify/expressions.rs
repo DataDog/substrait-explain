@@ -1,9 +1,7 @@
 use std::fmt::{self};
 
-use chrono::{DateTime, NaiveDate};
 use expr::RexType;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
-use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
 };
@@ -12,9 +10,9 @@ use substrait::proto::{
     AggregateFunction, Expression, FunctionArgument, FunctionOption, expression as expr,
 };
 
-use super::{PlanError, Scope, Textify, Visibility};
+use super::{PlanError, Scope, Textify};
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
+use crate::textify::types::{Name, NamedAnchor, OutputType};
 
 // …(…) for function call
 // […] for variant
@@ -28,234 +26,10 @@ use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 // …:… for specifying type
 // &… for enum
 
-pub fn textify_binary<S: Scope, W: fmt::Write>(items: &[u8], ctx: &S, w: &mut W) -> fmt::Result {
-    if ctx.options().show_literal_binaries {
-        write!(w, "0x")?;
-        for &n in items {
-            write!(w, "{n:02x}")?;
-        }
-    } else {
-        write!(w, "{{binary}}")?;
-    }
-    Ok(())
-}
-
-/// Write an error token for a literal type that hasn't been implemented yet.
-fn unimplemented_literal<S: Scope, W: fmt::Write>(
-    variant: &'static str,
-    ctx: &S,
-    w: &mut W,
-) -> fmt::Result {
-    write!(
-        w,
-        "{}",
-        ctx.failure(PlanError::unimplemented(
-            "LiteralType",
-            Some(variant),
-            format!("{variant} literal textification not implemented"),
-        ))
-    )
-}
-
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
 /// a valid identifier; otherwise, they are written as `&'<escaped_string>'`.
 pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fmt::Result {
     write!(w, "&{}", Name(s))
-}
-
-/// Convert days since Unix epoch to date string
-fn days_to_date_string(days: i32) -> String {
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let date = epoch + chrono::Duration::days(days as i64);
-    date.format("%Y-%m-%d").to_string()
-}
-
-/// Convert microseconds since midnight to time string
-fn microseconds_to_time_string(microseconds: i64) -> String {
-    let total_seconds = microseconds / 1_000_000;
-    let remaining_microseconds = microseconds % 1_000_000;
-
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-
-    if remaining_microseconds == 0 {
-        format!("{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        // Convert microseconds to fractional seconds
-        let fractional = remaining_microseconds as f64 / 1_000_000.0;
-        format!("{hours:02}:{minutes:02}:{seconds:02}{fractional:.6}")
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string()
-    }
-}
-
-/// Convert microseconds since Unix epoch to timestamp string
-fn microseconds_to_timestamp_string(microseconds: i64) -> String {
-    let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
-    let duration = chrono::Duration::microseconds(microseconds);
-    let datetime = epoch + duration;
-
-    // Format with fractional seconds, then clean up trailing zeros
-    let formatted = datetime.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
-
-    // If there are fractional seconds, trim trailing zeros and dot if needed
-    if formatted.contains('.') {
-        formatted
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string()
-    } else {
-        formatted
-    }
-}
-
-/// Write just the value portion of a literal, with no type suffix or
-/// nullability marker.
-///
-/// For unimplemented types, writes an error token via `ctx.failure()`.
-fn write_literal_value<S: Scope, W: fmt::Write>(
-    lit: &LiteralType,
-    ctx: &S,
-    w: &mut W,
-) -> fmt::Result {
-    match lit {
-        LiteralType::Boolean(b) => write!(w, "{b}"),
-        LiteralType::I8(i) | LiteralType::I16(i) | LiteralType::I32(i) => write!(w, "{i}"),
-        LiteralType::I64(i) => write!(w, "{i}"),
-        LiteralType::Fp32(f) => write!(w, "{f}"),
-        LiteralType::Fp64(f) => write!(w, "{f}"),
-        LiteralType::String(s) => write!(w, "'{}'", s.escape_debug()),
-        LiteralType::Binary(items) => textify_binary(items, ctx, w),
-        LiteralType::Date(days) => {
-            write!(w, "'{}'", escaped(&days_to_date_string(*days)))
-        }
-        #[allow(deprecated)]
-        LiteralType::Time(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_time_string(*microseconds))
-            )
-        }
-        #[allow(deprecated)]
-        LiteralType::Timestamp(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_timestamp_string(*microseconds))
-            )
-        }
-        LiteralType::IntervalYearToMonth(_) => unimplemented_literal("IntervalYearToMonth", ctx, w),
-        LiteralType::IntervalDayToSecond(_) => unimplemented_literal("IntervalDayToSecond", ctx, w),
-        LiteralType::IntervalCompound(_) => unimplemented_literal("IntervalCompound", ctx, w),
-        LiteralType::FixedChar(_) => unimplemented_literal("FixedChar", ctx, w),
-        LiteralType::VarChar(_) => unimplemented_literal("VarChar", ctx, w),
-        LiteralType::FixedBinary(_) => unimplemented_literal("FixedBinary", ctx, w),
-        LiteralType::Decimal(_) => unimplemented_literal("Decimal", ctx, w),
-        LiteralType::PrecisionTime(_) => unimplemented_literal("PrecisionTime", ctx, w),
-        LiteralType::PrecisionTimestamp(_) => unimplemented_literal("PrecisionTimestamp", ctx, w),
-        LiteralType::PrecisionTimestampTz(_) => {
-            unimplemented_literal("PrecisionTimestampTz", ctx, w)
-        }
-        LiteralType::Struct(_) => unimplemented_literal("Struct", ctx, w),
-        LiteralType::Map(_) => unimplemented_literal("Map", ctx, w),
-        #[allow(deprecated)]
-        LiteralType::TimestampTz(_) => unimplemented_literal("TimestampTz", ctx, w),
-        LiteralType::Uuid(_) => unimplemented_literal("Uuid", ctx, w),
-        LiteralType::Null(_) => write!(w, "null"),
-        LiteralType::List(_) => unimplemented_literal("List", ctx, w),
-        LiteralType::EmptyList(_) => unimplemented_literal("EmptyList", ctx, w),
-        LiteralType::EmptyMap(_) => unimplemented_literal("EmptyMap", ctx, w),
-        LiteralType::UserDefined(_) => unimplemented_literal("UserDefined", ctx, w),
-    }
-}
-
-/// The type suffix for a literal (e.g., `"i32"`, `"fp64"`, `"date"`).
-///
-/// Returns `None` for unimplemented types whose [`write_literal_value`] already
-/// emitted an error token.
-fn literal_type_suffix(lit: &LiteralType) -> Option<&'static str> {
-    match lit {
-        LiteralType::Boolean(_) => Some("boolean"),
-        LiteralType::I8(_) => Some("i8"),
-        LiteralType::I16(_) => Some("i16"),
-        LiteralType::I32(_) => Some("i32"),
-        LiteralType::I64(_) => Some("i64"),
-        LiteralType::Fp32(_) => Some("fp32"),
-        LiteralType::Fp64(_) => Some("fp64"),
-        LiteralType::String(_) => Some("string"),
-        LiteralType::Binary(_) => Some("binary"),
-        LiteralType::Date(_) => Some("date"),
-        #[allow(deprecated)]
-        LiteralType::Time(_) => Some("time"),
-        #[allow(deprecated)]
-        LiteralType::Timestamp(_) => Some("timestamp"),
-        _ => None,
-    }
-}
-
-/// Whether this type is the default interpretation for its value syntax.
-///
-/// Each literal value syntax has a default type that the parser assumes when
-/// no explicit type suffix is present:
-/// - `true`/`false` → `boolean`
-/// - bare integers (`42`) → `i64`
-/// - bare floats (`3.19`) → `fp64`
-/// - single-quoted strings (`'hello'`) → `string`
-/// - hex literals (`0x...`) → `binary`
-///
-/// Non-default types (e.g., `i32`, `fp32`, `date`) always need an explicit
-/// suffix to distinguish them from the default.
-fn is_default_for_syntax(lit: &LiteralType) -> bool {
-    matches!(
-        lit,
-        LiteralType::Boolean(_)
-            | LiteralType::String(_)
-            | LiteralType::Binary(_)
-            | LiteralType::I64(_)
-            | LiteralType::Fp64(_)
-    )
-}
-
-impl Textify for expr::Literal {
-    fn name() -> &'static str {
-        "Literal"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let Some(lit) = self.literal_type.as_ref() else {
-            return write!(
-                w,
-                "{}",
-                ctx.failure(PlanError::invalid(
-                    "Literal",
-                    Some("literal_type"),
-                    "missing literal_type",
-                ))
-            );
-        };
-        write_literal_value(lit, ctx, w)?;
-        let show_suffix = match ctx.options().literal_types {
-            Visibility::Never => false,
-            Visibility::Always => true,
-            Visibility::Required => self.nullable || !is_default_for_syntax(lit),
-        };
-        if let LiteralType::Null(typ) = lit {
-            write!(w, ":{}", ctx.expect(Some(typ)))?;
-            return Ok(());
-        }
-        if show_suffix {
-            if let Some(suffix) = literal_type_suffix(lit) {
-                write!(w, ":{suffix}")?;
-            }
-            if self.nullable {
-                write!(w, "?")?;
-            }
-        }
-        Ok(())
-    }
 }
 
 pub struct Reference(pub i32);
@@ -671,6 +445,7 @@ impl Textify for AggregateFunction {
 #[cfg(test)]
 mod tests {
     use substrait::proto::Type;
+    use substrait::proto::expression::literal::LiteralType;
     use substrait::proto::expression::{cast, if_then};
     use substrait::proto::r#type::{Boolean, I16, I32, I64, Kind, Nullability, UserDefined};
 
