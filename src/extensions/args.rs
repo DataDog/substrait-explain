@@ -29,9 +29,10 @@ use std::collections::HashSet;
 use std::fmt;
 
 use indexmap::IndexMap;
+use prost_types::Timestamp as ProtoTimestamp;
 use substrait::proto;
 use substrait::proto::expression::field_reference::ReferenceType;
-use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::literal::{LiteralType, PrecisionTime, PrecisionTimestamp};
 use substrait::proto::expression::{RexType, reference_segment};
 
 use super::ExtensionError;
@@ -172,6 +173,187 @@ impl From<String> for Expr {
 impl From<&str> for Expr {
     fn from(value: &str) -> Self {
         value.to_string().into()
+    }
+}
+
+/// A Substrait literal carried as an extension argument.
+///
+/// Unlike [`Expr`], this represents literal argument syntax directly rather than
+/// a full Substrait expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensionLiteral(proto::expression::Literal);
+
+impl ExtensionLiteral {
+    /// Borrow the underlying Substrait literal protobuf.
+    pub fn as_proto(&self) -> &proto::expression::Literal {
+        &self.0
+    }
+
+    /// Clone the underlying Substrait literal protobuf.
+    pub fn to_proto(&self) -> proto::expression::Literal {
+        self.0.clone()
+    }
+
+    /// Return true if this literal is one of the temporal literal variants
+    /// currently supported as first-class extension literals.
+    #[allow(deprecated)]
+    pub(crate) fn is_temporal(&self) -> bool {
+        matches!(
+            self.0.literal_type,
+            Some(LiteralType::Date(_))
+                | Some(LiteralType::Time(_))
+                | Some(LiteralType::Timestamp(_))
+                | Some(LiteralType::PrecisionTime(_))
+                | Some(LiteralType::PrecisionTimestamp(_))
+                | Some(LiteralType::PrecisionTimestampTz(_))
+        )
+    }
+
+    pub fn date_days(days: i32) -> Self {
+        Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::Date(days)),
+            nullable: false,
+            type_variation_reference: 0,
+        })
+    }
+
+    #[allow(deprecated)]
+    pub fn time_micros(micros: i64) -> Self {
+        Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::Time(micros)),
+            nullable: false,
+            type_variation_reference: 0,
+        })
+    }
+
+    #[allow(deprecated)]
+    pub fn timestamp_micros(micros: i64) -> Self {
+        Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::Timestamp(micros)),
+            nullable: false,
+            type_variation_reference: 0,
+        })
+    }
+
+    pub fn precision_time_units(precision: i32, value: i64) -> Result<Self, ExtensionError> {
+        validate_precision(precision)?;
+        Ok(Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::PrecisionTime(PrecisionTime {
+                precision,
+                value,
+            })),
+            nullable: false,
+            type_variation_reference: 0,
+        }))
+    }
+
+    pub fn precision_timestamp_units(precision: i32, value: i64) -> Result<Self, ExtensionError> {
+        validate_precision(precision)?;
+        Ok(Self::precision_timestamp_units_unchecked(precision, value))
+    }
+
+    pub fn precision_timestamp_seconds(value: i64) -> Self {
+        Self::precision_timestamp_units_unchecked(0, value)
+    }
+
+    pub fn precision_timestamp_millis(value: i64) -> Self {
+        Self::precision_timestamp_units_unchecked(3, value)
+    }
+
+    pub fn precision_timestamp_micros(value: i64) -> Self {
+        Self::precision_timestamp_units_unchecked(6, value)
+    }
+
+    pub fn precision_timestamp_nanos(value: i64) -> Self {
+        Self::precision_timestamp_units_unchecked(9, value)
+    }
+
+    /// Build a timezone-less Substrait precision timestamp from a protobuf UTC
+    /// timestamp. The epoch value is preserved, but timezone semantics are not.
+    pub fn precision_timestamp(
+        precision: i32,
+        timestamp: ProtoTimestamp,
+    ) -> Result<Self, ExtensionError> {
+        let value = timestamp_to_units(precision, timestamp)?;
+        Ok(Self::precision_timestamp_units_unchecked(precision, value))
+    }
+
+    /// Build a UTC Substrait precision timestamp from a protobuf UTC timestamp.
+    pub fn precision_timestamp_tz_utc(
+        precision: i32,
+        timestamp: ProtoTimestamp,
+    ) -> Result<Self, ExtensionError> {
+        let value = timestamp_to_units(precision, timestamp)?;
+        Ok(Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::PrecisionTimestampTz(PrecisionTimestamp {
+                precision,
+                value,
+            })),
+            nullable: false,
+            type_variation_reference: 0,
+        }))
+    }
+
+    fn precision_timestamp_units_unchecked(precision: i32, value: i64) -> Self {
+        Self::from(proto::expression::Literal {
+            literal_type: Some(LiteralType::PrecisionTimestamp(PrecisionTimestamp {
+                precision,
+                value,
+            })),
+            nullable: false,
+            type_variation_reference: 0,
+        })
+    }
+}
+
+fn validate_precision(precision: i32) -> Result<(), ExtensionError> {
+    if (0..=12).contains(&precision) {
+        Ok(())
+    } else {
+        Err(ExtensionError::InvalidArgument(format!(
+            "temporal precision must be between 0 and 12, got {precision}"
+        )))
+    }
+}
+
+fn timestamp_to_units(precision: i32, timestamp: ProtoTimestamp) -> Result<i64, ExtensionError> {
+    validate_precision(precision)?;
+    if precision > 9 {
+        return Err(ExtensionError::InvalidArgument(format!(
+            "protobuf Timestamp can only represent precision 0 through 9, got {precision}"
+        )));
+    }
+    let timestamp = timestamp.try_normalize().map_err(|original| {
+        ExtensionError::InvalidArgument(format!(
+            "timestamp out of range or overflow (seconds={}, nanos={})",
+            original.seconds, original.nanos
+        ))
+    })?;
+    let scale = 10_i64.pow(precision as u32);
+    let nanos_per_unit = 10_i32.pow((9 - precision) as u32);
+    if timestamp.nanos % nanos_per_unit != 0 {
+        return Err(ExtensionError::InvalidArgument(format!(
+            "timestamp nanos {} are not exactly representable at precision {precision}",
+            timestamp.nanos
+        )));
+    }
+    let seconds_units = timestamp.seconds.checked_mul(scale).ok_or_else(|| {
+        ExtensionError::InvalidArgument("timestamp value overflows i64".to_string())
+    })?;
+    seconds_units
+        .checked_add(i64::from(timestamp.nanos / nanos_per_unit))
+        .ok_or_else(|| ExtensionError::InvalidArgument("timestamp value overflows i64".to_string()))
+}
+
+impl From<proto::expression::Literal> for ExtensionLiteral {
+    fn from(literal: proto::expression::Literal) -> Self {
+        Self(literal)
+    }
+}
+
+impl From<ExtensionLiteral> for proto::expression::Literal {
+    fn from(literal: ExtensionLiteral) -> Self {
+        literal.0
     }
 }
 
@@ -365,6 +547,8 @@ pub enum ExtensionValue {
     /// Use `TryFrom<&ExtensionValue> for Expr` when a handler accepts either an
     /// expression or a scalar value widened into an expression.
     Expr(Expr),
+    /// Substrait literal value using typed literal syntax.
+    Literal(ExtensionLiteral),
     /// Enum value (e.g. &CORE, &Inner) — the string holds the identifier
     /// without the `&` prefix
     Enum(String),
@@ -386,6 +570,7 @@ pub enum ExtensionValueKind {
     Enum,
     Tuple,
     Expression,
+    Literal,
 }
 
 impl fmt::Display for ExtensionValueKind {
@@ -399,6 +584,7 @@ impl fmt::Display for ExtensionValueKind {
             ExtensionValueKind::Enum => write!(f, "enum"),
             ExtensionValueKind::Tuple => write!(f, "tuple"),
             ExtensionValueKind::Expression => write!(f, "expression"),
+            ExtensionValueKind::Literal => write!(f, "literal"),
         }
     }
 }
@@ -412,6 +598,7 @@ impl ExtensionValue {
             ExtensionValue::Float(_) => ExtensionValueKind::Float,
             ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
             ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
+            ExtensionValue::Literal(_) => ExtensionValueKind::Literal,
             ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
             ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
         }
@@ -421,6 +608,12 @@ impl ExtensionValue {
 impl From<Expr> for ExtensionValue {
     fn from(expr: Expr) -> Self {
         ExtensionValue::Expr(expr)
+    }
+}
+
+impl From<ExtensionLiteral> for ExtensionValue {
+    fn from(literal: ExtensionLiteral) -> Self {
+        ExtensionValue::Literal(literal)
     }
 }
 
@@ -523,6 +716,17 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a TupleValue {
     }
 }
 
+impl TryFrom<&ExtensionValue> for ExtensionLiteral {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<ExtensionLiteral, Self::Error> {
+        match value {
+            ExtensionValue::Literal(literal) => Ok(literal.clone()),
+            v => Err(invalid_type(ExtensionValueKind::Literal, v)),
+        }
+    }
+}
+
 impl TryFrom<&ExtensionValue> for i64 {
     type Error = ExtensionError;
 
@@ -575,6 +779,7 @@ impl TryFrom<&ExtensionValue> for Expr {
     fn try_from(value: &ExtensionValue) -> Result<Expr, Self::Error> {
         match value {
             ExtensionValue::Expr(e) => Ok(e.clone()),
+            ExtensionValue::Literal(literal) => Ok(Expr::from(literal.to_proto())),
             // Untyped extension scalars are intentionally expression-compatible:
             // `arg=2` carries no syntax that distinguishes "configuration
             // integer" from "i64 literal expression". Scalar-specific
@@ -631,5 +836,138 @@ impl ExtensionArgs {
     /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost_types::Timestamp as ProtoTimestamp;
+    use substrait::proto::expression::RexType;
+    use substrait::proto::expression::literal::LiteralType;
+
+    use super::{Expr, ExtensionLiteral, ExtensionValue};
+
+    fn literal_type(literal: &ExtensionLiteral) -> &LiteralType {
+        literal
+            .as_proto()
+            .literal_type
+            .as_ref()
+            .expect("literal_type")
+    }
+
+    #[test]
+    fn precision_timestamp_tz_utc_converts_protobuf_timestamp_units() {
+        let literal = ExtensionLiteral::precision_timestamp_tz_utc(
+            9,
+            ProtoTimestamp {
+                seconds: 1,
+                nanos: 123_456_789,
+            },
+        )
+        .expect("timestamp literal");
+
+        match literal_type(&literal) {
+            LiteralType::PrecisionTimestampTz(value) => {
+                assert_eq!(value.precision, 9);
+                assert_eq!(value.value, 1_123_456_789);
+            }
+            other => panic!("Expected PrecisionTimestampTz, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precision_timestamp_converts_protobuf_timestamp_to_naive_literal() {
+        let literal = ExtensionLiteral::precision_timestamp(
+            6,
+            ProtoTimestamp {
+                seconds: 1,
+                nanos: 123_456_000,
+            },
+        )
+        .expect("timestamp literal");
+
+        match literal_type(&literal) {
+            LiteralType::PrecisionTimestamp(value) => {
+                assert_eq!(value.precision, 6);
+                assert_eq!(value.value, 1_123_456);
+            }
+            other => panic!("Expected PrecisionTimestamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precision_timestamp_from_protobuf_rejects_lossy_precision() {
+        let err = ExtensionLiteral::precision_timestamp_tz_utc(
+            6,
+            ProtoTimestamp {
+                seconds: 1,
+                nanos: 123_456_789,
+            },
+        )
+        .expect_err("lossy timestamp should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("not exactly representable at precision 6"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn precision_timestamp_from_protobuf_rejects_precision_above_nanos() {
+        let err = ExtensionLiteral::precision_timestamp_tz_utc(
+            10,
+            ProtoTimestamp {
+                seconds: 1,
+                nanos: 123_456_789,
+            },
+        )
+        .expect_err("protobuf timestamp cannot represent precision 10");
+
+        assert!(
+            err.to_string()
+                .contains("can only represent precision 0 through 9"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn precision_timestamp_convenience_constructors_use_expected_precision() {
+        let cases = [
+            (ExtensionLiteral::precision_timestamp_seconds(7), 0, 7),
+            (ExtensionLiteral::precision_timestamp_millis(7), 3, 7),
+            (ExtensionLiteral::precision_timestamp_micros(7), 6, 7),
+            (ExtensionLiteral::precision_timestamp_nanos(7), 9, 7),
+        ];
+
+        for (literal, expected_precision, expected_value) in cases {
+            match literal_type(&literal) {
+                LiteralType::PrecisionTimestamp(value) => {
+                    assert_eq!(value.precision, expected_precision);
+                    assert_eq!(value.value, expected_value);
+                }
+                other => panic!("Expected PrecisionTimestamp, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn extension_literal_extracts_directly_and_widens_to_expr() {
+        let value = ExtensionValue::from(ExtensionLiteral::precision_timestamp_micros(42));
+
+        let literal = ExtensionLiteral::try_from(&value).expect("extension literal");
+        match literal_type(&literal) {
+            LiteralType::PrecisionTimestamp(timestamp) => {
+                assert_eq!(timestamp.precision, 6);
+                assert_eq!(timestamp.value, 42);
+            }
+            other => panic!("Expected PrecisionTimestamp, got {other:?}"),
+        }
+
+        let expr = Expr::try_from(&value).expect("expression widening");
+        assert!(matches!(
+            expr.as_proto().rex_type.as_ref(),
+            Some(RexType::Literal(_))
+        ));
     }
 }

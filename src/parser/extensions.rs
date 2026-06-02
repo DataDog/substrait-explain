@@ -10,8 +10,8 @@ use super::{
 };
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
-    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
-    TupleValue,
+    AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionLiteral, ExtensionValue, InsertError,
+    SimpleExtensions, TupleValue,
 };
 use crate::parser::structural::IndentedLine;
 
@@ -307,11 +307,33 @@ impl ScopedParsePair for ExtensionValue {
                 ExtensionValue::Tuple(tv)
             }
             Rule::expression => {
+                if let Some(literal) = parse_temporal_extension_literal(extensions, inner.clone())?
+                {
+                    return Ok(ExtensionValue::from(literal));
+                }
                 let expr = Expression::parse_pair(extensions, inner)?;
                 ExtensionValue::from(expr)
             }
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
         })
+    }
+}
+
+fn parse_temporal_extension_literal(
+    extensions: &SimpleExtensions,
+    expression: pest::iterators::Pair<Rule>,
+) -> Result<Option<ExtensionLiteral>, MessageParseError> {
+    assert_eq!(expression.as_rule(), Rule::expression);
+    let inner = unwrap_single_pair(expression);
+    if inner.as_rule() != Rule::literal {
+        return Ok(None);
+    }
+    let literal = substrait::proto::expression::Literal::parse_pair(extensions, inner)?;
+    let extension_literal = ExtensionLiteral::from(literal);
+    if extension_literal.is_temporal() {
+        Ok(Some(extension_literal))
+    } else {
+        Ok(None)
     }
 }
 
@@ -606,7 +628,7 @@ mod tests {
 
     use super::*;
     use crate::OutputOptions;
-    use crate::extensions::{Expr, ExtensionValue};
+    use crate::extensions::{Expr, ExtensionLiteral, ExtensionValue};
     use crate::fixtures::TestContext;
     use crate::parser::{Parser, ScopedParse};
 
@@ -881,9 +903,29 @@ Functions:
     }
 
     #[test]
+    fn test_temporal_extension_literals_parse_as_extension_literals() {
+        let ctx = TestContext::new();
+        for text in [
+            "'2023-12-25':date",
+            "'14:30:45':time",
+            "'2023-01-01T12:00:00':timestamp",
+            "'14:30:45.123':precisiontime<3>",
+            "'2023-01-01T12:00:00.123456':precisiontimestamp<6>",
+            "'2023-01-01T12:00:00.123456789':precisiontimestamptz<9>",
+        ] {
+            let value = parse_extension_value(text);
+            let literal = ExtensionLiteral::try_from(&value).expect("temporal literal");
+            assert_eq!(ctx.textify_no_errors(&literal), text);
+            let expr = Expr::try_from(&value).expect("temporal literal should widen to Expr");
+            assert_eq!(ctx.textify_no_errors(&expr), text);
+        }
+    }
+
+    #[test]
     fn test_typed_extension_literal_parses_as_expression() {
         let value = parse_extension_value("42:i16");
         assert!(i64::try_from(&value).is_err());
+        assert!(ExtensionLiteral::try_from(&value).is_err());
 
         let expr = Expr::try_from(&value).unwrap();
         assert_eq!(ctx_text(&expr), "42:i16");

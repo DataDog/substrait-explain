@@ -105,10 +105,18 @@ map_type = { ^"map" ~ nullability ~ "<" ~ type ~ "," ~ sp ~ type ~ ">" }
 
 struct_type = { ^"struct" ~ nullability ~ parameters }
 
+precision_temporal_type_name = {
+    "precisiontimestamptz"
+  | "precisiontimestamp"
+  | "precisiontime"
+}
+
+precision_temporal_type = { precision_temporal_type_name ~ nullability ~ parameters }
+
 // A compound type expression, composed of a name, optional parameters, and optional nullability.
 // Example: LIST?<fp64?>, MAP<i64, string>
-// TODO: precisiontime types, interval_day
-compound_type = { list_type | map_type | struct_type }
+// TODO: interval_day
+compound_type = { precision_temporal_type | list_type | map_type | struct_type }
 
 // A user-defined type expression.
 // 

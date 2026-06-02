@@ -197,9 +197,9 @@ A literal can come in the form of an integer, float, boolean, or string, and can
   - Default to `string` type; other types may also be assigned
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
+  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-12-25T14:30:45.123456789':precisiontimestamp<9>`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, and `timestamp` typed literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime<N>`, `precisiontimestamp<N>`, and `precisiontimestamptz<N>` typed literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
 
 ## Types
 
@@ -266,6 +266,9 @@ Root[result]
 ### Compound Types
 
 Compound types follow the same syntax as standard Substrait parameterized types.
+Precision temporal types use one integer parameter for precision:
+`precisiontime<N>`, `precisiontimestamp<N>`, and `precisiontimestamptz<N>`,
+where `N` is between `0` and `12`.
 
 #### Examples
 
@@ -851,9 +854,11 @@ Untyped scalar extension arguments such as `2`, `2.4`, `true`, and `'path'`
 are treated as extension scalar values and render without expression type
 suffixes, even in verbose output. They can still be consumed by extension
 handlers as expressions, in which case they widen to default non-nullable
-Substrait literal expressions. Typed literals such as `2:i16` or
-`'2024-01-01':date`, field references, function calls, and casts are expression
-values.
+Substrait literal expressions. Temporal typed literals such as
+`'2024-01-01':date` and
+`'2024-01-01T12:34:56.123456':precisiontimestamp<6>` are extension literal
+values and can also widen to expression values. Other typed literals such as
+`2:i16`, field references, function calls, and casts are expression values.
 
 #### Examples
 

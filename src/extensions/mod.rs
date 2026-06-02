@@ -17,7 +17,8 @@ pub mod simple;
 pub use any::{Any, AnyRef};
 pub(crate) use args::AddendumKind;
 pub use args::{
-    EnumValue, Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, ExtensionValueKind, TupleValue,
+    EnumValue, Expr, ExtensionArgs, ExtensionColumn, ExtensionLiteral, ExtensionValue,
+    ExtensionValueKind, TupleValue,
 };
 pub use registry::{
     AnyConvertible, Explainable, Extension, ExtensionError, ExtensionProtoConvert,

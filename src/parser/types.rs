@@ -1,5 +1,5 @@
 use pest::iterators::Pair;
-use substrait::proto::r#type::{Kind, Nullability, Parameter};
+use substrait::proto::r#type::{Kind, Nullability, Parameter, parameter};
 use substrait::proto::{self, Type};
 
 use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
@@ -98,6 +98,11 @@ impl ScopedParsePair for Parameter {
                     Type::parse_pair(extensions, inner)?,
                 )),
             }),
+            Rule::integer => Ok(Parameter {
+                parameter: Some(parameter::Parameter::Integer(
+                    inner.as_str().parse::<i64>().unwrap(),
+                )),
+            }),
             _ => unimplemented!("{:?}", inner.as_rule()),
         }
     }
@@ -186,11 +191,76 @@ fn parse_compound_type(
     assert_eq!(pair.as_rule(), Rule::compound_type);
     let inner = unwrap_single_pair(pair);
     match inner.as_rule() {
+        Rule::precision_temporal_type => parse_precision_temporal_type(extensions, inner),
         Rule::list_type => parse_list_type(extensions, inner),
         // Rule::map_type => parse_map_type(inner),
         // Rule::struct_type => parse_struct_type(inner),
         _ => unimplemented!("{:?}", inner.as_rule()),
     }
+}
+
+fn parse_precision_temporal_type(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Type, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::precision_temporal_type);
+    let span = pair.as_span();
+    let mut iter = iter_pairs(pair.into_inner());
+    let name = iter.pop(Rule::precision_temporal_type_name).as_str();
+    let nullability = iter.parse_next::<Nullability>();
+    let parameters = parse_parameters(extensions, iter.pop(Rule::parameters))?;
+    iter.done();
+
+    let [parameter] = parameters.as_slice() else {
+        return Err(MessageParseError::invalid(
+            "precision_temporal_type",
+            span,
+            format!("{name} expects exactly one precision parameter"),
+        ));
+    };
+    let Some(parameter::Parameter::Integer(precision)) = parameter.parameter.as_ref() else {
+        return Err(MessageParseError::invalid(
+            "precision_temporal_type",
+            span,
+            format!("{name} precision must be an integer"),
+        ));
+    };
+    let precision = i32::try_from(*precision).map_err(|_| {
+        MessageParseError::invalid(
+            "precision_temporal_type",
+            span,
+            format!("{name} precision is out of range"),
+        )
+    })?;
+    if !(0..=12).contains(&precision) {
+        return Err(MessageParseError::invalid(
+            "precision_temporal_type",
+            span,
+            format!("{name} precision must be between 0 and 12"),
+        ));
+    }
+
+    let nullability = nullability.into();
+    let kind = match name {
+        "precisiontime" => Kind::PrecisionTime(proto::r#type::PrecisionTime {
+            precision,
+            nullability,
+            type_variation_reference: 0,
+        }),
+        "precisiontimestamp" => Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
+            precision,
+            nullability,
+            type_variation_reference: 0,
+        }),
+        "precisiontimestamptz" => Kind::PrecisionTimestampTz(proto::r#type::PrecisionTimestampTz {
+            precision,
+            nullability,
+            type_variation_reference: 0,
+        }),
+        _ => unreachable!("unexpected precision temporal type {name}"),
+    };
+
+    Ok(Type { kind: Some(kind) })
 }
 
 fn parse_list_type(
@@ -344,6 +414,27 @@ mod tests {
                 }))
             }
         );
+    }
+
+    #[test]
+    fn test_parse_precision_temporal_types() {
+        let extensions = SimpleExtensions::default();
+        for (text, expected_precision) in [
+            ("precisiontime<9>", 9),
+            ("precisiontimestamp<6>", 6),
+            ("precisiontimestamptz<3>", 3),
+        ] {
+            let mut pairs = ExpressionParser::parse(Rule::r#type, text).unwrap();
+            let pair = pairs.next().unwrap();
+            assert_eq!(pairs.next(), None);
+            let t = Type::parse_pair(&extensions, pair).unwrap();
+            match t.kind.unwrap() {
+                Kind::PrecisionTime(t) => assert_eq!(t.precision, expected_precision),
+                Kind::PrecisionTimestamp(t) => assert_eq!(t.precision, expected_precision),
+                Kind::PrecisionTimestampTz(t) => assert_eq!(t.precision, expected_precision),
+                other => panic!("unexpected type for {text}: {other:?}"),
+            }
+        }
     }
 
     #[test]
