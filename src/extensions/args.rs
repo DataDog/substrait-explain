@@ -219,6 +219,9 @@ impl ExtensionLiteral {
 
     #[allow(deprecated)]
     pub fn time_micros(micros: i64) -> Self {
+        // TODO: Decide whether this raw-unit constructor should reject values
+        // outside one time-of-day. The text parser uses HH:MM:SS and cannot
+        // round-trip values that format as 24:00:00 or beyond.
         Self::from(proto::expression::Literal {
             literal_type: Some(LiteralType::Time(micros)),
             nullable: false,
@@ -237,6 +240,9 @@ impl ExtensionLiteral {
 
     pub fn precision_time_units(precision: i32, value: i64) -> Result<Self, ExtensionError> {
         validate_precision(precision)?;
+        // TODO: Decide whether this raw-unit constructor should reject values
+        // outside one time-of-day. The text parser uses HH:MM:SS and cannot
+        // round-trip values that format as 24:00:00 or beyond.
         Ok(Self::from(proto::expression::Literal {
             literal_type: Some(LiteralType::PrecisionTime(PrecisionTime {
                 precision,
