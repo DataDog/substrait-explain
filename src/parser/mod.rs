@@ -2,6 +2,7 @@ pub(crate) mod common;
 pub(crate) mod errors;
 pub(crate) mod expressions;
 pub(crate) mod extensions;
+pub(crate) mod literals;
 pub(crate) mod relations;
 pub(crate) mod structural;
 pub(crate) mod types;

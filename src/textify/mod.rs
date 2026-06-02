@@ -4,6 +4,7 @@ mod addenda;
 pub(crate) mod expressions;
 pub(crate) mod extensions;
 pub(crate) mod foundation;
+pub(crate) mod literals;
 pub(crate) mod plan;
 pub(crate) mod rels;
 pub(crate) mod types;
