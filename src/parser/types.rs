@@ -189,8 +189,42 @@ fn parse_compound_type(
         Rule::list_type => parse_list_type(extensions, inner),
         // Rule::map_type => parse_map_type(inner),
         // Rule::struct_type => parse_struct_type(inner),
+        Rule::precision_timestamp_tz_type
+        | Rule::precision_timestamp_type
+        | Rule::precision_time_type => Ok(parse_precision_type(inner)),
         _ => unimplemented!("{:?}", inner.as_rule()),
     }
+}
+
+fn parse_precision_type(pair: Pair<Rule>) -> Type {
+    let rule = pair.as_rule();
+    let mut iter = iter_pairs(pair.into_inner());
+    let nullability = iter.parse_next::<Nullability>();
+    let precision = iter.pop(Rule::integer).as_str().parse::<i32>().unwrap();
+    iter.done();
+    let kind = match rule {
+        Rule::precision_timestamp_type => {
+            Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
+                precision,
+                nullability: nullability.into(),
+                type_variation_reference: 0,
+            })
+        }
+        Rule::precision_timestamp_tz_type => {
+            Kind::PrecisionTimestampTz(proto::r#type::PrecisionTimestampTz {
+                precision,
+                nullability: nullability.into(),
+                type_variation_reference: 0,
+            })
+        }
+        Rule::precision_time_type => Kind::PrecisionTime(proto::r#type::PrecisionTime {
+            precision,
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+        }),
+        _ => unreachable!("parse_precision_type called with rule {:?}", rule),
+    };
+    Type { kind: Some(kind) }
 }
 
 fn parse_list_type(

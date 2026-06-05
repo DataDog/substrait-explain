@@ -242,6 +242,14 @@ Root[a, b]
 }
 
 #[test]
+fn test_precision_time_types_roundtrip() {
+    let plan = r#"=== Plan
+Root[ts, ts_tz, pt]
+  Read[events => ts:precisiontimestamp<9>, ts_tz:precisiontimestamptz?<6>, pt:precisiontime<3>]"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_join_relation_roundtrip() {
     let plan = r#"=== Extensions
 URNs:
