@@ -109,6 +109,13 @@ fn test_types() {
 
     assert_roundtrip::<Type>(&ctx, "MyType#12<i32, string?>");
     assert_roundtrip::<Type>(&ctx, "MyType#12?<i32, string?>");
+
+    assert_roundtrip::<Type>(&ctx, "precisiontimestamp<9>");
+    assert_roundtrip::<Type>(&ctx, "precisiontimestamp?<9>");
+    assert_roundtrip::<Type>(&ctx, "precisiontimestamptz<6>");
+    assert_roundtrip::<Type>(&ctx, "precisiontimestamptz?<6>");
+    assert_roundtrip::<Type>(&ctx, "precisiontime<3>");
+    assert_roundtrip::<Type>(&ctx, "precisiontime?<3>");
 }
 
 #[test]
