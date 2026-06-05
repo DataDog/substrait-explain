@@ -191,16 +191,25 @@ fn parse_compound_type(
         // Rule::struct_type => parse_struct_type(inner),
         Rule::precision_timestamp_tz_type
         | Rule::precision_timestamp_type
-        | Rule::precision_time_type => Ok(parse_precision_type(inner)),
+        | Rule::precision_time_type => parse_precision_type(inner),
         _ => unimplemented!("{:?}", inner.as_rule()),
     }
 }
 
-fn parse_precision_type(pair: Pair<Rule>) -> Type {
+fn parse_precision_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
     let rule = pair.as_rule();
     let mut iter = iter_pairs(pair.into_inner());
     let nullability = iter.parse_next::<Nullability>();
-    let precision = iter.pop(Rule::integer).as_str().parse::<i32>().unwrap();
+    let precision_pair = iter.pop(Rule::integer);
+    let precision_span = precision_pair.as_span();
+    let precision = precision_pair.as_str().parse::<i32>().unwrap();
+    if !(0..=12).contains(&precision) {
+        return Err(MessageParseError::invalid(
+            "precision time type",
+            precision_span,
+            format!("precision must be between 0 and 12, got {precision}"),
+        ));
+    }
     iter.done();
     let kind = match rule {
         Rule::precision_timestamp_type => {
@@ -224,7 +233,7 @@ fn parse_precision_type(pair: Pair<Rule>) -> Type {
         }),
         _ => unreachable!("parse_precision_type called with rule {:?}", rule),
     };
-    Type { kind: Some(kind) }
+    Ok(Type { kind: Some(kind) })
 }
 
 fn parse_list_type(
