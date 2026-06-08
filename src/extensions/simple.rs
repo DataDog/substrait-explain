@@ -98,6 +98,12 @@ pub struct CompoundName {
 impl CompoundName {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
+        // A trailing colon with no signature suffix (e.g. "count:") is
+        // normalized to the bare base name ("count") for textification.
+        let name = match name.strip_suffix(':') {
+            Some(base) => base.to_owned(),
+            None => name,
+        };
         let index = name.find(':').unwrap_or(name.len());
         Self { name, index }
     }
@@ -279,7 +285,13 @@ impl SimpleExtensions {
                         pext::simple_extension_declaration::ExtensionFunction {
                             extension_urn_reference: *urn_ref,
                             function_anchor: *anchor,
-                            name: name.full().to_string(),
+                            // Substrait compound names always include the colon
+                            // separator, even for zero-argument functions (e.g. "count:").
+                            name: if name.has_signature() {
+                                name.full().to_string()
+                            } else {
+                                format!("{}:", name.full())
+                            },
                         },
                     ),
                     ExtensionKind::Type => MappingType::ExtensionType(
@@ -912,11 +924,11 @@ Type Variations:
 
     #[test]
     fn test_compound_name_trailing_colon() {
-        // Edge case: trailing colon → empty signature suffix, base is the prefix
+        // A trailing colon with no signature is normalized to the bare base name for textification.
         let n = CompoundName::new("foo:");
         assert_eq!(n.base(), "foo");
-        assert_eq!(n.full(), "foo:");
-        assert!(n.has_signature());
+        assert_eq!(n.full(), "foo");
+        assert!(!n.has_signature());
     }
 
     // ---- Tests for lookup_function ----

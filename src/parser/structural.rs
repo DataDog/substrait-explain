@@ -1281,7 +1281,7 @@ Project[$0, $1, 42, 84]
             Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 10);
                 assert_eq!(f.extension_urn_reference, 1);
-                assert_eq!(f.name, "func_a");
+                assert_eq!(f.name, "func_a:");
             }
             other => panic!("Expected ExtensionFunction, got {other:?}"),
         }
@@ -1291,7 +1291,7 @@ Project[$0, $1, 42, 84]
             Some(MappingType::ExtensionFunction(f)) => {
                 assert_eq!(f.function_anchor, 11);
                 assert_eq!(f.extension_urn_reference, 2);
-                assert_eq!(f.name, "func_b_special");
+                assert_eq!(f.name, "func_b_special:");
             }
             other => panic!("Expected ExtensionFunction, got {other:?}"),
         }
