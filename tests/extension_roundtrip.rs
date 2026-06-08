@@ -1,13 +1,14 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
 use prost::{Message, Name};
+use prost_types::Timestamp;
 use substrait::proto;
 use substrait::proto::expression::RexType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
+    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionLiteral,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
 use substrait_explain::fixtures::parse_type;
@@ -287,6 +288,128 @@ fn test_extension_literal_roundtrip() {
 === Plan
 Root[result]
   ExtensionLeaf:LiteralTest[path='data/source', big=1099511627776, ratio=3.25, enabled=false => value:string]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("Failed to parse plan");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+/// Test-only protobuf payload used to verify temporal literal argument
+/// round-tripping for registered extensions.
+#[derive(Clone, PartialEq, Message)]
+pub struct TemporalLiteralConfig {
+    #[prost(int64, tag = "1")]
+    pub created_at_micros: i64,
+    #[prost(int64, tag = "2")]
+    pub watermark_seconds: i64,
+    #[prost(int32, tag = "3")]
+    pub watermark_nanos: i32,
+}
+
+impl Name for TemporalLiteralConfig {
+    const NAME: &'static str = "TemporalLiteralConfig";
+    const PACKAGE: &'static str = "test";
+
+    fn full_name() -> String {
+        "test.TemporalLiteralConfig".to_string()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/test.TemporalLiteralConfig".to_string()
+    }
+}
+
+impl Explainable for TemporalLiteralConfig {
+    fn name() -> &'static str {
+        "TemporalLiteralTest"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        let created_at: ExtensionLiteral = extractor.expect_named_arg("created_at")?;
+        let watermark: ExtensionLiteral = extractor.expect_named_arg("watermark")?;
+        extractor.check_exhausted()?;
+
+        #[allow(deprecated)]
+        let created_at_micros = match created_at.as_proto().literal_type.as_ref() {
+            Some(LiteralType::Timestamp(value)) => *value,
+            Some(other) => {
+                return Err(ExtensionError::InvalidArgument(format!(
+                    "created_at must be a timestamp literal, got {other:?}"
+                )));
+            }
+            None => {
+                return Err(ExtensionError::InvalidArgument(
+                    "created_at must have literal_type".to_string(),
+                ));
+            }
+        };
+
+        let (watermark_seconds, watermark_nanos) = match watermark.as_proto().literal_type.as_ref()
+        {
+            Some(LiteralType::PrecisionTimestampTz(value)) if value.precision == 9 => {
+                let seconds = value.value.div_euclid(1_000_000_000);
+                let nanos = value.value.rem_euclid(1_000_000_000) as i32;
+                (seconds, nanos)
+            }
+            Some(other) => {
+                return Err(ExtensionError::InvalidArgument(format!(
+                    "watermark must be a precisiontimestamptz<9> literal, got {other:?}"
+                )));
+            }
+            None => {
+                return Err(ExtensionError::InvalidArgument(
+                    "watermark must have literal_type".to_string(),
+                ));
+            }
+        };
+
+        Ok(TemporalLiteralConfig {
+            created_at_micros,
+            watermark_seconds,
+            watermark_nanos,
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::default();
+        args.insert(
+            "created_at",
+            ExtensionLiteral::timestamp_micros(self.created_at_micros),
+        );
+        args.insert(
+            "watermark",
+            ExtensionLiteral::precision_timestamp_tz_utc(
+                9,
+                Timestamp {
+                    seconds: self.watermark_seconds,
+                    nanos: self.watermark_nanos,
+                },
+            )?,
+        );
+        args.output_columns.push(ExtensionColumn::Named {
+            name: "value".to_string(),
+            r#type: parse_type("string"),
+        });
+        Ok(args)
+    }
+}
+
+#[test]
+fn test_temporal_extension_literal_roundtrip() {
+    let mut registry = ExtensionRegistry::new();
+    registry
+        .register_relation::<TemporalLiteralConfig>()
+        .unwrap();
+
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:TemporalLiteralTest[created_at='2023-01-01T12:00:00':timestamp, watermark='2023-01-01T12:00:00.123456789':precisiontimestamptz<9> => value:string]
 "#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
