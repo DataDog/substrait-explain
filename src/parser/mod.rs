@@ -2,6 +2,7 @@ pub mod common;
 pub mod errors;
 pub mod expressions;
 pub mod extensions;
+pub mod literals;
 pub mod relations;
 pub mod structural;
 pub mod types;

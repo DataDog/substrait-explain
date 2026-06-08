@@ -4,6 +4,7 @@ mod addenda;
 pub mod expressions;
 pub mod extensions;
 pub mod foundation;
+pub mod literals;
 pub mod plan;
 pub mod rels;
 pub mod types;
