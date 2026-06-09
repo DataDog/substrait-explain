@@ -24,7 +24,6 @@ use crate::parser::expressions::{FieldIndex, Name};
 
 /// Parsing context for relations that includes extensions, registry, and optional warning collection
 pub struct RelationParsingContext<'a> {
-    pub extensions: &'a SimpleExtensions,
     pub registry: &'a ExtensionRegistry,
     pub line_no: i64,
     pub line: &'a str,
@@ -93,7 +92,7 @@ pub trait RelationParsePair: Sized {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError>;
 
@@ -182,11 +181,10 @@ impl ScopedParsePair for NamedColumnList {
 /// children, to be used in the RelationParsePair trait. The RelationParsePair
 /// trait passes a Vec of children, because some relations have multiple
 /// children - but most accept exactly one child.
-#[allow(clippy::vec_box)]
 pub(crate) fn expect_one_child(
     message: &'static str,
     pair: &Pair<Rule>,
-    mut input_children: Vec<Box<Rel>>,
+    mut input_children: Vec<Rel>,
 ) -> Result<Box<Rel>, MessageParseError> {
     match input_children.len() {
         0 => Err(MessageParseError::invalid(
@@ -194,7 +192,7 @@ pub(crate) fn expect_one_child(
             pair.as_span(),
             format!("{message} missing child"),
         )),
-        1 => Ok(input_children.pop().unwrap()),
+        1 => Ok(Box::new(input_children.pop().unwrap())),
         n => Err(MessageParseError::invalid(
             message,
             pair.as_span(),
@@ -305,7 +303,7 @@ impl RelationParsePair for ReadRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -369,7 +367,7 @@ impl RelationParsePair for VirtualReadRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         _input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -421,16 +419,10 @@ impl RelationParsePair for VirtualReadRel {
 pub(crate) struct ExtensionReadRel(ReadRel);
 
 impl ExtensionReadRel {
-    // Clippy allow: normally Vec<Box<…>> is a warning, because Vec is already
-    // on the heap, so Vec<Box<…>> just adds a layer of indirection. Here, the
-    // protobuf generated code already comes with boxes, so not using boxes
-    // would mean copying things around, which would be more wasteful. So we
-    // allow(…) it.
-    #[allow(clippy::vec_box)]
     pub(crate) fn parse_pair_with_detail(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
         detail: Any,
         advanced_extension: Option<AdvancedExtension>,
@@ -547,7 +539,7 @@ impl RelationParsePair for FilterRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -595,7 +587,7 @@ impl RelationParsePair for ProjectRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -662,7 +654,7 @@ impl RelationParsePair for AggregateRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         // Aggregate defines its own output schema (grouping keys + measures),
         // so the input field count isn't needed for emit construction.
         _input_field_count: usize,
@@ -905,7 +897,7 @@ impl RelationParsePair for SortRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -1063,7 +1055,7 @@ impl RelationParsePair for FetchRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -1164,7 +1156,7 @@ impl RelationParsePair for JoinRel {
     fn parse_pair_with_context(
         extensions: &SimpleExtensions,
         pair: Pair<Rule>,
-        input_children: Vec<Box<Rel>>,
+        input_children: Vec<Rel>,
         input_field_count: usize,
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
@@ -1181,8 +1173,8 @@ impl RelationParsePair for JoinRel {
         }
 
         let mut children_iter = input_children.into_iter();
-        let left = children_iter.next().unwrap();
-        let right = children_iter.next().unwrap();
+        let left = Box::new(children_iter.next().unwrap());
+        let right = Box::new(children_iter.next().unwrap());
 
         let mut iter = RuleIter::from(pair.into_inner());
         let join_type = iter.parse_next::<join_rel::JoinType>();
@@ -1276,7 +1268,7 @@ mod tests {
         let filter = FilterRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::filter_relation, "Filter[$1 => $0, $1, $2]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1295,7 +1287,7 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1319,7 +1311,7 @@ mod tests {
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             5, // Assume 5 input fields
         )
         .unwrap()
@@ -1352,7 +1344,7 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1), _ => sum($2), $0, count($2)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1394,7 +1386,7 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[$0 => sum($1), $0, count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1430,7 +1422,7 @@ mod tests {
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1)]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1456,7 +1448,7 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[_ => sum($0), count($1)]",
             ),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1507,7 +1499,7 @@ mod tests {
                 Rule::aggregate_relation,
                 "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
             ),
-            vec![Box::new(read_rel.into_rel(None))],
+            vec![read_rel.into_rel(None)],
             4,
         )
         .unwrap()
@@ -1534,7 +1526,7 @@ mod tests {
         let fetch_rel = FetchRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::fetch_relation, "Fetch[limit=10, offset=5 => $0]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         )
         .unwrap()
@@ -1564,7 +1556,7 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel(None))],
+                    vec![example_read_relation().into_rel(None)],
                     3,
                 );
                 assert!(result.is_err());
@@ -1595,7 +1587,7 @@ mod tests {
                 let result = FetchRel::parse_pair_with_context(
                     &extensions,
                     pair,
-                    vec![Box::new(example_read_relation().into_rel(None))],
+                    vec![example_read_relation().into_rel(None)],
                     3,
                 );
                 assert!(result.is_err());
@@ -1627,7 +1619,7 @@ mod tests {
                 Rule::join_relation,
                 "Join[&Inner, eq($0, $3) => $0, $1, $3, $4]",
             ),
-            vec![Box::new(left_rel), Box::new(right_rel)],
+            vec![left_rel, right_rel],
             6, // left (3) + right (3) = 6 total input fields
         )
         .unwrap()
@@ -1665,7 +1657,7 @@ mod tests {
         let join = JoinRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Left, eq($0, $3) => $0, $1, $2]"),
-            vec![Box::new(left_rel), Box::new(right_rel)],
+            vec![left_rel, right_rel],
             6,
         )
         .unwrap()
@@ -1696,7 +1688,7 @@ mod tests {
         let join = JoinRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::join_relation, "Join[&LeftSemi, eq($0, $3) => $0, $1]"),
-            vec![Box::new(left_rel), Box::new(right_rel)],
+            vec![left_rel, right_rel],
             6,
         )
         .unwrap()
@@ -1731,7 +1723,7 @@ mod tests {
         let result = JoinRel::parse_pair_with_context(
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
-            vec![Box::new(example_read_relation().into_rel(None))],
+            vec![example_read_relation().into_rel(None)],
             3,
         );
         assert!(result.is_err());
@@ -1741,9 +1733,9 @@ mod tests {
             &extensions,
             parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
             vec![
-                Box::new(example_read_relation().into_rel(None)),
-                Box::new(example_read_relation().into_rel(None)),
-                Box::new(example_read_relation().into_rel(None)),
+                example_read_relation().into_rel(None),
+                example_read_relation().into_rel(None),
+                example_read_relation().into_rel(None),
             ],
             9,
         );

@@ -67,6 +67,11 @@ impl AddendumKind {
 pub struct Expr(Box<proto::Expression>);
 
 impl Expr {
+    /// Create a direct field-reference expression (`$N`).
+    pub fn field(index: i32) -> Self {
+        Reference(index).into()
+    }
+
     /// Borrow the underlying Substrait expression protobuf.
     pub fn as_proto(&self) -> &proto::Expression {
         self.0.as_ref()
@@ -78,7 +83,7 @@ impl Expr {
     }
 
     /// If this expression is a direct field reference (`$N`), return it.
-    pub fn as_direct_reference(&self) -> Option<Reference> {
+    pub fn as_direct_reference(&self) -> Option<i32> {
         let Some(RexType::Selection(field_ref)) = self.as_proto().rex_type.as_ref() else {
             return None;
         };
@@ -94,7 +99,7 @@ impl Expr {
         if field.child.is_some() {
             return None;
         }
-        Some(Reference(field.field))
+        Some(field.field)
     }
 }
 
@@ -196,7 +201,8 @@ pub struct ExtensionArgs {
 /// Tracks which arguments have been consumed. Callers **must** call
 /// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
 /// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic (matching the [`RuleIter`](crate::parser::RuleIter) pattern).
+/// calling `check_exhausted` will panic. This catches [`Explainable`](super::Explainable)
+/// implementations that forget to reject unexpected named arguments.
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
     consumed: HashSet<&'a str>,
@@ -563,6 +569,7 @@ impl TryFrom<&ExtensionValue> for Reference {
         match value {
             ExtensionValue::Expr(expr) => expr
                 .as_direct_reference()
+                .map(Reference)
                 .ok_or_else(|| invalid_type(ExtensionValueKind::Reference, value)),
             v => Err(invalid_type(ExtensionValueKind::Reference, v)),
         }
@@ -608,6 +615,13 @@ pub enum ExtensionColumn {
     },
     /// Expression-compatible output column, including field references.
     Expr(Expr),
+}
+
+impl ExtensionColumn {
+    /// Create an expression output column that references an existing input field (`$N`).
+    pub fn field(index: i32) -> Self {
+        Self::Expr(Expr::field(index))
+    }
 }
 
 impl ExtensionArgs {

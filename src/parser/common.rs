@@ -9,37 +9,32 @@ use crate::extensions::simple::MissingReference;
 
 #[derive(PestDeriveParser)]
 #[grammar = "parser/expression_grammar.pest"] // Path relative to src
-pub struct ExpressionParser;
+pub(crate) struct ExpressionParser;
 
 /// An error that occurs when parsing a message within a specific line. Contains
 /// context pointing at that specific error.
 #[derive(Error, Debug, Clone)]
 #[error("{kind} Error parsing {message}:\n{error}")]
 pub struct MessageParseError {
-    pub message: &'static str,
-    pub kind: ErrorKind,
+    message: &'static str,
+    kind: ErrorKind,
     #[source]
-    pub error: Box<pest::error::Error<Rule>>,
+    error: Box<pest::error::Error<Rule>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ErrorKind {
+pub(crate) enum ErrorKind {
     Syntax,
     InvalidValue,
     Lookup(MissingReference),
 }
 
 impl MessageParseError {
-    pub fn syntax(message: &'static str, span: pest::Span, description: impl ToString) -> Self {
-        let error = pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: description.to_string(),
-            },
-            span,
-        );
-        Self::new(message, ErrorKind::Syntax, Box::new(error))
-    }
-    pub fn invalid(message: &'static str, span: pest::Span, description: impl ToString) -> Self {
+    pub(crate) fn invalid(
+        message: &'static str,
+        span: pest::Span,
+        description: impl ToString,
+    ) -> Self {
         let error = pest::error::Error::new_from_span(
             pest::error::ErrorVariant::CustomError {
                 message: description.to_string(),
@@ -49,7 +44,7 @@ impl MessageParseError {
         Self::new(message, ErrorKind::InvalidValue, Box::new(error))
     }
 
-    pub fn lookup(
+    pub(crate) fn lookup(
         message: &'static str,
         missing: MissingReference,
         span: pest::Span,
@@ -66,7 +61,7 @@ impl MessageParseError {
 }
 
 impl MessageParseError {
-    pub fn new(
+    pub(crate) fn new(
         message: &'static str,
         kind: ErrorKind,
         error: Box<pest::error::Error<Rule>>,
@@ -89,7 +84,7 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-pub fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators::Pair<Rule> {
+pub(crate) fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators::Pair<Rule> {
     let mut pairs = pair.into_inner();
     let pair = pairs.next().unwrap();
     assert_eq!(pairs.next(), None);
@@ -108,7 +103,7 @@ pub fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators:
 /// Panics if the rule is not `string_literal` or `quoted_name` (this should never happen
 /// if the pest grammar is working correctly).
 ///
-pub fn unescape_string(pair: pest::iterators::Pair<Rule>) -> String {
+pub(crate) fn unescape_string(pair: pest::iterators::Pair<Rule>) -> String {
     let s = pair.as_str();
 
     // Determine opener/closer based on rule type
@@ -164,7 +159,7 @@ pub fn unescape_string(pair: pest::iterators::Pair<Rule>) -> String {
 // A trait for converting a pest::iterators::Pair<Rule> into a Rust type. This
 // is used to convert from the uniformly structured nesting
 // pest::iterators::Pair<Rule> into more structured types.
-pub trait ParsePair: Sized {
+pub(crate) trait ParsePair: Sized {
     // The rule that this type is parsed from.
     fn rule() -> Rule;
 
@@ -204,7 +199,7 @@ impl<T: ParsePair> Parse for T {
 /// depends on the context - e.g. extension lookups or other contextual
 /// information. This is used for types that are not directly parsed from the
 /// grammar, but rather require additional context to parse correctly.
-pub trait ScopedParsePair: Sized {
+pub(crate) trait ScopedParsePair: Sized {
     // The rule that this type is parsed from.
     fn rule() -> Rule;
 
@@ -237,14 +232,14 @@ impl<T: ScopedParsePair> ScopedParse for T {
     }
 }
 
-pub fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_> {
+pub(crate) fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_> {
     RuleIter {
         iter: pair,
         done: false,
     }
 }
 
-pub struct RuleIter<'a> {
+pub(crate) struct RuleIter<'a> {
     iter: pest::iterators::Pairs<'a, Rule>,
     // Set to true when done is called, so destructor doesn't panic
     done: bool,
@@ -257,12 +252,12 @@ impl<'a> From<pest::iterators::Pairs<'a, Rule>> for RuleIter<'a> {
 }
 
 impl<'a> RuleIter<'a> {
-    pub fn peek(&self) -> Option<pest::iterators::Pair<'a, Rule>> {
+    pub(crate) fn peek(&self) -> Option<pest::iterators::Pair<'a, Rule>> {
         self.iter.peek()
     }
 
     // Pop the next pair if it matches the rule. Returns None if not.
-    pub fn try_pop(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
+    pub(crate) fn try_pop(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
         match self.peek() {
             Some(pair) if pair.as_rule() == rule => {
                 self.iter.next();
@@ -273,7 +268,7 @@ impl<'a> RuleIter<'a> {
     }
 
     // Pop the next pair, asserting it matches the given rule. Panics if not.
-    pub fn pop(&mut self, rule: Rule) -> pest::iterators::Pair<'a, Rule> {
+    pub(crate) fn pop(&mut self, rule: Rule) -> pest::iterators::Pair<'a, Rule> {
         let pair = self.iter.next().expect("expected another pair");
         assert_eq!(
             pair.as_rule(),
@@ -286,7 +281,7 @@ impl<'a> RuleIter<'a> {
     }
 
     // Parse the next pair if it matches the rule. Returns None if not.
-    pub fn parse_if_next<T: ParsePair>(&mut self) -> Option<T> {
+    pub(crate) fn parse_if_next<T: ParsePair>(&mut self) -> Option<T> {
         match self.peek() {
             Some(pair) if pair.as_rule() == T::rule() => {
                 self.iter.next();
@@ -297,7 +292,7 @@ impl<'a> RuleIter<'a> {
     }
 
     // Parse the next pair if it matches the rule. Returns None if not.
-    pub fn parse_if_next_scoped<T: ScopedParsePair>(
+    pub(crate) fn parse_if_next_scoped<T: ScopedParsePair>(
         &mut self,
         extensions: &SimpleExtensions,
     ) -> Option<Result<T, MessageParseError>> {
@@ -311,13 +306,13 @@ impl<'a> RuleIter<'a> {
     }
 
     // Parse the next pair, assuming it matches the rule. Panics if not.
-    pub fn parse_next<T: ParsePair>(&mut self) -> T {
+    pub(crate) fn parse_next<T: ParsePair>(&mut self) -> T {
         let pair = self.iter.next().unwrap();
         T::parse_pair(pair)
     }
 
     // Parse the next pair, assuming it matches the rule. Panics if not.
-    pub fn parse_next_scoped<T: ScopedParsePair>(
+    pub(crate) fn parse_next_scoped<T: ScopedParsePair>(
         &mut self,
         extensions: &SimpleExtensions,
     ) -> Result<T, MessageParseError> {
@@ -325,7 +320,7 @@ impl<'a> RuleIter<'a> {
         T::parse_pair(extensions, pair)
     }
 
-    pub fn done(mut self) {
+    pub(crate) fn done(mut self) {
         self.done = true;
         assert_eq!(self.iter.next(), None);
     }

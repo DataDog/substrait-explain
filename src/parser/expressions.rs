@@ -18,7 +18,6 @@ use super::{
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{CompoundName, ExtensionKind};
-use crate::parser::ErrorKind;
 
 /// A field index (e.g., parsed from "$0" -> 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,18 +114,11 @@ fn to_int_literal(
             i.type_variation_reference,
         ),
         k => {
-            let pest_error = pest::error::Error::new_from_span(
-                pest::error::ErrorVariant::CustomError {
-                    message: format!("Invalid type for integer literal: {k:?}"),
-                },
+            return Err(MessageParseError::invalid(
+                "int_literal_type",
                 value.as_span(),
-            );
-            let error = MessageParseError {
-                message: "int_literal_type",
-                kind: ErrorKind::InvalidValue,
-                error: Box::new(pest_error),
-            };
-            return Err(error);
+                format!("Invalid type for integer literal: {k:?}"),
+            ));
         }
     };
 
@@ -164,18 +156,11 @@ fn to_float_literal(
             f.type_variation_reference,
         ),
         k => {
-            let pest_error = pest::error::Error::new_from_span(
-                pest::error::ErrorVariant::CustomError {
-                    message: format!("Invalid type for float literal: {k:?}"),
-                },
+            return Err(MessageParseError::invalid(
+                "float_literal_type",
                 value.as_span(),
-            );
-            let error = MessageParseError {
-                message: "float_literal_type",
-                kind: ErrorKind::InvalidValue,
-                error: Box::new(pest_error),
-            };
-            return Err(error);
+                format!("Invalid type for float literal: {k:?}"),
+            ));
         }
     };
 
@@ -200,17 +185,11 @@ fn to_boolean_literal(
         ),
         None => (false, 0),
         Some(k) => {
-            let pest_error = pest::error::Error::new_from_span(
-                pest::error::ErrorVariant::CustomError {
-                    message: format!("Invalid type for boolean literal: {k:?}"),
-                },
+            return Err(MessageParseError::invalid(
+                "bool_literal_type",
                 value.as_span(),
-            );
-            return Err(MessageParseError {
-                message: "bool_literal_type",
-                kind: ErrorKind::InvalidValue,
-                error: Box::new(pest_error),
-            });
+                format!("Invalid type for boolean literal: {k:?}"),
+            ));
         }
     };
 
@@ -301,18 +280,11 @@ fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessagePa
         }
     }
 
-    Err(MessageParseError {
-        message: "date_parse_format",
-        kind: ErrorKind::InvalidValue,
-        error: Box::new(pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: format!(
-                    "Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY/MM/DD"
-                ),
-            },
-            span,
-        )),
-    })
+    Err(MessageParseError::invalid(
+        "date_parse_format",
+        span,
+        format!("Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY/MM/DD"),
+    ))
 }
 
 /// Parse a time string using chrono to microseconds since midnight
@@ -329,18 +301,11 @@ fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, M
         }
     }
 
-    Err(MessageParseError {
-        message: "time_parse_format",
-        kind: ErrorKind::InvalidValue,
-        error: Box::new(pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: format!(
-                    "Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"
-                ),
-            },
-            span,
-        )),
-    })
+    Err(MessageParseError::invalid(
+        "time_parse_format",
+        span,
+        format!("Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"),
+    ))
 }
 
 /// Parse a timestamp string using chrono to microseconds since Unix epoch
@@ -369,18 +334,13 @@ fn parse_timestamp_to_microseconds(
         }
     }
 
-    Err(MessageParseError {
-        message: "timestamp_parse_format",
-        kind: ErrorKind::InvalidValue,
-        error: Box::new(pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: format!(
-                    "Invalid timestamp format: '{timestamp_str}'. Expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS"
-                ),
-            },
-            span,
-        )),
-    })
+    Err(MessageParseError::invalid(
+        "timestamp_parse_format",
+        span,
+        format!(
+            "Invalid timestamp format: '{timestamp_str}'. Expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS"
+        ),
+    ))
 }
 
 impl ScopedParsePair for Literal {

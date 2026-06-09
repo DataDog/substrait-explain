@@ -277,8 +277,7 @@ impl<'a> TreeBuilder<'a> {
 struct RelationContext<'a> {
     pair: Pair<'a, Rule>,
     line_no: i64,
-    #[allow(clippy::vec_box)]
-    children: Vec<Box<Rel>>,
+    children: Vec<Rel>,
     input_field_count: usize,
     addenda: Addenda<'a>,
 }
@@ -310,27 +309,20 @@ impl<'a> ParsedAddendum<'a> {
 
     fn relation_context<'b>(
         &'b self,
-        extensions: &'b SimpleExtensions,
         registry: &'b ExtensionRegistry,
     ) -> RelationParsingContext<'b> {
         RelationParsingContext {
-            extensions,
             registry,
             line_no: self.line_no,
             line: self.line,
         }
     }
-    fn resolve_detail(
-        &self,
-        extensions: &SimpleExtensions,
-        registry: &ExtensionRegistry,
-    ) -> Result<Any, ParseError> {
-        self.relation_context(extensions, registry)
-            .resolve_addendum_detail(
-                self.invocation.kind,
-                &self.invocation.name,
-                &self.invocation.args,
-            )
+    fn resolve_detail(&self, registry: &ExtensionRegistry) -> Result<Any, ParseError> {
+        self.relation_context(registry).resolve_addendum_detail(
+            self.invocation.kind,
+            &self.invocation.name,
+            &self.invocation.args,
+        )
     }
 }
 
@@ -368,7 +360,6 @@ impl<'a> Addenda<'a> {
 
     fn into_standard_advanced_extension(
         self,
-        extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
     ) -> Result<Option<AdvancedExtension>, ParseError> {
         let mut enhancement = None;
@@ -383,10 +374,10 @@ impl<'a> Addenda<'a> {
                             "at most one enhancement per relation is allowed".to_string(),
                         ));
                     }
-                    enhancement = Some(addendum.resolve_detail(extensions, registry)?.into());
+                    enhancement = Some(addendum.resolve_detail(registry)?.into());
                 }
                 AddendumKind::Optimization => {
-                    optimizations.push(addendum.resolve_detail(extensions, registry)?.into());
+                    optimizations.push(addendum.resolve_detail(registry)?.into());
                 }
                 AddendumKind::ExtensionTable => {
                     return Err(ParseError::ValidationError(
@@ -409,7 +400,6 @@ impl<'a> Addenda<'a> {
 
     fn into_extension_read_parts(
         self,
-        extensions: &SimpleExtensions,
         registry: &ExtensionRegistry,
         relation_context: ParseContext,
     ) -> Result<(Any, Option<AdvancedExtension>), ParseError> {
@@ -440,11 +430,11 @@ impl<'a> Addenda<'a> {
             )
         })?;
 
-        let detail = extension_table.resolve_detail(extensions, registry)?;
+        let detail = extension_table.resolve_detail(registry)?;
         let advanced_extension = Addenda {
             items: advanced_addenda,
         }
-        .into_standard_advanced_extension(extensions, registry)?;
+        .into_standard_advanced_extension(registry)?;
 
         Ok((detail, advanced_extension))
     }
@@ -457,19 +447,6 @@ pub struct RelationParser<'a> {
 }
 
 impl<'a> RelationParser<'a> {
-    pub fn parse_line(&mut self, line: IndentedLine<'a>, line_no: i64) -> Result<(), ParseError> {
-        let IndentedLine(depth, line) = line;
-
-        // Use parse_root for depth 0 (top-level relations), parse for other depths
-        let node = if depth == 0 {
-            LineNode::parse_root(line, line_no)?
-        } else {
-            LineNode::parse(line, line_no)?
-        };
-
-        self.tree.add_line(depth, node)
-    }
-
     /// Dispatch by grammar rule after validating addenda constraints.
     /// Standard relations go through [`parse_rel`](Self::parse_rel);
     /// extension relations go through
@@ -518,7 +495,7 @@ impl<'a> RelationParser<'a> {
         } = ctx;
         assert_eq!(pair.as_rule(), T::rule());
         let line = pair.as_str();
-        let advanced_extension = addenda.into_standard_advanced_extension(extensions, registry)?;
+        let advanced_extension = addenda.into_standard_advanced_extension(registry)?;
 
         match T::parse_pair_with_context(extensions, pair, children, input_field_count) {
             Ok((parsed, count)) => Ok((parsed.into_rel(advanced_extension), count)),
@@ -564,7 +541,6 @@ impl<'a> RelationParser<'a> {
             })?;
 
         let context = RelationParsingContext {
-            extensions,
             registry,
             line_no,
             line: &line,
@@ -573,8 +549,7 @@ impl<'a> RelationParser<'a> {
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
         let output_column_count = extension_args.output_columns.len();
 
-        let children = ctx.children.into_iter().map(|child| *child).collect();
-        let rel = relation_kind.create_rel(detail, children);
+        let rel = relation_kind.create_rel(detail, ctx.children);
 
         Ok((rel, output_column_count))
     }
@@ -589,9 +564,9 @@ impl<'a> RelationParser<'a> {
     ) -> Result<(Rel, usize), ParseError> {
         assert_eq!(ctx.pair.as_rule(), Rule::extension_read_relation);
         let context = ParseContext::new(ctx.line_no, ctx.pair.as_str().to_string());
-        let (detail, advanced_extension) =
-            ctx.addenda
-                .into_extension_read_parts(extensions, registry, context.clone())?;
+        let (detail, advanced_extension) = ctx
+            .addenda
+            .into_extension_read_parts(registry, context.clone())?;
 
         ExtensionReadRel::parse_pair_with_detail(
             extensions,
@@ -614,12 +589,12 @@ impl<'a> RelationParser<'a> {
         registry: &ExtensionRegistry,
         node: RelationNode,
     ) -> Result<(Rel, usize), ParseError> {
-        let mut children: Vec<Box<Rel>> = Vec::new();
+        let mut children: Vec<Rel> = Vec::new();
         let mut input_field_count: usize = 0;
         for child in node.children {
             let (rel, count) = self.build_rel(extensions, registry, child)?;
             input_field_count += count;
-            children.push(Box::new(rel));
+            children.push(rel);
         }
 
         let addenda = Addenda::parse(extensions, node.addenda)?;

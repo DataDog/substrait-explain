@@ -16,10 +16,10 @@ pub mod cli;
 pub mod json;
 
 // Re-export commonly used types for easier access
-pub use parser::ParseError;
+pub use parser::{ExtensionParseError, MessageParseError, ParseContext, ParseError, Parser};
 use substrait::proto::Plan;
 use textify::foundation::ErrorQueue;
-pub use textify::foundation::{FormatError, OutputOptions, Visibility};
+pub use textify::foundation::{FormatError, FormatErrorType, OutputOptions, PlanError, Visibility};
 use textify::plan::PlanWriter;
 
 /// Parse a Substrait plan from text format.
