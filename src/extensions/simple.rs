@@ -122,7 +122,7 @@ impl CompoundName {
     }
 
     #[deprecated(
-        since = "0.7.0",
+        since = "0.6.0",
         note = "use is_zero_arg() for the trailing-colon (zero-argument) form, \
                 or check !full().contains(':') for the no-colon form"
     )]
