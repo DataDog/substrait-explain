@@ -1,14 +1,13 @@
 //! Output a plan in text format.
 
 mod addenda;
-pub mod expressions;
-pub mod extensions;
-pub mod foundation;
-pub mod plan;
-pub mod rels;
-pub mod types;
+pub(crate) mod expressions;
+pub(crate) mod extensions;
+pub(crate) mod foundation;
+pub(crate) mod plan;
+pub(crate) mod rels;
+pub(crate) mod types;
 
-pub use foundation::{
-    ErrorQueue, FormatErrorType, OutputOptions, PlanError, Scope, ScopedContext, Textify,
-    Visibility,
-};
+#[cfg(test)]
+pub(crate) use foundation::ErrorQueue;
+pub(crate) use foundation::{OutputOptions, PlanError, Scope, ScopedContext, Textify, Visibility};

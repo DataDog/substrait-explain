@@ -11,6 +11,9 @@
 //! Each positional argument is a [`PartitionStrategy`] variant rendered with
 //! the `&` enum prefix.  The optional named argument `count` gives the target
 //! number of partitions (`0` / absent means "let the executor decide").
+//!
+//! This hidden module is crate-owned example support for doctests and
+//! integration tests, not a stable extension API.
 
 use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionValue};
 use crate::extensions::registry::{Explainable, ExtensionError, ExtensionRegistry};

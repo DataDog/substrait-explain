@@ -9,7 +9,7 @@ use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
-pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
+pub(crate) struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
     extensions: SimpleExtensions,
     relations: &'a [proto::PlanRel],
@@ -18,7 +18,7 @@ pub struct PlanWriter<'a, E: ErrorAccumulator + Default> {
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
-    pub fn new(
+    pub(crate) fn new(
         options: &'a OutputOptions,
         plan: &'a proto::Plan,
         extension_registry: &'a ExtensionRegistry,
@@ -45,7 +45,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         )
     }
 
-    pub fn scope(&'a self) -> ScopedContext<'a, E> {
+    pub(crate) fn scope(&'a self) -> ScopedContext<'a, E> {
         ScopedContext::new(
             self.options,
             &self.errors,
@@ -54,11 +54,11 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         )
     }
 
-    pub fn write_extensions(&self, w: &mut impl fmt::Write) -> fmt::Result {
+    pub(crate) fn write_extensions(&self, w: &mut impl fmt::Write) -> fmt::Result {
         self.extensions.write(w, &self.options.indent)
     }
 
-    pub fn write_relations(&self, w: &mut impl fmt::Write) -> fmt::Result {
+    pub(crate) fn write_relations(&self, w: &mut impl fmt::Write) -> fmt::Result {
         // We always write the plan header, even if there are no relations.
         writeln!(w, "{PLAN_HEADER}")?;
         let scope = self.scope();

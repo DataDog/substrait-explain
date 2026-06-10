@@ -1,6 +1,5 @@
 use std::fmt;
 
-use pest::Parser as PestParser;
 use pest_derive::Parser as PestDeriveParser;
 use thiserror::Error;
 
@@ -181,20 +180,6 @@ pub(crate) trait ParsePair: Sized {
     }
 }
 
-/// A trait for types that can be directly parsed from a string input,
-/// regardless of context.
-pub trait Parse {
-    fn parse(input: &str) -> Result<Self, MessageParseError>
-    where
-        Self: Sized;
-}
-
-impl<T: ParsePair> Parse for T {
-    fn parse(input: &str) -> Result<Self, MessageParseError> {
-        T::parse_str(input)
-    }
-}
-
 /// A trait for types that are parsed from a `pest::iterators::Pair<Rule>` that
 /// depends on the context - e.g. extension lookups or other contextual
 /// information. This is used for types that are not directly parsed from the
@@ -213,23 +198,6 @@ pub(crate) trait ScopedParsePair: Sized {
         extensions: &SimpleExtensions,
         pair: pest::iterators::Pair<Rule>,
     ) -> Result<Self, MessageParseError>;
-}
-
-pub trait ScopedParse: Sized {
-    fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError>
-    where
-        Self: Sized;
-}
-
-impl<T: ScopedParsePair> ScopedParse for T {
-    fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError> {
-        let mut pairs = ExpressionParser::parse(Self::rule(), input)
-            .map_err(|e| MessageParseError::new(Self::message(), ErrorKind::Syntax, Box::new(e)))?;
-        assert_eq!(pairs.as_str(), input);
-        let pair = pairs.next().unwrap();
-        assert_eq!(pairs.next(), None);
-        Self::parse_pair(extensions, pair)
-    }
 }
 
 pub(crate) fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_> {
@@ -337,5 +305,50 @@ impl Drop for RuleIter<'_> {
         }
         // If the iterator is not done, something probably went wrong.
         assert_eq!(self.iter.next(), None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use pest::Parser as PestParser;
+
+    use super::{ErrorKind, ExpressionParser, MessageParseError, ParsePair, ScopedParsePair};
+    use crate::extensions::SimpleExtensions;
+
+    /// Test-only adapter for parsing individual grammar fragments from strings.
+    ///
+    /// Production parsing goes through [`ParsePair`] and the structural [`Parser`](crate::Parser).
+    pub(crate) trait Parse {
+        fn parse(input: &str) -> Result<Self, MessageParseError>
+        where
+            Self: Sized;
+    }
+
+    impl<T: ParsePair> Parse for T {
+        fn parse(input: &str) -> Result<Self, MessageParseError> {
+            T::parse_str(input)
+        }
+    }
+
+    /// Test-only adapter for parsing context-dependent grammar fragments from strings.
+    ///
+    /// Production parsing goes through [`ScopedParsePair`] and the structural
+    /// [`Parser`](crate::Parser).
+    pub(crate) trait ScopedParse: Sized {
+        fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError>
+        where
+            Self: Sized;
+    }
+
+    impl<T: ScopedParsePair> ScopedParse for T {
+        fn parse(extensions: &SimpleExtensions, input: &str) -> Result<Self, MessageParseError> {
+            let mut pairs = ExpressionParser::parse(Self::rule(), input).map_err(|e| {
+                MessageParseError::new(Self::message(), ErrorKind::Syntax, Box::new(e))
+            })?;
+            assert_eq!(pairs.as_str(), input);
+            let pair = pairs.next().unwrap();
+            assert_eq!(pairs.next(), None);
+            Self::parse_pair(extensions, pair)
+        }
     }
 }

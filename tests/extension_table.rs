@@ -1,5 +1,7 @@
 //! Integration tests for `Read:Extension` and `+ Ext` parse rules.
 
+mod common;
+
 use prost::{Message, Name};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry, examples,

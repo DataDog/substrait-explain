@@ -5,10 +5,12 @@
 pub use extensions::{AnyConvertible, Explainable, ExtensionRegistry};
 
 pub mod extensions;
-pub mod fixtures;
 pub mod grammar;
-pub mod parser;
-pub mod textify;
+mod parser;
+mod textify;
+
+#[cfg(test)]
+mod fixtures;
 
 #[cfg(test)]
 mod types_tests;
@@ -19,7 +21,10 @@ pub mod cli;
 pub mod json;
 
 // Re-export commonly used types for easier access
-pub use parser::{ExtensionParseError, MessageParseError, ParseContext, ParseError, Parser};
+pub use parser::{
+    ExpectedExtensionLine, ExtensionParseError, MessageParseError, ParseContext, ParseError,
+    ParseResult, Parser,
+};
 use substrait::proto::Plan;
 use textify::foundation::ErrorQueue;
 pub use textify::foundation::{FormatError, FormatErrorType, OutputOptions, PlanError, Visibility};
@@ -167,17 +172,25 @@ pub fn format_with_options(plan: &Plan, options: &OutputOptions) -> (String, Vec
 /// Format a Substrait plan with custom options and an extension registry.
 ///
 /// This function allows you to provide a custom extension registry for handling
-/// ExtensionLeaf, ExtensionSingle, and ExtensionMulti relations.
+/// extension relations, enhancement addenda, and optimization addenda.
 ///
 /// # Example
-/// ```rust,ignore
-/// use substrait_explain::{parse, format_with_registry, OutputOptions, ExtensionRegistry};
+/// ```rust
+/// use substrait_explain::extensions::examples;
+/// use substrait_explain::{format_with_registry, OutputOptions, Parser};
 ///
-/// let mut registry = ExtensionRegistry::new();
-/// // Register custom extensions...
+/// let registry = examples::registry();
+/// let parser = Parser::new().with_extension_registry(registry.clone());
+/// let plan = parser.parse_plan(r#"
+/// === Plan
+/// Root[id, payload]
+///   Read:Extension[id:i64, payload:string]
+///     + Ext:BlobStoreRead['path/to/file', limit=100]
+/// "#).unwrap();
 ///
-/// let plan = parse("...").unwrap();
 /// let (text, errors) = format_with_registry(&plan, &OutputOptions::default(), &registry);
+/// assert!(errors.is_empty());
+/// assert!(text.contains("BlobStoreRead"));
 /// ```
 pub fn format_with_registry(
     plan: &Plan,

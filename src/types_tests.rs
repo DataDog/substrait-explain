@@ -4,8 +4,9 @@ use substrait::proto::{Expression, Type};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::ExtensionKind;
 use crate::fixtures::TestContext;
-use crate::parser::{Parse, ScopedParse};
-use crate::textify::{ErrorQueue, OutputOptions, Textify};
+use crate::parser::common::test_support::{Parse, ScopedParse};
+use crate::textify::foundation::ErrorQueue;
+use crate::textify::{OutputOptions, Textify};
 
 /// Helper function to parse and check for errors, panicking if either fails
 fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {

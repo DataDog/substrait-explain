@@ -63,11 +63,6 @@ pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fm
     write!(w, "&{}", Name(s))
 }
 
-pub fn timestamp_to_string(t: i64) -> String {
-    let ts = chrono::DateTime::from_timestamp_nanos(t);
-    ts.to_rfc3339()
-}
-
 /// Convert days since Unix epoch to date string
 fn days_to_date_string(days: i32) -> String {
     let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
