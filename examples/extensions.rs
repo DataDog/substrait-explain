@@ -17,8 +17,7 @@ use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
     AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
 };
-use substrait_explain::parser::Parser;
-use substrait_explain::{OutputOptions, format_with_registry};
+use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
 /// Custom protobuf message for a ParquetScan extension configuration. In a real
 /// implementation, this would be generated from a .proto file.

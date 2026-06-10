@@ -5,9 +5,10 @@
 //! rare, and more likely a reflection of the author's misunderstanding of the
 //! Substrait plan format.
 
-use substrait_explain::fixtures::roundtrip_plan;
-use substrait_explain::format;
-use substrait_explain::parser::{ParseError, Parser};
+mod common;
+
+use common::roundtrip_plan;
+use substrait_explain::{ParseError, Parser, format};
 
 /// Assert that both canonical and equivalent plans parse and pretty-print to the canonical form.
 fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
@@ -324,7 +325,7 @@ Root[result]
 
 #[test]
 fn test_malformed_input_error_handling() {
-    use substrait_explain::parser::Parser;
+    use substrait_explain::Parser;
 
     // Test malformed input: unclosed bracket in extension relation
     let malformed_plan = r#"=== Plan

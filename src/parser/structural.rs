@@ -706,7 +706,7 @@ impl<'a> RelationParser<'a> {
 /// The simplest entry point is the static `parse()` method:
 ///
 /// ```rust
-/// use substrait_explain::parser::Parser;
+/// use substrait_explain::Parser;
 ///
 /// let plan_text = r#"
 /// === Plan
@@ -745,7 +745,7 @@ impl<'a> RelationParser<'a> {
 /// - Specific error type and description
 ///
 /// ```rust
-/// use substrait_explain::parser::Parser;
+/// use substrait_explain::Parser;
 ///
 /// let invalid_plan = r#"
 /// === Plan
@@ -775,7 +775,7 @@ impl<'a> RelationParser<'a> {
 /// - Use custom types and type variations
 ///
 /// ```rust
-/// use substrait_explain::parser::Parser;
+/// use substrait_explain::Parser;
 ///
 /// let plan_with_extensions = r#"
 /// === Extensions
@@ -831,7 +831,7 @@ impl<'a> Parser<'a> {
     ///
     /// Simple parsing:
     /// ```rust
-    /// use substrait_explain::parser::Parser;
+    /// use substrait_explain::Parser;
     ///
     /// let plan_text = r#"
     /// === Plan

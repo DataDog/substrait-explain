@@ -70,7 +70,7 @@ impl PartitionStrategy {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -172,7 +172,7 @@ impl Explainable for PartitionHint {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -250,7 +250,7 @@ impl Explainable for PlanHint {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());

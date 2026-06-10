@@ -1,6 +1,8 @@
 //! Test roundtrip functionality for literal parsing and formatting
 
-use substrait_explain::fixtures::roundtrip_plan;
+mod common;
+
+use common::roundtrip_plan;
 
 #[test]
 fn test_float_literal_roundtrip() {

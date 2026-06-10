@@ -3,14 +3,15 @@
 //! Tests parse → textify round-trips for `+ Enh:` and `+ Opt:` annotations
 //! on standard relations, using [`PartitionHint`] as the concrete example.
 
+mod common;
+
+use common::parse_type;
 use substrait::proto::plan_rel;
 use substrait::proto::rel::RelType;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::extensions::registry::ExtensionError;
-use substrait_explain::fixtures::parse_type;
-use substrait_explain::parser::Parser;
-use substrait_explain::{FormatError, format_with_registry};
+use substrait_explain::{FormatError, Parser, format_with_registry};
 
 fn make_registry() -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
@@ -587,7 +588,7 @@ Root[result]
   Project[$0, $1, 42]
     ExtensionLeaf:TwoColumnScan[_ => col0:i64, col1:i32]"#;
 
-    let parser = substrait_explain::parser::Parser::new().with_extension_registry(registry.clone());
+    let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");
 
     // --- proto-level: verify emit mapping on ProjectRel ---

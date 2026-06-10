@@ -3,27 +3,31 @@
 //! This example shows how to parse a Substrait plan and format it with
 //! different output options.
 
-use std::borrow::Cow;
-
 use substrait::proto::Plan;
-use substrait_explain::extensions::ExtensionRegistry;
-use substrait_explain::parser::Parser;
-use substrait_explain::textify::foundation::ErrorList;
-use substrait_explain::textify::plan::PlanWriter;
-use substrait_explain::textify::{ErrorQueue, OutputOptions, Visibility};
+use substrait_explain::{OutputOptions, Parser, Visibility, format_with_options};
 
 /// Helper function to format a plan with given options and print the result with error handling
-fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) -> Result<(), ErrorList> {
+fn print_with_errors(
+    plan: &Plan,
+    options: Option<&OutputOptions>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let default_options;
     let options = match options {
-        Some(options) => Cow::Borrowed(options),
-        None => Cow::Owned(OutputOptions::default()),
+        Some(options) => options,
+        None => {
+            default_options = OutputOptions::default();
+            &default_options
+        }
     };
-    let registry = ExtensionRegistry::default();
-    let (formatter, errors) = PlanWriter::<ErrorQueue>::new(&options, plan, &registry);
+    let (formatted, errors) = format_with_options(plan, options);
 
-    println!("{formatter}");
+    println!("{formatted}");
 
-    errors.errs()
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("formatting produced errors: {errors:?}").into())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
