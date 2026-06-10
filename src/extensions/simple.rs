@@ -82,11 +82,14 @@ pub enum InsertError {
     },
 }
 
-/// A Substrait compound function name, e.g. `"equal:any_any"` or `"add"`.
+/// A Substrait compound function name, e.g. `"equal:any_any"`, `"count:"`, or `"add"`.
 ///
-/// The name before the first `:` is the *base name*; the part after is the
-/// *type-signature suffix*.  For plain names with no `:` the base name is the
-/// full name and `has_signature` returns `false`.
+/// The name before the `:` is the *base name*; the part after is the
+/// *type-signature suffix* (empty for zero-argument functions like `"count:"`).
+/// Function compound names may or may not contain a `:`:
+/// - `"add"` — no type signature
+/// - `"count:"` — conventionally used for zero-argument functions
+/// - `"equal:any_any"` — colon with a type-signature suffix
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompoundName {
     /// Full name including the signature suffix, e.g. `"equal:any_any"`.
@@ -98,12 +101,6 @@ pub struct CompoundName {
 impl CompoundName {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
-        // A trailing colon with no signature suffix (e.g. "count:") is
-        // normalized to the bare base name ("count") for textification.
-        let name = match name.strip_suffix(':') {
-            Some(base) => base.to_owned(),
-            None => name,
-        };
         let index = name.find(':').unwrap_or(name.len());
         Self { name, index }
     }
@@ -113,12 +110,22 @@ impl CompoundName {
         &self.name[..self.index]
     }
 
-    /// The full compound name, e.g. `"equal:any_any"`.
+    /// The full compound name, e.g. `"equal:any_any"` or `"count:"`.
     pub fn full(&self) -> &str {
         &self.name
     }
 
-    /// `true` when the name includes a signature suffix (contains `:`).
+    /// `true` when the name uses the zero-argument form: a colon with nothing
+    /// after it (e.g. `"count:"`). Distinct from no signature at all (`"count"`).
+    pub fn is_zero_arg(&self) -> bool {
+        self.index + 1 == self.name.len()
+    }
+
+    #[deprecated(
+        since = "0.7.0",
+        note = "use is_zero_arg() for the trailing-colon (zero-argument) form, \
+                or check !full().contains(':') for the no-colon form"
+    )]
     pub fn has_signature(&self) -> bool {
         self.index < self.name.len()
     }
@@ -285,13 +292,7 @@ impl SimpleExtensions {
                         pext::simple_extension_declaration::ExtensionFunction {
                             extension_urn_reference: *urn_ref,
                             function_anchor: *anchor,
-                            // Substrait compound names always include the colon
-                            // separator, even for zero-argument functions (e.g. "count:").
-                            name: if name.has_signature() {
-                                name.full().to_string()
-                            } else {
-                                format!("{}:", name.full())
-                            },
+                            name: name.full().to_string(),
                         },
                     ),
                     ExtensionKind::Type => MappingType::ExtensionType(
@@ -504,26 +505,35 @@ impl SimpleExtensions {
         })
     }
 
-    /// Resolve a function name (plain or compound) with an optional explicit
-    /// anchor to a [`ResolvedFunction`].
-    /// the caller has a text name and an optional anchor
-    /// from the plan source and needs the canonical anchor plus uniqueness info.
+    /// Resolve a [`CompoundName`] written in the plan to a [`ResolvedFunction`].
     ///
-    /// * `anchor = Some(a)` — validates that `name` matches the stored name
-    ///   (exact compound-name match **or** base-name match, e.g. `"equal"`
-    ///   matches stored `"equal:any_any"`).
-    /// * `anchor = None` — tries an exact match first; if not found and
-    ///   `name` contains no `:`, falls back to base-name search so that
-    ///   `equal(…)` resolves when `equal:any_any` is the only overload.
+    /// * `anchor = Some(a)` — the anchor identifies the function; the name is
+    ///   validated for consistency. An exact compound-name match is always
+    ///   accepted; no-signature and zero-argument forms also match on base name
+    ///   alone (the signature is redundant when an anchor is present).
+    /// * `anchor = None` — the name must be unambiguous on its own:
+    ///   - No signature: base-name search; fails if more than one function
+    ///     shares that base name.
+    ///   - Zero-argument: exact match first, then base-name fallback so that
+    ///     `add:()` resolves `add:i64_i64` when it is the only overload.
+    ///   - Full signature: exact match only.
     pub fn resolve_function(
         &self,
         name: &str,
         anchor: Option<u32>,
     ) -> Result<ResolvedFunction<'_>, MissingReference> {
-        let resolved_anchor = match anchor {
+        let lookup = CompoundName::new(name);
+        let no_signature = !lookup.full().contains(':');
+        // True for "add" (no signature) and "add:" (zero-argument) — the caller supplied
+        // no type signature, so when an anchor is present we accept a match on
+        // the function name alone ("add" or "add:" written, "add:i64_i64" stored).
+        let sig_optional = no_signature || lookup.is_zero_arg();
+        let resolved_anchor: u32 = match anchor {
             Some(a) => {
                 let (_, stored) = self.find_by_anchor(ExtensionKind::Function, a)?;
-                if stored.full() == name || stored.base() == name {
+                if stored.full() == lookup.full()
+                    || (sig_optional && stored.base() == lookup.base())
+                {
                     a
                 } else {
                     return Err(MissingReference::Mismatched(
@@ -533,13 +543,27 @@ impl SimpleExtensions {
                     ));
                 }
             }
-            None => match self.find_by_name(ExtensionKind::Function, name) {
-                Ok(a) => a,
-                Err(MissingReference::MissingName(_, _)) if !name.contains(':') => {
-                    self.find_by_base_name(ExtensionKind::Function, name)?
+            None => {
+                if no_signature {
+                    // No-colon form: always use base-name search so that both a
+                    // stored "add" (no colon) and a stored "add:i64_i64" (compact
+                    // display) resolve, and so that the presence of multiple
+                    // functions with the same base name is correctly reported as
+                    // ambiguous.
+                    self.find_by_base_name(ExtensionKind::Function, lookup.base())?
+                } else {
+                    // Has a colon: try exact compound-name match first.
+                    match self.find_by_name(ExtensionKind::Function, lookup.full()) {
+                        Ok(a) => a,
+                        // Empty-sig fallback: "add:" resolves "add:i64_i64" when
+                        // it is the only overload.
+                        Err(MissingReference::MissingName(_, _)) if lookup.is_zero_arg() => {
+                            self.find_by_base_name(ExtensionKind::Function, lookup.base())?
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
-                Err(e) => return Err(e),
-            },
+            }
         };
         self.lookup_function(resolved_anchor)
     }
@@ -895,15 +919,14 @@ Type Variations:
     }
 
     #[test]
-    fn test_compound_name_plain() {
-        let n = CompoundName::new("add");
-        assert_eq!(n.full(), "add");
+    fn test_compound_name_zero_arg() {
+        // The zero-argument form has a trailing colon and nothing after it.
+        let n = CompoundName::new("add:");
+        assert_eq!(n.full(), "add:");
         assert_eq!(n.base(), "add");
-        assert!(!n.has_signature());
-
-        let n2 = CompoundName::new("coalesce");
-        assert_eq!(n2.full(), "coalesce");
-        assert_eq!(n2.base(), "coalesce");
+        assert!(n.is_zero_arg());
+        // A name with a type signature is not the zero-argument form.
+        assert!(!CompoundName::new("add:i64_i64").is_zero_arg());
     }
 
     #[test]
@@ -911,24 +934,13 @@ Type Variations:
         let n = CompoundName::new("equal:any_any");
         assert_eq!(n.full(), "equal:any_any");
         assert_eq!(n.base(), "equal");
-        assert!(n.has_signature());
 
         let n2 = CompoundName::new("regexp_match_substring:str_str_i64");
         assert_eq!(n2.base(), "regexp_match_substring");
         assert_eq!(n2.full(), "regexp_match_substring:str_str_i64");
-        assert!(n2.has_signature());
 
         let n3 = CompoundName::new("add:i64_i64");
         assert_eq!(n3.base(), "add");
-    }
-
-    #[test]
-    fn test_compound_name_trailing_colon() {
-        // A trailing colon with no signature is normalized to the bare base name for textification.
-        let n = CompoundName::new("foo:");
-        assert_eq!(n.base(), "foo");
-        assert_eq!(n.full(), "foo");
-        assert!(!n.has_signature());
     }
 
     // ---- Tests for lookup_function ----
@@ -1016,7 +1028,7 @@ Type Variations:
 
     #[test]
     fn test_resolve_function_with_anchor() {
-        // Explicit anchor: exact compound name, base name, and mismatched name.
+        // Explicit anchor: exact compound name, zero-arg base match, and mismatched name.
         let exts = make_resolve_extensions();
 
         // Exact compound name matches stored name → resolves.
@@ -1027,16 +1039,25 @@ Type Variations:
             1
         );
 
-        // Base name "equal" matches stored "equal:any_any" → resolves.
-        assert_eq!(exts.resolve_function("equal", Some(1)).unwrap().anchor, 1);
+        // Zero-arg form "equal:" matches stored "equal:any_any" by base name → resolves.
+        assert_eq!(exts.resolve_function("equal:", Some(1)).unwrap().anchor, 1);
 
-        // "like" does not match stored "equal:any_any" → error.
-        assert!(exts.resolve_function("like", Some(1)).is_err());
+        // No-sig form "add" matches stored "add:i64_i64" by base name when anchor is supplied.
+        assert_eq!(exts.resolve_function("add", Some(3)).unwrap().anchor, 3);
+
+        // "add" (base "add") does not match stored "equal:any_any" (base "equal") → error.
+        assert!(exts.resolve_function("add", Some(1)).is_err());
+
+        // Same base name, different overload: "equal:any_any" against anchor 2 (equal:str_str) → error.
+        assert!(exts.resolve_function("equal:any_any", Some(2)).is_err());
+
+        // "like:" does not match stored "equal:any_any" → error.
+        assert!(exts.resolve_function("like:", Some(1)).is_err());
     }
 
     #[test]
     fn test_resolve_function_without_anchor() {
-        // No anchor: exact compound, unique base (fallback), and ambiguous base.
+        // No anchor: exact compound, unique zero-arg (base fallback), and ambiguous base.
         let exts = make_resolve_extensions();
 
         // Exact compound names resolve directly.
@@ -1049,11 +1070,11 @@ Type Variations:
             2
         );
 
-        // "add" is the only overload → base-name fallback finds anchor 3.
-        assert_eq!(exts.resolve_function("add", None).unwrap().anchor, 3);
+        // "add:" (zero-arg form) is the only overload → base-name fallback finds anchor 3.
+        assert_eq!(exts.resolve_function("add:", None).unwrap().anchor, 3);
 
-        // "equal" has two overloads → DuplicateName error.
-        assert!(exts.resolve_function("equal", None).is_err());
+        // "equal:" has two overloads → DuplicateName error.
+        assert!(exts.resolve_function("equal:", None).is_err());
     }
 
     #[test]

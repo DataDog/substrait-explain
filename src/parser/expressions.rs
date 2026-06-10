@@ -1127,6 +1127,7 @@ mod tests {
 
     #[test]
     fn test_compound_name_plain() {
+        // The grammar accepts a bare identifier (compact display form); stored as-is.
         assert_eq!(parse_compound_name("add").full(), "add");
     }
 

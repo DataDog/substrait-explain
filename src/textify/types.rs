@@ -126,7 +126,7 @@ impl Textify for Anchor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct NamedAnchor<'a> {
-    /// The full stored compound name, e.g. `"equal:any_any"` or `"add"`.
+    /// The full stored compound name, e.g. `"equal:any_any"` or `"count:"`.
     pub name: MaybeToken<&'a CompoundName>,
     pub anchor: u32,
     /// True if the compound name is unique across all URNs for this extension
@@ -198,7 +198,9 @@ impl<'a> Textify for NamedAnchor<'a> {
 
         match &self.name.0 {
             Ok(n) => {
-                if show_signature {
+                // Zero-arg functions use the "count:" form — always write full() so
+                // the trailing colon is preserved and round-trips correctly.
+                if show_signature || n.is_zero_arg() {
                     write!(w, "{}", n.full())?;
                 } else {
                     write!(w, "{}", n.base())?;
@@ -207,7 +209,18 @@ impl<'a> Textify for NamedAnchor<'a> {
             Err(e) => write!(w, "{e}")?,
         }
 
-        let anchor = Anchor::new(self.anchor, !self.unique);
+        // Show the anchor when:
+        // - The compound name is not unique (another URN uses the same name), OR
+        // - The compound name has no colon (no-sig form like "add") and the base
+        //   name is not unique — without an anchor the written token is
+        //   indistinguishable from the compact display of other "add:*" functions
+        //   and would be parsed as an ambiguous base-name lookup.
+        let needs_anchor = !self.unique
+            || match &self.name.0 {
+                Ok(n) if !n.full().contains(':') => !self.base_name_unique,
+                _ => false,
+            };
+        let anchor = Anchor::new(self.anchor, needs_anchor);
         write!(w, "{}", ctx.display(&anchor))
     }
 }
@@ -1026,6 +1039,40 @@ mod tests {
 
         let s = ctx.textify_no_errors(&na);
         assert_eq!(s, "equal:any_any#1");
+    }
+
+    #[test]
+    fn named_anchor_zero_arg_compact_unique_shows_trailing_colon() {
+        // Zero-arg "count:" is the only function with base "count".
+        // Compact mode: trailing colon is preserved; base name unique → no anchor.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn")
+            .with_function(1, 5, "count:");
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
+        assert!(na.base_name_unique);
+        assert!(na.unique);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "count:");
+    }
+
+    #[test]
+    fn named_anchor_verbose_zero_arg_shows_trailing_colon_and_anchor() {
+        // Verbose mode: zero-arg "count:" always writes full() (trailing colon preserved) + anchor.
+        let mut ctx = TestContext::new()
+            .with_urn(1, "urn")
+            .with_function(1, 5, "count:");
+        ctx.options.show_simple_extension_anchors = Visibility::Always;
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "count:#5");
     }
 
     #[test]
