@@ -1127,8 +1127,17 @@ mod tests {
 
     #[test]
     fn test_compound_name_plain() {
-        // The grammar accepts a bare identifier (compact display form); stored as-is.
         assert_eq!(parse_compound_name("add").full(), "add");
+    }
+
+    #[test]
+    fn test_compound_name_zero_arg() {
+        // The zero-argument form has a trailing colon and nothing after it.
+        let n = parse_compound_name("add:");
+        assert_eq!(n.full(), "add:");
+        assert_eq!(n.base(), "add");
+        assert!(n.is_zero_arg());
+        assert!(!parse_compound_name("add:i64_i64").is_zero_arg());
     }
 
     #[test]

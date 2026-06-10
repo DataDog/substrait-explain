@@ -1028,7 +1028,7 @@ Type Variations:
 
     #[test]
     fn test_resolve_function_with_anchor() {
-        // Explicit anchor: exact compound name, zero-arg base match, and mismatched name.
+        // Explicit anchor: exact compound name and mismatch errors.
         let exts = make_resolve_extensions();
 
         // Exact compound name matches stored name → resolves.
@@ -1038,12 +1038,6 @@ Type Variations:
                 .anchor,
             1
         );
-
-        // Zero-arg form "equal:" matches stored "equal:any_any" by base name → resolves.
-        assert_eq!(exts.resolve_function("equal:", Some(1)).unwrap().anchor, 1);
-
-        // No-sig form "add" matches stored "add:i64_i64" by base name when anchor is supplied.
-        assert_eq!(exts.resolve_function("add", Some(3)).unwrap().anchor, 3);
 
         // "add" (base "add") does not match stored "equal:any_any" (base "equal") → error.
         assert!(exts.resolve_function("add", Some(1)).is_err());
@@ -1056,11 +1050,24 @@ Type Variations:
     }
 
     #[test]
+    fn test_resolve_function_with_anchor_zero_arg() {
+        // Zero-arg form ("name:") with explicit anchor matches by base name.
+        let exts = make_resolve_extensions();
+        assert_eq!(exts.resolve_function("equal:", Some(1)).unwrap().anchor, 1);
+    }
+
+    #[test]
+    fn test_resolve_function_with_anchor_no_sig() {
+        // No-signature form ("name" without colon) with explicit anchor matches by base name.
+        let exts = make_resolve_extensions();
+        assert_eq!(exts.resolve_function("add", Some(3)).unwrap().anchor, 3);
+    }
+
+    #[test]
     fn test_resolve_function_without_anchor() {
-        // No anchor: exact compound, unique zero-arg (base fallback), and ambiguous base.
+        // No anchor: exact compound name resolution.
         let exts = make_resolve_extensions();
 
-        // Exact compound names resolve directly.
         assert_eq!(
             exts.resolve_function("equal:any_any", None).unwrap().anchor,
             1
@@ -1069,12 +1076,30 @@ Type Variations:
             exts.resolve_function("equal:str_str", None).unwrap().anchor,
             2
         );
+    }
 
-        // "add:" (zero-arg form) is the only overload → base-name fallback finds anchor 3.
+    #[test]
+    fn test_resolve_function_without_anchor_zero_arg() {
+        // Zero-arg form ("name:") without anchor: falls back to base-name search.
+        let exts = make_resolve_extensions();
+
+        // Unique base name → resolves.
         assert_eq!(exts.resolve_function("add:", None).unwrap().anchor, 3);
 
-        // "equal:" has two overloads → DuplicateName error.
+        // Ambiguous base name → error.
         assert!(exts.resolve_function("equal:", None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_function_without_anchor_no_sig() {
+        // No-signature form ("name" without colon) without anchor: always uses base-name search.
+        let exts = make_resolve_extensions();
+
+        // Unique base name → resolves.
+        assert_eq!(exts.resolve_function("add", None).unwrap().anchor, 3);
+
+        // Ambiguous base name → error.
+        assert!(exts.resolve_function("equal", None).is_err());
     }
 
     #[test]
