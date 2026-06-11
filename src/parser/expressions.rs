@@ -414,11 +414,8 @@ impl ScopedParsePair for ScalarFunction {
             });
         }
 
-        // Parse optional output type (e.g., :i64)
-        let output_type = match iter.try_pop(Rule::r#type) {
-            Some(t) => Some(Type::parse_pair(extensions, t)?),
-            None => None,
-        };
+        // Parse required output type (e.g., :i64)
+        let output_type = Some(Type::parse_pair(extensions, iter.pop(Rule::r#type))?);
 
         iter.done();
         let anchor = get_and_validate_anchor(
@@ -1142,7 +1139,7 @@ mod tests {
     fn test_scalar_function_full_compound_name() {
         // Full compound name without anchor
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
@@ -1151,7 +1148,7 @@ mod tests {
     #[test]
     fn test_scalar_function_second_overload() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
         assert_eq!(f.arguments.len(), 2);
@@ -1162,7 +1159,7 @@ mod tests {
     fn test_scalar_function_base_name_unique_overload() {
         // "add" has only one overload; base-name lookup should succeed
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "add($0, $1)");
+        let pair = parse_exact(Rule::function_call, "add($0, $1):i64");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
         assert_eq!(f.arguments.len(), 2);
@@ -1173,7 +1170,7 @@ mod tests {
     fn test_scalar_function_base_name_ambiguous_fails() {
         // "equal" has two overloads; base-name lookup should fail
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal($0, $1):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "ambiguous base name should fail");
     }
@@ -1181,7 +1178,7 @@ mod tests {
     #[test]
     fn test_scalar_function_compound_name_with_anchor() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
@@ -1191,7 +1188,7 @@ mod tests {
     fn test_scalar_function_base_name_with_anchor() {
         // Base name + explicit anchor should resolve (anchor 1 stores equal:any_any)
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal#1($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
@@ -1200,7 +1197,7 @@ mod tests {
     #[test]
     fn test_scalar_function_wrong_name_for_anchor_fails() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "like#1($0)");
+        let pair = parse_exact(Rule::function_call, "like#1($0):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
     }

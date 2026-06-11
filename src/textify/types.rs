@@ -212,10 +212,7 @@ impl<'a> Textify for NamedAnchor<'a> {
     }
 }
 
-/// The type desciptor of the output of a function call.
-///
-/// This is optional, and if present, it must be the last argument in the
-/// function call.
+/// The output type of a function call, rendered as `:type` after the argument list.
 #[derive(Debug, Copy, Clone)]
 pub struct OutputType<T: Deref<Target = proto::Type>>(pub Option<T>);
 

@@ -143,10 +143,10 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // - Optional Anchor, e.g. #1
 // - Optional URN Anchor, e.g. @1
 // - Arguments `()` are required, e.g. (1, 2, 3)
-// - Optional output type annotation after closing paren, e.g. :i64
+// - Required output type annotation after closing paren, e.g. :i64
 //   (unambiguous because compound_name is atomic and ends before the opening paren)
 function_call = {
-    compound_name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
+    compound_name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ ":" ~ sp ~ type
 }
 
 if_clause = {

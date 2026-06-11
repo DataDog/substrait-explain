@@ -76,7 +76,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1)]
+  Project[$0, $1, add($0, $1):i64]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
@@ -138,7 +138,7 @@ Functions:
 === Plan
 Root[result]                   // Level 0 (no indentation)
   Project[$0, $1]              // Level 1 (2 spaces)
-    Filter[gt($0, 10) => $0]   // Level 2 (4 spaces)
+    Filter[gt($0, 10):boolean => $0]   // Level 2 (4 spaces)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
@@ -334,8 +334,8 @@ Root[result]
 ### Examples
 
 ```text
-add($3, 10)            // Simple function call
-add#10@2(#3, 10):int   // Function call with anchors and type
+add($3, 10):i64              // Simple function call with required output type
+add#10@2($3, 10):i64         // Function call with anchors and output type
 ```
 
 ### Field References
@@ -366,7 +366,7 @@ Root[result]
 
 #### Syntax
 
-`function_call := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
 
 #### Components
 
@@ -374,7 +374,7 @@ Root[result]
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above
-- `type` - optional output type
+- `type` - required output type
 
 ### Aggregate Measures
 
@@ -382,13 +382,13 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 
 #### Syntax
 
-- `aggregate_measure := name anchor? urn_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
+- `aggregate_measure := name anchor? urn_anchor? "(" expression ")" ":" type` - aggregate function call with optional extension anchors and required output type
 - Field references: `$0`, `$1`, ...
 
 #### Examples
 
-- `sum($2)`
-- `count($1)`
+- `sum($2):i64`
+- `count($1):i64`
 - `avg($3):fp64`
 - `$0` (field reference to grouping field)
 
@@ -678,7 +678,7 @@ Functions:
 
 === Plan
 Root[result]
-  Filter[gt($2, 100) => $0, $1, $2]
+  Filter[gt($2, 100):boolean => $0, $1, $2]
     Project[$0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 # "#;
@@ -742,7 +742,7 @@ Functions:
 
 === Plan
 Root[result]
-  Aggregate[($0), ($0, $1) => $0, $1, sum($2), count($2)]           // Group by field 0, and ($0, $1)
+  Aggregate[($0), ($0, $1) => $0, $1, sum($2):i64, count($2):i64]           // Group by field 0, and ($0, $1)
     Read[orders => category:string, region:string?,  amount:i64]
 # "#;
 #
@@ -802,7 +802,7 @@ Functions:
 
 === Plan
 Root[user_orders]
-  Join[&Inner, eq($0, $2) => $0, $1, $3]
+  Join[&Inner, eq($0, $2):boolean => $0, $1, $3]
     Read[users => id:i64, name:string]        // Fields $0, $1
     Read[orders => user_id:i64, amount:i32]   // Fields $2, $3
 # "#;
@@ -1030,10 +1030,10 @@ Functions:
 
 === Plan
 Root[customer_revenue]
-  Aggregate[$0, $1 => $0, $1, sum($3)]
-    Filter[gt($3, 100) => $0, $1, $2, $3]
-      Project[$0, $1, $2, multiply($4, $5)]
-        Join[&Inner, eq($0, $3) => $0, $1, $2, $3, $4, $5]
+  Aggregate[$0, $1 => $0, $1, sum($3):i64]
+    Filter[gt($3, 100):boolean => $0, $1, $2, $3]
+      Project[$0, $1, $2, multiply($4, $5):i64]
+        Join[&Inner, eq($0, $3):boolean => $0, $1, $2, $3, $4, $5]
           Read[users => id:i64, name:string, region:string]
           Read[orders => user_id:i64, quantity:i32, price:i64]
 # "#;

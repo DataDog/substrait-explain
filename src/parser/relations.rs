@@ -1342,7 +1342,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[($0, $1), _ => sum($2), $0, count($2)]",
+                "Aggregate[($0, $1), _ => sum($2):i64, $0, count($2):i64]",
             ),
             vec![example_read_relation().into_rel(None)],
             3,
@@ -1384,7 +1384,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[$0 => sum($1), $0, count($1)]",
+                "Aggregate[$0 => sum($1):i64, $0, count($1):i64]",
             ),
             vec![example_read_relation().into_rel(None)],
             3,
@@ -1421,7 +1421,7 @@ mod tests {
 
         let aggregate = AggregateRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1)]"),
+            parse_exact(Rule::aggregate_relation, "Aggregate[$2, $0 => sum($1):i64]"),
             vec![example_read_relation().into_rel(None)],
             3,
         )
@@ -1446,7 +1446,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[_ => sum($0), count($1)]",
+                "Aggregate[_ => sum($0):i64, count($1):i64]",
             ),
             vec![example_read_relation().into_rel(None)],
             3,
@@ -1497,7 +1497,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::aggregate_relation,
-                "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3)]",
+                "Aggregate[($0, $1, $2), ($2, $0), ($1), _ => $0, $1, $2, count($3):i64]",
             ),
             vec![read_rel.into_rel(None)],
             4,
@@ -1617,7 +1617,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::join_relation,
-                "Join[&Inner, eq($0, $3) => $0, $1, $3, $4]",
+                "Join[&Inner, eq($0, $3):boolean => $0, $1, $3, $4]",
             ),
             vec![left_rel, right_rel],
             6, // left (3) + right (3) = 6 total input fields
@@ -1656,7 +1656,10 @@ mod tests {
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::join_relation, "Join[&Left, eq($0, $3) => $0, $1, $2]"),
+            parse_exact(
+                Rule::join_relation,
+                "Join[&Left, eq($0, $3):boolean => $0, $1, $2]",
+            ),
             vec![left_rel, right_rel],
             6,
         )
@@ -1687,7 +1690,10 @@ mod tests {
 
         let join = JoinRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::join_relation, "Join[&LeftSemi, eq($0, $3) => $0, $1]"),
+            parse_exact(
+                Rule::join_relation,
+                "Join[&LeftSemi, eq($0, $3):boolean => $0, $1]",
+            ),
             vec![left_rel, right_rel],
             6,
         )
@@ -1713,7 +1719,10 @@ mod tests {
         // Test with 0 children
         let result = JoinRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            parse_exact(
+                Rule::join_relation,
+                "Join[&Inner, eq($0, $1):boolean => $0, $1]",
+            ),
             vec![],
             0,
         );
@@ -1722,7 +1731,10 @@ mod tests {
         // Test with 1 child
         let result = JoinRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            parse_exact(
+                Rule::join_relation,
+                "Join[&Inner, eq($0, $1):boolean => $0, $1]",
+            ),
             vec![example_read_relation().into_rel(None)],
             3,
         );
@@ -1731,7 +1743,10 @@ mod tests {
         // Test with 3 children
         let result = JoinRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::join_relation, "Join[&Inner, eq($0, $1) => $0, $1]"),
+            parse_exact(
+                Rule::join_relation,
+                "Join[&Inner, eq($0, $1):boolean => $0, $1]",
+            ),
             vec![
                 example_read_relation().into_rel(None),
                 example_read_relation().into_rel(None),

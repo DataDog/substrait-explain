@@ -417,7 +417,7 @@ impl Textify for ScalarFunction {
         };
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.optional(&output, ctx.options().fn_types);
+        let output_type = ctx.display(&output);
 
         write!(
             w,
@@ -655,7 +655,7 @@ impl Textify for AggregateFunction {
         };
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.optional(&output, ctx.options().fn_types);
+        let output_type = ctx.display(&output);
 
         write!(
             w,

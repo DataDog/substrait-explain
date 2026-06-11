@@ -33,7 +33,7 @@ Functions:
   ## 10 @  1: add
 
 === Plan
-Project[$0, $1, add($0, $1)]
+Project[$0, $1, add($0, $1):i32?]
   Read[table1 => col1:i32?, col2:i32?]
 "#;
 
@@ -240,8 +240,8 @@ Functions:
   # 12 @  2: count
 === Plan
 Root[result]
-  Aggregate[$0 => $0, sum($1), count($1)]
-    Project[$0, add($1, $2)]
+  Aggregate[$0 => $0, sum($1):i32?, count($1):i64]
+    Project[$0, add($1, $2):i32?]
       Read[table1 => category:string, col1:i32?, col2:i32?]
 ```
 
@@ -258,7 +258,7 @@ Each relation is displayed on a single line with the format:
 
 - **Field references**: `$0`, `$1`, etc.
 - **Literals**: `42`, `'hello'`, `true`
-- **Function calls**: `add($0, $1)`, `sum($2)` (scalar and aggregate functions)
+- **Function calls**: `add($0, $1):i64`, `sum($2):i64`
 - **Types**: `i32`, `string?`, `list<i64>`
 
 ## Configuration Options
