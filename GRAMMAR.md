@@ -366,15 +366,41 @@ Root[result]
 
 #### Syntax
 
-`function_call := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+
+`compound_name := identifier (":" identifier?)?`
 
 #### Components
 
-- `name` - function name
+- `compound_name` - function name, optionally including a type-signature suffix (see below)
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above
 - `type` - optional output type
+
+#### Function Name Resolution
+
+A compound name is either *simple* (no colon, e.g. `add`) or *full* (has a colon, e.g. `add:i64_i64` or `count:`). These resolve differently:
+
+- **Simple** (`add`): matches any registered function whose base name is `add`, regardless of type signature. Succeeds only if the base name is unambiguous (exactly one registered function has that base name).
+- **Full** (`add:i64_i64`, `count:`): exact match only — the written name must match the registered name exactly.
+
+An `anchor` explicitly identifies which registered function is meant. When present:
+- A simple name validates that the anchor's registered name shares the same base.
+- A full name validates that the anchor's registered name matches exactly.
+
+The type signature and anchor are each optional, but either or both may be required to make the reference unambiguous.
+
+#### Examples
+
+```text
+add($0, $1)              // Simple: resolves if "add" is unambiguous
+add:i64_i64($0, $1)      // Full: resolves only if "add:i64_i64" is registered
+add#1($0, $1)            // Anchor: resolves anchor 1, validates base name "add"
+add:i64_i64#1($0, $1)    // Anchor + full name: exact consistency check
+count()                  // Simple: resolves if "count" base name is unambiguous
+count:()                 // Full: resolves only if "count:" is registered exactly
+```
 
 ### Aggregate Measures
 
