@@ -414,7 +414,8 @@ impl ScopedParsePair for ScalarFunction {
             });
         }
 
-        // Parse required output type (e.g., :i64)
+        // Parse required output type (e.g., :i64). pop is safe here because
+        // the grammar guarantees the type token is always present.
         let output_type = Some(Type::parse_pair(extensions, iter.pop(Rule::r#type))?);
 
         iter.done();
@@ -1143,6 +1144,10 @@ mod tests {
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
+        assert!(
+            f.output_type.is_some(),
+            "output_type must be set after parsing"
+        );
     }
 
     #[test]
@@ -1164,6 +1169,10 @@ mod tests {
 
         assert_eq!(f.arguments.len(), 2);
         assert_eq!(f.function_reference, 3);
+        assert!(
+            f.output_type.is_some(),
+            "output_type must be set after parsing"
+        );
     }
 
     #[test]
@@ -1200,6 +1209,16 @@ mod tests {
         let pair = parse_exact(Rule::function_call, "like#1($0):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
+    }
+
+    #[test]
+    fn test_scalar_function_missing_type_fails_to_parse() {
+        // The grammar requires a type annotation; "add($0, $1)" without ":i64" must fail.
+        let result = ExpressionParser::parse(Rule::function_call, "add($0, $1)");
+        assert!(
+            result.is_err(),
+            "function call without type annotation should fail to parse"
+        );
     }
 
     #[test]

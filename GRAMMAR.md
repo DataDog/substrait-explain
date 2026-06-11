@@ -382,7 +382,7 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 
 #### Syntax
 
-- `aggregate_measure := name anchor? urn_anchor? "(" expression ")" ":" type` - aggregate function call with optional extension anchors and required output type
+- `aggregate_measure := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type` - aggregate function call with optional extension anchors and required output type
 - Field references: `$0`, `$1`, ...
 
 #### Examples

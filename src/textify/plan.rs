@@ -93,7 +93,7 @@ mod tests {
     use substrait::proto::expression::{RexType, ScalarFunction};
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
-    use substrait::proto::r#type::{Kind, Nullability, Struct};
+    use substrait::proto::r#type::{I64, Kind, Nullability, Struct};
     use substrait::proto::{
         Expression, FunctionArgument, NamedStruct, ReadRel, Type, extensions as pext,
     };
@@ -174,7 +174,12 @@ mod tests {
                 },
             ],
             options: vec![],
-            output_type: None,
+            output_type: Some(Type {
+                kind: Some(Kind::I64(I64 {
+                    nullability: Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            }),
             #[allow(deprecated)]
             args: vec![],
         };
@@ -215,7 +220,7 @@ Functions:
   # 10 @  1: add
 
 === Plan
-Project[$0, $1, add($0, $1)]
+Project[$0, $1, add($0, $1):i64]
   Read[table1 => col1:i32?, col2:i32?]
 "#
         .trim_start();

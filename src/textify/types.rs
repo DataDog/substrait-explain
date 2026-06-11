@@ -224,7 +224,15 @@ impl<T: Deref<Target = proto::Type>> Textify for OutputType<T> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self.0 {
             Some(ref t) => write!(w, ":{}", ctx.display(t.deref())),
-            None => Ok(()),
+            None => write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::invalid(
+                    "OutputType",
+                    None::<&str>,
+                    "function output_type must be set",
+                ))
+            ),
         }
     }
 }

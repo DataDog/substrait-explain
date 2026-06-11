@@ -20,6 +20,9 @@ fmt:
 # Run the tests.
 test:
     cargo test --all-features
+    cargo run --example basic_usage --features protoc
+    cargo run --example advanced_usage --features serde,protoc
+    cargo run --example extensions --features cli,protoc
     cargo run --features cli,protoc -- validate -i example-plans/basic.substrait
     cargo run --features cli,protoc -- validate -i example-plans/simple.substrait
 
