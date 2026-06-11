@@ -198,9 +198,7 @@ impl<'a> Textify for NamedAnchor<'a> {
 
         match &self.name.0 {
             Ok(n) => {
-                // Zero-arg functions use the "count:" form — always write full() so
-                // the trailing colon is preserved and round-trips correctly.
-                if show_signature || n.is_zero_arg() {
+                if show_signature {
                     write!(w, "{}", n.full())?;
                 } else {
                     write!(w, "{}", n.base())?;
@@ -211,10 +209,9 @@ impl<'a> Textify for NamedAnchor<'a> {
 
         // Show the anchor when:
         // - The compound name is not unique (another URN uses the same name), OR
-        // - The compound name has no colon (no-sig form like "add") and the base
-        //   name is not unique — without an anchor the written token is
-        //   indistinguishable from the compact display of other "add:*" functions
-        //   and would be parsed as an ambiguous base-name lookup.
+        // - The name is simple (no colon, e.g. "add") and the base name is not
+        //   unique — without an anchor, "add" would be parsed as a base-name
+        //   lookup and fail as ambiguous.
         let needs_anchor = !self.unique
             || match &self.name.0 {
                 Ok(n) if !n.full().contains(':') => !self.base_name_unique,
@@ -1042,9 +1039,11 @@ mod tests {
     }
 
     #[test]
-    fn named_anchor_zero_arg_compact_unique_shows_trailing_colon() {
-        // Zero-arg "count:" is the only function with base "count".
-        // Compact mode: trailing colon is preserved; base name unique → no anchor.
+    fn named_anchor_compact_unique_full_name_zero_arg_type_signature() {
+        // "count:" is the only function with base "count".
+        // Compact mode: base name unique → write base name only, no anchor.
+        // "count:" and "count:i64" are not conceptually different;
+        // both write just the base name when unambiguous.
         let ctx = TestContext::new()
             .with_urn(1, "urn")
             .with_function(1, 5, "count:");
@@ -1056,12 +1055,12 @@ mod tests {
         assert!(na.unique);
 
         let s = ctx.textify_no_errors(&na);
-        assert_eq!(s, "count:");
+        assert_eq!(s, "count");
     }
 
     #[test]
-    fn named_anchor_verbose_zero_arg_shows_trailing_colon_and_anchor() {
-        // Verbose mode: zero-arg "count:" always writes full() (trailing colon preserved) + anchor.
+    fn named_anchor_verbose_full_name_shows_signature_and_anchor() {
+        // Verbose mode: always writes full() + anchor.
         let mut ctx = TestContext::new()
             .with_urn(1, "urn")
             .with_function(1, 5, "count:");

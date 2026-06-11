@@ -242,7 +242,7 @@ Root[a, b]
 }
 
 #[test]
-fn test_zero_arg_function_roundtrip() {
+fn test_full_name_zero_arg_type_signature_roundtrip() {
     let plan = r#"=== Extensions
 URNs:
   @  1: extension:io.substrait:functions_aggregate_generic
@@ -251,7 +251,7 @@ Functions:
 
 === Plan
 Root[n]
-  Project[count:()]
+  Project[count()]
     Read[events => n:i64]"#;
     roundtrip_plan(plan);
 }
@@ -292,9 +292,9 @@ Root[result]
     assert!(Parser::parse(plan).is_err());
 }
 
-/// `add` (no-signature) and `add:` (zero-argument) registered under the same
-/// URN.  The zero-argument form is unambiguous so it needs no anchor; the
-/// no-signature form requires an anchor because the base name `add` is shared.
+/// `add` (simple) and `add:` (full, zero-argument type signature) registered under the same
+/// URN. `add:` is unambiguous so it needs no anchor; `add` requires an anchor
+/// because the base name is shared.
 #[test]
 fn test_no_sig_and_zero_arg_disambiguate_without_anchor() {
     let plan = r#"=== Extensions
@@ -311,7 +311,7 @@ Root[result]
     roundtrip_plan(plan);
 }
 
-/// `add` (no-sig) from one URN and `add:` (zero-arg) from two different URNs.
+/// `add` (simple) from one URN and `add:` (full, zero-argument type signature) from two different URNs.
 /// The compound name `add:` is no longer unique, so all three functions require
 /// an anchor in the plan text.
 #[test]

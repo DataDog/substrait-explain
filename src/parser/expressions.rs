@@ -1131,13 +1131,14 @@ mod tests {
     }
 
     #[test]
-    fn test_compound_name_zero_arg() {
-        // The zero-argument form has a trailing colon and nothing after it.
+    fn test_compound_name_full_zero_arg_type_signature() {
+        // A Full name whose type signature encodes zero argument types (nothing after the colon).
         let n = parse_compound_name("add:");
         assert_eq!(n.full(), "add:");
         assert_eq!(n.base(), "add");
-        assert!(n.is_zero_arg());
-        assert!(!parse_compound_name("add:i64_i64").is_zero_arg());
+        assert!(n.matches("add:"));
+        assert!(!n.matches("add:i64_i64"));
+        assert!(n.matches("add"));
     }
 
     #[test]
