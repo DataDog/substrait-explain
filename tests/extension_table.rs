@@ -1,11 +1,12 @@
 //! Integration tests for `Read:Extension` and `+ Ext` parse rules.
 
+mod common;
+
 use prost::{Message, Name};
 use substrait_explain::extensions::{
     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry, examples,
 };
-use substrait_explain::format_with_registry;
-use substrait_explain::parser::Parser;
+use substrait_explain::{Parser, format_with_registry};
 
 #[derive(Clone, PartialEq, Message)]
 struct UserTable {

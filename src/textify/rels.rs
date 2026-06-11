@@ -88,11 +88,9 @@ pub struct NamedArg<'a> {
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
-    Name(Name<'a>),
     TableName(Vec<Name<'a>>),
     Field(Option<Name<'a>>, Option<&'a Type>),
     Tuple(Vec<Value<'a>>),
-    List(Vec<Value<'a>>),
     Reference(i32),
     Expression(&'a Expression),
     AggregateFunction(&'a AggregateFunction),
@@ -102,10 +100,8 @@ pub enum Value<'a> {
     Enum(Cow<'a, str>),
     EmptyGroup,
     Integer(i64),
-    Float(f64),
-    Boolean(bool),
     /// A decoded extension argument value.
-    ExtValue(ExtensionValue),
+    ExtensionArgument(ExtensionValue),
     /// A decoded extension output column.
     ExtColumn(ExtensionColumn),
 }
@@ -135,13 +131,11 @@ impl<'a> Textify for Value<'a> {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self {
-            Value::Name(name) => write!(w, "{}", ctx.display(name)),
             Value::TableName(names) => write!(w, "{}", ctx.separated(names, ".")),
             Value::Field(name, typ) => {
                 write!(w, "{}:{}", ctx.expect(name.as_ref()), ctx.expect(*typ))
             }
             Value::Tuple(values) => write!(w, "({})", ctx.separated(values, ", ")),
-            Value::List(values) => write!(w, "[{}]", ctx.separated(values, ", ")),
             Value::Reference(i) => write!(w, "{}", Reference(*i)),
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
             Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
@@ -149,9 +143,7 @@ impl<'a> Textify for Value<'a> {
             Value::Enum(res) => write!(w, "&{res}"),
             Value::Integer(i) => write!(w, "{i}"),
             Value::EmptyGroup => write!(w, "_"),
-            Value::Float(f) => write!(w, "{f}"),
-            Value::Boolean(b) => write!(w, "{b}"),
-            Value::ExtValue(ev) => ev.textify(ctx, w),
+            Value::ExtensionArgument(ev) => ev.textify(ctx, w),
             Value::ExtColumn(ec) => ec.textify(ctx, w),
         }
     }
@@ -342,20 +334,6 @@ impl<'a> Relation<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct TableName<'a>(&'a [String]);
-
-impl<'a> Textify for TableName<'a> {
-    fn name() -> &'static str {
-        "TableName"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let names = self.0.iter().map(|n| Name(n)).collect::<Vec<_>>();
-        write!(w, "{}", ctx.separated(names.iter(), "."))
-    }
-}
-
 impl<'a> Relation<'a> {
     fn from_read<S: Scope>(rel: &'a ReadRel, ctx: &S) -> Self {
         let columns = read_columns(rel);
@@ -461,18 +439,6 @@ pub fn get_emit(rel: Option<&RelCommon>) -> Option<&EmitKind> {
 }
 
 impl<'a> Relation<'a> {
-    /// Create a vector of values that are references to the emitted outputs of
-    /// this relation. "Emitted" here meaning the outputs of this relation after
-    /// the emit kind has been applied.
-    ///
-    /// This is useful for relations like Filter and Limit whose direct outputs
-    /// are primarily those of its children (direct here meaning before the emit
-    /// has been applied).
-    pub fn input_refs(&self) -> Vec<Value<'a>> {
-        let len = self.emitted();
-        (0..len).map(|i| Value::Reference(i as i32)).collect()
-    }
-
     /// Convert a vector of relation references into their structured form.
     ///
     /// Returns a list of children (with None for ones missing), and a count of input columns.
@@ -619,13 +585,13 @@ impl<'a> Relation<'a> {
                 let (children, _) = Relation::convert_children(child_refs, ctx);
                 let mut positional = vec![];
                 for value in args.positional {
-                    positional.push(Value::ExtValue(value));
+                    positional.push(Value::ExtensionArgument(value));
                 }
                 let mut named = vec![];
                 for (key, value) in args.named {
                     named.push(NamedArg {
                         name: Cow::Owned(key),
-                        value: Value::ExtValue(value),
+                        value: Value::ExtensionArgument(value),
                     });
                 }
                 let mut columns = vec![];

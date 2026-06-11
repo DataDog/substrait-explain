@@ -11,6 +11,9 @@
 //! Each positional argument is a [`PartitionStrategy`] variant rendered with
 //! the `&` enum prefix.  The optional named argument `count` gives the target
 //! number of partitions (`0` / absent means "let the executor decide").
+//!
+//! This hidden module is crate-owned example support for doctests and
+//! integration tests, not a stable extension API.
 
 use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionValue};
 use crate::extensions::registry::{Explainable, ExtensionError, ExtensionRegistry};
@@ -70,7 +73,7 @@ impl PartitionStrategy {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -172,7 +175,7 @@ impl Explainable for PartitionHint {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());
@@ -250,7 +253,7 @@ impl Explainable for PlanHint {
 /// ```rust
 /// # use substrait_explain::extensions::examples;
 /// # use substrait_explain::format_with_registry;
-/// # use substrait_explain::parser::Parser;
+/// # use substrait_explain::Parser;
 /// #
 /// # let registry = examples::registry();
 /// # let parser = Parser::new().with_extension_registry(registry.clone());

@@ -1,5 +1,8 @@
 //! Integration test for custom extension handlers with roundtrip parsing and formatting
 
+mod common;
+
+use common::parse_type;
 use prost::{Message, Name};
 use substrait::proto;
 use substrait::proto::expression::RexType;
@@ -10,10 +13,7 @@ use substrait_explain::extensions::{
     EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
-use substrait_explain::fixtures::parse_type;
-use substrait_explain::format_with_registry;
-use substrait_explain::parser::Parser;
-use substrait_explain::textify::expressions::Reference;
+use substrait_explain::{Parser, format_with_registry};
 
 /// A custom extension configuration for a hypothetical "UserTable" data source.
 /// This differs from the file-based scan in the example by using logical table properties.
@@ -435,8 +435,7 @@ impl Explainable for PassThroughWrapper {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
-        args.output_columns
-            .push(ExtensionColumn::Expr(Reference(0).into()));
+        args.output_columns.push(ExtensionColumn::field(0));
         Ok(args)
     }
 }
@@ -470,10 +469,8 @@ impl Explainable for BinaryMerge {
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
-        args.output_columns
-            .push(ExtensionColumn::Expr(Reference(0).into()));
-        args.output_columns
-            .push(ExtensionColumn::Expr(Reference(1).into()));
+        args.output_columns.push(ExtensionColumn::field(0));
+        args.output_columns.push(ExtensionColumn::field(1));
         Ok(args)
     }
 }
@@ -750,7 +747,7 @@ fn test_extension_proto_convert_schema_columns_roundtrip() {
 
 #[test]
 fn test_extension_proto_convert_schema_rejects_references() {
-    let columns = vec![ExtensionColumn::Expr(Reference(0).into())];
+    let columns = vec![ExtensionColumn::field(0)];
     assert!(columns.as_slice().convert().is_err());
 }
 

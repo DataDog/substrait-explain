@@ -513,7 +513,7 @@ impl SimpleExtensions {
         name: &str,
         anchor: Option<u32>,
     ) -> Result<ResolvedFunction<'_>, MissingReference> {
-        let resolved_anchor: u32 = match anchor {
+        let resolved_anchor = match anchor {
             Some(a) => {
                 let (_, stored) = self.find_by_anchor(ExtensionKind::Function, a)?;
                 if stored.matches(name) {

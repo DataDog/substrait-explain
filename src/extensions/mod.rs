@@ -10,9 +10,11 @@
 
 pub mod any;
 pub mod args;
-pub mod examples;
 pub mod registry;
 pub mod simple;
+
+#[doc(hidden)]
+pub mod examples;
 
 pub use any::{Any, AnyRef};
 pub(crate) use args::AddendumKind;
