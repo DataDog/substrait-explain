@@ -3,6 +3,7 @@
 mod common;
 
 use common::roundtrip_plan;
+use substrait_explain::Parser;
 
 #[test]
 fn test_float_literal_roundtrip() {
@@ -112,6 +113,35 @@ Root[result]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
+}
+
+#[test]
+fn test_null_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project[null:i64?, null:string?, null:date?]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_bare_null_literal_requires_type() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project[null]
+    Read[data => a:i64]
+"#;
+
+    let error = Parser::parse(plan).expect_err("bare null literal should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("Null literals require an explicit type annotation"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
