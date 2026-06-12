@@ -32,10 +32,13 @@ quoted_name = @{
 name = { identifier | quoted_name }
 
 // A compound name is a Substrait function compound name: base identifier followed by an optional
-// colon-delimited signature (e.g. "equal:any_any", "regexp_match_substring:str_str_i64").
+// colon-delimited signature (e.g. "equal:any_any", "count:").
+// The signature after the colon is an optional identifier: present for "equal:any_any", absent
+// for the zero-argument form "count:". Using identifier? (not identifier+) allows the trailing
+// colon with nothing after it, while keeping the same character constraints as the base name.
 // The rule is atomic so no whitespace is allowed around the colon, making it unambiguous
 // with the output-type annotation which always follows the closing parenthesis.
-compound_name = @{ identifier ~ (":" ~ identifier)? }
+compound_name = @{ identifier ~ (":" ~ identifier?)? }
 
 // Expression Components
 // Field reference
