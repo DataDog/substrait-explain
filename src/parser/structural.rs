@@ -785,7 +785,7 @@ impl<'a> RelationParser<'a> {
 ///   ## 10 @  1: my_custom_function
 /// === Plan
 /// Root[result]
-///   Project[my_custom_function($0, $1)]
+///   Project[my_custom_function($0, $1):i32]
 ///     Read[table => col1:i32, col2:i32]
 /// "#;
 ///
