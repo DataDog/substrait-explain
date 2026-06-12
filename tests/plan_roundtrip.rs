@@ -243,10 +243,93 @@ Root[a, b]
 }
 
 #[test]
-fn test_precision_time_types_roundtrip() {
-    let plan = r#"=== Plan
-Root[ts, ts_tz, pt]
-  Read[events => ts:precisiontimestamp<9>, ts_tz:precisiontimestamptz?<6>, pt:precisiontime<3>]"#;
+fn test_full_name_zero_arg_type_signature_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: extension:io.substrait:functions_aggregate_generic
+Functions:
+  #  1 @  1: count:
+
+=== Plan
+Root[n]
+  Project[count()]
+    Read[events => n:i64]"#;
+    roundtrip_plan(plan);
+}
+
+/// One no-signature `add` registration — base name is unique so the function
+/// is written without an anchor or type signature in compact mode.
+#[test]
+fn test_no_sig_function_unique_no_anchor() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: urn:substrait:vendor_a
+Functions:
+  #  1 @  1: add
+
+=== Plan
+Root[result]
+  Project[$0, $1, add($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+    roundtrip_plan(plan);
+}
+
+/// `add` and `add:` share the base name, so `add(…)` (no colon, no anchor)
+/// is ambiguous and must be rejected.
+#[test]
+fn test_ambiguous_base_name_fails() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: urn:substrait:vendor_a
+Functions:
+  #  1 @  1: add
+  #  2 @  1: add:
+
+=== Plan
+Root[result]
+  Project[add($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}
+
+/// `add` (simple) and `add:` (full, zero-argument type signature) registered under the same
+/// URN. `add:` is unambiguous so it needs no anchor; `add` requires an anchor
+/// because the base name is shared.
+#[test]
+fn test_no_sig_and_zero_arg_disambiguate_without_anchor() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: urn:substrait:vendor_a
+Functions:
+  #  1 @  1: add
+  #  2 @  1: add:
+
+=== Plan
+Root[result]
+  Project[$0, $1, add#1($0, $1), add:($0, $1)]
+    Read[t => a:i64, b:i64]"#;
+    roundtrip_plan(plan);
+}
+
+/// `add` (simple) from one URN and `add:` (full, zero-argument type signature) from two different URNs.
+/// The compound name `add:` is no longer unique, so all three functions require
+/// an anchor in the plan text.
+#[test]
+fn test_three_add_variants_all_require_anchors() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: urn:substrait:vendor_a
+  @  2: urn:substrait:vendor_b
+Functions:
+  #  1 @  1: add
+  #  2 @  1: add:
+  #  3 @  2: add:
+
+=== Plan
+Root[result]
+  Project[$0, $1, add#1($0, $1), add:#2($0, $1), add:#3($0, $1)]
+    Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
 

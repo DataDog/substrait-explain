@@ -1091,6 +1091,17 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_name_full_zero_arg_type_signature() {
+        // A Full name whose type signature encodes zero argument types (nothing after the colon).
+        let n = parse_compound_name("add:");
+        assert_eq!(n.full(), "add:");
+        assert_eq!(n.base(), "add");
+        assert!(n.matches("add:"));
+        assert!(!n.matches("add:i64_i64"));
+        assert!(n.matches("add"));
+    }
+
+    #[test]
     fn test_compound_name_with_signature() {
         assert_eq!(parse_compound_name("equal:any_any").full(), "equal:any_any");
         assert_eq!(

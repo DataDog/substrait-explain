@@ -82,11 +82,12 @@ pub enum InsertError {
     },
 }
 
-/// A Substrait compound function name, e.g. `"equal:any_any"` or `"add"`.
+/// A Substrait compound function name, e.g. `"equal:any_any"`, `"count:"`, or `"add"`.
 ///
-/// The name before the first `:` is the *base name*; the part after is the
-/// *type-signature suffix*.  For plain names with no `:` the base name is the
-/// full name and `has_signature` returns `false`.
+/// A name is either *simple* (no `:`, e.g. `"add"`) or *full* (has a `:`,
+/// e.g. `"count:"` or `"equal:any_any"`). The part after the `:` is the
+/// type-signature suffix, which encodes the argument types (`"i64_i64"`) or
+/// zero argument types (`"count:"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompoundName {
     /// Full name including the signature suffix, e.g. `"equal:any_any"`.
@@ -107,14 +108,21 @@ impl CompoundName {
         &self.name[..self.index]
     }
 
-    /// The full compound name, e.g. `"equal:any_any"`.
+    /// The full compound name, e.g. `"equal:any_any"` or `"count:"`.
     pub fn full(&self) -> &str {
         &self.name
     }
 
-    /// `true` when the name includes a signature suffix (contains `:`).
-    pub fn has_signature(&self) -> bool {
-        self.index < self.name.len()
+    /// Returns `true` if `self` (a stored name) is matched by `pattern` (a written name).
+    ///
+    /// - Simple pattern (no `:`): matches any stored name with the same base.
+    /// - Full pattern (has `:`): exact match only.
+    pub fn matches(&self, pattern: &str) -> bool {
+        if pattern.contains(':') {
+            self.full() == pattern
+        } else {
+            self.base() == pattern
+        }
     }
 }
 
@@ -492,17 +500,14 @@ impl SimpleExtensions {
         })
     }
 
-    /// Resolve a function name (plain or compound) with an optional explicit
-    /// anchor to a [`ResolvedFunction`].
-    /// the caller has a text name and an optional anchor
-    /// from the plan source and needs the canonical anchor plus uniqueness info.
+    /// Resolve a [`CompoundName`] written in the plan to a [`ResolvedFunction`].
     ///
-    /// * `anchor = Some(a)` — validates that `name` matches the stored name
-    ///   (exact compound-name match **or** base-name match, e.g. `"equal"`
-    ///   matches stored `"equal:any_any"`).
-    /// * `anchor = None` — tries an exact match first; if not found and
-    ///   `name` contains no `:`, falls back to base-name search so that
-    ///   `equal(…)` resolves when `equal:any_any` is the only overload.
+    /// * `anchor = Some(a)` — the anchor identifies the function; the name is
+    ///   validated for consistency using [`CompoundName::matches`].
+    /// * `anchor = None` — the name must be unambiguous on its own:
+    ///   - Simple (no `:`): base-name search; fails if more than one function
+    ///     shares that base name.
+    ///   - Full (has `:`): exact match only.
     pub fn resolve_function(
         &self,
         name: &str,
@@ -511,7 +516,7 @@ impl SimpleExtensions {
         let resolved_anchor = match anchor {
             Some(a) => {
                 let (_, stored) = self.find_by_anchor(ExtensionKind::Function, a)?;
-                if stored.full() == name || stored.base() == name {
+                if stored.matches(name) {
                     a
                 } else {
                     return Err(MissingReference::Mismatched(
@@ -521,13 +526,13 @@ impl SimpleExtensions {
                     ));
                 }
             }
-            None => match self.find_by_name(ExtensionKind::Function, name) {
-                Ok(a) => a,
-                Err(MissingReference::MissingName(_, _)) if !name.contains(':') => {
+            None => {
+                if name.contains(':') {
+                    self.find_by_name(ExtensionKind::Function, name)?
+                } else {
                     self.find_by_base_name(ExtensionKind::Function, name)?
                 }
-                Err(e) => return Err(e),
-            },
+            }
         };
         self.lookup_function(resolved_anchor)
     }
@@ -552,7 +557,7 @@ impl SimpleExtensions {
         let mut matches = self
             .extensions
             .iter()
-            .filter(|&(&(_a, k), (_, n))| k == kind && n.base() == base)
+            .filter(|&(&(_a, k), (_, n))| k == kind && n.matches(base))
             .map(|(&(anchor, _), _)| anchor);
 
         let anchor = matches
@@ -883,15 +888,16 @@ Type Variations:
     }
 
     #[test]
-    fn test_compound_name_plain() {
-        let n = CompoundName::new("add");
-        assert_eq!(n.full(), "add");
+    fn test_compound_name_full_zero_arg_type_signature() {
+        // A Full name whose type signature encodes zero argument types (nothing after the colon).
+        let n = CompoundName::new("add:");
+        assert_eq!(n.full(), "add:");
         assert_eq!(n.base(), "add");
-        assert!(!n.has_signature());
-
-        let n2 = CompoundName::new("coalesce");
-        assert_eq!(n2.full(), "coalesce");
-        assert_eq!(n2.base(), "coalesce");
+        // Full pattern: exact match only.
+        assert!(n.matches("add:"));
+        assert!(!n.matches("add:i64_i64"));
+        // Simple pattern: base match.
+        assert!(n.matches("add"));
     }
 
     #[test]
@@ -899,24 +905,13 @@ Type Variations:
         let n = CompoundName::new("equal:any_any");
         assert_eq!(n.full(), "equal:any_any");
         assert_eq!(n.base(), "equal");
-        assert!(n.has_signature());
 
         let n2 = CompoundName::new("regexp_match_substring:str_str_i64");
         assert_eq!(n2.base(), "regexp_match_substring");
         assert_eq!(n2.full(), "regexp_match_substring:str_str_i64");
-        assert!(n2.has_signature());
 
         let n3 = CompoundName::new("add:i64_i64");
         assert_eq!(n3.base(), "add");
-    }
-
-    #[test]
-    fn test_compound_name_trailing_colon() {
-        // Edge case: trailing colon → empty signature suffix, base is the prefix
-        let n = CompoundName::new("foo:");
-        assert_eq!(n.base(), "foo");
-        assert_eq!(n.full(), "foo:");
-        assert!(n.has_signature());
     }
 
     // ---- Tests for lookup_function ----
@@ -992,19 +987,19 @@ Type Variations:
     // ---- Tests for resolve_function ----
 
     fn make_resolve_extensions() -> SimpleExtensions {
-        // Mirrors the fixture used in the old parser/types.rs tests.
         let urns = vec![new_urn(1, "test_urn")];
         let extensions = vec![
             new_ext_fn(1, 1, "equal:any_any"),
             new_ext_fn(2, 1, "equal:str_str"),
             new_ext_fn(3, 1, "add:i64_i64"),
+            new_ext_fn(4, 1, "add:"),
         ];
         unwrap_new_extensions(&urns, &extensions)
     }
 
     #[test]
     fn test_resolve_function_with_anchor() {
-        // Explicit anchor: exact compound name, base name, and mismatched name.
+        // Explicit anchor: exact compound name and mismatch errors.
         let exts = make_resolve_extensions();
 
         // Exact compound name matches stored name → resolves.
@@ -1015,19 +1010,25 @@ Type Variations:
             1
         );
 
-        // Base name "equal" matches stored "equal:any_any" → resolves.
-        assert_eq!(exts.resolve_function("equal", Some(1)).unwrap().anchor, 1);
+        // Simple (no-sig) form matches any stored name with the same base.
+        assert_eq!(exts.resolve_function("add", Some(3)).unwrap().anchor, 3);
+        assert_eq!(exts.resolve_function("add", Some(4)).unwrap().anchor, 4);
 
-        // "like" does not match stored "equal:any_any" → error.
-        assert!(exts.resolve_function("like", Some(1)).is_err());
+        // Full form requires exact match — "add:" does not match anchor 3 (stored "add:i64_i64").
+        assert!(exts.resolve_function("add:", Some(3)).is_err());
+
+        // "add" does not match stored "equal:any_any" (different base) → error.
+        assert!(exts.resolve_function("add", Some(1)).is_err());
+
+        // Same base name, different overload → error.
+        assert!(exts.resolve_function("equal:any_any", Some(2)).is_err());
     }
 
     #[test]
     fn test_resolve_function_without_anchor() {
-        // No anchor: exact compound, unique base (fallback), and ambiguous base.
+        // No anchor: exact compound name resolution.
         let exts = make_resolve_extensions();
 
-        // Exact compound names resolve directly.
         assert_eq!(
             exts.resolve_function("equal:any_any", None).unwrap().anchor,
             1
@@ -1036,11 +1037,30 @@ Type Variations:
             exts.resolve_function("equal:str_str", None).unwrap().anchor,
             2
         );
+    }
 
-        // "add" is the only overload → base-name fallback finds anchor 3.
-        assert_eq!(exts.resolve_function("add", None).unwrap().anchor, 3);
+    #[test]
+    fn test_resolve_function_without_anchor_full_sig() {
+        // Full form (has colon) resolves by exact match only — no fallback.
+        let exts = make_resolve_extensions();
 
-        // "equal" has two overloads → DuplicateName error.
+        assert_eq!(exts.resolve_function("add:", None).unwrap().anchor, 4);
+        assert_eq!(
+            exts.resolve_function("add:i64_i64", None).unwrap().anchor,
+            3
+        );
+
+        // "equal:" is not registered → error (no fallback to base-name search).
+        assert!(exts.resolve_function("equal:", None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_function_without_anchor_no_sig() {
+        // No-signature form (no colon) without anchor: base-name search.
+        let exts = make_resolve_extensions();
+
+        // Ambiguous base name → error.
+        assert!(exts.resolve_function("add", None).is_err());
         assert!(exts.resolve_function("equal", None).is_err());
     }
 
