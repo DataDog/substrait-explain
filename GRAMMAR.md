@@ -380,26 +380,30 @@ Root[result]
 
 #### Function Name Resolution
 
-A compound name is either *simple* (no colon, e.g. `add`) or *full* (has a colon, e.g. `add:i64_i64` or `count:`). These resolve differently:
+Within the plan, a function name has three parts: a `base` name (e.g. `abs`), a type signature (prefixed with a colon, e.g. `abs:i64`), and anchor (prefixed with `#`, e.g. `#4`).
 
-- **Simple** (`add`): matches any registered function whose base name is `add`, regardless of type signature. Succeeds only if the base name is unambiguous (exactly one registered function has that base name).
-- **Full** (`add:i64_i64`, `count:`): exact match only — the written name must match the registered name exactly.
+Both type signature and anchor are separably optional if the reference is unambiguous; either or both may be required to make the reference unambiguous. A function name (base, signature if present, and anchor if present) must  to exactly one function named in the `Extensions` section.
 
-An `anchor` explicitly identifies which registered function is meant. When present:
-- A simple name validates that the anchor's registered name shares the same base.
-- A full name validates that the anchor's registered name matches exactly.
-
-The type signature and anchor are each optional, but either or both may be required to make the reference unambiguous.
+Where unambiguous, signature and anchor may both be left off (`abs($0)`), used separately (e.g. `abs:i64($0)`, `abs$4($0)`), or together for completeness (`abs:i64#4($0)`).
 
 #### Examples
 
 ```text
-add($0, $1)              // Simple: resolves if "add" is unambiguous
-add:i64_i64($0, $1)      // Full: resolves only if "add:i64_i64" is registered
-add#1($0, $1)            // Anchor: resolves anchor 1, validates base name "add"
-add:i64_i64#1($0, $1)    // Anchor + full name: exact consistency check
-count()                  // Simple: resolves if "count" base name is unambiguous
-count:()                 // Full: resolves only if "count:" is registered exactly
+// Simple: resolves if there is exactly one function named `add`
+add($0, $1)
+// Signature: resolves only if exactly one function named `add` is registered,
+// with signature `:i64_i64`
+add:i64_i64($0, $1)
+// Anchor: resolves if anchor 1 exists with base name `add`
+add#1($0, $1)            
+// Anchor + full name: resolves if anchor 1 exists with name `add` and 
+// signature `i64_i64`
+add:i64_i64#1($0, $1)
+// Simple: resolves if there is exactly one function named `count`
+count()
+// Signature: resolves if "count:" is registered exactly once with
+// signature "" (zero arguments)
+count:()
 ```
 
 ### Aggregate Measures
