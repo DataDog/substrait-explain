@@ -216,7 +216,7 @@ type_name := "u!" identifier | identifier
 
 Where:
 
-- **`type_name`** - Type name(case-insensitive, lowercase preferred), plain (e.g. `i64`, `geo_point`) or with `u!` prefix for user-defined types (e.g. `u!json`). The prefix is part of the name and must match the declaration exactly.
+- **`type_name`** - Type name (case-insensitive, lowercase preferred), plain (e.g. `i64`, `geo_point`) or with `u!` prefix for user-defined types (e.g. `u!json`). The prefix is part of the name and must match the declaration exactly.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -291,10 +291,9 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 
 #### Syntax
 
-`type_name anchor? urn_anchor? nullability? parameters?`
+`udt_name anchor? urn_anchor? nullability? parameters?`
 
-where `type_name` is `"u!" identifier | identifier`.
-
+where `udt_name` is `"u!" (identifier | quoted_name) | identifier | quoted_name`.
 #### Key differences from standard Substrait
 
 - Adds optional `anchor` and `urn_anchor` for extension references
