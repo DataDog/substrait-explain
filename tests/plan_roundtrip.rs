@@ -251,6 +251,40 @@ Root[ts, ts_tz, pt]
 }
 
 #[test]
+fn test_u_prefix_type_in_schema_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  #  5 @  1: u!json
+
+=== Plan
+Root[result]
+  Project[$0]
+    Read[data => doc:u!json]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_u_prefix_type_in_function_declaration_roundtrip() {
+    // The declaration preserves the full compound name including the u!-prefixed
+    // signature. The call site uses the compact base name since the function is unique.
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://example.com/funcs
+Functions:
+  #  5 @  1: json_extract_path:u!json_str
+
+=== Plan
+Root[result]
+  Project[json_extract_path($0, $1)]
+    Read[data => doc:string, path:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_join_relation_roundtrip() {
     let plan = r#"=== Extensions
 URNs:

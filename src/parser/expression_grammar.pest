@@ -31,11 +31,27 @@ quoted_name = @{
 // A name of a function or table can either be an unquoted identifier or a quoted string
 name = { identifier | quoted_name }
 
-// A compound name is a Substrait function compound name: base identifier followed by an optional
-// colon-delimited signature (e.g. "equal:any_any", "regexp_match_substring:str_str_i64").
-// The rule is atomic so no whitespace is allowed around the colon, making it unambiguous
-// with the output-type annotation which always follows the closing parenthesis.
-compound_name = @{ identifier ~ (":" ~ identifier)? }
+// A plain or u!-prefixed type name, used in schema, cast positions, and function base names.
+// Examples: "geo_point", "u!geo_point"
+type_name = @{ "u!" ~ identifier | identifier }
+
+// Examples: 'geo_point', 'u!geo_point', 'u!"my type"'
+udt_name = @{ "u!" ~ (identifier | quoted_name) | identifier | quoted_name }
+
+// No underscores since "_" is the argument separator.
+// Examples: "i64", "str", "any", "json"
+type_code = @{ ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
+
+// argument type in a function signature: plain or u!-prefixed.
+// Examples: "i64", "u!json"
+type_arg = @{ "u!" ~ type_code | type_code }
+
+// suffix of a compound name: underscore-separated type_args.
+function_args = @{ type_arg ~ ("_" ~ type_arg)* }
+
+// A Substrait compound name: base name with an optional colon-delimited signature suffix.
+// Examples: "add", "equal:any_any", "count:", "json_extract_path:u!json_str", "bar:u!arg_u!arg".
+compound_name = @{ type_name ~ (":" ~ function_args?)? }
 
 // Expression Components
 // Field reference
@@ -117,18 +133,10 @@ precision_time_type         = { ^"precisiontime"        ~ nullability ~ "<" ~ in
 compound_type = { list_type | map_type | struct_type | precision_timestamp_tz_type | precision_timestamp_type | precision_time_type }
 
 // A user-defined type expression.
-// 
-// Example: point#8@2?<i8>
-// 
-// - The `u!` prefix is optional.
-// - The anchor is optional if the name is unique in the extensions; otherwise,
-// required.
-// - The URN anchor is optional. Note that this is different from type
-// expressions in the YAML, where these do not exist.
-// - If the type is nullable, the nullability is required.
-// - The parameters are required if they exist for this type.
+// Examples: "point#8@2?<i8>", "u!json?", "u!geo_point#5@1"
+// Anchor is required when the name is ambiguous across URNs; URN anchor is optional.
 user_defined_type = {
-    "u!"? ~ name ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
+    udt_name ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
 }
 
 // A type expression is a simple type, a compound type, or a user-defined type.

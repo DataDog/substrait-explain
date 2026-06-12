@@ -1101,8 +1101,22 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_name_user_defined_type_base() {
+        // u! prefix on the base name, used in extension type declarations e.g. "# 5 @ 1: u!json"
+        // u!json name, base() and full() are identical by design since there's no :suffix.
+        assert_eq!(parse_compound_name("u!json").full(), "u!json");
+        assert_eq!(parse_compound_name("u!json").base(), "u!json");
+    }
+
+    #[test]
+    fn test_compound_name_trailing_colon_grammar() {
+        // "count:" (trailing colon, zero-arg type signature) must parse fully at grammar level.
+        let pairs = ExpressionParser::parse(Rule::compound_name, "count:").unwrap();
+        assert_eq!(pairs.as_str(), "count:");
+    }
+
+    #[test]
     fn test_compound_name_stops_at_opening_paren() {
-        // where is the paren ???
         // In a function call, the compound_name must stop before the '('.
         // Verify the grammar does not consume the paren.
         let pairs = ExpressionParser::parse(Rule::compound_name, "equal:any_any").unwrap();
@@ -1203,6 +1217,25 @@ mod tests {
         let pair = parse_exact(Rule::function_call, "like#1($0)");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
+    }
+
+    #[test]
+    fn test_scalar_function_user_defined_type_in_signature() {
+        // u!-prefixed type segments in function signatures parse and resolve.
+        let mut exts = SimpleExtensions::default();
+        exts.add_extension_urn("urn".to_string(), 1).unwrap();
+        exts.add_extension(
+            crate::extensions::simple::ExtensionKind::Function,
+            1,
+            10,
+            "json_extract_path:u!json_str".to_string(),
+        )
+        .unwrap();
+
+        let pair = parse_exact(Rule::function_call, "json_extract_path:u!json_str($0, $1)");
+        let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
+        assert_eq!(f.function_reference, 10);
+        assert_eq!(f.arguments.len(), 2);
     }
 
     #[test]
@@ -1328,5 +1361,29 @@ mod tests {
             result.failure_behavior,
             cast::FailureBehavior::ThrowException as i32
         );
+    }
+
+    #[test]
+    fn test_parse_cast_to_user_defined_type_with_u_prefix() {
+        // Cast target type is a u!-prefixed UDT; exercises type_name in the cast path.
+        let mut extensions = SimpleExtensions::default();
+        extensions.add_extension_urn("urn".to_string(), 1).unwrap();
+        extensions
+            .add_extension(
+                crate::extensions::simple::ExtensionKind::Type,
+                1,
+                5,
+                "u!json".to_string(),
+            )
+            .unwrap();
+
+        let pair = parse_exact(Rule::cast_expression, "($0)::u!json");
+        let result = Cast::parse_pair(&extensions, pair).unwrap();
+        match result.r#type.as_ref().unwrap().kind.as_ref().unwrap() {
+            substrait::proto::r#type::Kind::UserDefined(u) => {
+                assert_eq!(u.type_reference, 5);
+            }
+            other => panic!("expected UserDefined, got {other:?}"),
+        }
     }
 }
