@@ -707,6 +707,16 @@ Type Variations:
     }
 
     #[test]
+    fn test_parse_simple_extension_declaration_u_prefix_function_with_u_signature() {
+        // A function declaration with a u!-prefixed type in the signature.
+        let line = "#5 @2: json_extract_path:u!json_str";
+        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        assert_eq!(decl.anchor, 5);
+        assert_eq!(decl.urn_anchor, 2);
+        assert_eq!(decl.name, "json_extract_path:u!json_str");
+    }
+
+    #[test]
     fn test_extensions_round_trip_plan_with_compound_names() {
         let input = r#"=== Extensions
 URNs:

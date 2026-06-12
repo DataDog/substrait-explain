@@ -210,13 +210,13 @@ The type syntax in this grammar follows the [standard Substrait type definition 
 All types follow this general pattern:
 
 ```text
-type := "u!"? name anchor? urn_anchor? nullability? parameters?
+type := type_name anchor? urn_anchor? nullability? parameters?
+type_name := "u!" identifier | identifier
 ```
 
 Where:
 
-- **`"u!"`** - Optional prefix for user-defined types
-- **`name`** - Type name (case-insensitive, lowercase preferred)
+- **`type_name`** - Type name(case-insensitive, lowercase preferred), plain (e.g. `i64`, `geo_point`) or with `u!` prefix for user-defined types (e.g. `u!json`). The prefix is part of the name and must match the declaration exactly.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -291,13 +291,14 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 
 #### Syntax
 
-`"u!"? name anchor? urn_anchor? nullability? parameters?`
+`type_name anchor? urn_anchor? nullability? parameters?`
+
+where `type_name` is `"u!" identifier | identifier`.
 
 #### Key differences from standard Substrait
 
-- The `u!` prefix is optional (can be omitted when anchors are present)
 - Adds optional `anchor` and `urn_anchor` for extension references
-- Maintains compatibility with standard Substrait UDT syntax
+- The `u!` prefix is part of the type name: a type declared as `u!json` must be referenced as `u!json`, not bare `json`
 
 #### Examples
 
@@ -311,14 +312,14 @@ URNs:
   @  2: https://example.com/functions
 Types:
   ##  8 @  1: point
-  ##  9 @  1: custom_type
+  ##  9 @  1: u!custom_type
 Functions:
   ## 10 @  2: add
 
 === Plan
 Root[result]
   Project[$0, $1, $2]
-    Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
+    Read[data => point_field:point#8@1?<i8>, custom_field:u!custom_type#9, prefixed_field:u!custom_type]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();
@@ -366,11 +367,24 @@ Root[result]
 
 #### Syntax
 
-`function_call := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+
+where `compound_name` is the base function name with an optional colon-delimited type-signature suffix:
+
+```text
+compound_name := type_name (":" function_args?)?
+function_args := type_arg ("_" type_arg)*
+type_arg      := "u!" type_code | type_code
+type_code     := ASCII_ALPHA ASCII_ALPHANUMERIC*
+```
+
+Examples of compound names: `add`, `equal:any_any`, `count:` (empty signature), `json_extract_path:u!json_str`, `bar:u!arg_u!arg`.
+
+The `u!` prefix may appear in signature argument slots as well as in the base name. Note that `type_code` (used in signatures) does not allow underscores — `_` is the argument separator.
 
 #### Components
 
-- `name` - function name
+- `compound_name` - function name with optional signature suffix (see above)
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above

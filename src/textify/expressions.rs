@@ -668,7 +668,7 @@ impl Textify for AggregateFunction {
 mod tests {
     use substrait::proto::Type;
     use substrait::proto::expression::{cast, if_then};
-    use substrait::proto::r#type::{I16, I32, Kind, Nullability};
+    use substrait::proto::r#type::{I16, I32, Kind, Nullability, UserDefined};
 
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
@@ -1098,5 +1098,26 @@ mod tests {
                 panic!("Expected Format(InvalidValue) for invalid failure_behavior, got: {other}")
             }
         }
+    }
+
+    #[test]
+    fn test_cast_to_user_defined_type_textifies_with_u_prefix() {
+        // Cast to a u!-prefixed UDT must emit "::u!json", not "::json".
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example:types")
+            .with_type(1, 5, "u!json");
+        let cast = Cast {
+            r#type: Some(Type {
+                kind: Some(Kind::UserDefined(UserDefined {
+                    type_variation_reference: 0,
+                    nullability: Nullability::Required as i32,
+                    type_reference: 5,
+                    type_parameters: vec![],
+                })),
+            }),
+            input: Some(Box::new(literal_i32(1))),
+            failure_behavior: 0,
+        };
+        assert_eq!(ctx.textify_no_errors(&cast), "(1:i32)::u!json");
     }
 }
