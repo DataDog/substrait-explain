@@ -583,6 +583,16 @@ Root[id, name]
 }
 
 #[test]
+fn test_virtual_read_typed_null_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, null:string?), (2, 'bob') => id:i64, name:string?]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_virtual_read_empty() {
     let plan = r#"
 === Plan

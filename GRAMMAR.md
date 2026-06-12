@@ -179,9 +179,9 @@ Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNull
 
 ### `literal`
 
-A literal can come in the form of an integer, float, boolean, or string, and can have an optional additional type:
+A literal can be an integer, float, boolean, string, or null. Literals may include a type annotation:
 
-`literal := (float / integer / boolean / string) (":" type)?`
+`literal := (float / integer / boolean / string / "null") (":" type)?`
 
 - **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
@@ -195,11 +195,14 @@ A literal can come in the form of an integer, float, boolean, or string, and can
 - **`string`**` := "'" ("\\" . / !"'" .)* "'"`
   - Examples: `'hello'`, `'table name'`, `'C:\path\to\file'`, `'line1\nline2'`, `'quote\'s here'`
   - Default to `string` type; other types may also be assigned
+- **`null`**` := "null"`
+  - Examples: `null:i64?`, `null:string?`, `null:date?`
+  - A type annotation is required for `null`
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, and `timestamp` typed literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
 
 ## Types
 
