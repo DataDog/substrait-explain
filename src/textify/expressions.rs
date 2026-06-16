@@ -164,7 +164,7 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         #[allow(deprecated)]
         LiteralType::TimestampTz(_) => unimplemented_literal("TimestampTz", ctx, w),
         LiteralType::Uuid(_) => unimplemented_literal("Uuid", ctx, w),
-        LiteralType::Null(_) => unimplemented_literal("Null", ctx, w),
+        LiteralType::Null(_) => write!(w, "null"),
         LiteralType::List(_) => unimplemented_literal("List", ctx, w),
         LiteralType::EmptyList(_) => unimplemented_literal("EmptyList", ctx, w),
         LiteralType::EmptyMap(_) => unimplemented_literal("EmptyMap", ctx, w),
@@ -242,6 +242,10 @@ impl Textify for expr::Literal {
             Visibility::Always => true,
             Visibility::Required => self.nullable || !is_default_for_syntax(lit),
         };
+        if let LiteralType::Null(typ) = lit {
+            write!(w, ":{}", ctx.expect(Some(typ)))?;
+            return Ok(());
+        }
         if show_suffix {
             if let Some(suffix) = literal_type_suffix(lit) {
                 write!(w, ":{suffix}")?;

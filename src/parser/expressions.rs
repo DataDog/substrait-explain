@@ -266,6 +266,26 @@ fn to_string_literal(
     }
 }
 
+fn to_null_literal(
+    value: pest::iterators::Pair<Rule>,
+    typ: Option<Type>,
+) -> Result<Literal, MessageParseError> {
+    assert_eq!(value.as_rule(), Rule::null);
+    let typ = typ.ok_or_else(|| {
+        MessageParseError::invalid(
+            "null_literal_type",
+            value.as_span(),
+            "Null literals require an explicit type annotation, e.g. null:i64?",
+        )
+    })?;
+
+    Ok(Literal {
+        literal_type: Some(LiteralType::Null(typ)),
+        nullable: false,
+        type_variation_reference: 0,
+    })
+}
+
 /// Parse a date string using chrono to days since Unix epoch
 fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessageParseError> {
     // Try multiple date formats for flexibility
@@ -370,6 +390,7 @@ impl ScopedParsePair for Literal {
             Rule::float => to_float_literal(value, typ),
             Rule::boolean => to_boolean_literal(value, typ),
             Rule::string_literal => to_string_literal(value, typ),
+            Rule::null => to_null_literal(value, typ),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
     }

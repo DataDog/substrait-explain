@@ -9,6 +9,7 @@ identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 integer    = @{ "-"? ~ ASCII_DIGIT+ }
 float      = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 boolean    = @{ "true" | "false" }
+null       = @{ "null" }
 
 // Basic string literals, does not handle escape sequences for simplicity here.
 // String literals are for literal values
@@ -44,7 +45,7 @@ compound_name = @{ identifier ~ (":" ~ identifier?)? }
 // Field reference
 reference = { "$" ~ integer }
 // Literal
-literal = { (float | integer | boolean | string_literal) ~ (":" ~ sp ~ type)? }
+literal = { (float | integer | boolean | string_literal | null) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
