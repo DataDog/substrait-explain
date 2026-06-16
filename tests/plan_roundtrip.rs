@@ -252,7 +252,7 @@ Functions:
 
 === Plan
 Root[n]
-  Project[count()]
+  Project[count():i64]
     Read[events => n:i64]"#;
     roundtrip_plan(plan);
 }
@@ -269,7 +269,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1)]
+  Project[$0, $1, add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
@@ -307,7 +307,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add#1($0, $1), add:($0, $1)]
+  Project[$0, $1, add#1($0, $1):i64, add:($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
@@ -328,7 +328,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add#1($0, $1), add:#2($0, $1), add:#3($0, $1)]
+  Project[$0, $1, add#1($0, $1):i64, add:#2($0, $1):i64, add:#3($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }

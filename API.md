@@ -338,7 +338,6 @@ cat plan.substrait | substrait-explain convert -f text -t json > plan.json
 - `-i, --input <FILE>` - Input file (default: stdin)
 - `-o, --output <FILE>` - Output file (default: stdout)
 - `--show-literal-types` - Show type annotations on literals
-- `--show-expression-types` - Show type annotations on expressions
 - `--verbose` - Show detailed progress information
 
 #### Validate Command
@@ -370,7 +369,7 @@ substrait-explain validate -i example-plans/basic.substrait
 substrait-explain validate -i example-plans/simple.substrait
 
 # Convert with verbose output and type information
-substrait-explain convert -f text -t json --show-literal-types --show-expression-types --verbose -i example-plans/basic.substrait
+substrait-explain convert -f text -t json --show-literal-types --verbose -i example-plans/basic.substrait
 
 # Roundtrip test: text → protobuf → text
 substrait-explain convert -f text -t protobuf -i plan.substrait -o plan.pb

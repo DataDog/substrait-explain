@@ -376,7 +376,7 @@ Root[result]
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above
-- `type` - optional output type
+- `type` - required output type
 
 #### Function Name Resolution
 
@@ -384,26 +384,26 @@ Within the plan, a function name has three parts: a `base` name (e.g. `abs`), a 
 
 Both type signature and anchor are separably optional if the reference is unambiguous; either or both may be required to make the reference unambiguous. A function name (base, signature if present, and anchor if present) must map to exactly one function named in the `Extensions` section.
 
-Where unambiguous, signature and anchor may both be left off (`abs($0)`), used separately (e.g. `abs:i64($0)`, `abs#4($0)`), or together for completeness (`abs:i64#4($0)`).
+Where unambiguous, signature and anchor may both be left off, used separately, or together for completeness (`abs:i64#4($0):fp64`).
 
 #### Examples
 
 ```text
 // Simple: resolves if there is exactly one function named `add`
-add($0, $1)
+add($0, $1):i64
 // Signature: resolves only if exactly one function named `add` is registered,
 // with type signature `:i64_i64`
-add:i64_i64($0, $1)
+add:i64_i64($0, $1):i64
 // Anchor: resolves if anchor 1 exists with base name `add`
-add#1($0, $1)            
-// Anchor + full name: resolves if anchor 1 exists with name `add` and 
+add#1($0, $1):i64
+// Anchor + full name: resolves if anchor 1 exists with name `add` and
 // type signature `i64_i64`
-add:i64_i64#1($0, $1)
+add:i64_i64#1($0, $1):i64
 // Simple: resolves if there is exactly one function named `count`
-count()
+count():i64
 // Signature: resolves if "count:" is registered exactly once with
 // type signature "" (zero arguments)
-count:()
+count:():i64
 ```
 
 ### Aggregate Measures
