@@ -506,6 +506,7 @@ pub(crate) trait Scope: Sized {
         }
     }
 
+    // TODO: this was last used on 2026-06-15, before a refactor removed it; if its not used again, perhaps we should drop it?
     #[allow(dead_code)]
     fn optional<'a, T: Textify>(
         &'a self,

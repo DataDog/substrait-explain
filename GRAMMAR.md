@@ -366,7 +366,7 @@ Root[result]
 
 #### Syntax
 
-`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
 
 `compound_name := identifier (":" identifier?)?`
 
