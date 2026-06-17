@@ -376,7 +376,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[json_extract_path($0, $1)]
+  Project[json_extract_path($0, $1):string]
     Read[data => doc:string, path:string]"#;
 
     // Explicit compound name in the call site resolves to the same canonical output.
@@ -388,7 +388,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[json_extract_path:u!json_str($0, $1)]
+  Project[json_extract_path:u!json_str($0, $1):string]
     Read[data => doc:string, path:string]"#;
 
     roundtrip_plan(canonical);

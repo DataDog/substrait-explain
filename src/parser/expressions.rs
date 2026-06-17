@@ -1112,7 +1112,7 @@ mod tests {
     #[test]
     fn test_compound_name_full_zero_arg_type_signature() {
         // A Full name whose type signature encodes zero argument types (nothing after the colon).
-        let n = parse_compound_name("add:");
+        let n = parse_function_signature("add:");
         assert_eq!(n.full(), "add:");
         assert_eq!(n.base(), "add");
         assert!(n.matches("add:"));
@@ -1273,7 +1273,10 @@ mod tests {
         )
         .unwrap();
 
-        let pair = parse_exact(Rule::function_call, "json_extract_path:u!json_str($0, $1)");
+        let pair = parse_exact(
+            Rule::function_call,
+            "json_extract_path:u!json_str($0, $1):string",
+        );
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 10);
         assert_eq!(f.arguments.len(), 2);

@@ -116,6 +116,11 @@ impl CompoundName {
         &self.name
     }
 
+    /// `true` when the name includes a `:` signature suffix (e.g. `"equal:any_any"`, `"count:"`).
+    pub fn has_signature(&self) -> bool {
+        self.index < self.name.len()
+    }
+
     /// Returns `true` if `self` (a stored name) is matched by `pattern` (a written name).
     ///
     /// - Simple pattern (no `:`): matches any stored name with the same base.
