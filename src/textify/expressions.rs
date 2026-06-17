@@ -421,7 +421,7 @@ impl Textify for ScalarFunction {
         };
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.optional(&output, ctx.options().fn_types);
+        let output_type = ctx.display(&output);
 
         write!(
             w,
@@ -659,7 +659,7 @@ impl Textify for AggregateFunction {
         };
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.optional(&output, ctx.options().fn_types);
+        let output_type = ctx.display(&output);
 
         write!(
             w,
@@ -672,7 +672,7 @@ impl Textify for AggregateFunction {
 mod tests {
     use substrait::proto::Type;
     use substrait::proto::expression::{cast, if_then};
-    use substrait::proto::r#type::{I16, I32, Kind, Nullability};
+    use substrait::proto::r#type::{Boolean, I16, I32, I64, Kind, Nullability};
 
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
@@ -783,14 +783,15 @@ mod tests {
             function_reference: 1000, // Does not exist
             arguments: vec![],
             options: vec![],
-            output_type: None,
+            output_type: Some(Type {
+                kind: Some(Kind::I64(I64 {
+                    nullability: Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            }),
             #[allow(deprecated)]
             args: vec![],
         });
-        // With strict=false (default in OutputOptions), it should format as unknown
-        // If strict=true, it would be an error.
-        // Assuming default OutputOptions has strict = false.
-        // ScopedContext.options() has strict. Default OutputOptions has strict: false.
         let (s, errq) = ctx.textify(&func);
         let errs: Vec<_> = errq.0;
         match errs[0] {
@@ -800,19 +801,24 @@ mod tests {
             }
             _ => panic!("Expected Lookup MissingAnchor: {}", errs[0]),
         }
-        assert_eq!(s, "!{function}#1000()");
+        assert_eq!(s, "!{function}#1000():i64");
 
         let ctx = ctx.with_urn(1, "first").with_function(1, 100, "first");
         let func = RexType::ScalarFunction(ScalarFunction {
             function_reference: 100,
             arguments: vec![],
             options: vec![],
-            output_type: None,
+            output_type: Some(Type {
+                kind: Some(Kind::I64(I64 {
+                    nullability: Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            }),
             #[allow(deprecated)]
             args: vec![],
         });
         let s = ctx.textify_no_errors(&func);
-        assert_eq!(s, "first()");
+        assert_eq!(s, "first():i64");
 
         // Test for duplicated function name requiring anchor
         let options_show_anchor = Default::default();
@@ -836,12 +842,17 @@ mod tests {
                 })),
             }],
             options: vec![],
-            output_type: None,
+            output_type: Some(Type {
+                kind: Some(Kind::Bool(Boolean {
+                    nullability: Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            }),
             #[allow(deprecated)]
             args: vec![],
         });
         let s = ctx.textify_no_errors(&rex_dup);
-        assert_eq!(s, "duplicated#231(true)");
+        assert_eq!(s, "duplicated#231(true):boolean");
     }
 
     #[test]

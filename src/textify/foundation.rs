@@ -44,8 +44,6 @@ pub struct OutputOptions {
     /// Show the types for literals. If `Required`, the type is shown for anything other than
     /// `i64`, `fp64`, `boolean`, or `string`.
     pub literal_types: Visibility,
-    /// Show the output types for functions
-    pub fn_types: bool,
     /// Show the nullability of types
     pub nullability: bool,
     /// The indent to use for nested types
@@ -64,7 +62,6 @@ impl Default for OutputOptions {
             literal_types: Visibility::Required,
             show_emit: false,
             read_types: false,
-            fn_types: false,
             nullability: false,
             indent: "  ".to_string(),
             show_literal_binaries: false,
@@ -84,7 +81,6 @@ impl OutputOptions {
             // Emits are not required for a complete plan - just not a precise one.
             show_emit: false,
             read_types: true,
-            fn_types: true,
             nullability: true,
             indent: "  ".to_string(),
             show_literal_binaries: true,
@@ -510,6 +506,8 @@ pub(crate) trait Scope: Sized {
         }
     }
 
+    // TODO: this was last used on 2026-06-15, before a refactor removed it; if its not used again, perhaps we should drop it?
+    #[allow(dead_code)]
     fn optional<'a, T: Textify>(
         &'a self,
         value: &'a T,
@@ -572,6 +570,7 @@ impl<'a, S: Scope, T: Textify> fmt::Display for Displayable<'a, S, T> {
 }
 
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 pub(crate) struct OptionalDisplayable<'a, S: Scope, T: Textify> {
     scope: &'a S,
     value: Option<&'a T>,

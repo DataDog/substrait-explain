@@ -33,7 +33,7 @@ Functions:
   ## 10 @  1: add
 
 === Plan
-Project[$0, $1, add($0, $1)]
+Project[$0, $1, add($0, $1):i32?]
   Read[table1 => col1:i32?, col2:i32?]
 "#;
 
@@ -240,8 +240,8 @@ Functions:
   # 12 @  2: count
 === Plan
 Root[result]
-  Aggregate[$0 => $0, sum($1), count($1)]
-    Project[$0, add($1, $2)]
+  Aggregate[$0 => $0, sum($1):i32?, count($1):i64]
+    Project[$0, add($1, $2):i32?]
       Read[table1 => category:string, col1:i32?, col2:i32?]
 ```
 
@@ -258,7 +258,7 @@ Each relation is displayed on a single line with the format:
 
 - **Field references**: `$0`, `$1`, etc.
 - **Literals**: `42`, `'hello'`, `true`
-- **Function calls**: `add($0, $1)`, `sum($2)` (scalar and aggregate functions)
+- **Function calls**: `add($0, $1):i64`, `sum($2):i64`
 - **Types**: `i32`, `string?`, `list<i64>`
 
 ## Configuration Options
@@ -338,7 +338,6 @@ cat plan.substrait | substrait-explain convert -f text -t json > plan.json
 - `-i, --input <FILE>` - Input file (default: stdin)
 - `-o, --output <FILE>` - Output file (default: stdout)
 - `--show-literal-types` - Show type annotations on literals
-- `--show-expression-types` - Show type annotations on expressions
 - `--verbose` - Show detailed progress information
 
 #### Validate Command
@@ -370,7 +369,7 @@ substrait-explain validate -i example-plans/basic.substrait
 substrait-explain validate -i example-plans/simple.substrait
 
 # Convert with verbose output and type information
-substrait-explain convert -f text -t json --show-literal-types --show-expression-types --verbose -i example-plans/basic.substrait
+substrait-explain convert -f text -t json --show-literal-types --verbose -i example-plans/basic.substrait
 
 # Roundtrip test: text → protobuf → text
 substrait-explain convert -f text -t protobuf -i plan.substrait -o plan.pb

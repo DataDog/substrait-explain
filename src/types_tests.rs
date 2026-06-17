@@ -143,10 +143,10 @@ fn test_expression() {
     assert_roundtrip::<Literal>(&ctx, "12");
     assert_roundtrip::<Literal>(&ctx, "12:i32");
     roundtrip_parse::<FieldReference>(&ctx, "$1");
-    assert_roundtrip::<ScalarFunction>(&ctx, "foo()");
-    assert_roundtrip::<Expression>(&ctx, "bar(12)");
-    assert_roundtrip::<Expression>(&ctx, "foo(bar(12:i16, 18), -4:i16)");
-    assert_roundtrip::<Expression>(&ctx, "foo($2, bar($5, 18), -4:i16)");
+    assert_roundtrip::<ScalarFunction>(&ctx, "foo():i64");
+    assert_roundtrip::<Expression>(&ctx, "bar(12):i64");
+    assert_roundtrip::<Expression>(&ctx, "foo(bar(12:i16, 18):i64, -4:i16):i64");
+    assert_roundtrip::<Expression>(&ctx, "foo($2, bar($5, 18):i64, -4:i16):i64");
 }
 
 #[test]
@@ -162,16 +162,16 @@ fn test_verbose_and_simple_output() {
         .add_extension(ExtensionKind::Function, 4, 14, "bar".to_string())
         .unwrap();
 
-    roundtrip_with_simple_output::<ScalarFunction>(extensions.clone(), "foo#12():i64", "foo()");
-    // Check type is included in verbose output
+    roundtrip_with_simple_output::<ScalarFunction>(extensions.clone(), "foo#12():i64", "foo():i64");
+    // Check type is always included in output
     roundtrip_with_simple_output::<ScalarFunction>(
         extensions.clone(),
         "foo#12(3:i32, 5:i64):i64",
-        "foo(3:i32, 5)",
+        "foo(3:i32, 5):i64",
     );
     roundtrip_with_simple_output::<ScalarFunction>(
         extensions.clone(),
-        "foo#12(bar#14(5:i64, $2)):i64",
-        "foo(bar(5, $2))",
+        "foo#12(bar#14(5:i64, $2):i64):i64",
+        "foo(bar(5, $2):i64):i64",
     );
 }

@@ -184,7 +184,6 @@ fn make_cli(from: Format) -> Cli {
             from: Some(from),
             to: Some(Format::Text),
             show_literal_types: false,
-            show_expression_types: false,
             verbose: false,
         },
     }

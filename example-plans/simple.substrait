@@ -12,21 +12,21 @@ Functions:
 
 === Plan
 Root[c, d]
-  Filter[eq($0, 0) => $0, $1]
-    Project[$1, abs($0)]
+  Filter[eq($0, 0):boolean => $0, $1]
+    Project[$1, abs($0):fp64?]
       Read[schema.table => a:fp64?, b:i64]
 
 Root[c, d, e]
-  Aggregate[$0 => $0, sum($1), count($1)]
+  Aggregate[$0 => $0, sum($1):fp64?, count($1):i64]
     Read[schema.table => name:string?, num:fp64?, id:i64]
 
 Root[name, num]
-  Project[$1, coalesce($1, $2)]
+  Project[$1, coalesce($1, $2):fp64?]
     Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]
 
 Root[name, parent, sum, count]
-  Join[&Inner, eq($0, $4) => $0, $3, $1, $2]
-    Aggregate[$0 => $0, sum($1), count($1)]
+  Join[&Inner, eq($0, $4):boolean => $0, $3, $1, $2]
+    Aggregate[$0 => $0, sum($1):fp64?, count($1):i64]
       Read[schema.table => name:string?, num:fp64?, id:i64]
     Read[schema.table2 => parent:string?, name:string?]
 
@@ -36,7 +36,7 @@ Root[name, num, id]
 
 Root[result]
   Project[$0, $1, $2]
-    Filter[eq($2, 100) => $0, $1, $2]
+    Filter[eq($2, 100):boolean => $0, $1, $2]
       Read[orders => customer:string, amount:fp64, order_id:i64]
 
 Root[name, count]
