@@ -210,13 +210,12 @@ The type syntax in this grammar follows the [standard Substrait type definition 
 All types follow this general pattern:
 
 ```text
-type := type_name anchor? urn_anchor? nullability? parameters?
-type_name := "u!" identifier | identifier
+user_defined_type := ("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?
 ```
 
 Where:
 
-- **`type_name`** - Type name(case-insensitive, lowercase preferred), plain (e.g. `i64`, `geo_point`) or with `u!` prefix for user-defined types (e.g. `u!json`). The prefix is part of the name and must match the declaration exactly.
+- **`identifier | quoted_name`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `"my type"`. Both `u!json` and `json` refer to the same extension; the `u!` prefix is stripped at storage time.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -291,14 +290,13 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 
 #### Syntax
 
-`type_name anchor? urn_anchor? nullability? parameters?`
-
-where `type_name` is `"u!" identifier | identifier`.
+`("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?`
 
 #### Key differences from standard Substrait
 
 - Adds optional `anchor` and `urn_anchor` for extension references
-- The `u!` prefix is part of the type name: a type declared as `u!json` must be referenced as `u!json`, not bare `json`
+- The `u!` prefix is accepted in type declarations but normalized at storage time, so `u!json` and `json` in a declaration refer to the same type. It is an error to use `u!` on function or type-variation declarations.
+- In plan references both `u!json` and `json` are accepted and resolve to the same anchor. The canonical output always uses the bare name.
 
 #### Examples
 
@@ -312,14 +310,14 @@ URNs:
   @  2: https://example.com/functions
 Types:
   ##  8 @  1: point
-  ##  9 @  1: u!custom_type
+  ##  9 @  1: custom_type
 Functions:
   ## 10 @  2: add
 
 === Plan
 Root[result]
   Project[$0, $1, $2]
-    Read[data => point_field:point#8@1?<i8>, custom_field:u!custom_type#9, prefixed_field:u!custom_type]
+    Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();
@@ -367,24 +365,22 @@ Root[result]
 
 #### Syntax
 
-`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
 
-where `compound_name` is the base function name with an optional colon-delimited type-signature suffix:
+where `function_signature` is the function base name with an optional colon-delimited type-signature suffix:
 
 ```text
-compound_name := type_name (":" function_args?)?
-function_args := type_arg ("_" type_arg)*
-type_arg      := "u!" type_code | type_code
-type_code     := ASCII_ALPHA ASCII_ALPHANUMERIC*
+function_signature := identifier (":" argument_signature?)?
+argument_signature := short_arg_type ("_" short_arg_type)*
+short_arg_type     := "u!" short_arg_name | short_arg_name
+short_arg_name     := ASCII_ALPHA ASCII_ALPHANUMERIC*
 ```
 
-Examples of compound names: `add`, `equal:any_any`, `count:` (empty signature), `json_extract_path:u!json_str`, `bar:u!arg_u!arg`.
-
-The `u!` prefix may appear in signature argument slots as well as in the base name. Note that `type_code` (used in signatures) does not allow underscores — `_` is the argument separator.
+Examples of function signatures: `add`, `equal:any_any`, `count:` (empty signature), `json_extract_path:u!json_str`, `bar:u!arg_u!arg`.
 
 #### Components
 
-- `compound_name` - function name with optional signature suffix (see above)
+- `function_signature` - function name with optional signature suffix (see above)
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above

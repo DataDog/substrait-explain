@@ -1101,8 +1101,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_to_user_defined_type_textifies_with_u_prefix() {
-        // Cast to a u!-prefixed UDT must emit "::u!json", not "::json".
+    fn test_cast_to_user_defined_type_textifies_without_u_prefix() {
+        // A type stored as "u!json" normalizes to "json"; cast emits "::json".
         let ctx = TestContext::new()
             .with_urn(1, "urn:example:types")
             .with_type(1, 5, "u!json");
@@ -1118,6 +1118,6 @@ mod tests {
             input: Some(Box::new(literal_i32(1))),
             failure_behavior: 0,
         };
-        assert_eq!(ctx.textify_no_errors(&cast), "(1:i32)::u!json");
+        assert_eq!(ctx.textify_no_errors(&cast), "(1:i32)::json");
     }
 }

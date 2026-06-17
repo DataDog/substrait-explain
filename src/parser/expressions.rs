@@ -618,7 +618,7 @@ impl ParsePair for Name {
 
 impl ParsePair for CompoundName {
     fn rule() -> Rule {
-        Rule::compound_name
+        Rule::function_signature
     }
 
     fn message() -> &'static str {
@@ -1078,48 +1078,51 @@ mod tests {
         );
     }
 
-    // ---- Tests for CompoundName grammar rule ----
+    // ---- Tests for function_signature grammar rule ----
 
-    fn parse_compound_name(input: &str) -> CompoundName {
-        let pair = parse_exact(Rule::compound_name, input);
+    fn parse_function_signature(input: &str) -> CompoundName {
+        let pair = parse_exact(Rule::function_signature, input);
         CompoundName::parse_pair(pair)
     }
 
     #[test]
     fn test_compound_name_plain() {
-        assert_eq!(parse_compound_name("add").full(), "add");
+        assert_eq!(parse_function_signature("add").full(), "add");
     }
 
     #[test]
     fn test_compound_name_with_signature() {
-        assert_eq!(parse_compound_name("equal:any_any").full(), "equal:any_any");
         assert_eq!(
-            parse_compound_name("regexp_match_substring:str_str_i64").full(),
+            parse_function_signature("equal:any_any").full(),
+            "equal:any_any"
+        );
+        assert_eq!(
+            parse_function_signature("regexp_match_substring:str_str_i64").full(),
             "regexp_match_substring:str_str_i64"
         );
-        assert_eq!(parse_compound_name("add:i64_i64").full(), "add:i64_i64");
-    }
-
-    #[test]
-    fn test_compound_name_user_defined_type_base() {
-        // u! prefix on the base name, used in extension type declarations e.g. "# 5 @ 1: u!json"
-        // u!json name, base() and full() are identical by design since there's no :suffix.
-        assert_eq!(parse_compound_name("u!json").full(), "u!json");
-        assert_eq!(parse_compound_name("u!json").base(), "u!json");
+        assert_eq!(
+            parse_function_signature("add:i64_i64").full(),
+            "add:i64_i64"
+        );
     }
 
     #[test]
     fn test_compound_name_trailing_colon_grammar() {
-        // "count:" (trailing colon, zero-arg type signature) must parse fully at grammar level.
-        let pairs = ExpressionParser::parse(Rule::compound_name, "count:").unwrap();
-        assert_eq!(pairs.as_str(), "count:");
+        // "count:" (trailing colon, zero-arg type signature) parses as a compound name with
+        // an empty signature suffix: base "count", has_signature true, full "count:".
+        let name = parse_function_signature("count:");
+        assert_eq!(name.base(), "count");
+        assert_eq!(name.full(), "count:");
+        assert!(
+            name.has_signature(),
+            "trailing colon must set has_signature"
+        );
     }
 
     #[test]
     fn test_compound_name_stops_at_opening_paren() {
-        // In a function call, the compound_name must stop before the '('.
-        // Verify the grammar does not consume the paren.
-        let pairs = ExpressionParser::parse(Rule::compound_name, "equal:any_any").unwrap();
+        // In a function call, the function_signature must stop before the '('.
+        let pairs = ExpressionParser::parse(Rule::function_signature, "equal:any_any").unwrap();
         assert_eq!(pairs.as_str(), "equal:any_any");
     }
 
@@ -1365,7 +1368,7 @@ mod tests {
 
     #[test]
     fn test_parse_cast_to_user_defined_type_with_u_prefix() {
-        // Cast target type is a u!-prefixed UDT; exercises type_name in the cast path.
+        // Cast target type is a u!-prefixed UDT; exercises the user_defined_type rule in the cast path.
         let mut extensions = SimpleExtensions::default();
         extensions.add_extension_urn("urn".to_string(), 1).unwrap();
         extensions
@@ -1385,5 +1388,15 @@ mod tests {
             }
             other => panic!("expected UserDefined, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_function_call_u_prefix_base_name_rejected() {
+        // u! is not valid in a function call base name. The grammar's function_signature
+        // rule uses `identifier` as the base, which cannot match "u!" + identifier.
+        assert!(
+            ExpressionParser::parse(Rule::function_call, "u!json_get($0)").is_err(),
+            "u! prefix in function call base name must be rejected by the grammar"
+        );
     }
 }

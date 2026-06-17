@@ -228,8 +228,7 @@ impl ParsePair for SimpleExtensionDeclaration {
             .as_str()
             .parse::<u32>()
             .unwrap();
-        // compound_name handles both plain names ("add") and compound names with signatures ("equal:any_any").
-        let name_pair = iter.pop(Rule::compound_name);
+        let name_pair = iter.pop(Rule::simple_extension_name);
         let name = name_pair.as_str().to_string();
         iter.done();
 
@@ -608,11 +607,11 @@ mod tests {
     use substrait::proto::expression::literal::LiteralType;
 
     use super::*;
-    use crate::OutputOptions;
     use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
     use crate::parser::Parser;
     use crate::parser::common::test_support::ScopedParse;
+    use crate::{OutputOptions, format};
 
     fn parse_extension_value(text: &str) -> ExtensionValue {
         ExtensionValue::parse(&SimpleExtensions::default(), text).unwrap()
@@ -714,6 +713,68 @@ Type Variations:
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "json_extract_path:u!json_str");
+    }
+
+    #[test]
+    fn test_u_prefix_type_declaration_accepted() {
+        // u! prefix on a type name is non-standard but accepted; normalized to bare name at storage.
+        let plan_text = "\
+=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  # 11 @  1: u!point
+=== Plan
+Root[result]
+  Project[$0]
+    Read[data => p:point#11]";
+        let plan = Parser::parse(plan_text).unwrap();
+        let (text, errors) = format(&plan);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(
+            text.contains("  # 11 @  1: point"),
+            "declaration line must use bare name"
+        );
+        assert!(
+            !text.contains("u!point"),
+            "u! prefix should be stripped in output"
+        );
+    }
+
+    #[test]
+    fn test_u_prefix_type_variation_declaration_rejected() {
+        // u! prefix on a type variation name is invalid, same as for functions.
+        let plan_text = "\
+=== Extensions
+URNs:
+  @  1: https://example.com/types
+Type Variations:
+  # 30 @  1: u!myvar
+=== Plan
+Root[result]
+  Read[data => x:i64]";
+        assert!(
+            Parser::parse(plan_text).is_err(),
+            "u! prefix on a type variation name should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_u_prefix_function_declaration_rejected() {
+        // u! prefix on a function base name is invalid; function names are never u!-prefixed.
+        let plan_text = "\
+=== Extensions
+URNs:
+  @  1: https://example.com/funcs
+Functions:
+  # 21 @  1: u!json_get
+=== Plan
+Root[result]
+  Read[data => x:i64]";
+        assert!(
+            Parser::parse(plan_text).is_err(),
+            "u! prefix on a function name should be rejected"
+        );
     }
 
     #[test]

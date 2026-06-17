@@ -80,6 +80,9 @@ pub enum InsertError {
         name: String,
         urn: u32,
     },
+
+    #[error("Invalid {kind} name '{name}': u! prefix is only valid for type names")]
+    InvalidName { kind: ExtensionKind, name: String },
 }
 
 /// A Substrait compound function name, e.g. `"equal:any_any"` or `"add"`.
@@ -220,6 +223,16 @@ impl SimpleExtensions {
         anchor: u32,
         name: String,
     ) -> Result<(), InsertError> {
+        // Normalize type names: strip the optional "u!" prefix so that "u!json" and "json"
+        // are stored identically and resolve to the same anchor.
+        // For other extension kinds, "u!" prefix is invalid per the Substrait spec.
+        let name = if kind == ExtensionKind::Type {
+            name.strip_prefix("u!").map(str::to_string).unwrap_or(name)
+        } else if name.starts_with("u!") {
+            return Err(InsertError::InvalidName { kind, name });
+        } else {
+            name
+        };
         let missing_urn = !self.urns.contains_key(&urn);
 
         let prev = match self.extensions.entry((anchor, kind)) {
@@ -1078,6 +1091,24 @@ Type Variations:
         assert!(
             text.contains("equal:str_str"),
             "compound name must appear in output"
+        );
+    }
+
+    #[test]
+    fn test_insert_error_invalid_name_type_variation() {
+        // u! prefix is invalid on TypeVariation declarations, just as it is for Functions.
+        let mut exts = SimpleExtensions::new();
+        exts.add_extension_urn("urn:example".to_string(), 1)
+            .unwrap();
+        let err = exts
+            .add_extension(ExtensionKind::TypeVariation, 1, 30, "u!myvar".to_string())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            InsertError::InvalidName {
+                kind: ExtensionKind::TypeVariation,
+                name: "u!myvar".to_string()
+            }
         );
     }
 }

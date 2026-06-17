@@ -2,7 +2,7 @@ use pest::iterators::Pair;
 use substrait::proto::r#type::{Kind, Nullability, Parameter};
 use substrait::proto::{self, Type};
 
-use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
+use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unescape_string, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{ExtensionKind, MissingReference};
 use crate::parser::MessageParseError;
@@ -276,7 +276,11 @@ fn parse_user_defined_type(
     let span = pair.as_span();
     assert_eq!(pair.as_rule(), Rule::user_defined_type);
     let mut iter = iter_pairs(pair.into_inner());
-    let name = iter.pop(Rule::udt_name).as_str();
+    let name = if let Some(p) = iter.try_pop(Rule::identifier) {
+        p.as_str().to_string()
+    } else {
+        unescape_string(iter.pop(Rule::quoted_name))
+    };
     let anchor = iter
         .try_pop(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
@@ -293,7 +297,7 @@ fn parse_user_defined_type(
     };
     iter.done();
 
-    let anchor = get_and_validate_anchor(extensions, ExtensionKind::Type, anchor, name, span)?;
+    let anchor = get_and_validate_anchor(extensions, ExtensionKind::Type, anchor, &name, span)?;
 
     Ok(Type {
         kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
@@ -479,8 +483,9 @@ mod tests {
 
     #[test]
     fn test_udts_with_u_prefix() {
-        // Extensions declared with "u!" prefix (e.g. "# 7 @ 4: u!json") store the name
-        // including the prefix. Lookups from type annotations like "u!json?" must match.
+        // Extensions declared with "u!" prefix (e.g. "# 7 @ 4: u!json") normalize to
+        // bare name at storage time. Both "u!json" and "json" in the plan resolve to the
+        // same anchor.
         let mut extensions = SimpleExtensions::default();
         extensions
             .add_extension_urn("some_source".to_string(), 4)
@@ -489,7 +494,7 @@ mod tests {
             .add_extension(ExtensionKind::Type, 4, 7, "u!json".to_string())
             .unwrap();
 
-        // With explicit anchor
+        // Plan uses u! prefix with explicit anchor
         let pair = ExpressionParser::parse(Rule::user_defined_type, "u!json#7")
             .unwrap()
             .next()
@@ -507,8 +512,8 @@ mod tests {
             }
         );
 
-        // Nullable, no anchor — name is unique so anchor-free lookup succeeds
-        let pair = ExpressionParser::parse(Rule::user_defined_type, "u!json?")
+        // Plan uses bare name — also resolves to the same anchor
+        let pair = ExpressionParser::parse(Rule::user_defined_type, "json?")
             .unwrap()
             .next()
             .unwrap();
@@ -524,11 +529,29 @@ mod tests {
                 }))
             }
         );
+
+        // Plan uses u! prefix with no anchor — anchor-free lookup must strip u! and find the type
+        let pair = ExpressionParser::parse(Rule::user_defined_type, "u!json")
+            .unwrap()
+            .next()
+            .unwrap();
+        let t = parse_user_defined_type(&extensions, pair).unwrap();
+        assert_eq!(
+            t,
+            Type {
+                kind: Some(Kind::UserDefined(proto::r#type::UserDefined {
+                    type_reference: 7,
+                    type_variation_reference: 0,
+                    nullability: Nullability::Required as i32,
+                    type_parameters: vec![],
+                }))
+            }
+        );
     }
 
     #[test]
-    fn test_udt_prefix_mismatch_u_prefix_against_plain_registration() {
-        // Extension registered without "u!" but plan uses "u!json" — must fail.
+    fn test_udt_u_prefix_matches_plain_registration() {
+        // Extension registered without "u!" and plan uses "u!json" — must succeed.
         let mut extensions = SimpleExtensions::default();
         extensions.add_extension_urn("src".to_string(), 1).unwrap();
         extensions
@@ -539,15 +562,21 @@ mod tests {
             .unwrap()
             .next()
             .unwrap();
-        assert!(
-            parse_user_defined_type(&extensions, pair).is_err(),
-            "u!json should not match an extension declared as json"
+        let t = parse_user_defined_type(&extensions, pair).unwrap();
+        assert_eq!(
+            t.kind,
+            Some(Kind::UserDefined(proto::r#type::UserDefined {
+                type_reference: 3,
+                type_variation_reference: 0,
+                nullability: Nullability::Required as i32,
+                type_parameters: vec![],
+            }))
         );
     }
 
     #[test]
-    fn test_udt_prefix_mismatch_plain_against_u_prefix_registration() {
-        // Extension registered with "u!" but plan uses bare "json" — must fail.
+    fn test_udt_plain_matches_u_prefix_registration() {
+        // Extension registered with "u!" prefix and plan uses bare "json" — must succeed.
         let mut extensions = SimpleExtensions::default();
         extensions.add_extension_urn("src".to_string(), 1).unwrap();
         extensions
@@ -558,9 +587,15 @@ mod tests {
             .unwrap()
             .next()
             .unwrap();
-        assert!(
-            parse_user_defined_type(&extensions, pair).is_err(),
-            "bare json should not match an extension declared as u!json"
+        let t = parse_user_defined_type(&extensions, pair).unwrap();
+        assert_eq!(
+            t.kind,
+            Some(Kind::UserDefined(proto::r#type::UserDefined {
+                type_reference: 3,
+                type_variation_reference: 0,
+                nullability: Nullability::Required as i32,
+                type_parameters: vec![],
+            }))
         );
     }
 }

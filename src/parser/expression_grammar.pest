@@ -31,27 +31,24 @@ quoted_name = @{
 // A name of a function or table can either be an unquoted identifier or a quoted string
 name = { identifier | quoted_name }
 
-// A plain or u!-prefixed type name, used in schema, cast positions, and function base names.
-// Examples: "geo_point", "u!geo_point"
-type_name = @{ "u!" ~ identifier | identifier }
-
-// Examples: 'geo_point', 'u!geo_point', 'u!"my type"'
-udt_name = @{ "u!" ~ (identifier | quoted_name) | identifier | quoted_name }
-
-// No underscores since "_" is the argument separator.
+// Short argument type name in a function signature.
+// Underscores are intentionally excluded: "_" is the argument separator in function_args,
+// so a type name like "json_str" cannot be written as a single arg — it would parse as
+// two arguments "json" and "str". All Substrait-defined arg type codes are alphanumeric-only.
 // Examples: "i64", "str", "any", "json"
-type_code = @{ ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
+short_arg_name = @{ ASCII_ALPHA ~ ASCII_ALPHANUMERIC* }
 
-// argument type in a function signature: plain or u!-prefixed.
+// A single argument type in a function signature: plain or u!-prefixed.
 // Examples: "i64", "u!json"
-type_arg = @{ "u!" ~ type_code | type_code }
+short_arg_type = @{ "u!" ~ short_arg_name | short_arg_name }
 
-// suffix of a compound name: underscore-separated type_args.
-function_args = @{ type_arg ~ ("_" ~ type_arg)* }
+// The type-signature suffix of a function signature: underscore-separated argument types.
+// Examples: "any_any", "i64_i64", "u!json_str"
+argument_signature = @{ short_arg_type ~ ("_" ~ short_arg_type)* }
 
-// A Substrait compound name: base name with an optional colon-delimited signature suffix.
-// Examples: "add", "equal:any_any", "count:", "json_extract_path:u!json_str", "bar:u!arg_u!arg".
-compound_name = @{ type_name ~ (":" ~ function_args?)? }
+// A Substrait function signature: function base name with an optional colon-delimited type-signature suffix.
+// Examples: "add", "equal:any_any", "count:", "json_extract_path:u!json_str"
+function_signature = @{ identifier ~ (":" ~ argument_signature?)? }
 
 // Expression Components
 // Field reference
@@ -132,11 +129,12 @@ precision_time_type         = { ^"precisiontime"        ~ nullability ~ "<" ~ in
 // TODO: interval_day
 compound_type = { list_type | map_type | struct_type | precision_timestamp_tz_type | precision_timestamp_type | precision_time_type }
 
-// A user-defined type expression.
-// Examples: "point#8@2?<i8>", "u!json?", "u!geo_point#5@1"
+// A user-defined type expression. The u! prefix is optional and ignored for lookup purposes;
+// both "json" and "u!json" resolve to the same extension.
+// Examples: "point#8@2?<i8>", "json?", "u!json?", "geo_point#5@1", "u!geo_point#5@1"
 // Anchor is required when the name is ambiguous across URNs; URN anchor is optional.
 user_defined_type = {
-    udt_name ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
+    "u!"? ~ (identifier | quoted_name) ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
 }
 
 // A type expression is a simple type, a compound type, or a user-defined type.
@@ -152,9 +150,9 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // - Optional URN Anchor, e.g. @1
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Optional output type annotation after closing paren, e.g. :i64
-//   (unambiguous because compound_name is atomic and ends before the opening paren)
+//   (unambiguous because function_signature is atomic and ends before the opening paren)
 function_call = {
-    compound_name ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
+    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ (":" ~ sp ~ type)?
 }
 
 if_clause = {
@@ -199,12 +197,14 @@ urn = @{ (!whitespace ~ ANY)+ }
 extension_urn_declaration = { urn_anchor ~ ":" ~ sp ~ urn }
 
 // -- Simple Extension Declaration (Function, Type, TypeVariation) --
-// Format: #anchor@urn_ref: name_or_compound_name
-// Examples: #10@1: my_func   #1@2: equal:any_any
+// Format: #anchor@urn_ref: simple_extension_name
+// Examples: #10@1: my_func   #1@2: equal:any_any   #5@1: json   #11@1: u!point
 // `anchor` is defined above as "#" ~ integer.
 // `urn_anchor` is defined above as "@" ~ integer.
-// `compound_name` accepts both plain names and compound names with signatures.
-simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ compound_name }
+// The u! prefix is accepted at grammar level for all extension kinds, but is only valid
+// semantically for Type declarations; Function and TypeVariation names must be bare.
+simple_extension_name = @{ "u!"? ~ identifier ~ (":" ~ argument_signature?)? }
+simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ simple_extension_name }
 
 // == Relations ==
 // These rules are for parsing relations - well, for parsing one relation on one line.

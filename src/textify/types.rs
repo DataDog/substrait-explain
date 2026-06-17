@@ -1045,8 +1045,9 @@ mod tests {
     }
 
     #[test]
-    fn u_prefix_type_textifies_with_prefix() {
-        // A type registered as "u!json" must textify back as "u!json", not bare "json".
+    fn u_prefix_type_textifies_without_prefix() {
+        // A type registered as "u!json" normalizes to "json" at storage time and
+        // textifies back as "json" (the u! prefix is not part of the type name).
         let ctx = TestContext::new()
             .with_urn(1, "urn:example:types")
             .with_type(1, 5, "u!json");
@@ -1059,11 +1060,11 @@ mod tests {
                 type_parameters: vec![],
             })),
         };
-        assert_eq!(ctx.textify_no_errors(&t), "u!json");
+        assert_eq!(ctx.textify_no_errors(&t), "json");
     }
 
     #[test]
-    fn u_prefix_type_nullable_textifies_with_prefix_and_nullability() {
+    fn u_prefix_type_nullable_textifies_without_prefix() {
         let ctx = TestContext::new()
             .with_urn(1, "urn:example:types")
             .with_type(1, 7, "u!geo_point");
@@ -1076,7 +1077,7 @@ mod tests {
                 type_parameters: vec![],
             })),
         };
-        assert_eq!(ctx.textify_no_errors(&t), "u!geo_point?");
+        assert_eq!(ctx.textify_no_errors(&t), "geo_point?");
     }
 
     #[test]
