@@ -33,7 +33,7 @@ quoted_name = @{
 name = { identifier | quoted_name }
 
 // Short argument type name in a function signature.
-// Underscores are intentionally excluded: "_" is the argument separator in function_args,
+// Underscores are intentionally excluded: "_" is the argument separator in argument_signature,
 // so a type name like "json_str" cannot be written as a single arg — it would parse as
 // two arguments "json" and "str". All Substrait-defined arg type codes are alphanumeric-only.
 // Examples: "i64", "str", "any", "json"
