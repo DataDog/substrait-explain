@@ -266,6 +266,26 @@ fn to_string_literal(
     }
 }
 
+fn to_null_literal(
+    value: pest::iterators::Pair<Rule>,
+    typ: Option<Type>,
+) -> Result<Literal, MessageParseError> {
+    assert_eq!(value.as_rule(), Rule::null);
+    let typ = typ.ok_or_else(|| {
+        MessageParseError::invalid(
+            "null_literal_type",
+            value.as_span(),
+            "Null literals require an explicit type annotation, e.g. null:i64?",
+        )
+    })?;
+
+    Ok(Literal {
+        literal_type: Some(LiteralType::Null(typ)),
+        nullable: false,
+        type_variation_reference: 0,
+    })
+}
+
 /// Parse a date string using chrono to days since Unix epoch
 fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessageParseError> {
     // Try multiple date formats for flexibility
@@ -370,6 +390,7 @@ impl ScopedParsePair for Literal {
             Rule::float => to_float_literal(value, typ),
             Rule::boolean => to_boolean_literal(value, typ),
             Rule::string_literal => to_string_literal(value, typ),
+            Rule::null => to_null_literal(value, typ),
             _ => unreachable!("Literal unexpected rule: {:?}", value.as_rule()),
         }
     }
@@ -414,11 +435,9 @@ impl ScopedParsePair for ScalarFunction {
             });
         }
 
-        // Parse optional output type (e.g., :i64)
-        let output_type = match iter.try_pop(Rule::r#type) {
-            Some(t) => Some(Type::parse_pair(extensions, t)?),
-            None => None,
-        };
+        // Parse required output type (e.g., :i64). pop is safe here because
+        // the grammar guarantees the type token is always present.
+        let output_type = Some(Type::parse_pair(extensions, iter.pop(Rule::r#type))?);
 
         iter.done();
         let anchor = get_and_validate_anchor(
@@ -1091,6 +1110,17 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_name_full_zero_arg_type_signature() {
+        // A Full name whose type signature encodes zero argument types (nothing after the colon).
+        let n = parse_compound_name("add:");
+        assert_eq!(n.full(), "add:");
+        assert_eq!(n.base(), "add");
+        assert!(n.matches("add:"));
+        assert!(!n.matches("add:i64_i64"));
+        assert!(n.matches("add"));
+    }
+
+    #[test]
     fn test_compound_name_with_signature() {
         assert_eq!(
             parse_function_signature("equal:any_any").full(),
@@ -1159,16 +1189,20 @@ mod tests {
     fn test_scalar_function_full_compound_name() {
         // Full compound name without anchor
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
+        assert!(
+            f.output_type.is_some(),
+            "output_type must be set after parsing"
+        );
     }
 
     #[test]
     fn test_scalar_function_second_overload() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
         assert_eq!(f.arguments.len(), 2);
@@ -1179,18 +1213,22 @@ mod tests {
     fn test_scalar_function_base_name_unique_overload() {
         // "add" has only one overload; base-name lookup should succeed
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "add($0, $1)");
+        let pair = parse_exact(Rule::function_call, "add($0, $1):i64");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
         assert_eq!(f.arguments.len(), 2);
         assert_eq!(f.function_reference, 3);
+        assert!(
+            f.output_type.is_some(),
+            "output_type must be set after parsing"
+        );
     }
 
     #[test]
     fn test_scalar_function_base_name_ambiguous_fails() {
         // "equal" has two overloads; base-name lookup should fail
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal($0, $1):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "ambiguous base name should fail");
     }
@@ -1198,7 +1236,7 @@ mod tests {
     #[test]
     fn test_scalar_function_compound_name_with_anchor() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
@@ -1208,7 +1246,7 @@ mod tests {
     fn test_scalar_function_base_name_with_anchor() {
         // Base name + explicit anchor should resolve (anchor 1 stores equal:any_any)
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "equal#1($0, $1)");
+        let pair = parse_exact(Rule::function_call, "equal#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
         assert_eq!(f.arguments.len(), 2);
@@ -1217,7 +1255,7 @@ mod tests {
     #[test]
     fn test_scalar_function_wrong_name_for_anchor_fails() {
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(Rule::function_call, "like#1($0)");
+        let pair = parse_exact(Rule::function_call, "like#1($0):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
     }
@@ -1239,6 +1277,16 @@ mod tests {
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 10);
         assert_eq!(f.arguments.len(), 2);
+    }
+
+    #[test]
+    fn test_scalar_function_missing_type_fails_to_parse() {
+        // The grammar requires a type annotation; "add($0, $1)" without ":i64" must fail.
+        let result = ExpressionParser::parse(Rule::function_call, "add($0, $1)");
+        assert!(
+            result.is_err(),
+            "function call without type annotation should fail to parse"
+        );
     }
 
     #[test]

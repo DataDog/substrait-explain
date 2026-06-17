@@ -1112,7 +1112,7 @@ mod tests {
     use substrait::proto::function_argument::ArgType;
     use substrait::proto::read_rel::{NamedTable, ReadType};
     use substrait::proto::rel_common::{Direct, Emit};
-    use substrait::proto::r#type::{self as ptype, Kind, Nullability, Struct};
+    use substrait::proto::r#type::{self as ptype, Boolean, I64, Kind, Nullability, Struct};
     use substrait::proto::{
         Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
     };
@@ -1229,7 +1229,12 @@ mod tests {
                     },
                 ],
                 options: vec![],
-                output_type: None,
+                output_type: Some(Type {
+                    kind: Some(Kind::Bool(Boolean {
+                        nullability: Nullability::Required as i32,
+                        type_variation_reference: 0,
+                    })),
+                }),
                 #[allow(deprecated)]
                 args: vec![],
             })),
@@ -1251,7 +1256,7 @@ mod tests {
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
-Filter[gt($0, 10:i32) => $0, $1]
+Filter[gt($0, 10:i32):boolean => $0, $1]
   Read[test_table => col1:i32?, col2:i32?]"#
             .trim_start();
         assert_eq!(result, expected);
@@ -1271,7 +1276,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&value);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert_eq!(result, "sum($1)");
+        assert_eq!(result, "sum($1):i64");
     }
 
     #[test]
@@ -1317,8 +1322,8 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        // Expected: Aggregate[_ => sum($1), count($1)] we chose to emit only measures
-        assert!(result.contains("Aggregate[_ => sum($1), count($1)]"));
+        // Expected: Aggregate[_ => sum($1):i64, count($1):i64] we chose to emit only measures
+        assert!(result.contains("Aggregate[_ => sum($1):i64, count($1):i64]"));
     }
 
     #[test]
@@ -1395,7 +1400,7 @@ Filter[gt($0, 10:i32) => $0, $1]
         let (result, errors) = ctx.textify(&rel);
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert!(result.contains("($0), ($0, $1) => $0, $1, count($2)"));
+        assert!(result.contains("($0), ($0, $1) => $0, $1, count($2):i64"));
     }
 
     #[test]
@@ -1462,8 +1467,9 @@ Filter[gt($0, 10:i32) => $0, $1]
 
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert!(
-            result
-                .contains("Aggregate[($0, $1), ($0, $1), ($1), ($1, $1), _ => $0, $1, count($2)]")
+            result.contains(
+                "Aggregate[($0, $1), ($0, $1), ($1), ($1, $1), _ => $0, $1, count($2):i64]"
+            )
         );
     }
 
@@ -1644,7 +1650,12 @@ Filter[gt($0, 10:i32) => $0, $1]
                 })),
             }],
             options: vec![],
-            output_type: None,
+            output_type: Some(Type {
+                kind: Some(Kind::I64(I64 {
+                    nullability: Nullability::Required as i32,
+                    type_variation_reference: 0,
+                })),
+            }),
             invocation: 0,
             phase: 0,
             sorts: vec![],

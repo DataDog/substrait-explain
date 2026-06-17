@@ -126,7 +126,7 @@ impl Textify for Anchor {
 
 #[derive(Debug, Copy, Clone)]
 pub struct NamedAnchor<'a> {
-    /// The full stored compound name, e.g. `"equal:any_any"` or `"add"`.
+    /// The full stored compound name, e.g. `"equal:any_any"` or `"count:"`.
     pub name: MaybeToken<&'a CompoundName>,
     pub anchor: u32,
     /// True if the compound name is unique across all URNs for this extension
@@ -207,15 +207,22 @@ impl<'a> Textify for NamedAnchor<'a> {
             Err(e) => write!(w, "{e}")?,
         }
 
-        let anchor = Anchor::new(self.anchor, !self.unique);
+        // Show the anchor when:
+        // - The compound name is not unique (another URN uses the same name), OR
+        // - The name is simple (no colon, e.g. "add") and the base name is not
+        //   unique — without an anchor, "add" would be parsed as a base-name
+        //   lookup and fail as ambiguous.
+        let needs_anchor = !self.unique
+            || match &self.name.0 {
+                Ok(n) if !n.full().contains(':') => !self.base_name_unique,
+                _ => false,
+            };
+        let anchor = Anchor::new(self.anchor, needs_anchor);
         write!(w, "{}", ctx.display(&anchor))
     }
 }
 
-/// The type desciptor of the output of a function call.
-///
-/// This is optional, and if present, it must be the last argument in the
-/// function call.
+/// The output type of a function call, rendered as `:type` after the argument list.
 #[derive(Debug, Copy, Clone)]
 pub struct OutputType<T: Deref<Target = proto::Type>>(pub Option<T>);
 
@@ -227,7 +234,15 @@ impl<T: Deref<Target = proto::Type>> Textify for OutputType<T> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         match self.0 {
             Some(ref t) => write!(w, ":{}", ctx.display(t.deref())),
-            None => Ok(()),
+            None => write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::invalid(
+                    "OutputType",
+                    None::<&str>,
+                    "function output_type must be set",
+                ))
+            ),
         }
     }
 }
@@ -1026,6 +1041,42 @@ mod tests {
 
         let s = ctx.textify_no_errors(&na);
         assert_eq!(s, "equal:any_any#1");
+    }
+
+    #[test]
+    fn named_anchor_compact_unique_full_name_zero_arg_type_signature() {
+        // "count:" is the only function with base "count".
+        // Compact mode: base name unique → write base name only, no anchor.
+        // "count:" and "count:i64" are not conceptually different;
+        // both write just the base name when unambiguous.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn")
+            .with_function(1, 5, "count:");
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
+        assert!(na.base_name_unique);
+        assert!(na.unique);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "count");
+    }
+
+    #[test]
+    fn named_anchor_verbose_full_name_shows_signature_and_anchor() {
+        // Verbose mode: always writes full() + anchor.
+        let mut ctx = TestContext::new()
+            .with_urn(1, "urn")
+            .with_function(1, 5, "count:");
+        ctx.options.show_simple_extension_anchors = Visibility::Always;
+
+        let eq = crate::textify::ErrorQueue::default();
+        let scope = ctx.scope(&eq);
+        let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
+
+        let s = ctx.textify_no_errors(&na);
+        assert_eq!(s, "count:#5");
     }
 
     #[test]

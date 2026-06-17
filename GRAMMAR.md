@@ -76,7 +76,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1)]
+  Project[$0, $1, add($0, $1):i64]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
@@ -138,7 +138,7 @@ Functions:
 === Plan
 Root[result]                   // Level 0 (no indentation)
   Project[$0, $1]              // Level 1 (2 spaces)
-    Filter[gt($0, 10) => $0]   // Level 2 (4 spaces)
+    Filter[gt($0, 10):boolean => $0]   // Level 2 (4 spaces)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
 #
@@ -179,9 +179,9 @@ Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNull
 
 ### `literal`
 
-A literal can come in the form of an integer, float, boolean, or string, and can have an optional additional type:
+A literal can be an integer, float, boolean, string, or null. Literals may include a type annotation:
 
-`literal := (float / integer / boolean / string) (":" type)?`
+`literal := (float / integer / boolean / string / "null") (":" type)?`
 
 - **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
@@ -195,11 +195,14 @@ A literal can come in the form of an integer, float, boolean, or string, and can
 - **`string`**` := "'" ("\\" . / !"'" .)* "'"`
   - Examples: `'hello'`, `'table name'`, `'C:\path\to\file'`, `'line1\nline2'`, `'quote\'s here'`
   - Default to `string` type; other types may also be assigned
+- **`null`**` := "null"`
+  - Examples: `null:i64?`, `null:string?`, `null:date?`
+  - A type annotation is required for `null`
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, and `timestamp` typed literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
 
 ## Types
 
@@ -210,7 +213,7 @@ The type syntax in this grammar follows the [standard Substrait type definition 
 All types follow this general pattern:
 
 ```text
-user_defined_type := ("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?
+type := ("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?
 ```
 
 Where:
@@ -333,8 +336,8 @@ Root[result]
 ### Examples
 
 ```text
-add($3, 10)            // Simple function call
-add#10@2(#3, 10):int   // Function call with anchors and type
+add($3, 10):i64              // Simple function call with required output type
+add#10@2($3, 10):i64         // Function call with anchors and output type
 ```
 
 ### Field References
@@ -365,7 +368,7 @@ Root[result]
 
 #### Syntax
 
-`function_call := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" (":" type)?`
+`function_call := compound_function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
 
 where `function_signature` is the function base name with an optional colon-delimited type-signature suffix:
 
@@ -384,7 +387,35 @@ Examples of function signatures: `add`, `equal:any_any`, `count:` (empty signatu
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above
-- `type` - optional output type
+- `type` - required output type
+
+#### Function Name Resolution
+
+Within the plan, a function name has three parts: a `base` name (e.g. `abs`), a type signature (prefixed with a colon, e.g. `:i64`), and anchor (prefixed with `#`, e.g. `#4`).
+
+Both type signature and anchor are separably optional if the reference is unambiguous; either or both may be required to make the reference unambiguous. A function name (base, signature if present, and anchor if present) must map to exactly one function named in the `Extensions` section.
+
+Where unambiguous, signature and anchor may both be left off, used separately, or together for completeness (`abs:i64#4($0):fp64`).
+
+#### Examples
+
+```text
+// Simple: resolves if there is exactly one function named `add`
+add($0, $1):i64
+// Signature: resolves only if exactly one function named `add` is registered,
+// with type signature `:i64_i64`
+add:i64_i64($0, $1):i64
+// Anchor: resolves if anchor 1 exists with base name `add`
+add#1($0, $1):i64
+// Anchor + full name: resolves if anchor 1 exists with name `add` and
+// type signature `i64_i64`
+add:i64_i64#1($0, $1):i64
+// Simple: resolves if there is exactly one function named `count`
+count():i64
+// Signature: resolves if "count:" is registered exactly once with
+// type signature "" (zero arguments)
+count:():i64
+```
 
 ### Aggregate Measures
 
@@ -392,13 +423,13 @@ Aggregate measures are used in the output of Aggregate relations. They can be ei
 
 #### Syntax
 
-- `aggregate_measure := name anchor? urn_anchor? "(" expression ")" (":" type)?` - aggregate function call with optional extension anchors and output type
+- `aggregate_measure := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type` - aggregate function call with optional extension anchors and required output type
 - Field references: `$0`, `$1`, ...
 
 #### Examples
 
-- `sum($2)`
-- `count($1)`
+- `sum($2):i64`
+- `count($1):i64`
 - `avg($3):fp64`
 - `$0` (field reference to grouping field)
 
@@ -688,7 +719,7 @@ Functions:
 
 === Plan
 Root[result]
-  Filter[gt($2, 100) => $0, $1, $2]
+  Filter[gt($2, 100):boolean => $0, $1, $2]
     Project[$0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 # "#;
@@ -752,7 +783,7 @@ Functions:
 
 === Plan
 Root[result]
-  Aggregate[($0), ($0, $1) => $0, $1, sum($2), count($2)]           // Group by field 0, and ($0, $1)
+  Aggregate[($0), ($0, $1) => $0, $1, sum($2):i64, count($2):i64]           // Group by field 0, and ($0, $1)
     Read[orders => category:string, region:string?,  amount:i64]
 # "#;
 #
@@ -812,7 +843,7 @@ Functions:
 
 === Plan
 Root[user_orders]
-  Join[&Inner, eq($0, $2) => $0, $1, $3]
+  Join[&Inner, eq($0, $2):boolean => $0, $1, $3]
     Read[users => id:i64, name:string]        // Fields $0, $1
     Read[orders => user_id:i64, amount:i32]   // Fields $2, $3
 # "#;
@@ -1040,10 +1071,10 @@ Functions:
 
 === Plan
 Root[customer_revenue]
-  Aggregate[$0, $1 => $0, $1, sum($3)]
-    Filter[gt($3, 100) => $0, $1, $2, $3]
-      Project[$0, $1, $2, multiply($4, $5)]
-        Join[&Inner, eq($0, $3) => $0, $1, $2, $3, $4, $5]
+  Aggregate[$0, $1 => $0, $1, sum($3):i64]
+    Filter[gt($3, 100):boolean => $0, $1, $2, $3]
+      Project[$0, $1, $2, multiply($4, $5):i64]
+        Join[&Inner, eq($0, $3):boolean => $0, $1, $2, $3, $4, $5]
           Read[users => id:i64, name:string, region:string]
           Read[orders => user_id:i64, quantity:i32, price:i64]
 # "#;

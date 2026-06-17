@@ -73,15 +73,13 @@ impl Cli {
                 from,
                 to,
                 show_literal_types,
-                show_expression_types,
                 verbose,
             } => {
                 let reader = get_reader(input)
                     .with_context(|| format!("Failed to open input file: {input}"))?;
                 let writer = get_writer(output)
                     .with_context(|| format!("Failed to create output file: {output}"))?;
-                let options =
-                    self.create_output_options(*show_literal_types, *show_expression_types);
+                let options = self.create_output_options(*show_literal_types);
                 let from_format = self.resolve_input_format(from, input)?;
                 let to_format = self.resolve_output_format(to, output)?;
                 self.run_convert_with_io(
@@ -123,12 +121,10 @@ impl Cli {
                 from,
                 to,
                 show_literal_types,
-                show_expression_types,
                 verbose,
                 ..
             } => {
-                let options =
-                    self.create_output_options(*show_literal_types, *show_expression_types);
+                let options = self.create_output_options(*show_literal_types);
                 let from_format = self.resolve_input_format(from, input)?;
                 let to_format = self.resolve_output_format(to, output)?;
                 self.run_convert_with_io(
@@ -148,19 +144,11 @@ impl Cli {
         }
     }
 
-    fn create_output_options(
-        &self,
-        show_literal_types: bool,
-        show_expression_types: bool,
-    ) -> OutputOptions {
+    fn create_output_options(&self, show_literal_types: bool) -> OutputOptions {
         let mut options = OutputOptions::default();
 
         if show_literal_types {
             options.literal_types = Visibility::Always;
-        }
-
-        if show_expression_types {
-            options.fn_types = true;
         }
 
         options
@@ -287,9 +275,6 @@ pub enum Commands {
         /// Show literal types (text output only)
         #[arg(long)]
         show_literal_types: bool,
-        /// Show expression types (text output only)
-        #[arg(long)]
-        show_expression_types: bool,
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -511,7 +496,7 @@ Functions:
 
 === Plan
 Root[result]
-  Filter[gt($2, 100) => $0, $1, $2]
+  Filter[gt($2, 100):boolean => $0, $1, $2]
     Project[$0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 "#;
@@ -528,7 +513,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Text),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -555,7 +539,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Json),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -583,7 +566,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Json),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -603,7 +585,6 @@ Root[result]
                 from: Some(Format::Json),
                 to: Some(Format::Text),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -629,7 +610,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Protobuf),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -688,7 +668,7 @@ Root[result]
         assert!(output_content.contains("=== Extensions"));
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
-        assert!(output_content.contains("Filter[gt($2, 100)"));
+        assert!(output_content.contains("Filter[gt($2, 100):boolean"));
     }
 
     #[test]
@@ -703,7 +683,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Text),
                 show_literal_types: true,
-                show_expression_types: true,
                 verbose: false,
             },
         };
@@ -757,7 +736,6 @@ Root[result]
                 from: None, // Auto-detect from extension
                 to: None,   // Auto-detect from extension
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -784,7 +762,6 @@ Root[result]
                 from: None, // Should fail auto-detection
                 to: None,
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -811,7 +788,6 @@ Root[result]
                 from: None,
                 to: None, // Should fail auto-detection
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -838,7 +814,6 @@ Root[result]
                 from: Some(Format::Text),        // Explicit override
                 to: Some(Format::Text),          // Explicit override
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -864,7 +839,6 @@ Root[result]
                 from: Some(Format::Text),
                 to: Some(Format::Protobuf),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -884,7 +858,6 @@ Root[result]
                 from: Some(Format::Protobuf),
                 to: Some(Format::Text),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -975,7 +948,6 @@ Root[val]
                 from: Some(Format::Text),
                 to: Some(Format::Text),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -999,7 +971,6 @@ Root[val]
                 from: Some(Format::Text),
                 to: Some(Format::Json),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -1043,7 +1014,6 @@ Root[val]
                 from: Some(Format::Text),
                 to: Some(Format::Text),
                 show_literal_types: false,
-                show_expression_types: false,
                 verbose: false,
             },
         };
@@ -1062,7 +1032,7 @@ Functions:
 
 === Plan
 Root[result]
-  Filter[equal($0, 42:i32) => $0]
+  Filter[equal($0, 42:i32):boolean => $0]
     Read[data => a:i32]
 "#;
 
