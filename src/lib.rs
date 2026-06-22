@@ -22,8 +22,8 @@ pub mod json;
 
 // Re-export commonly used types for easier access
 pub use parser::{
-    ExpectedExtensionLine, ExtensionParseError, MessageParseError, ParseContext, ParseError,
-    ParseResult, Parser,
+    ExpectedExtensionLine, ExtensionParseError, HeaderParseError, MessageParseError, ParseContext,
+    ParseError, ParseResult, Parser,
 };
 use substrait::proto::Plan;
 use textify::foundation::ErrorQueue;

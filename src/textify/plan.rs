@@ -4,17 +4,28 @@ use substrait::proto;
 
 use super::Textify;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
-use crate::parser::PLAN_HEADER;
+use crate::parser::{HEADER_HEADER, PLAN_HEADER};
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
+    version: Option<&'a proto::Version>,
     extensions: SimpleExtensions,
     relations: &'a [proto::PlanRel],
     errors: E,
     extension_registry: &'a ExtensionRegistry,
+}
+
+/// Returns true if the version carries no information worth writing: all three
+/// version numbers are zero and both string fields are empty.
+fn version_is_empty(version: &proto::Version) -> bool {
+    version.major_number == 0
+        && version.minor_number == 0
+        && version.patch_number == 0
+        && version.git_hash.is_empty()
+        && version.producer.is_empty()
 }
 
 impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
@@ -36,6 +47,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         (
             Self {
                 options,
+                version: plan.version.as_ref(),
                 extensions,
                 relations,
                 errors: errors.clone(),
@@ -43,6 +55,57 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
             },
             errors,
         )
+    }
+
+    /// Returns true if there is a header worth writing.
+    pub(crate) fn has_header(&self) -> bool {
+        self.version.is_some_and(|v| !version_is_empty(v))
+    }
+
+    /// Write the `=== Header` section, if the plan carries any header metadata.
+    ///
+    /// When any version number is non-zero, `producer` and `git_hash` are
+    /// nested under a compact `Version:` line. When all version numbers are
+    /// zero but metadata is present, the metadata is written at the top level
+    /// with no `Version:` line.
+    pub(crate) fn write_header(&self, w: &mut impl fmt::Write) -> fmt::Result {
+        let Some(version) = self.version else {
+            return Ok(());
+        };
+        if version_is_empty(version) {
+            return Ok(());
+        }
+
+        writeln!(w, "{HEADER_HEADER}")?;
+
+        let indent = &self.options.indent;
+        let has_numbers =
+            version.major_number != 0 || version.minor_number != 0 || version.patch_number != 0;
+
+        if has_numbers {
+            writeln!(
+                w,
+                "Version: {}.{}.{}",
+                version.major_number, version.minor_number, version.patch_number
+            )?;
+            if !version.producer.is_empty() {
+                writeln!(w, "{indent}producer: \"{}\"", version.producer)?;
+            }
+            if !version.git_hash.is_empty() {
+                writeln!(w, "{indent}git_hash: {}", version.git_hash)?;
+            }
+        } else {
+            // No version numbers: emit metadata at the top level, with no
+            // `Version:` line to nest it under.
+            if !version.producer.is_empty() {
+                writeln!(w, "producer: \"{}\"", version.producer)?;
+            }
+            if !version.git_hash.is_empty() {
+                writeln!(w, "git_hash: {}", version.git_hash)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn scope(&'a self) -> ScopedContext<'a, E> {
@@ -75,6 +138,10 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
 
 impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.has_header() {
+            self.write_header(f)?;
+            writeln!(f)?;
+        }
         self.write_extensions(f)?;
         if !self.extensions.is_empty() {
             writeln!(f)?;

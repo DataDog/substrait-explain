@@ -2,6 +2,7 @@ pub(crate) mod common;
 pub(crate) mod errors;
 pub(crate) mod expressions;
 pub(crate) mod extensions;
+pub(crate) mod header;
 pub(crate) mod relations;
 pub(crate) mod structural;
 pub(crate) mod types;
@@ -13,6 +14,8 @@ pub(crate) use common::{
 };
 pub use errors::{ParseContext, ParseError, ParseResult};
 pub use extensions::{ExpectedExtensionLine, ExtensionParseError};
+pub(crate) use header::HEADER_HEADER;
+pub use header::HeaderParseError;
 pub(crate) use relations::RelationParsePair;
 pub(crate) use structural::PLAN_HEADER;
 pub use structural::Parser;

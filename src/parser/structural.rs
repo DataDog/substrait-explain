@@ -21,6 +21,7 @@ use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AddendumInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
+use crate::parser::header::{HEADER_HEADER, HeaderParseError, HeaderParser};
 use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, VirtualReadRel};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
@@ -164,6 +165,9 @@ impl<'a> LineNode<'a> {
 pub enum State {
     // The initial state, before we have parsed any lines.
     Initial,
+    // The header section, after parsing the '=== Header' line. Carries
+    // plan-level metadata such as the version.
+    Header,
     // The extensions section, after parsing the header and any other Extension lines.
     Extensions,
     // The plan section, after parsing the header and any other Plan lines.
@@ -807,6 +811,7 @@ impl<'a> RelationParser<'a> {
 pub struct Parser<'a> {
     line_no: i64,
     state: State,
+    header_parser: HeaderParser,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
@@ -855,6 +860,7 @@ impl<'a> Parser<'a> {
         Self {
             line_no: 1,
             state: State::Initial,
+            header_parser: HeaderParser::default(),
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -894,6 +900,9 @@ impl<'a> Parser<'a> {
 
         match self.state {
             State::Initial => self.parse_initial(indented_line),
+            State::Header => self
+                .parse_header(indented_line)
+                .map_err(|e| ParseError::Header(ctx(), e)),
             State::Extensions => self
                 .parse_extensions(indented_line)
                 .map_err(|e| ParseError::Extension(ctx(), e)),
@@ -917,6 +926,9 @@ impl<'a> Parser<'a> {
     fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
             IndentedLine(0, l) if l.trim().is_empty() => {}
+            IndentedLine(0, HEADER_HEADER) => {
+                self.state = State::Header;
+            }
             IndentedLine(0, simple::EXTENSIONS_HEADER) => {
                 self.state = State::Extensions;
             }
@@ -937,6 +949,21 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse a single line from the header section of the input, updating the
+    /// parser state. Transitions to the extensions or plan section when their
+    /// respective headers are seen.
+    fn parse_header(&mut self, line: IndentedLine<'_>) -> Result<(), HeaderParseError> {
+        if line == IndentedLine(0, simple::EXTENSIONS_HEADER) {
+            self.state = State::Extensions;
+            return Ok(());
+        }
+        if line == IndentedLine(0, PLAN_HEADER) {
+            self.state = State::Plan;
+            return Ok(());
+        }
+        self.header_parser.parse_line(line)
+    }
+
     /// Parse a single line from the extensions section of the input, updating
     /// the parser state.
     fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
@@ -950,6 +977,7 @@ impl<'a> Parser<'a> {
     /// Build the plan from the parser state with warning collection.
     fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
+            header_parser,
             relation_parser,
             extension_parser,
             extension_registry,
@@ -963,6 +991,7 @@ impl<'a> Parser<'a> {
 
         // Build the final plan
         Ok(Plan {
+            version: header_parser.version(),
             extension_urns: extensions.to_extension_urns(),
             extensions: extensions.to_extension_declarations(),
             relations: root_relations,

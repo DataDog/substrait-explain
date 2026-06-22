@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use super::MessageParseError;
 use super::extensions::ExtensionParseError;
+use super::header::HeaderParseError;
 use crate::extensions::registry::ExtensionError;
 
 /// Context for parse errors and warnings
@@ -26,6 +27,9 @@ impl std::fmt::Display for ParseContext {
 /// Parse errors that prevent successful parsing
 #[derive(Debug, Clone, Error)]
 pub enum ParseError {
+    #[error("Error parsing header on {0}: {1}")]
+    Header(ParseContext, #[source] HeaderParseError),
+
     #[error("Error parsing extension on {0}: {1}")]
     Extension(ParseContext, #[source] ExtensionParseError),
 

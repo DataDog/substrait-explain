@@ -4,10 +4,11 @@ This document describes the grammar for the human-readable Substrait text format
 
 ## Overview
 
-The Substrait text format consists of two main sections:
+The Substrait text format consists of three sections:
 
-1. **Extensions Section** (optional) - Defines URNs and function/type extensions
-2. **Plan Section** - Contains the actual query plan with relations
+1. **Header Section** (optional) - Plan-level metadata, such as the plan version
+2. **Extensions Section** (optional) - Defines URNs and function/type extensions
+3. **Plan Section** - Contains the actual query plan with relations
 
 ## Design Principles
 
@@ -86,14 +87,46 @@ Root[result]
 
 ## Document Structure
 
-A Substrait text format document consists of two main sections with specific formatting rules.
+A Substrait text format document consists of three sections with specific formatting rules.
 
 ### Sections
 
-The document uses `===` headers to separate major sections:
+The document uses `===` headers to separate major sections. When present, they appear in this order:
 
+- **`=== Header`** - Plan-level metadata, such as the plan version (optional)
 - **`=== Extensions`** - Defines URNs and function/type mappings (optional)
 - **`=== Plan`** - Contains the actual query plan (required)
+
+#### Header format
+
+The header section carries plan-level metadata. Today the only supported field
+is the plan version (`Plan.version`); the section is a framework for additional
+top-level fields in the future.
+
+The version uses a compact, semantic-versioning style on a single line, with the
+optional `producer` and `git_hash` fields nested beneath it:
+
+```text
+=== Header
+Version: 0.64.0
+  producer: "datafusion-substrait 46.0.0"
+  git_hash: f455ecbe8b581c9b93abd6fbf4a360ec54b196d9
+```
+
+Where the version is `major.minor.patch` (three integers), `producer` is a
+quoted string, and `git_hash` is an unquoted token.
+
+All fields are optional and empty fields are omitted:
+
+- An empty version (all three numbers `0`, empty `git_hash`, empty `producer`)
+  omits the entire `=== Header` section.
+- The `Version:` line is omitted when all three numbers are `0`; any `producer`
+  or `git_hash` is then written at the top level of the section:
+
+  ```text
+  === Header
+  producer: "datafusion-substrait 46.0.0"
+  ```
 
 #### Extension format
 
