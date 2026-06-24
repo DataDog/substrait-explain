@@ -5,8 +5,8 @@ use substrait::proto::{Expression, Type};
 use thiserror::Error;
 
 use super::{
-    MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
-    unwrap_single_pair,
+    ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
+    unescape_string, unwrap_single_pair,
 };
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
@@ -137,7 +137,7 @@ impl ExtensionParser {
         match line {
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let decl = SimpleExtensionDeclaration::from_str(s)?;
+                let decl = parse_decl_for_kind(s, extension_kind)?;
                 self.extensions.add_extension(
                     extension_kind,
                     decl.urn_anchor,
@@ -238,6 +238,56 @@ impl ParsePair for SimpleExtensionDeclaration {
             name,
         }
     }
+}
+
+/// Like [`SimpleExtensionDeclaration::parse_str`] but retains the Pest span of the name
+/// token so that kind-specific validation errors carry a column pointer. Parsing is
+/// duplicated rather than delegated because `parse_pair` discards the span before returning.
+fn parse_decl_for_kind(
+    s: &str,
+    kind: ExtensionKind,
+) -> Result<SimpleExtensionDeclaration, MessageParseError> {
+    let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(Rule::simple_extension, s)
+        .map_err(|e| {
+            MessageParseError::new("SimpleExtensionDeclaration", ErrorKind::Syntax, Box::new(e))
+        })?;
+    assert_eq!(pairs.as_str(), s);
+    let pair = pairs.next().unwrap();
+    let mut iter = RuleIter::from(pair.into_inner());
+
+    let anchor = unwrap_single_pair(iter.pop(Rule::anchor))
+        .as_str()
+        .parse::<u32>()
+        .unwrap();
+    let urn_anchor = unwrap_single_pair(iter.pop(Rule::urn_anchor))
+        .as_str()
+        .parse::<u32>()
+        .unwrap();
+    let name_pair = iter.pop(Rule::simple_extension_name);
+    let name_span = name_pair.as_span();
+    let name = name_pair.as_str();
+
+    if kind != ExtensionKind::Type && name.starts_with("u!") {
+        return Err(MessageParseError::invalid(
+            "simple_extension_name",
+            name_span,
+            format!("'u!' prefix is only valid for type declarations, not {kind}"),
+        ));
+    }
+    if matches!(kind, ExtensionKind::Type | ExtensionKind::TypeVariation) && name.contains(':') {
+        return Err(MessageParseError::invalid(
+            "simple_extension_name",
+            name_span,
+            format!("type/type-variation names must not include a signature suffix, got '{name}'"),
+        ));
+    }
+    iter.done();
+
+    Ok(SimpleExtensionDeclaration {
+        anchor,
+        urn_anchor,
+        name: name.to_string(),
+    })
 }
 
 impl FromStr for SimpleExtensionDeclaration {
@@ -774,6 +824,47 @@ Root[result]
         assert!(
             Parser::parse(plan_text).is_err(),
             "u! prefix on a function name should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_signature_on_type_declaration_rejected() {
+        // Function signatures (':' suffix) are invalid on type declarations.
+        let plan_text = "\
+=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  # 10 @  1: mytype:i64_i64
+=== Plan
+Root[result]
+  Read[data => x:i64]";
+        assert!(
+            Parser::parse(plan_text).is_err(),
+            "function signature suffix on a type declaration should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_u_prefix_function_rejected_at_parser_level() {
+        // The u! rejection must come from parse_decl_for_kind (a MessageParseError with
+        // column info), not from add_extension (an InsertError without position).
+        let plan_text = "\
+=== Extensions
+URNs:
+  @  1: https://example.com/funcs
+Functions:
+  # 21 @  1: u!bad_func
+=== Plan
+Root[result]
+  Read[data => x:i64]";
+        let err = Parser::parse(plan_text).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::parser::ParseError::Extension(_, ExtensionParseError::Message(_))
+            ),
+            "expected parser-level MessageParseError, got: {err}"
         );
     }
 

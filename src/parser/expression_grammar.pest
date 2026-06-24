@@ -134,8 +134,9 @@ compound_type = { list_type | map_type | struct_type | precision_timestamp_tz_ty
 // both "json" and "u!json" resolve to the same extension.
 // Examples: "point#8@2?<i8>", "json?", "u!json?", "geo_point#5@1", "u!geo_point#5@1"
 // Anchor is required when the name is ambiguous across URNs; URN anchor is optional.
+// TODO: Do we need to support quoted names / special characters in type/function names?
 user_defined_type = {
-    "u!"? ~ (identifier | quoted_name) ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
+    "u!"? ~ identifier ~ anchor? ~ urn_anchor? ~ nullability ~ parameters?
 }
 
 // A type expression is a simple type, a compound type, or a user-defined type.
@@ -202,8 +203,6 @@ extension_urn_declaration = { urn_anchor ~ ":" ~ sp ~ urn }
 // Examples: #10@1: my_func   #1@2: equal:any_any   #5@1: json   #11@1: u!point
 // `anchor` is defined above as "#" ~ integer.
 // `urn_anchor` is defined above as "@" ~ integer.
-// The u! prefix is accepted at grammar level for all extension kinds, but is only valid
-// semantically for Type declarations; Function and TypeVariation names must be bare.
 simple_extension_name = @{ "u!"? ~ identifier ~ (":" ~ argument_signature?)? }
 simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ simple_extension_name }
 

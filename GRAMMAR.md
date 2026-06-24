@@ -213,12 +213,12 @@ The type syntax in this grammar follows the [standard Substrait type definition 
 All types follow this general pattern:
 
 ```text
-type := ("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?
+type := ("u!")? identifier anchor? urn_anchor? nullability? parameters?
 ```
 
 Where:
 
-- **`identifier | quoted_name`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `"my type"`. Both `u!json` and `json` refer to the same extension; the `u!` prefix is stripped at storage time.
+- **`identifier`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `"my type"`. Both `u!json` and `json` refer to the same extension; the `u!` prefix is stripped at storage time.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -293,7 +293,7 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 
 #### Syntax
 
-`("u!")? (identifier | quoted_name) anchor? urn_anchor? nullability? parameters?`
+`("u!")? identifier anchor? urn_anchor? nullability? parameters?`
 
 #### Key differences from standard Substrait
 

@@ -2,7 +2,7 @@ use pest::iterators::Pair;
 use substrait::proto::r#type::{Kind, Nullability, Parameter};
 use substrait::proto::{self, Type};
 
-use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unescape_string, unwrap_single_pair};
+use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{ExtensionKind, MissingReference};
 use crate::parser::MessageParseError;
@@ -276,11 +276,8 @@ fn parse_user_defined_type(
     let span = pair.as_span();
     assert_eq!(pair.as_rule(), Rule::user_defined_type);
     let mut iter = iter_pairs(pair.into_inner());
-    let name = if let Some(p) = iter.try_pop(Rule::identifier) {
-        p.as_str().to_string()
-    } else {
-        unescape_string(iter.pop(Rule::quoted_name))
-    };
+    // TODO: quoted names not yet supported — see grammar TODO at user_defined_type
+    let name = iter.pop(Rule::identifier).as_str().to_string();
     let anchor = iter
         .try_pop(Rule::anchor)
         .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
