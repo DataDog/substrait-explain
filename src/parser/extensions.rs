@@ -137,7 +137,7 @@ impl ExtensionParser {
         match line {
             IndentedLine(0, _s) => self.parse_subsection(line), // Pass the original line with 0 indent
             IndentedLine(1, s) => {
-                let decl = parse_decl_for_kind(s, extension_kind)?;
+                let decl = SimpleExtensionDeclaration::parse_from_kind(s, extension_kind)?;
                 self.extensions.add_extension(
                     extension_kind,
                     decl.urn_anchor,
@@ -206,95 +206,52 @@ impl FromStr for URNExtensionDeclaration {
     }
 }
 
-impl ParsePair for SimpleExtensionDeclaration {
-    fn rule() -> Rule {
-        Rule::simple_extension
-    }
-
-    fn message() -> &'static str {
-        "SimpleExtensionDeclaration"
-    }
-
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
-        assert_eq!(pair.as_rule(), Self::rule());
+impl SimpleExtensionDeclaration {
+    fn parse_from_kind(s: &str, kind: ExtensionKind) -> Result<Self, MessageParseError> {
+        let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(Rule::simple_extension, s)
+            .map_err(|e| {
+                MessageParseError::new("SimpleExtensionDeclaration", ErrorKind::Syntax, Box::new(e))
+            })?;
+        assert_eq!(pairs.as_str(), s);
+        let pair = pairs.next().unwrap();
         let mut iter = RuleIter::from(pair.into_inner());
-        let anchor_pair = iter.pop(Rule::anchor);
-        let anchor = unwrap_single_pair(anchor_pair)
+
+        let anchor = unwrap_single_pair(iter.pop(Rule::anchor))
             .as_str()
             .parse::<u32>()
             .unwrap();
-        let urn_anchor_pair = iter.pop(Rule::urn_anchor);
-        let urn_anchor = unwrap_single_pair(urn_anchor_pair)
+        let urn_anchor = unwrap_single_pair(iter.pop(Rule::urn_anchor))
             .as_str()
             .parse::<u32>()
             .unwrap();
         let name_pair = iter.pop(Rule::simple_extension_name);
-        let name = name_pair.as_str().to_string();
+        let name_span = name_pair.as_span();
+        let name = name_pair.as_str();
+
+        if kind != ExtensionKind::Type && name.starts_with("u!") {
+            return Err(MessageParseError::invalid(
+                "simple_extension_name",
+                name_span,
+                format!("'u!' prefix is only valid for type declarations, not {kind}"),
+            ));
+        }
+        if matches!(kind, ExtensionKind::Type | ExtensionKind::TypeVariation) && name.contains(':')
+        {
+            return Err(MessageParseError::invalid(
+                "simple_extension_name",
+                name_span,
+                format!(
+                    "type/type-variation names must not include a signature suffix, got '{name}'"
+                ),
+            ));
+        }
         iter.done();
 
-        SimpleExtensionDeclaration {
+        Ok(SimpleExtensionDeclaration {
             anchor,
             urn_anchor,
-            name,
-        }
-    }
-}
-
-/// Like [`SimpleExtensionDeclaration::parse_str`] but retains the Pest span of the name
-/// token so that kind-specific validation errors carry a column pointer. Parsing is
-/// duplicated rather than delegated because `parse_pair` discards the span before returning.
-fn parse_decl_for_kind(
-    s: &str,
-    kind: ExtensionKind,
-) -> Result<SimpleExtensionDeclaration, MessageParseError> {
-    let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(Rule::simple_extension, s)
-        .map_err(|e| {
-            MessageParseError::new("SimpleExtensionDeclaration", ErrorKind::Syntax, Box::new(e))
-        })?;
-    assert_eq!(pairs.as_str(), s);
-    let pair = pairs.next().unwrap();
-    let mut iter = RuleIter::from(pair.into_inner());
-
-    let anchor = unwrap_single_pair(iter.pop(Rule::anchor))
-        .as_str()
-        .parse::<u32>()
-        .unwrap();
-    let urn_anchor = unwrap_single_pair(iter.pop(Rule::urn_anchor))
-        .as_str()
-        .parse::<u32>()
-        .unwrap();
-    let name_pair = iter.pop(Rule::simple_extension_name);
-    let name_span = name_pair.as_span();
-    let name = name_pair.as_str();
-
-    if kind != ExtensionKind::Type && name.starts_with("u!") {
-        return Err(MessageParseError::invalid(
-            "simple_extension_name",
-            name_span,
-            format!("'u!' prefix is only valid for type declarations, not {kind}"),
-        ));
-    }
-    if matches!(kind, ExtensionKind::Type | ExtensionKind::TypeVariation) && name.contains(':') {
-        return Err(MessageParseError::invalid(
-            "simple_extension_name",
-            name_span,
-            format!("type/type-variation names must not include a signature suffix, got '{name}'"),
-        ));
-    }
-    iter.done();
-
-    Ok(SimpleExtensionDeclaration {
-        anchor,
-        urn_anchor,
-        name: name.to_string(),
-    })
-}
-
-impl FromStr for SimpleExtensionDeclaration {
-    type Err = super::MessageParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_str(s)
+            name: name.to_string(),
+        })
     }
 }
 
@@ -677,16 +634,16 @@ mod tests {
 
     #[test]
     fn test_parse_simple_extension_declaration() {
-        // Assumes a format like "@anchor: urn_anchor:name"
         let line = "#5@2: my_function_name";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        let decl =
+            SimpleExtensionDeclaration::parse_from_kind(line, ExtensionKind::Function).unwrap();
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "my_function_name");
 
-        // Test with a different name format, e.g. with underscores and numbers
         let line2 = "#10  @200: another_ext_123";
-        let decl = SimpleExtensionDeclaration::from_str(line2).unwrap();
+        let decl =
+            SimpleExtensionDeclaration::parse_from_kind(line2, ExtensionKind::Function).unwrap();
         assert_eq!(decl.anchor, 10);
         assert_eq!(decl.urn_anchor, 200);
         assert_eq!(decl.name, "another_ext_123");
@@ -740,7 +697,8 @@ Type Variations:
     fn test_parse_simple_extension_declaration_compound_name() {
         // A function name that includes a Substrait signature suffix
         let line = "#1 @2: equal:any_any";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        let decl =
+            SimpleExtensionDeclaration::parse_from_kind(line, ExtensionKind::Function).unwrap();
         assert_eq!(decl.anchor, 1);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "equal:any_any");
@@ -749,7 +707,8 @@ Type Variations:
     #[test]
     fn test_parse_simple_extension_declaration_compound_name_multi_segment() {
         let line = "#3 @1: regexp_match_substring:str_str_i64";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        let decl =
+            SimpleExtensionDeclaration::parse_from_kind(line, ExtensionKind::Function).unwrap();
         assert_eq!(decl.anchor, 3);
         assert_eq!(decl.urn_anchor, 1);
         assert_eq!(decl.name, "regexp_match_substring:str_str_i64");
@@ -757,9 +716,11 @@ Type Variations:
 
     #[test]
     fn test_parse_simple_extension_declaration_u_prefix_function_with_u_signature() {
-        // A function declaration with a u!-prefixed type in the signature.
+        // u! is valid inside a signature suffix (e.g. u!json as an arg type); only
+        // the base function name itself may not be u!-prefixed.
         let line = "#5 @2: json_extract_path:u!json_str";
-        let decl = SimpleExtensionDeclaration::from_str(line).unwrap();
+        let decl =
+            SimpleExtensionDeclaration::parse_from_kind(line, ExtensionKind::Function).unwrap();
         assert_eq!(decl.anchor, 5);
         assert_eq!(decl.urn_anchor, 2);
         assert_eq!(decl.name, "json_extract_path:u!json_str");
