@@ -334,6 +334,98 @@ Root[result]
 }
 
 #[test]
+fn test_u_prefix_type_in_schema_roundtrip() {
+    // Types are declared without u! in the Extensions section. The u! prefix is
+    // accepted but ignored in plan references (both "doc:json" and "doc:u!json" resolve
+    // to the same type), and output is always the bare name.
+    let canonical = r#"=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  #  5 @  1: json
+
+=== Plan
+Root[result]
+  Project[$0]
+    Read[data => doc:json]"#;
+
+    // Plan authored with u! prefix on the type reference round-trips to the canonical form.
+    let with_prefix = r#"=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  #  5 @  1: json
+
+=== Plan
+Root[result]
+  Project[$0]
+    Read[data => doc:u!json]"#;
+
+    assert_roundtrip_canonical(canonical, with_prefix);
+}
+
+#[test]
+fn test_u_prefix_type_in_function_declaration_roundtrip() {
+    // The declaration preserves the full compound name including the u!-prefixed signature.
+    // The call site uses the compact base name since the function is unique.
+    let canonical = r#"=== Extensions
+URNs:
+  @  1: https://example.com/funcs
+Functions:
+  #  5 @  1: json_extract_path:u!json_str
+
+=== Plan
+Root[result]
+  Project[json_extract_path($0, $1):string]
+    Read[data => doc:string, path:string]"#;
+
+    // Explicit compound name in the call site resolves to the same canonical output.
+    let with_signature = r#"=== Extensions
+URNs:
+  @  1: https://example.com/funcs
+Functions:
+  #  5 @  1: json_extract_path:u!json_str
+
+=== Plan
+Root[result]
+  Project[json_extract_path:u!json_str($0, $1):string]
+    Read[data => doc:string, path:string]"#;
+
+    roundtrip_plan(canonical);
+    assert_roundtrip_canonical(canonical, with_signature);
+}
+
+#[test]
+fn test_u_prefix_type_in_cast_roundtrip() {
+    // A cast to a u!-prefixed UDT: both "::u!json" and "::json" in the plan resolve to
+    // the same type. Canonical output always uses the bare name.
+    let canonical = r#"=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  #  5 @  1: json
+
+=== Plan
+Root[result]
+  Project[($0)::json]
+    Read[data => doc:string]"#;
+
+    let with_prefix = r#"=== Extensions
+URNs:
+  @  1: https://example.com/types
+Types:
+  #  5 @  1: json
+
+=== Plan
+Root[result]
+  Project[($0)::u!json]
+    Read[data => doc:string]"#;
+
+    roundtrip_plan(canonical);
+    assert_roundtrip_canonical(canonical, with_prefix);
+}
+
+#[test]
 fn test_join_relation_roundtrip() {
     let plan = r#"=== Extensions
 URNs:

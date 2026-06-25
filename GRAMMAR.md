@@ -213,13 +213,12 @@ The type syntax in this grammar follows the [standard Substrait type definition 
 All types follow this general pattern:
 
 ```text
-type := "u!"? name anchor? urn_anchor? nullability? parameters?
+type := ("u!")? identifier anchor? urn_anchor? nullability? parameters?
 ```
 
 Where:
 
-- **`"u!"`** - Optional prefix for user-defined types
-- **`name`** - Type name (case-insensitive, lowercase preferred)
+- **`identifier`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `my_type`. `u!my_type` syntax is accepted, but not recommended; the `u!` will be dropped - e.g. both `u!json` and `json` refer to the same extension.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -294,13 +293,13 @@ User-defined types extend the standard Substrait UDT syntax to support anchors a
 
 #### Syntax
 
-`"u!"? name anchor? urn_anchor? nullability? parameters?`
+`("u!")? identifier anchor? urn_anchor? nullability? parameters?`
 
 #### Key differences from standard Substrait
 
-- The `u!` prefix is optional (can be omitted when anchors are present)
 - Adds optional `anchor` and `urn_anchor` for extension references
-- Maintains compatibility with standard Substrait UDT syntax
+- The `u!` prefix is accepted in type declarations but normalized at storage time, so `u!json` and `json` in a declaration refer to the same type. It is an error to use `u!` on function or type-variation declarations.
+- In plan references both `u!json` and `json` are accepted and resolve to the same anchor. The canonical output always uses the bare name.
 
 #### Examples
 
@@ -369,13 +368,22 @@ Root[result]
 
 #### Syntax
 
-`function_call := compound_name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
+`function_call := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
 
-`compound_name := identifier (":" identifier?)?`
+where `function_signature` is the function base name with an optional colon-delimited type-signature suffix:
+
+```text
+function_signature := identifier (":" argument_signature?)?
+argument_signature := short_arg_type ("_" short_arg_type)*
+short_arg_type     := "u!" short_arg_name | short_arg_name
+short_arg_name     := ASCII_ALPHA ASCII_ALPHANUMERIC*
+```
+
+Examples of function signatures: `add`, `equal:any_any`, `count:` (empty signature), `json_extract_path:u!json_str`, `bar:u!arg_u!arg`.
 
 #### Components
 
-- `compound_name` - function name, optionally including a type-signature suffix (see below)
+- `function_signature` - function name with optional signature suffix (see above)
 - `anchor` - optional anchor (e.g., `#10`)
 - `urn_anchor` - optional URN anchor (e.g., `@1`)
 - `expression` - as above

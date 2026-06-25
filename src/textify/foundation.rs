@@ -300,6 +300,7 @@ impl FormatError {
             FormatError::Insert(InsertError::DuplicateAnchor { .. }) => "extension",
             FormatError::Insert(InsertError::MissingUrn { .. }) => "uri",
             FormatError::Insert(InsertError::DuplicateAndMissingUrn { .. }) => "uri",
+            FormatError::Insert(InsertError::InvalidName { .. }) => "extension",
         }
     }
 }

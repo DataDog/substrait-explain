@@ -1096,6 +1096,42 @@ mod tests {
     }
 
     #[test]
+    fn u_prefix_type_textifies_without_prefix() {
+        // A type registered as "u!json" normalizes to "json" at storage time and
+        // textifies back as "json" (the u! prefix is not part of the type name).
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example:types")
+            .with_type(1, 5, "u!json");
+
+        let t = proto::Type {
+            kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
+                type_variation_reference: 0,
+                nullability: ptype::Nullability::Required as i32,
+                type_reference: 5,
+                type_parameters: vec![],
+            })),
+        };
+        assert_eq!(ctx.textify_no_errors(&t), "json");
+    }
+
+    #[test]
+    fn u_prefix_type_nullable_textifies_without_prefix() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example:types")
+            .with_type(1, 7, "u!geo_point");
+
+        let t = proto::Type {
+            kind: Some(ptype::Kind::UserDefined(ptype::UserDefined {
+                type_variation_reference: 0,
+                nullability: ptype::Nullability::Nullable as i32,
+                type_reference: 7,
+                type_parameters: vec![],
+            })),
+        };
+        assert_eq!(ctx.textify_no_errors(&t), "geo_point?");
+    }
+
+    #[test]
     fn named_anchor_compact_plain_name_non_unique_shows_anchor() {
         let ctx = TestContext::new()
             .with_urn(1, "urn1")
