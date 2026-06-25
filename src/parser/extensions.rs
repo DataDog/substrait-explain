@@ -808,8 +808,7 @@ Root[result]
 
     #[test]
     fn test_u_prefix_function_rejected_at_parser_level() {
-        // The u! rejection must come from parse_decl_for_kind (a MessageParseError with
-        // column info), not from add_extension (an InsertError without position).
+        // The parser should reject function names with a `u!` prefix
         let plan_text = "\
 === Extensions
 URNs:
