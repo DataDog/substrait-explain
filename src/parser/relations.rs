@@ -15,7 +15,10 @@ use substrait::proto::{
     RelCommon, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, r#type,
 };
 
-use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
+use super::{
+    ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
+    unwrap_single_pair,
+};
 use crate::extensions::any::Any;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
@@ -354,6 +357,88 @@ impl RelationParsePair for ReadRel {
 /// proto type is `ReadRel` (same as `NamedTable`), but the grammar and handling
 /// are different.
 pub(crate) struct VirtualReadRel(ReadRel);
+
+impl VirtualReadRel {
+    /// Parse the multi-line `Read:Virtual[` form from raw continuation-line
+    /// content strings.  Each `&str` in `contents` is the text after the
+    /// leading `"- "` prefix, still pointing into the original input so Pest
+    /// can borrow it without allocation.
+    ///
+    /// All but the last element are row lines of the form `(expr, ...) [,]`.
+    /// The last element is the schema line: `=> col:type, ... ]`.
+    pub(crate) fn parse_from_continuation_contents<'i>(
+        extensions: &SimpleExtensions,
+        contents: &[&'i str],
+    ) -> Result<(Self, usize), MessageParseError> {
+        // The caller guarantees contents is non-empty (schema line is required).
+        let (row_contents, schema_content): (&[&'i str], &'i str) = {
+            let (last, rest) = contents
+                .split_last()
+                .expect("parse_from_continuation_contents called with empty contents");
+            (rest, *last)
+        };
+
+        // Parse schema line: strip leading `=>` and trailing `]`.
+        let after_arrow = schema_content.trim().strip_prefix("=>").ok_or_else(|| {
+            let span = pest::Span::new(schema_content, 0, schema_content.len()).unwrap();
+            MessageParseError::invalid(
+                "VirtualReadRel",
+                span,
+                "last continuation line of Read:Virtual[ must start with `=>`",
+            )
+        })?;
+        let schema_str = after_arrow
+            .trim_start()
+            .strip_suffix(']')
+            .ok_or_else(|| {
+                let span = pest::Span::new(schema_content, 0, schema_content.len()).unwrap();
+                MessageParseError::invalid(
+                    "VirtualReadRel",
+                    span,
+                    "last continuation line of Read:Virtual[ must end with `]`",
+                )
+            })?
+            .trim_end();
+
+        let columns = {
+            let mut pairs =
+                <ExpressionParser as pest::Parser<Rule>>::parse(Rule::named_column_list, schema_str)
+                    .map_err(|e| {
+                        MessageParseError::new("named_column_list", ErrorKind::Syntax, Box::new(e))
+                    })?;
+            let pair = pairs.next().expect("named_column_list yields one pair");
+            NamedColumnList::parse_pair(extensions, pair)?.0
+        };
+
+        // Parse each row line: strip optional trailing `,` then parse as virtual_row.
+        let rows = row_contents
+            .iter()
+            .map(|content: &&'i str| {
+                let row_str: &'i str = content.trim_end().trim_end_matches(',').trim_end();
+                let mut pairs =
+                    <ExpressionParser as pest::Parser<Rule>>::parse(Rule::virtual_row, row_str)
+                        .map_err(|e| {
+                            MessageParseError::new("virtual_row", ErrorKind::Syntax, Box::new(e))
+                        })?;
+                let pair = pairs.next().expect("virtual_row yields one pair");
+                parse_virtual_row(extensions, pair)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let output_count = columns.len();
+        Ok((
+            VirtualReadRel(ReadRel {
+                base_schema: Some(build_named_struct(columns)),
+                read_type: Some(read_rel::ReadType::VirtualTable(read_rel::VirtualTable {
+                    expressions: rows,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            output_count,
+        ))
+    }
+}
 
 impl RelationParsePair for VirtualReadRel {
     fn rule() -> Rule {

@@ -59,12 +59,29 @@ pub struct Addendum<'a> {
     pub line_no: i64,
 }
 
+/// A `-`-prefixed continuation line attached to a `Read:Virtual` relation.
+/// `content` is the raw text after the leading `"- "` prefix.
+#[derive(Debug, Clone)]
+pub struct Continuation<'a> {
+    pub content: &'a str,
+    pub line_no: i64,
+}
+
+impl<'a> Continuation<'a> {
+    pub fn context(&self) -> ParseContext {
+        ParseContext::new(self.line_no, format!("- {}", self.content))
+    }
+}
+
 /// A relation node in the plan tree, before conversion to a Substrait proto.
 #[derive(Debug, Clone)]
 pub struct RelationNode<'a> {
     pub pair: Pair<'a, Rule>,
     pub line_no: i64,
     pub addenda: Vec<Addendum<'a>>,
+    /// Continuation lines (`- row`) attached to a `Read:Virtual` relation.
+    /// Always empty for all other relation types.
+    pub continuations: Vec<Continuation<'a>>,
     pub children: Vec<RelationNode<'a>>,
 }
 
@@ -77,7 +94,8 @@ impl<'a> RelationNode<'a> {
     }
 }
 
-/// A parsed plan line: either a relation or a `+`-prefixed addendum line.
+/// A parsed plan line: either a relation, a `+`-prefixed addendum, or a
+/// `-`-prefixed continuation line.
 ///
 /// Classification happens at construction time by inspecting the inner grammar
 /// rule, so downstream code can use standard Rust pattern matching rather than
@@ -86,10 +104,15 @@ impl<'a> RelationNode<'a> {
 pub enum LineNode<'a> {
     Relation(RelationNode<'a>),
     Addendum(Addendum<'a>),
+    Continuation(Continuation<'a>),
 }
 
 impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
+        if let Some(content) = line.strip_prefix("- ") {
+            return Ok(LineNode::Continuation(Continuation { content, line_no }));
+        }
+
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
             <ExpressionParser as pest::Parser<Rule>>::parse(Rule::planNode, line).map_err(|e| {
                 ParseError::Plan(
@@ -114,6 +137,7 @@ impl<'a> LineNode<'a> {
                 pair: inner,
                 line_no,
                 addenda: Vec::new(),
+                continuations: Vec::new(),
                 children: Vec::new(),
             }),
         })
@@ -155,6 +179,7 @@ impl<'a> LineNode<'a> {
             pair,
             line_no,
             addenda: Vec::new(),
+            continuations: Vec::new(),
             children: Vec::new(),
         }))
     }
@@ -255,6 +280,42 @@ impl<'a> TreeBuilder<'a> {
 
                 parent.addenda.push(addendum);
             }
+            LineNode::Continuation(cont) => {
+                let context = cont.context();
+                if depth == 0 {
+                    return Err(ParseError::ValidationError(
+                        context,
+                        "continuation lines (`- `) cannot appear at the top level".to_string(),
+                    ));
+                }
+
+                let parent = match self.get_at_depth(depth - 1) {
+                    None => {
+                        return Err(ParseError::ValidationError(
+                            context,
+                            format!("no parent found for continuation at depth {depth}"),
+                        ));
+                    }
+                    Some(parent) => parent,
+                };
+
+                if parent.pair.as_rule() != Rule::virtual_read_relation_open {
+                    return Err(ParseError::ValidationError(
+                        context,
+                        "continuation lines (`- `) are only supported inside `Read:Virtual[`"
+                            .to_string(),
+                    ));
+                }
+
+                if !parent.children.is_empty() {
+                    return Err(ParseError::ValidationError(
+                        context,
+                        "continuation lines must appear before child relations".to_string(),
+                    ));
+                }
+
+                parent.continuations.push(cont);
+            }
         }
         Ok(())
     }
@@ -280,6 +341,7 @@ struct RelationContext<'a> {
     children: Vec<Rel>,
     input_field_count: usize,
     addenda: Addenda<'a>,
+    continuations: Vec<Continuation<'a>>,
 }
 
 /// A parsed addendum line plus enough source location to build later errors.
@@ -464,6 +526,9 @@ impl<'a> RelationParser<'a> {
             Rule::virtual_read_relation => {
                 self.parse_rel::<VirtualReadRel>(extensions, registry, ctx)
             }
+            Rule::virtual_read_relation_open => {
+                self.parse_virtual_read_relation_open(extensions, registry, ctx)
+            }
             Rule::read_relation => self.parse_rel::<ReadRel>(extensions, registry, ctx),
             Rule::filter_relation => self.parse_rel::<FilterRel>(extensions, registry, ctx),
             Rule::project_relation => self.parse_rel::<ProjectRel>(extensions, registry, ctx),
@@ -492,6 +557,7 @@ impl<'a> RelationParser<'a> {
             children,
             input_field_count,
             addenda,
+            continuations: _,
         } = ctx;
         assert_eq!(pair.as_rule(), T::rule());
         let line = pair.as_str();
@@ -554,6 +620,47 @@ impl<'a> RelationParser<'a> {
         Ok((rel, output_column_count))
     }
 
+    /// Parse the multi-line `Read:Virtual[` form, where rows and the schema are
+    /// supplied by `- ` continuation lines:
+    ///
+    /// ```text
+    /// Read:Virtual[
+    ///   - (1, 'alice'),
+    ///   - (2, 'bob')
+    ///   - => id:i64, name:string]
+    /// ```
+    ///
+    /// Row continuations have the form `(expr, ...) [,]`; the schema continuation
+    /// starts with `=>` and ends with `]`.  All continuation strings are slices of
+    /// the original input, so Pest can borrow them without allocation.
+    fn parse_virtual_read_relation_open<'i>(
+        &self,
+        extensions: &SimpleExtensions,
+        registry: &ExtensionRegistry,
+        ctx: RelationContext<'i>,
+    ) -> Result<(Rel, usize), ParseError> {
+        assert_eq!(ctx.pair.as_rule(), Rule::virtual_read_relation_open);
+        let context = ParseContext::new(ctx.line_no, ctx.pair.as_str().to_string());
+        let advanced_extension = ctx.addenda.into_standard_advanced_extension(registry)?;
+
+        if ctx.continuations.is_empty() {
+            return Err(ParseError::ValidationError(
+                context,
+                "`Read:Virtual[` must be followed by continuation lines (`- rows...`)"
+                    .to_string(),
+            ));
+        }
+
+        let cont_contents: Vec<&'i str> =
+            ctx.continuations.into_iter().map(|c| c.content).collect();
+
+        let (parsed, count) =
+            VirtualReadRel::parse_from_continuation_contents(extensions, &cont_contents)
+                .map_err(|e| ParseError::Plan(context, e))?;
+
+        Ok((parsed.into_rel(advanced_extension), count))
+    }
+
     /// Parse `Read:Extension[...]`, whose table detail is supplied by exactly
     /// one `+ Ext:Name[...]` addendum.
     fn parse_extension_read_relation(
@@ -598,6 +705,7 @@ impl<'a> RelationParser<'a> {
         }
 
         let addenda = Addenda::parse(extensions, node.addenda)?;
+        let continuations = node.continuations;
 
         self.parse_relation(
             extensions,
@@ -608,6 +716,7 @@ impl<'a> RelationParser<'a> {
                 children,
                 input_field_count,
                 addenda,
+                continuations,
             },
         )
     }

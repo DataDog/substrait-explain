@@ -657,6 +657,113 @@ Root[result]
     );
 }
 
+#[test]
+fn test_virtual_read_continuation_single_row() {
+    // A single continuation row parses to the same plan as the inline form.
+    let continuation = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[
+    - (1, 'alice')
+    - => id:i64, name:string]"#;
+
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice') => id:i64, name:string]"#;
+
+    assert_roundtrip_canonical(inline.trim(), continuation.trim());
+}
+
+#[test]
+fn test_virtual_read_continuation_multi_row() {
+    // Multiple continuation rows produce the same plan as the inline form.
+    let continuation = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[
+    - (1, 'alice'),
+    - (2, 'bob'),
+    - (3, 'carol')
+    - => id:i64, name:string]"#;
+
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
+
+    assert_roundtrip_canonical(inline.trim(), continuation.trim());
+}
+
+#[test]
+fn test_virtual_read_continuation_typed_expressions() {
+    // Typed literals and nulls work in continuation rows.
+    // The formatter drops redundant type annotations (e.g. 'Alice':string? → 'Alice'),
+    // so the canonical form uses the formatter's actual output.
+    let continuation = r#"
+=== Plan
+Root[id, name, age]
+  Read:Virtual[
+    - (1:i32, 'Alice':string?, 25:i32),
+    - (15:i32, null:string?, 30:i32)
+    - => id:i32, name:string?, age:i32]"#;
+
+    let canonical = r#"
+=== Plan
+Root[id, name, age]
+  Read:Virtual[(1:i32, 'Alice', 25:i32), (15:i32, null:string?, 30:i32) => id:i32, name:string?, age:i32]"#;
+
+    assert_roundtrip_canonical(canonical.trim(), continuation.trim());
+}
+
+#[test]
+fn test_virtual_read_continuation_missing_schema_rejected() {
+    // A Read:Virtual[ with no continuation lines must be rejected.
+    let plan = r#"
+=== Plan
+Root[id]
+  Read:Virtual["#;
+
+    let result = Parser::parse(plan);
+    assert!(
+        result.is_err(),
+        "Read:Virtual[ with no continuation lines should fail"
+    );
+}
+
+#[test]
+fn test_virtual_read_continuation_invalid_row_rejected() {
+    // A malformed continuation row (not a valid virtual_row) must fail.
+    let plan = r#"
+=== Plan
+Root[id]
+  Read:Virtual[
+    - not_a_row
+    - => id:i64]"#;
+
+    let result = Parser::parse(plan);
+    assert!(
+        result.is_err(),
+        "malformed continuation row should fail to parse"
+    );
+}
+
+#[test]
+fn test_virtual_read_continuation_wrong_relation_rejected() {
+    // Continuation lines attached to a non-VirtualTable relation must be rejected.
+    let plan = r#"
+=== Plan
+Root[id]
+  Filter[$0 => $0]
+    - (1)"#;
+
+    let result = Parser::parse(plan);
+    assert!(
+        result.is_err(),
+        "continuation lines on non-VirtualTable relation should fail"
+    );
+}
+
 // === Emit / output-field-count propagation tests ===
 //
 // These exercise the pipeline: child's output_field_count → parent's
