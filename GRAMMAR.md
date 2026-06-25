@@ -218,7 +218,7 @@ type := ("u!")? identifier anchor? urn_anchor? nullability? parameters?
 
 Where:
 
-- **`identifier`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `"my type"`. Both `u!json` and `json` refer to the same extension; the `u!` prefix is stripped at storage time.
+- **`identifier`** - The type name (case-insensitive, lowercase preferred), e.g. `geo_point` or `my_type`. `u!my_type` syntax is accepted, but not recommended; the `u!` will be dropped - e.g. both `u!json` and `json` refer to the same extension.
 - **`anchor`**` := "#" integer` - Extension anchor (e.g., `#10`)
 - **`urn_anchor`**` := "@" integer` - URN anchor (e.g., `@1`)
 - **`nullability`**` := "?"` - Optional nullability indicator (defaults to non-nullable)
@@ -368,7 +368,7 @@ Root[result]
 
 #### Syntax
 
-`function_call := compound_function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
+`function_call := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type`
 
 where `function_signature` is the function base name with an optional colon-delimited type-signature suffix:
 
