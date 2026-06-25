@@ -646,8 +646,7 @@ impl<'a> RelationParser<'a> {
         if ctx.continuations.is_empty() {
             return Err(ParseError::ValidationError(
                 context,
-                "`Read:Virtual[` must be followed by continuation lines (`- rows...`)"
-                    .to_string(),
+                "`Read:Virtual[` must be followed by continuation lines (`- rows...`)".to_string(),
             ));
         }
 

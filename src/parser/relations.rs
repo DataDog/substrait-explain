@@ -401,11 +401,13 @@ impl VirtualReadRel {
             .trim_end();
 
         let columns = {
-            let mut pairs =
-                <ExpressionParser as pest::Parser<Rule>>::parse(Rule::named_column_list, schema_str)
-                    .map_err(|e| {
-                        MessageParseError::new("named_column_list", ErrorKind::Syntax, Box::new(e))
-                    })?;
+            let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(
+                Rule::named_column_list,
+                schema_str,
+            )
+            .map_err(|e| {
+                MessageParseError::new("named_column_list", ErrorKind::Syntax, Box::new(e))
+            })?;
             let pair = pairs.next().expect("named_column_list yields one pair");
             NamedColumnList::parse_pair(extensions, pair)?.0
         };
