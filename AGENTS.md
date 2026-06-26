@@ -63,6 +63,8 @@ Relations generally follow `RelationName[arguments => output_columns]` with
 
 ## Routing
 
+- For project-level design philosophy like compatibility expectations, error handling
+  posture, extension boundaries, or format change guidance, read `DESIGN.md`.
 - For syntax or text-format changes, read `GRAMMAR.md` and update the docs,
   Pest grammar, parser, textifier, and roundtrip tests together.
 - For contributor process, PR expectations, issue shape, or public guidance,

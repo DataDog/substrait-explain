@@ -81,6 +81,8 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 
 ### Project-Specific Guidelines
 
+See the overall [Design Philosophy documentation](DESIGN.md) for the project-level design principles and [`GRAMMAR.md`](GRAMMAR.md) for the user-facing syntax contract.
+
 #### Substrait-Specific Development
 
 This project implements Substrait protobuf plan parsing and formatting. See the [official Substrait documentation](https://substrait.io/) for the complete specification, including output mapping rules per relation type.

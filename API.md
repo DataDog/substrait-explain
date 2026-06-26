@@ -13,6 +13,9 @@ A Rust library that converts Substrait query plans between protobuf format and a
 - **Flexible formatting**: Configurable output options for different use cases
 - **Complete grammar**: Full specification of the text format in the [`grammar`] module
 
+For project-level design principles, compatibility expectations, and format
+change guidance, see the
+[design philosophy](https://github.com/DataDog/substrait-explain/blob/main/DESIGN.md).
 For installation instructions, see the [README](https://github.com/DataDog/substrait-explain/blob/main/README.md).
 
 ## Quick Start

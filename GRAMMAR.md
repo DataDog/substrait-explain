@@ -11,6 +11,10 @@ The Substrait text format consists of two main sections:
 
 ## Design Principles
 
+This section describes the syntax and semantics principles of the text-format
+DSL. For the repository-level design philosophy, compatibility expectations, and
+format change guidance, see [`DESIGN.md`](DESIGN.md).
+
 The grammar is designed around several concrete choices that make it practical and consistent:
 
 ### 1. Single-Line, Structured Relations
@@ -353,7 +357,7 @@ Currently, only references to fields in the Relations' input are supported.
 
 ```rust
 # use substrait_explain::Parser;
-# 
+#
 # let plan_text = r#"
 === Plan
 Root[result]
@@ -439,7 +443,7 @@ An IfThen expression is a conditional function or logical operator that evaluate
 
 ```rust
 # use substrait_explain::Parser;
-# 
+#
 # let plan_text = r#"
 === Plan
 Root[status]
@@ -447,7 +451,7 @@ Root[status]
     Project[if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]
 #  "#;
-# 
+#
 #  let plan = Parser::parse(plan_text).unwrap();
 #  assert_eq!(plan.relations.len(), 1);
 ```
