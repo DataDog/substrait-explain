@@ -109,9 +109,21 @@ Root[revenue]
 
 Now you can easily see what the query does: it reads from an orders table, multiplies quantity and price, filters for orders where the result is greater than 100, and outputs the revenue.
 
+## Design Philosophy
+
+`substrait-explain` is human-first and protobuf-backed. It provides a readable
+text representation for inspecting, discussing, testing, and round-tripping
+Substrait plans; it is not SQL, an optimizer IR, or a replacement for Substrait
+protobuf.
+
+For the project-level design stance, including round-trip expectations, error
+handling, extension boundaries, and guidance for changing the format, see
+[`DESIGN.md`](DESIGN.md). For the syntax and semantics of the text format itself,
+see [`GRAMMAR.md`](GRAMMAR.md).
+
 ## Supported Relations
 
-The following Substrait relations are currently supported in the text format:
+The core text format currently supports these standard relations:
 
 - `Read`
 - `Project`
@@ -121,7 +133,11 @@ The following Substrait relations are currently supported in the text format:
 - `Sort`
 - `Root`
 
-Support for additional relations (e.g., Set, Fetch, Window, etc.) is planned for future releases.
+The grammar also documents supported read variants, extension relations, and
+advanced extension addenda. For the full current syntax contract, see
+[`GRAMMAR.md`](GRAMMAR.md).
+
+Support for additional standard relations (e.g., Set, Window, etc.) is planned for future releases.
 If you need a specific relation, please open an issue or contribute!
 
 ## Quick Start
@@ -181,6 +197,7 @@ substrait = "0.57.0"  # For protobuf types
 
 ## Documentation
 
+- **[Design Philosophy](https://github.com/DataDog/substrait-explain/blob/main/DESIGN.md)** - Project-level design principles, compatibility expectations, and change guidance
 - **[API Documentation](https://github.com/DataDog/substrait-explain/blob/main/API.md)** - Complete API reference with examples and configuration options
 - **[Grammar Specification](https://github.com/DataDog/substrait-explain/blob/main/GRAMMAR.md)** - Detailed specification of the text format grammar
 - **[Full Documentation](https://datadoghq.dev/substrait-explain/substrait_explain/)** - Generated API docs using GitHub Pages, including grammar and API docs.

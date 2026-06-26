@@ -42,7 +42,8 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
    just fmt                      # Format code
    just check                    # Run linting and checks
    just fix                      # Format code, auto-fix clippy errors
-   cargo test                    # Run all tests
+   just test                     # Run all tests and examples
+   cargo test                    # Run Rust tests
    cargo test -- --nocapture     # Run tests with output
    cargo run --example basic_usage
    cargo doc --open              # View documentation
@@ -56,7 +57,9 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
 - Add documentation for public APIs, and review them with `cargo doc --open`
 - Include tests for new functionality
 - **Import organization**: Prefer module-level imports over function-level `use` statements or long inline type references (e.g., `use substrait::proto::RelType;` at module level rather than `substrait::proto::RelType` inline)
+- **Structure for local reasoning**: Prefer code that keeps invariants close to the data they describe. Use named intermediate types, trait implementations, or methods when they make parser/textifier behavior easier to understand from signatures and local context. Avoid helper functions whose signatures expose unrelated state or spread one concept across several modules.
 - **Pattern matching depth**: Avoid deeply nested pattern matching (if-let chains, match arms). Prefer sequential operations with let-else patterns or early returns for clarity
+
   ```rust
   // Good: Sequential with let-else
   let Some(root) = plan.relations.first_mut() else {
@@ -73,18 +76,24 @@ For non-trivial bug fixes, please open an issue first to discuss the problem and
       }
   }
   ```
+
 - **Unused parameters**: When refactoring changes behavior, remove parameters that are no longer used rather than prefixing with underscore
 
 ### Project-Specific Guidelines
+
+See the overall [Design Philosophy documentation](DESIGN.md) for the project-level design principles and [`GRAMMAR.md`](GRAMMAR.md) for the user-facing syntax contract.
 
 #### Substrait-Specific Development
 
 This project implements Substrait protobuf plan parsing and formatting. See the [official Substrait documentation](https://substrait.io/) for the complete specification, including output mapping rules per relation type.
 
+When implementing or documenting support for a Substrait feature, start from the upstream spec or protobuf definition. Link the relevant reference in the issue or PR, use upstream terminology where it exists, and describe `substrait-explain` text-format choices as representation choices rather than changes to Substrait itself.
+
 ##### Project-specific text format patterns
 
 - **Enum textification**: All Substrait enums use `&` prefix in text format (e.g., `&Inner`, `&AscNullsFirst`)
 - **Unknown enum handling**: For invalid/unknown enum values, use `Value::Missing(PlanError)` and fallback to reasonable default enum value (usually `UNSPECIFIED`) for processing
+- **Readable defaults**: Prefer concise, human-readable text output when it does not lose information. Syntax should make the common case clear while still preserving enough detail to disambiguate Substrait/Protobuf specifics like anchors, signatures, types, and extension references when needed.
 
 #### Error Handling Patterns
 
@@ -104,7 +113,7 @@ fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
 }
 ```
 
-_Note: Ideally, `pest_derive` would remove the need for unwraps by providing structural types that encode the invariants, ensuring at compile-time the grammar and code remain in sync._
+_Note: Ideally, `pest_derive` would remove the need for unwraps by providing structural types that encode the invariants, ensuring at compile-time the grammar and code remain in sync; however, that functionality does not yet fully exist._
 
 ##### Other Parsing Context (e.g., lookups)
 
@@ -195,10 +204,14 @@ When working with [`GRAMMAR.md`](GRAMMAR.md):
 - Use PEG format with `rule_name := definition` syntax
 - Run `cargo test --doc` to verify all code examples compile
 - Ensure all referenced identifiers are properly defined somewhere in the grammar
+- Treat `GRAMMAR.md` as the user-facing text-format contract. For syntax changes, update the docs, Pest grammar, parser, textifier, and roundtrip tests together so accepted input and produced output stay aligned.
+- Describe the user-facing grammar clearly rather than copying Pest syntax directly. Pest-specific details such as `~` for concatenation and `|` for choice belong in `src/parser/expression_grammar.pest`, not in the documentation grammar. The syntax described by `GRAMMAR.md` and the Pest grammar should match; however, naming and/or structuring (e.g. inlining rules) may differ so that `GRAMMAR.md` prioritizes user-facing documentation whereas the Pest grammar must also lead to code generation.
 
 #### Testing Guidelines
 
 **Roundtrip testing**: The most effective validation is parse→format→parse comparison. Parse text to protobuf, format back to text, and verify the output matches the input. See `tests/plan_roundtrip.rs` for examples.
+
+When changing protobuf-to-text behavior, include tests for raw, malformed, older, or partially populated protobuf inputs when relevant. Textification should surface missing or unsupported fields through accumulated errors and `!{...}` output rather than panicking or silently producing text the parser cannot read.
 
 **Assert on expected values, not just properties**: When testing structured output, prefer comparing against concrete expected values rather than only checking lengths or other surface-level properties. Use judgment for deeply nested structures where building a full expected value would be unwieldy — property-based checks are fine there. For example:
 
@@ -219,15 +232,18 @@ assert_eq!(result.len(), 3);
 3. Make your changes
 4. Add tests for new functionality
 5. Commit your changes with a clear message
-   - Pre-commit hooks will automatically run tests, clippy, and formatting
+   - Pre-commit hooks run formatting and clippy; run `just test` locally or rely on CI for tests and examples
 6. Push to the branch (`git push origin feature-name`)
 7. Open a Pull Request
 
 **PR Guidelines:**
 
 - Keep changes focused and atomic
-- Include tests for new functionality
-- Update documentation if needed
+- Make the PR title and description match the actual scope. If one diff implements multiple concepts, split it or call out the combined scope explicitly so reviewers can reason about it.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) syntax for PR titles, which are automatically compiled into our Changelog.
+- Include tests for new functionality.
+- Update documentation if needed.
+- For public API changes, state whether the change preserves compatibility, intentionally breaks compatibility, or narrows an accidentally exposed internal surface.
 - Ensure all CI checks pass
   - You may wish to leave it in 'Draft' form until you validate this
 - Provide a clear description of what the PR does
@@ -242,6 +258,20 @@ version bumping or changelog entries — just use
 release automation handles the rest.
 
 ## Contributing to Issues
+
+### Feature Requests
+
+Feature Requests should:
+
+- Clearly state the missing feature at a user level.
+  - If the feature is support for a particular Substrait feature, describe the Substrait feature in terms of Substrait itself (<https://substrait.io/>), not in terms of language-specific libraries.
+- Give a reproducible example wherever possible / reasonable. This should include both the input and commands to reproduce, and the output / errors it produced.
+  - For example, a Substrait feature would ideally include a JSON form of a plan with the feature in it, and show the output when running substrait-explain (e.g. the output of `substrait-explain convert ...`).
+- (Optional) Possible solutions, with a recommendation.
+  - If desired, suggest what some possible options are, and what your preference might be and why.
+  - In particular, focus on the user-level API / syntax changes.
+
+Example issue: <https://github.com/DataDog/substrait-explain/issues/160>
 
 ### Contributing to reporting bugs
 
