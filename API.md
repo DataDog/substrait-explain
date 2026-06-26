@@ -148,8 +148,11 @@ Untyped scalar extension literals such as `2` or `'path'` are represented as
 scalar `ExtensionValue` variants and render without expression type suffixes,
 even in verbose output. The same values can still be requested as `Expr` through
 `ArgsExtractor`, which widens them to default non-nullable Substrait literal
-expressions. Typed literals, field references, function calls, and casts are
-represented as expression values.
+expressions. Temporal typed literals such as `'2024-01-01':date` or
+`'2024-01-01T12:34:56.123456':precisiontimestamp<6>` are represented as
+`ExtensionLiteral` values and can also be requested as `Expr`. Other typed
+literals, field references, function calls, and casts are represented as
+expression values.
 
 `ExtensionProtoConvert` converts between extension arguments and Substrait
 protobuf values in either direction, such as output columns and relation
