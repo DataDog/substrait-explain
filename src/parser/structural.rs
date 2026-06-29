@@ -21,6 +21,7 @@ use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AddendumInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
+use crate::parser::chunks::ChunkCursor;
 use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, VirtualReadRel};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
@@ -88,6 +89,27 @@ pub enum LineNode<'a> {
     Addendum(Addendum<'a>),
 }
 
+/// Reject a continuation line the grammar did not consume.
+///
+/// A relation rule can match a prefix and stop — for example at a stray `- `
+/// continuation line left after the relation's closing `]`. Pest does not
+/// require a rule to reach the end of its input, so without this check that
+/// merged line would be silently dropped from the parsed plan.
+///
+/// Trailing content *on the same physical line* (such as a `// comment`) is
+/// left tolerated, as it always has been. Only unconsumed input that crosses a
+/// newline indicates a dropped continuation line, so that is what we reject.
+fn ensure_fully_consumed(line: &str, line_no: i64, consumed: usize) -> Result<(), ParseError> {
+    if !line[consumed..].contains('\n') {
+        return Ok(());
+    }
+    let span = pest::Span::new(line, consumed, line.len()).expect("trailing span is in range");
+    Err(ParseError::Plan(
+        ParseContext::new(line_no, line.to_string()),
+        MessageParseError::invalid("planNode", span, "unexpected trailing input after relation"),
+    ))
+}
+
 impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
@@ -103,6 +125,7 @@ impl<'a> LineNode<'a> {
 
         let outer = pairs.next().unwrap();
         assert!(pairs.next().is_none()); // Should be exactly one pair
+        ensure_fully_consumed(line, line_no, outer.as_span().end())?;
         let inner = unwrap_single_pair(outer);
 
         Ok(match inner.as_rule() {
@@ -135,6 +158,7 @@ impl<'a> LineNode<'a> {
 
         let outer = pairs.next().unwrap();
         assert!(pairs.next().is_none());
+        ensure_fully_consumed(line, line_no, outer.as_span().end())?;
 
         // top_level_relation is either root_relation or planNode.
         // If planNode, unwrap one more level to obtain the specific relation rule.
@@ -869,18 +893,57 @@ impl<'a> Parser<'a> {
 
     /// Parse a Substrait plan with the current parser configuration.
     pub fn parse_plan(mut self, input: &'a str) -> ParseResult {
-        for line in input.lines() {
-            if line.trim().is_empty() {
-                self.line_no += 1;
+        let mut cursor = ChunkCursor::new(input, 1);
+        while let Some(c) = cursor {
+            let (chunk, line_no, rest) = self.build_chunk(c);
+            cursor = rest;
+
+            // The chunk slice carries the trailing newline of its last physical
+            // line (see `ChunkCursor`); drop it so single-line chunks match the
+            // old `str::lines()` behaviour exactly.
+            let chunk = chunk.trim_end_matches(['\r', '\n']);
+            if chunk.trim().is_empty() {
                 continue;
             }
 
-            self.parse_line(line)?;
-            self.line_no += 1;
+            self.line_no = line_no;
+            self.parse_line(chunk)?;
         }
 
         let plan = self.build_plan()?;
         Ok(plan)
+    }
+
+    /// Group the next chunk out of `cursor`: always its first physical line,
+    /// plus any `- ` continuation lines indented one level deeper while we are
+    /// in the plan section.
+    ///
+    /// Grouping the whole relation into one contiguous slice lets the grammar
+    /// see a multi-line relation as a single unit. The [`ChunkCursor`] layer is
+    /// syntax-agnostic, so the `- `/indent policy lives here. Returns the chunk
+    /// text, its first line number, and the cursor for whatever follows.
+    fn build_chunk(&self, mut c: ChunkCursor<'a>) -> (&'a str, i64, Option<ChunkCursor<'a>>) {
+        // Every chunk contains at least its first physical line.
+        let first = c
+            .peek_line()
+            .expect("a non-exhausted cursor always yields a line");
+        c.merge(first);
+
+        if matches!(self.state, State::Plan) {
+            let base = IndentedLine::from(first.as_str()).0;
+            while let Some(line) = c.peek_line() {
+                let IndentedLine(depth, body) = IndentedLine::from(line.as_str());
+                if depth == base + 1 && body.starts_with("- ") {
+                    c.merge(line);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let line_no = c.start_line_no();
+        let (chunk, rest) = c.next();
+        (chunk, line_no, rest)
     }
 
     /// Parse a single line of input.
