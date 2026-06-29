@@ -754,6 +754,27 @@ Root[name]
 }
 
 #[test]
+fn test_virtual_read_multiline_tolerates_trailing_whitespace() {
+    // Trailing spaces after `[`, after a row comma, and after a row must not
+    // break parsing — the old line-based parser trimmed each physical line, so
+    // files with harmless trailing whitespace must keep working. `concat!`
+    // keeps the (otherwise invisible) trailing spaces explicit.
+    let inline = "=== Plan\n\
+                  Root[id, name]\n  \
+                    Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]";
+    let multiline = concat!(
+        "=== Plan\n",
+        "Root[id, name]\n",
+        "  Read:Virtual[  \n",     // trailing spaces after `[`
+        "    - (1, 'alice'),  \n", // trailing spaces after a row comma
+        "    - (2, 'bob')  \n",    // trailing spaces after a row
+        "    - => id:i64, name:string]",
+    );
+
+    assert_roundtrip_canonical(inline, multiline);
+}
+
+#[test]
 fn test_virtual_read_multiline_rejects_child() {
     // A child relation (not a `- ` line) under a multi-line virtual read is not
     // merged into the chunk; it becomes a child, which a leaf read rejects.

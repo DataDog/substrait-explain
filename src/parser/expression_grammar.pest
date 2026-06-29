@@ -262,11 +262,15 @@ extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
 //
 // The structural layer groups the physical lines into one contiguous slice
 // before the grammar sees them (see `chunks` / `Parser::build_chunk`); here we
-// only accept the newline + indentation + `- ` marker. `relation_line_cont` is
-// tried before `sp` because `sp` matches the empty string and would otherwise
-// shadow it.
+// accept optional trailing spaces, the newline, indentation, and the `- `
+// marker. The leading `sp` matters: without it, harmless trailing whitespace
+// before the newline (after `[`, a row comma, or a row) would leave the parser
+// stranded at the space and reject the relation, unlike the old line-based
+// parser which trimmed each physical line. `relation_line_cont` is tried before
+// the bare `sp` fallback because `sp` matches the empty string and would
+// otherwise shadow it.
 // TODO: reuse these for other bracketed relations (Project, Aggregate, ...).
-relation_line_cont = _{ NEWLINE ~ " "* ~ "- " ~ sp }
+relation_line_cont = _{ sp ~ NEWLINE ~ sp ~ "- " ~ sp }
 relation_open      = _{ "[" ~ relation_line_cont? }
 relation_comma     = _{ sp ~ "," ~ (relation_line_cont | sp) }
 relation_arrow     = _{ (relation_line_cont | sp) ~ "=>" ~ sp }
