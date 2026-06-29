@@ -15,13 +15,13 @@ use substrait::proto::{
 
 use crate::extensions::any::Any;
 use crate::extensions::{AddendumKind, ExtensionRegistry, SimpleExtensions, simple};
+use crate::parser::chunks::ChunkCursor;
 use crate::parser::common::{MessageParseError, ParsePair, ScopedParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AddendumInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
-use crate::parser::chunks::ChunkCursor;
 use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, VirtualReadRel};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
