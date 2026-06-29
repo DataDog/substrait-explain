@@ -16,19 +16,17 @@
 //! - [`ChunkCursor::next`] — finish the current chunk and produce a cursor for
 //!   the next one.
 //!
-//! ## Why the cursor *is* the chunk
+//! ## The cursor is the chunk
 //!
-//! Rather than a separate "chunk" value plus a cursor that could drift out of
-//! sync, the cursor itself represents the current chunk: `text[..current_end]`
-//! is the chunk built so far, and `text[current_end..]` is everything after it.
-//! A chunk starts empty, so the first physical line is added through the same
-//! `peek_line` / `merge` path as every continuation line — there is no special
-//! case for the first line.
+//! The cursor itself represents the current chunk: it tracks how much of the
+//! input the chunk has grown to cover and what remains after it. A chunk starts
+//! empty, so the first physical line is added through the same `peek_line` /
+//! `merge` path as every continuation line — there is no special case for the
+//! first line.
 //!
-//! Because the only line you can `merge` is the one [`peek_line`] just returned
-//! (which always starts exactly at `current_end`), a chunk is always a span of
-//! *contiguously consumed* lines. That invariant is what keeps a chunk a single
-//! `&str` slice instead of a list of fragments.
+//! Because the only line you can `merge` is the one [`peek_line`] just returned,
+//! a chunk is always a span of *contiguously consumed* lines. That invariant is
+//! what keeps a chunk a single `&str` slice instead of a list of fragments.
 //!
 //! [`peek_line`]: ChunkCursor::peek_line
 
@@ -55,14 +53,16 @@ impl<'a> Line<'a> {
 
 /// A forward cursor over the input that yields one chunk at a time.
 ///
-/// The cursor represents the chunk currently being built: [`chunk`] is
-/// `&text[..current_end]`, and the unread remainder is `text[current_end..]`.
-/// See the [module docs](self) for the overall model.
+/// Each chunk is a contiguous slice of the input spanning one or more physical
+/// lines. Use [`peek_line`] to inspect the next line, [`merge`] to extend the
+/// current chunk to include it, and [`next`] to finish the chunk and obtain a
+/// cursor for what follows. See the [module docs](self) for the overall model.
 ///
 /// The cursor is move-only on purpose: [`next`] consumes it by value, so a
 /// finished chunk cannot be accidentally reused or finished twice.
 ///
-/// [`chunk`]: ChunkCursor::chunk
+/// [`peek_line`]: ChunkCursor::peek_line
+/// [`merge`]: ChunkCursor::merge
 /// [`next`]: ChunkCursor::next
 #[derive(Debug)]
 pub struct ChunkCursor<'a> {
@@ -110,13 +110,9 @@ impl<'a> ChunkCursor<'a> {
             Some(nl) => {
                 // Exclude the '\n' and a preceding '\r' from the content, but
                 // advance `end` past the '\n' to the start of the next line.
-                let content_end = if nl > 0 && rest.as_bytes()[nl - 1] == b'\r' {
-                    nl - 1
-                } else {
-                    nl
-                };
+                let line = rest[..nl].strip_suffix('\r').unwrap_or(&rest[..nl]);
                 Some(Line {
-                    line: &rest[..content_end],
+                    line,
                     end: self.current_end + nl + 1,
                 })
             }

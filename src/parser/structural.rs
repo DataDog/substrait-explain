@@ -89,27 +89,6 @@ pub enum LineNode<'a> {
     Addendum(Addendum<'a>),
 }
 
-/// Reject a continuation line the grammar did not consume.
-///
-/// A relation rule can match a prefix and stop — for example at a stray `- `
-/// continuation line left after the relation's closing `]`. Pest does not
-/// require a rule to reach the end of its input, so without this check that
-/// merged line would be silently dropped from the parsed plan.
-///
-/// Trailing content *on the same physical line* (such as a `// comment`) is
-/// left tolerated, as it always has been. Only unconsumed input that crosses a
-/// newline indicates a dropped continuation line, so that is what we reject.
-fn ensure_fully_consumed(line: &str, line_no: i64, consumed: usize) -> Result<(), ParseError> {
-    if !line[consumed..].contains('\n') {
-        return Ok(());
-    }
-    let span = pest::Span::new(line, consumed, line.len()).expect("trailing span is in range");
-    Err(ParseError::Plan(
-        ParseContext::new(line_no, line.to_string()),
-        MessageParseError::invalid("planNode", span, "unexpected trailing input after relation"),
-    ))
-}
-
 impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
         let mut pairs: pest::iterators::Pairs<'a, Rule> =
@@ -125,7 +104,6 @@ impl<'a> LineNode<'a> {
 
         let outer = pairs.next().unwrap();
         assert!(pairs.next().is_none()); // Should be exactly one pair
-        ensure_fully_consumed(line, line_no, outer.as_span().end())?;
         let inner = unwrap_single_pair(outer);
 
         Ok(match inner.as_rule() {
@@ -158,7 +136,6 @@ impl<'a> LineNode<'a> {
 
         let outer = pairs.next().unwrap();
         assert!(pairs.next().is_none());
-        ensure_fully_consumed(line, line_no, outer.as_span().end())?;
 
         // top_level_relation is either root_relation or planNode.
         // If planNode, unwrap one more level to obtain the specific relation rule.
@@ -831,6 +808,10 @@ impl<'a> RelationParser<'a> {
 pub struct Parser<'a> {
     line_no: i64,
     state: State,
+    /// Cursor over the remaining input, advanced one chunk at a time by
+    /// [`next_chunk`](Self::next_chunk). `None` before parsing starts and once
+    /// the input is exhausted.
+    cursor: Option<ChunkCursor<'a>>,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
@@ -879,6 +860,7 @@ impl<'a> Parser<'a> {
         Self {
             line_no: 1,
             state: State::Initial,
+            cursor: None,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -893,20 +875,23 @@ impl<'a> Parser<'a> {
 
     /// Parse a Substrait plan with the current parser configuration.
     pub fn parse_plan(mut self, input: &'a str) -> ParseResult {
-        let mut cursor = ChunkCursor::new(input, 1);
-        while let Some(c) = cursor {
-            let (chunk, line_no, rest) = self.build_chunk(c);
-            cursor = rest;
+        self.cursor = ChunkCursor::new(input, 1);
+        while self.cursor.is_some() {
+            let (chunk, line_no) = self.next_chunk();
 
-            // The chunk slice carries the trailing newline of its last physical
-            // line (see `ChunkCursor`); drop it so single-line chunks match the
-            // old `str::lines()` behaviour exactly.
-            let chunk = chunk.trim_end_matches(['\r', '\n']);
             if chunk.trim().is_empty() {
                 continue;
             }
 
             self.line_no = line_no;
+            // TODO: multi-line chunk errors report a confusing location. The
+            // outer message uses the chunk's first line, while the Pest span
+            // inside counts lines relative to the chunk, so neither points at
+            // the true absolute line. E.g. a bad row on the 2nd line of a chunk
+            // starting at line 3 produces:
+            //   Error parsing plan on line 3: '...': ...
+            //    --> 2:8
+            // We should map the Pest-relative line back to an absolute line.
             self.parse_line(chunk)?;
         }
 
@@ -914,15 +899,17 @@ impl<'a> Parser<'a> {
         Ok(plan)
     }
 
-    /// Group the next chunk out of `cursor`: always its first physical line,
+    /// Group the next chunk out of the cursor: always its first physical line,
     /// plus any `- ` continuation lines indented one level deeper while we are
     /// in the plan section.
     ///
-    /// Grouping the whole relation into one contiguous slice lets the grammar
-    /// see a multi-line relation as a single unit. The [`ChunkCursor`] layer is
-    /// syntax-agnostic, so the `- `/indent policy lives here. Returns the chunk
-    /// text, its first line number, and the cursor for whatever follows.
-    fn build_chunk(&self, mut c: ChunkCursor<'a>) -> (&'a str, i64, Option<ChunkCursor<'a>>) {
+    /// For consistency, chunks always end with no newline.
+    fn next_chunk(&mut self) -> (&'a str, i64) {
+        let mut c = self
+            .cursor
+            .take()
+            .expect("next_chunk called with no cursor");
+
         // Every chunk contains at least its first physical line.
         let first = c
             .peek_line()
@@ -943,7 +930,8 @@ impl<'a> Parser<'a> {
 
         let line_no = c.start_line_no();
         let (chunk, rest) = c.next();
-        (chunk, line_no, rest)
+        self.cursor = rest;
+        (chunk.trim_end_matches(['\r', '\n']), line_no)
     }
 
     /// Parse a single line of input.

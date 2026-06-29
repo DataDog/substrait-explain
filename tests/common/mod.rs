@@ -31,6 +31,37 @@ pub fn roundtrip_plan(input: &str) {
     );
 }
 
+/// Assert that both `canonical` and `equivalent` parse and pretty-print to the
+/// canonical form. Use this when two different textual inputs should produce the
+/// same plan (e.g. a verbose form and its compact rendering, or a multi-line
+/// relation and its inline equivalent).
+pub fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
+    let plan1 = Parser::parse(canonical).expect("canonical parse failed");
+    let plan2 = Parser::parse(equivalent).expect("equivalent parse failed");
+
+    let (text1, errors1) = format(&plan1);
+    let (text2, errors2) = format(&plan2);
+    assert!(
+        errors1.is_empty(),
+        "Formatting errors for canonical: {errors1:?}"
+    );
+    assert!(
+        errors2.is_empty(),
+        "Formatting errors for equivalent: {errors2:?}"
+    );
+
+    assert_eq!(
+        text1.trim(),
+        canonical.trim(),
+        "Canonical did not roundtrip to itself"
+    );
+    assert_eq!(
+        text2.trim(),
+        canonical.trim(),
+        "Equivalent did not roundtrip to canonical"
+    );
+}
+
 /// Parse a built-in type string (e.g. `"i64"`, `"string?"`) into a
 /// `proto::Type`. Panics on invalid type names.
 pub fn parse_type(s: &str) -> proto::Type {

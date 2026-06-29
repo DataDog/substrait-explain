@@ -254,23 +254,13 @@ extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
 
 // -- Multi-line relation layout --
 // A relation may be written across several lines, with each continuation line
-// indented and prefixed by a `- ` marker. These silent rules accept that layout
-// only at the positions a relation's bracket syntax allows it (after `[`, after
-// a row comma, and before `=>`). Being silent, they emit no tokens: a relation
-// parses to the same pair tree whether written inline or multi-line, so the
-// semantic parser in `relations.rs` is unaffected.
+// indented and prefixed by a `- ` marker at defined points in the relation grammar.
 //
-// The structural layer groups the physical lines into one contiguous slice
-// before the grammar sees them (see `chunks` / `Parser::build_chunk`); here we
-// accept optional trailing spaces, the newline, indentation, and the `- `
-// marker. The leading `sp` matters: without it, harmless trailing whitespace
-// before the newline (after `[`, a row comma, or a row) would leave the parser
-// stranded at the space and reject the relation, unlike the old line-based
-// parser which trimmed each physical line. `relation_line_cont` is tried before
-// the bare `sp` fallback because `sp` matches the empty string and would
-// otherwise shadow it.
 // TODO: reuse these for other bracketed relations (Project, Aggregate, ...).
+// A continuation line transition: newline, followed by spaces and "- "
 relation_line_cont = _{ sp ~ NEWLINE ~ sp ~ "- " ~ sp }
+// Continuation allowed after relation opening ("["), between arguments (after ","),
+// or before the columns (before "=>")
 relation_open      = _{ "[" ~ relation_line_cont? }
 relation_comma     = _{ sp ~ "," ~ (relation_line_cont | sp) }
 relation_arrow     = _{ (relation_line_cont | sp) ~ "=>" ~ sp }
@@ -282,7 +272,12 @@ relation_arrow     = _{ (relation_line_cont | sp) ~ "=>" ~ sp }
 //     - (1, 'alice'),
 //     - (2, 'bob')
 //     - => id:i64, name:string]
-virtual_read_relation = { "Read:Virtual" ~ relation_open ~ virtual_read_args ~ relation_arrow ~ named_column_list ~ "]" }
+// The trailing `relation_end` forces the rule to consume the whole (possibly
+// multi-line) input, so a stray continuation line after `]` is a parse error
+// rather than silently dropped. It is silent so the `EOI` token does not show
+// up among the relation's child pairs.
+virtual_read_relation = { "Read:Virtual" ~ relation_open ~ virtual_read_args ~ relation_arrow ~ named_column_list ~ "]" ~ relation_end }
+relation_end          = _{ sp ~ EOI }
 virtual_read_args     = { virtual_row_list | empty }
 virtual_row_list      = { virtual_row ~ (relation_comma ~ virtual_row)* }
 virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }

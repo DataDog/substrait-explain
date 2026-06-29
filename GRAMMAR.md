@@ -619,6 +619,33 @@ Root[id, name]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
+#### Multi-line form
+
+For readability, a `Read:Virtual` with many rows may be written across several
+lines. Each continuation line is indented one level deeper than the relation and
+prefixed with a `- ` marker. Continuations are allowed after the opening `[`,
+after each row separator (`,`), and before `=>`:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[
+    - (1, 'alice'),
+    - (2, 'bob')
+    - => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+The multi-line form is purely a layout convenience: it parses to exactly the
+same plan as the inline form above. (Formatting currently always emits the
+inline form.)
+
 ### `ExtensionTable` Read Relation
 
 An `ExtensionTable` read uses `ReadRel` with `ReadType::ExtensionTable`. The relation header carries the read output schema, while a required `+ Ext:` addendum carries the custom table detail payload.
