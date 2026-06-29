@@ -15,6 +15,7 @@ use substrait::proto::{
 
 use crate::extensions::any::Any;
 use crate::extensions::{AddendumKind, ExtensionRegistry, SimpleExtensions, simple};
+use crate::parser::chunks::ChunkCursor;
 use crate::parser::common::{MessageParseError, ParsePair, ScopedParsePair};
 use crate::parser::errors::{ParseContext, ParseError, ParseResult};
 use crate::parser::expressions::Name;
@@ -807,6 +808,10 @@ impl<'a> RelationParser<'a> {
 pub struct Parser<'a> {
     line_no: i64,
     state: State,
+    /// Cursor over the remaining input, advanced one chunk at a time by
+    /// [`next_chunk`](Self::next_chunk). `None` before parsing starts and once
+    /// the input is exhausted.
+    cursor: Option<ChunkCursor<'a>>,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
@@ -855,6 +860,7 @@ impl<'a> Parser<'a> {
         Self {
             line_no: 1,
             state: State::Initial,
+            cursor: None,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -869,18 +875,63 @@ impl<'a> Parser<'a> {
 
     /// Parse a Substrait plan with the current parser configuration.
     pub fn parse_plan(mut self, input: &'a str) -> ParseResult {
-        for line in input.lines() {
-            if line.trim().is_empty() {
-                self.line_no += 1;
+        self.cursor = ChunkCursor::new(input, 1);
+        while self.cursor.is_some() {
+            let (chunk, line_no) = self.next_chunk();
+
+            if chunk.trim().is_empty() {
                 continue;
             }
 
-            self.parse_line(line)?;
-            self.line_no += 1;
+            self.line_no = line_no;
+            // TODO: multi-line chunk errors report a confusing location. The
+            // outer message uses the chunk's first line, while the Pest span
+            // inside counts lines relative to the chunk, so neither points at
+            // the true absolute line. E.g. a bad row on the 2nd line of a chunk
+            // starting at line 3 produces:
+            //   Error parsing plan on line 3: '...': ...
+            //    --> 2:8
+            // We should map the Pest-relative line back to an absolute line.
+            self.parse_line(chunk)?;
         }
 
         let plan = self.build_plan()?;
         Ok(plan)
+    }
+
+    /// Group the next chunk out of the cursor: always its first physical line,
+    /// plus any `- ` continuation lines indented one level deeper while we are
+    /// in the plan section.
+    ///
+    /// For consistency, chunks always end with no newline.
+    fn next_chunk(&mut self) -> (&'a str, i64) {
+        let mut c = self
+            .cursor
+            .take()
+            .expect("next_chunk called with no cursor");
+
+        // Every chunk contains at least its first physical line.
+        let first = c
+            .peek_line()
+            .expect("a non-exhausted cursor always yields a line");
+        c.merge(first);
+
+        if matches!(self.state, State::Plan) {
+            let base = IndentedLine::from(first.as_str()).0;
+            while let Some(line) = c.peek_line() {
+                let IndentedLine(depth, body) = IndentedLine::from(line.as_str());
+                if depth == base + 1 && body.starts_with("- ") {
+                    c.merge(line);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let line_no = c.start_line_no();
+        let (chunk, rest) = c.next();
+        self.cursor = rest;
+        (chunk.trim_end_matches(['\r', '\n']), line_no)
     }
 
     /// Parse a single line of input.

@@ -290,7 +290,14 @@ impl<'a> RuleIter<'a> {
 
     pub(crate) fn done(mut self) {
         self.done = true;
-        assert_eq!(self.iter.next(), None);
+        // A rule may end with the `EOI` marker to force full input consumption
+        // (e.g. `virtual_read_relation`). That marker carries no data, so it is
+        // not leftover content — skip it before asserting the iterator is empty.
+        let next = match self.iter.next() {
+            Some(pair) if pair.as_rule() == Rule::EOI => self.iter.next(),
+            other => other,
+        };
+        assert_eq!(next, None);
     }
 }
 

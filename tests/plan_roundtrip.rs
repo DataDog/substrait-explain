@@ -7,39 +7,8 @@
 
 mod common;
 
-use common::roundtrip_plan;
-use substrait_explain::{ParseError, Parser, format};
-
-/// Assert that both canonical and equivalent plans parse and pretty-print to the canonical form.
-fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
-    // Parse both
-    let plan1 = Parser::parse(canonical).expect("canonical parse failed");
-    let plan2 = Parser::parse(equivalent).expect("equivalent parse failed");
-
-    // Format both
-    let (text1, errors1) = format(&plan1);
-    let (text2, errors2) = format(&plan2);
-    assert!(
-        errors1.is_empty(),
-        "Formatting errors for canonical: {errors1:?}"
-    );
-    assert!(
-        errors2.is_empty(),
-        "Formatting errors for equivalent: {errors2:?}"
-    );
-
-    // Both should match the canonical text
-    assert_eq!(
-        text1.trim(),
-        canonical.trim(),
-        "Canonical did not roundtrip to itself"
-    );
-    assert_eq!(
-        text2.trim(),
-        canonical.trim(),
-        "Equivalent did not roundtrip to canonical"
-    );
-}
+use common::{assert_roundtrip_canonical, roundtrip_plan};
+use substrait_explain::{ParseError, Parser};
 
 #[test]
 fn test_simple_plan_roundtrip() {

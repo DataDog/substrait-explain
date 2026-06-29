@@ -256,11 +256,34 @@ read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ "=>" ~ sp ~ named_column_list
 // ExtensionTable read: Read:Extension[columns], with detail in a required + Ext addendum.
 extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
 
+// -- Multi-line relation layout --
+// A relation may be written across several lines, with each continuation line
+// indented and prefixed by a `- ` marker at defined points in the relation grammar.
+//
+// TODO: reuse these for other bracketed relations (Project, Aggregate, ...).
+// A continuation line transition: newline, followed by spaces and "- "
+relation_line_cont = _{ sp ~ NEWLINE ~ sp ~ "- " ~ sp }
+// Continuation allowed after relation opening ("["), between arguments (after ","),
+// or before the columns (before "=>")
+relation_open      = _{ "[" ~ relation_line_cont? }
+relation_comma     = _{ sp ~ "," ~ (relation_line_cont | sp) }
+relation_arrow     = _{ (relation_line_cont | sp) ~ "=>" ~ sp }
+
 // VirtualTable read: Read:Virtual[rows => columns] or Read:Virtual[_ => columns]
-// Rows are parenthesized tuples; _ means empty (no rows).
-virtual_read_relation = { "Read:Virtual" ~ "[" ~ virtual_read_args ~ sp ~ "=>" ~ sp ~ named_column_list ~ "]" }
+// Rows are parenthesized tuples; _ means empty (no rows). May also be written
+// across multiple lines using the relation layout rules above:
+//   Read:Virtual[
+//     - (1, 'alice'),
+//     - (2, 'bob')
+//     - => id:i64, name:string]
+// The trailing `relation_end` forces the rule to consume the whole (possibly
+// multi-line) input, so a stray continuation line after `]` is a parse error
+// rather than silently dropped. It is silent so the `EOI` token does not show
+// up among the relation's child pairs.
+virtual_read_relation = { "Read:Virtual" ~ relation_open ~ virtual_read_args ~ relation_arrow ~ named_column_list ~ "]" ~ relation_end }
+relation_end          = _{ sp ~ EOI }
 virtual_read_args     = { virtual_row_list | empty }
-virtual_row_list      = { virtual_row ~ (sp ~ "," ~ sp ~ virtual_row)* }
+virtual_row_list      = { virtual_row ~ (relation_comma ~ virtual_row)* }
 virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }
 
 filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
