@@ -228,12 +228,48 @@ impl<'a> Textify for Emitted<'a> {
     }
 }
 
+/// How an argument list renders inside a relation's `[...]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArgsLayout {
+    /// `arg, arg, arg` on a single line.
+    #[default]
+    Inline,
+    /// One `- arg` per line, used for `Read:Virtual` rows. See
+    /// [`Relation::write_header`] for the exact layout.
+    Rows,
+}
+
 #[derive(Debug, Clone)]
 pub struct Arguments<'a> {
     /// Positional arguments (e.g., a filter condition, group-bys, etc.)
     pub positional: Vec<Value<'a>>,
     /// Named arguments (e.g., limit=10, offset=5)
     pub named: Vec<NamedArg<'a>>,
+    /// How this argument list is laid out. Defaults to [`ArgsLayout::Inline`];
+    /// only `Read:Virtual` opts into [`ArgsLayout::Rows`].
+    layout: ArgsLayout,
+}
+
+impl<'a> Arguments<'a> {
+    /// An inline argument list (`arg, arg, arg`), the default for every
+    /// relation.
+    pub fn inline(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        Arguments {
+            positional,
+            named,
+            layout: ArgsLayout::Inline,
+        }
+    }
+
+    /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
+    /// with many rows. There are no named arguments in this form.
+    pub fn rows(positional: Vec<Value<'a>>) -> Self {
+        Arguments {
+            positional,
+            named: vec![],
+            layout: ArgsLayout::Rows,
+        }
+    }
 }
 
 impl<'a> Textify for Arguments<'a> {
@@ -293,9 +329,20 @@ impl Textify for Relation<'_> {
 }
 
 impl Relation<'_> {
-    /// Write the single header line for this relation, e.g. `Filter[$0 => $0]`.
-    /// Does not write a trailing newline; callers are responsible for any
-    /// newline that follows (either from an addendum or from the next child).
+    /// Write the header for this relation, e.g. `Filter[$0 => $0]`.
+    ///
+    /// Usually a single line, but an argument list with [`ArgsLayout::Rows`]
+    /// (used by `Read:Virtual` with many rows) spans several lines:
+    ///
+    /// ```text
+    /// Read:Virtual[
+    ///   - (1, 'alice'),
+    ///   - (2, 'bob')
+    ///   - => id:i64, name:string]
+    /// ```
+    ///
+    /// Callers are responsible for any newline that follows (either from an addendum or
+    /// from the next child).
     pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
@@ -304,6 +351,20 @@ impl Relation<'_> {
         match &self.arguments {
             None => {
                 write!(w, "{indent}{name}[{cols}]")
+            }
+            Some(args) if args.layout == ArgsLayout::Rows => {
+                // One `- row` per line, one indent level deeper, with a trailing
+                // comma on every row but the last, then `- => cols]`.
+                let child = ctx.push_indent();
+                let child_indent = child.indent();
+                writeln!(w, "{indent}{name}[")?;
+                let last = args.positional.len().saturating_sub(1);
+                for (i, row) in args.positional.iter().enumerate() {
+                    let row = ctx.display(row);
+                    let comma = if i == last { "" } else { "," };
+                    writeln!(w, "{child_indent}- {row}{comma}")?;
+                }
+                write!(w, "{child_indent}- => {cols}]")
             }
             Some(args) => {
                 let args = ctx.display(args);
@@ -344,10 +405,7 @@ impl<'a> Relation<'a> {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
                 Relation {
                     name: Cow::Borrowed("Read"),
-                    arguments: Some(Arguments {
-                        positional: vec![table_name],
-                        named: vec![],
-                    }),
+                    arguments: Some(Arguments::inline(vec![table_name], vec![])),
                     columns,
                     emit,
                     addenda: AddendumLines::from_advanced_extension(
@@ -358,18 +416,24 @@ impl<'a> Relation<'a> {
                 }
             }
             Some(ReadType::VirtualTable(vt)) => {
-                let positional = vt
+                let positional: Vec<Value> = vt
                     .expressions
                     .iter()
                     .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
                     .collect();
 
+                // Emit many rows across multiple lines for readability
+                // based on configurable threshold (default = 3)
+                let arguments =
+                    if positional.len() >= ctx.options().virtual_table_multiline_threshold {
+                        Arguments::rows(positional)
+                    } else {
+                        Arguments::inline(positional, vec![])
+                    };
+
                 Relation {
                     name: Cow::Borrowed("Read:Virtual"),
-                    arguments: Some(Arguments {
-                        positional,
-                        named: vec![],
-                    }),
+                    arguments: Some(arguments),
                     columns,
                     emit,
                     addenda: AddendumLines::from_advanced_extension(
@@ -406,10 +470,7 @@ impl<'a> Relation<'a> {
                 );
                 Relation {
                     name: Cow::Borrowed("Read"),
-                    arguments: Some(Arguments {
-                        positional: vec![Value::Missing(err)],
-                        named: vec![],
-                    }),
+                    arguments: Some(Arguments::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
                     addenda: AddendumLines::from_advanced_extension(
@@ -474,10 +535,7 @@ impl<'a> Relation<'a> {
             PlanError::unimplemented("FilterRel", Some("condition"), "Condition is None")
         });
         let positional = vec![condition];
-        let arguments = Some(Arguments {
-            positional,
-            named: vec![],
-        });
+        let arguments = Some(Arguments::inline(positional, vec![]));
         let emit = get_emit(rel.common.as_ref());
         let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
@@ -600,7 +658,7 @@ impl<'a> Relation<'a> {
                 }
                 Relation {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
-                    arguments: Some(Arguments { positional, named }),
+                    arguments: Some(Arguments::inline(positional, named)),
                     columns,
                     emit: None,
                     // Extension relations use `detail` rather than
@@ -683,10 +741,7 @@ impl<'a> Relation<'a> {
         }
 
         // adding the grouping_sets as a list of Arguments to Aggregate Rel
-        let arguments = Some(Arguments {
-            positional,
-            named: vec![],
-        });
+        let arguments = Some(Arguments::inline(positional, vec![]));
 
         // The columns are the direct outputs of this relation (before emit)
         let mut all_outputs: Vec<Value> = expression_list;
@@ -799,10 +854,7 @@ impl<'a> Relation<'a> {
         for sort_field in &rel.sorts {
             positional.push(Value::from(sort_field));
         }
-        let arguments = Some(Arguments {
-            positional,
-            named: vec![],
-        });
+        let arguments = Some(Arguments::inline(positional, vec![]));
         // The columns are the direct outputs of this relation (before emit)
         let mut col_values = vec![];
         for i in 0..input_columns {
@@ -863,10 +915,7 @@ impl<'a> Relation<'a> {
             .collect();
         Relation {
             name: Cow::Borrowed("Fetch"),
-            arguments: Some(Arguments {
-                positional: vec![],
-                named: named_args,
-            }),
+            arguments: Some(Arguments::inline(vec![], named_args)),
             columns,
             emit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
@@ -967,10 +1016,7 @@ impl<'a> Relation<'a> {
         // Currently post_join_filter is not supported in the text format
         // grammar
         let positional = vec![join_type_value, condition];
-        let arguments = Some(Arguments {
-            positional,
-            named: vec![],
-        });
+        let arguments = Some(Arguments::inline(positional, vec![]));
 
         let emit = get_emit(rel.common.as_ref());
         let columns = join_output_columns(join_type, left_columns, right_columns);
@@ -1476,10 +1522,7 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     #[test]
     fn test_arguments_textify_positional_only() {
         let ctx = TestContext::new();
-        let args = Arguments {
-            positional: vec![Value::Integer(42), Value::Integer(7)],
-            named: vec![],
-        };
+        let args = Arguments::inline(vec![Value::Integer(42), Value::Integer(7)], vec![]);
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "42, 7");
@@ -1488,9 +1531,9 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     #[test]
     fn test_arguments_textify_named_only() {
         let ctx = TestContext::new();
-        let args = Arguments {
-            positional: vec![],
-            named: vec![
+        let args = Arguments::inline(
+            vec![],
+            vec![
                 NamedArg {
                     name: Cow::Borrowed("limit"),
                     value: Value::Integer(10),
@@ -1500,7 +1543,7 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
                     value: Value::Integer(5),
                 },
             ],
-        };
+        );
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "limit=10, offset=5");
@@ -1545,13 +1588,13 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     #[test]
     fn test_arguments_textify_both() {
         let ctx = TestContext::new();
-        let args = Arguments {
-            positional: vec![Value::Integer(1)],
-            named: vec![NamedArg {
+        let args = Arguments::inline(
+            vec![Value::Integer(1)],
+            vec![NamedArg {
                 name: "foo".into(),
                 value: Value::Integer(2),
             }],
-        };
+        );
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "1, foo=2");
@@ -1560,10 +1603,7 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     #[test]
     fn test_arguments_textify_empty() {
         let ctx = TestContext::new();
-        let args = Arguments {
-            positional: vec![],
-            named: vec![],
-        };
+        let args = Arguments::inline(vec![], vec![]);
         let (result, errors) = ctx.textify(&args);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         assert_eq!(result, "_");

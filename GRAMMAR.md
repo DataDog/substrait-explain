@@ -655,8 +655,10 @@ Root[id, name]
 ```
 
 The multi-line form is purely a layout convenience: it parses to exactly the
-same plan as the inline form above. (Formatting currently always emits the
-inline form.)
+same plan as the inline form above. When formatting a plan back to text, a
+`Read:Virtual` is emitted in this multi-line form once it has at least
+`OutputOptions::virtual_table_multiline_threshold` rows (3 by default), and
+inline below that. Raising the threshold keeps larger tables inline.
 
 ### `ExtensionTable` Read Relation
 

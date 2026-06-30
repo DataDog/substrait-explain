@@ -51,6 +51,10 @@ pub struct OutputOptions {
     /// Show the binary values for literal types as hex strings. Normally, they
     /// are shown as '{{binary}}'
     pub show_literal_binaries: bool,
+    /// A `Read:Virtual` with at least this many rows is emitted across multiple
+    /// lines (one `- row` per line) instead of inline. Set to a very large
+    /// value to keep virtual tables inline regardless of row count.
+    pub virtual_table_multiline_threshold: usize,
 }
 
 impl Default for OutputOptions {
@@ -65,6 +69,7 @@ impl Default for OutputOptions {
             nullability: false,
             indent: "  ".to_string(),
             show_literal_binaries: false,
+            virtual_table_multiline_threshold: 3,
         }
     }
 }
@@ -84,6 +89,7 @@ impl OutputOptions {
             nullability: true,
             indent: "  ".to_string(),
             show_literal_binaries: true,
+            virtual_table_multiline_threshold: 3,
         }
     }
 }
