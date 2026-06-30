@@ -158,9 +158,6 @@ fn schema_to_values<'a>(schema: &'a NamedStruct) -> Vec<Value<'a>> {
         .flatten();
     let mut names = schema.names.iter();
 
-    // let field_count = schema.r#struct.as_ref().map(|s| s.types.len()).unwrap_or(0);
-    // let name_count = schema.names.len();
-
     let mut values = Vec::new();
     loop {
         let field = fields.next();
@@ -292,7 +289,65 @@ impl Textify for Relation<'_> {
     }
 }
 
-impl Relation<'_> {
+fn read_columns<'a>(rel: &'a ReadRel) -> Vec<Value<'a>> {
+    match rel.base_schema {
+        Some(ref schema) => schema_to_values(schema),
+        None => {
+            let err =
+                PlanError::unimplemented("ReadRel", Some("base_schema"), "Base schema is required");
+            vec![Value::Missing(err)]
+        }
+    }
+}
+
+pub fn get_emit(rel: Option<&RelCommon>) -> Option<&EmitKind> {
+    rel.as_ref().and_then(|c| c.emit_kind.as_ref())
+}
+
+fn join_output_columns(
+    join_type: join_rel::JoinType,
+    left_columns: usize,
+    right_columns: usize,
+) -> Vec<Value<'static>> {
+    let total_columns = match join_type {
+        // Inner, Left, Right, Outer joins output columns from both sides
+        join_rel::JoinType::Inner
+        | join_rel::JoinType::Left
+        | join_rel::JoinType::Right
+        | join_rel::JoinType::Outer => left_columns + right_columns,
+
+        // Left semi/anti joins only output columns from the left side
+        join_rel::JoinType::LeftSemi | join_rel::JoinType::LeftAnti => left_columns,
+
+        // Right semi/anti joins output columns from the right side
+        join_rel::JoinType::RightSemi | join_rel::JoinType::RightAnti => right_columns,
+
+        // Single joins behave like semi joins
+        join_rel::JoinType::LeftSingle => left_columns,
+        join_rel::JoinType::RightSingle => right_columns,
+
+        // Mark joins output base columns plus one mark column
+        join_rel::JoinType::LeftMark => left_columns + 1,
+        join_rel::JoinType::RightMark => right_columns + 1,
+
+        // Unspecified - fallback to all columns
+        join_rel::JoinType::Unspecified => left_columns + right_columns,
+    };
+
+    // Output is always a contiguous range starting from $0
+    (0..total_columns)
+        .map(|i| Value::Reference(i as i32))
+        .collect()
+}
+
+impl<'a> Relation<'a> {
+    pub fn emitted(&self) -> usize {
+        match self.emit {
+            Some(EmitKind::Emit(e)) => e.output_mapping.len(),
+            Some(EmitKind::Direct(_)) | None => self.columns.len(),
+        }
+    }
+
     /// Write the single header line for this relation, e.g. `Filter[$0 => $0]`.
     /// Does not write a trailing newline; callers are responsible for any
     /// newline that follows (either from an addendum or from the next child).
@@ -322,19 +377,62 @@ impl Relation<'_> {
         }
         Ok(())
     }
-}
 
-impl<'a> Relation<'a> {
-    pub fn emitted(&self) -> usize {
-        match self.emit {
-            Some(EmitKind::Emit(e)) => e.output_mapping.len(),
-            Some(EmitKind::Direct(_)) => self.columns.len(),
-            None => self.columns.len(),
+    /// Convert a vector of relation references into their structured form.
+    ///
+    /// Returns a list of children (with None for ones missing), and a count of input columns.
+    pub fn convert_children<S: Scope>(
+        refs: Vec<Option<&'a Rel>>,
+        ctx: &S,
+    ) -> (Vec<Option<Relation<'a>>>, usize) {
+        let mut children = vec![];
+        let mut inputs = 0;
+
+        for maybe_rel in refs {
+            match maybe_rel {
+                Some(rel) => {
+                    let child = Relation::from_rel(rel, ctx);
+                    inputs += child.emitted();
+                    children.push(Some(child));
+                }
+                None => children.push(None),
+            }
+        }
+
+        (children, inputs)
+    }
+
+    pub fn from_rel<S: Scope>(rel: &'a Rel, ctx: &S) -> Self {
+        match rel.rel_type.as_ref() {
+            Some(RelType::Read(r)) => Relation::from_read(r, ctx),
+            Some(RelType::Filter(r)) => Relation::from_filter(r, ctx),
+            Some(RelType::Project(r)) => Relation::from_project(r, ctx),
+            Some(RelType::Aggregate(r)) => Relation::from_aggregate(r, ctx),
+            Some(RelType::Sort(r)) => Relation::from_sort(r, ctx),
+            Some(RelType::Fetch(r)) => Relation::from_fetch(r, ctx),
+            Some(RelType::Join(r)) => Relation::from_join(r, ctx),
+            Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
+            Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
+            Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
+            _ => {
+                let name = rel.name();
+                let token = ctx.failure(FormatError::Format(PlanError::unimplemented(
+                    "Rel",
+                    Some(name),
+                    format!("{name} is not yet supported in the text format"),
+                )));
+                Relation {
+                    name: Cow::Owned(format!("{token}")),
+                    arguments: None,
+                    columns: vec![],
+                    emit: None,
+                    addenda: AddendumLines::none(),
+                    children: vec![],
+                }
+            }
         }
     }
-}
 
-impl<'a> Relation<'a> {
     fn from_read<S: Scope>(rel: &'a ReadRel, ctx: &S) -> Self {
         let columns = read_columns(rel);
         let emit = rel.common.as_ref().and_then(|c| c.emit_kind.as_ref());
@@ -421,50 +519,7 @@ impl<'a> Relation<'a> {
             }
         }
     }
-}
 
-fn read_columns<'a>(rel: &'a ReadRel) -> Vec<Value<'a>> {
-    match rel.base_schema {
-        Some(ref schema) => schema_to_values(schema),
-        None => {
-            let err =
-                PlanError::unimplemented("ReadRel", Some("base_schema"), "Base schema is required");
-            vec![Value::Missing(err)]
-        }
-    }
-}
-
-pub fn get_emit(rel: Option<&RelCommon>) -> Option<&EmitKind> {
-    rel.as_ref().and_then(|c| c.emit_kind.as_ref())
-}
-
-impl<'a> Relation<'a> {
-    /// Convert a vector of relation references into their structured form.
-    ///
-    /// Returns a list of children (with None for ones missing), and a count of input columns.
-    pub fn convert_children<S: Scope>(
-        refs: Vec<Option<&'a Rel>>,
-        ctx: &S,
-    ) -> (Vec<Option<Relation<'a>>>, usize) {
-        let mut children = vec![];
-        let mut inputs = 0;
-
-        for maybe_rel in refs {
-            match maybe_rel {
-                Some(rel) => {
-                    let child = Relation::from_rel(rel, ctx);
-                    inputs += child.emitted();
-                    children.push(Some(child));
-                }
-                None => children.push(None),
-            }
-        }
-
-        (children, inputs)
-    }
-}
-
-impl<'a> Relation<'a> {
     fn from_filter<S: Scope>(rel: &'a FilterRel, ctx: &S) -> Self {
         let condition = rel
             .condition
@@ -494,13 +549,10 @@ impl<'a> Relation<'a> {
 
     fn from_project<S: Scope>(rel: &'a ProjectRel, ctx: &S) -> Self {
         let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
-        let mut columns: Vec<Value> = vec![];
-        for i in 0..input_columns {
-            columns.push(Value::Reference(i as i32));
-        }
-        for expr in &rel.expressions {
-            columns.push(Value::Expression(expr));
-        }
+        let columns: Vec<Value> = (0..input_columns)
+            .map(|i| Value::Reference(i as i32))
+            .chain(rel.expressions.iter().map(Value::Expression))
+            .collect();
 
         Relation {
             name: Cow::Borrowed("Project"),
@@ -512,65 +564,34 @@ impl<'a> Relation<'a> {
         }
     }
 
-    pub fn from_rel<S: Scope>(rel: &'a Rel, ctx: &S) -> Self {
-        match rel.rel_type.as_ref() {
-            Some(RelType::Read(r)) => Relation::from_read(r, ctx),
-            Some(RelType::Filter(r)) => Relation::from_filter(r, ctx),
-            Some(RelType::Project(r)) => Relation::from_project(r, ctx),
-            Some(RelType::Aggregate(r)) => Relation::from_aggregate(r, ctx),
-            Some(RelType::Sort(r)) => Relation::from_sort(r, ctx),
-            Some(RelType::Fetch(r)) => Relation::from_fetch(r, ctx),
-            Some(RelType::Join(r)) => Relation::from_join(r, ctx),
-            Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
-            Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
-            Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
-            _ => {
-                let name = rel.name();
-                let token = ctx.failure(FormatError::Format(PlanError::unimplemented(
-                    "Rel",
-                    Some(name),
-                    format!("{name} is not yet supported in the text format"),
-                )));
-                Relation {
-                    name: Cow::Owned(format!("{token}")),
-                    arguments: None,
-                    columns: vec![],
-                    emit: None,
-                    addenda: AddendumLines::none(),
-                    children: vec![],
-                }
-            }
-        }
-    }
-
     fn from_extension_leaf<S: Scope>(rel: &'a ExtensionLeafRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
+        let decoded = rel
+            .detail
+            .as_ref()
+            .map_or(Err(ExtensionError::MissingDetail), |d| {
+                ctx.extension_registry().decode(AnyRef::from(d))
+            });
         Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
     }
 
     fn from_extension_single<S: Scope>(rel: &'a ExtensionSingleRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
+        let decoded = rel
+            .detail
+            .as_ref()
+            .map_or(Err(ExtensionError::MissingDetail), |d| {
+                ctx.extension_registry().decode(AnyRef::from(d))
+            });
         Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
     }
 
     fn from_extension_multi<S: Scope>(rel: &'a ExtensionMultiRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
-        let mut child_refs: Vec<Option<&'a Rel>> = vec![];
-        for input in &rel.inputs {
-            child_refs.push(Some(input));
-        }
+        let decoded = rel
+            .detail
+            .as_ref()
+            .map_or(Err(ExtensionError::MissingDetail), |d| {
+                ctx.extension_registry().decode(AnyRef::from(d))
+            });
+        let child_refs: Vec<Option<&'a Rel>> = rel.inputs.iter().map(Some).collect();
         Relation::from_extension("ExtensionMulti", decoded, child_refs, ctx)
     }
 
@@ -583,21 +604,24 @@ impl<'a> Relation<'a> {
         match decoded {
             Ok((name, args)) => {
                 let (children, _) = Relation::convert_children(child_refs, ctx);
-                let mut positional = vec![];
-                for value in args.positional {
-                    positional.push(Value::ExtensionArgument(value));
-                }
-                let mut named = vec![];
-                for (key, value) in args.named {
-                    named.push(NamedArg {
+                let positional = args
+                    .positional
+                    .into_iter()
+                    .map(Value::ExtensionArgument)
+                    .collect();
+                let named = args
+                    .named
+                    .into_iter()
+                    .map(|(key, value)| NamedArg {
                         name: Cow::Owned(key),
                         value: Value::ExtensionArgument(value),
-                    });
-                }
-                let mut columns = vec![];
-                for col in args.output_columns {
-                    columns.push(Value::ExtColumn(col));
-                }
+                    })
+                    .collect();
+                let columns = args
+                    .output_columns
+                    .into_iter()
+                    .map(Value::ExtColumn)
+                    .collect();
                 Relation {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
                     arguments: Some(Arguments { positional, named }),
@@ -741,58 +765,7 @@ impl<'a> Relation<'a> {
         }
         (expression_list, grouping_sets)
     }
-}
 
-impl Textify for RelRoot {
-    fn name() -> &'static str {
-        "RelRoot"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let names = self.names.iter().map(|n| Name(n)).collect::<Vec<_>>();
-
-        write!(
-            w,
-            "{}Root[{}]",
-            ctx.indent(),
-            ctx.separated(names.iter(), ", ")
-        )?;
-        let child_scope = ctx.push_indent();
-        for child in self.input.iter() {
-            writeln!(w)?;
-            child.textify(&child_scope, w)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Textify for PlanRelType {
-    fn name() -> &'static str {
-        "PlanRelType"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        match self {
-            PlanRelType::Rel(rel) => rel.textify(ctx, w),
-            PlanRelType::Root(root) => root.textify(ctx, w),
-        }
-    }
-}
-
-impl Textify for PlanRel {
-    fn name() -> &'static str {
-        "PlanRel"
-    }
-
-    /// Write the relation as a string. Inputs are ignored - those are handled
-    /// separately.
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.expect(self.rel_type.as_ref()))
-    }
-}
-
-impl<'a> Relation<'a> {
     fn from_sort<S: Scope>(rel: &'a SortRel, ctx: &S) -> Self {
         let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let mut positional = vec![];
@@ -803,16 +776,14 @@ impl<'a> Relation<'a> {
             positional,
             named: vec![],
         });
-        // The columns are the direct outputs of this relation (before emit)
-        let mut col_values = vec![];
-        for i in 0..input_columns {
-            col_values.push(Value::Reference(i as i32));
-        }
+        let columns: Vec<Value> = (0..input_columns)
+            .map(|i| Value::Reference(i as i32))
+            .collect();
         let emit = get_emit(rel.common.as_ref());
         Relation {
             name: Cow::Borrowed("Sort"),
             arguments,
-            columns: col_values,
+            columns,
             emit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
@@ -873,45 +844,7 @@ impl<'a> Relation<'a> {
             children,
         }
     }
-}
 
-fn join_output_columns(
-    join_type: join_rel::JoinType,
-    left_columns: usize,
-    right_columns: usize,
-) -> Vec<Value<'static>> {
-    let total_columns = match join_type {
-        // Inner, Left, Right, Outer joins output columns from both sides
-        join_rel::JoinType::Inner
-        | join_rel::JoinType::Left
-        | join_rel::JoinType::Right
-        | join_rel::JoinType::Outer => left_columns + right_columns,
-
-        // Left semi/anti joins only output columns from the left side
-        join_rel::JoinType::LeftSemi | join_rel::JoinType::LeftAnti => left_columns,
-
-        // Right semi/anti joins output columns from the right side
-        join_rel::JoinType::RightSemi | join_rel::JoinType::RightAnti => right_columns,
-
-        // Single joins behave like semi joins
-        join_rel::JoinType::LeftSingle => left_columns,
-        join_rel::JoinType::RightSingle => right_columns,
-
-        // Mark joins output base columns plus one mark column
-        join_rel::JoinType::LeftMark => left_columns + 1,
-        join_rel::JoinType::RightMark => right_columns + 1,
-
-        // Unspecified - fallback to all columns
-        join_rel::JoinType::Unspecified => left_columns + right_columns,
-    };
-
-    // Output is always a contiguous range starting from $0
-    (0..total_columns)
-        .map(|i| Value::Reference(i as i32))
-        .collect()
-}
-
-impl<'a> Relation<'a> {
     fn from_join<S: Scope>(rel: &'a JoinRel, ctx: &S) -> Self {
         let (children, _total_columns) =
             Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()], ctx);
@@ -983,6 +916,55 @@ impl<'a> Relation<'a> {
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
+    }
+}
+
+impl Textify for RelRoot {
+    fn name() -> &'static str {
+        "RelRoot"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let names = self.names.iter().map(|n| Name(n)).collect::<Vec<_>>();
+
+        write!(
+            w,
+            "{}Root[{}]",
+            ctx.indent(),
+            ctx.separated(names.iter(), ", ")
+        )?;
+        let child_scope = ctx.push_indent();
+        for child in self.input.iter() {
+            writeln!(w)?;
+            child.textify(&child_scope, w)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Textify for PlanRelType {
+    fn name() -> &'static str {
+        "PlanRelType"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self {
+            PlanRelType::Rel(rel) => rel.textify(ctx, w),
+            PlanRelType::Root(root) => root.textify(ctx, w),
+        }
+    }
+}
+
+impl Textify for PlanRel {
+    fn name() -> &'static str {
+        "PlanRel"
+    }
+
+    /// Write the relation as a string. Inputs are ignored - those are handled
+    /// separately.
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.expect(self.rel_type.as_ref()))
     }
 }
 
