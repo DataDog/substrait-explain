@@ -198,26 +198,42 @@ Root[id, name]
 #[test]
 fn test_virtual_read_threshold_is_configurable() {
     // Raising the threshold keeps an otherwise multi-line table (3 rows) inline.
-    let plan = Parser::parse(
-        r#"
+    let inline = r#"
 === Plan
 Root[id]
-  Read:Virtual[(1), (2), (3) => id:i64]"#
-            .trim(),
-    )
-    .expect("parse failed");
+  Read:Virtual[(1), (2), (3) => id:i64]"#;
 
+    let plan = Parser::parse(inline.trim()).expect("parse failed");
     let options = OutputOptions {
         virtual_table_multiline_threshold: 100,
         ..OutputOptions::default()
     };
     let (text, errors) = format_with_options(&plan, &options);
-    assert!(
-        errors.is_empty(),
-        "unexpected formatting errors: {errors:?}"
-    );
-    assert_eq!(
-        text.trim(),
-        "=== Plan\nRoot[id]\n  Read:Virtual[(1), (2), (3) => id:i64]",
-    );
+
+    assert!(errors.is_empty(), "unexpected formatting errors: {errors:?}");
+    assert_eq!(text.trim(), inline.trim());
+}
+
+#[test]
+fn test_virtual_read_empty_stays_inline_even_at_zero_threshold() {
+    // An empty virtual table is written `_`; there is no `- _` row form, so it
+    // must stay inline even when the threshold (0) would otherwise force rows —
+    // otherwise the formatted text would not parse back.
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]"#;
+
+    let plan = Parser::parse(inline.trim()).expect("parse failed");
+    let options = OutputOptions {
+        virtual_table_multiline_threshold: 0,
+        ..OutputOptions::default()
+    };
+    let (text, errors) = format_with_options(&plan, &options);
+
+    assert!(errors.is_empty(), "unexpected formatting errors: {errors:?}");
+    assert_eq!(text.trim(), inline.trim());
+
+    // The output must also parse back cleanly.
+    Parser::parse(text.trim()).expect("formatted empty virtual table should re-parse");
 }

@@ -53,7 +53,7 @@ pub struct OutputOptions {
     pub show_literal_binaries: bool,
     /// A `Read:Virtual` with at least this many rows is emitted across multiple
     /// lines (one `- row` per line) instead of inline. Set to a very large
-    /// value to keep virtual tables inline regardless of row count.
+    /// value to keep virtual tables inline regardless of row count. Defaults to 3.
     pub virtual_table_multiline_threshold: usize,
 }
 

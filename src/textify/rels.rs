@@ -262,7 +262,8 @@ impl<'a> Arguments<'a> {
     }
 
     /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
-    /// with many rows. There are no named arguments in this form.
+    /// with many rows. Currently not enabled for named arguments.
+    /// TODO: enable for named arguments as well.
     pub fn rows(positional: Vec<Value<'a>>) -> Self {
         Arguments {
             positional,
@@ -341,8 +342,8 @@ impl Relation<'_> {
     ///   - => id:i64, name:string]
     /// ```
     ///
-    /// Callers are responsible for any newline that follows (either from an addendum or
-    /// from the next child).
+    /// Does not write a trailing newline; callers are responsible for any
+    /// newline that follows (either from an addendum or from the next child).
     pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
@@ -422,14 +423,17 @@ impl<'a> Relation<'a> {
                     .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
                     .collect();
 
-                // Emit many rows across multiple lines for readability
-                // based on configurable threshold (default = 3)
-                let arguments =
-                    if positional.len() >= ctx.options().virtual_table_multiline_threshold {
-                        Arguments::rows(positional)
-                    } else {
-                        Arguments::inline(positional, vec![])
-                    };
+                // Emit many rows across multiple lines for readability, based on
+                // a configurable threshold (default = 3). An empty table has no
+                // rows to spread out and is written `_`, so it stays inline
+                // regardless of the threshold — the row layout has no `_` form.
+                let multiline = !positional.is_empty()
+                    && positional.len() >= ctx.options().virtual_table_multiline_threshold;
+                let arguments = if multiline {
+                    Arguments::rows(positional)
+                } else {
+                    Arguments::inline(positional, vec![])
+                };
 
                 Relation {
                     name: Cow::Borrowed("Read:Virtual"),
