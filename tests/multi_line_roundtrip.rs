@@ -210,7 +210,10 @@ Root[id]
     };
     let (text, errors) = format_with_options(&plan, &options);
 
-    assert!(errors.is_empty(), "unexpected formatting errors: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "unexpected formatting errors: {errors:?}"
+    );
     assert_eq!(text.trim(), inline.trim());
 }
 
@@ -231,7 +234,10 @@ Root[id, name]
     };
     let (text, errors) = format_with_options(&plan, &options);
 
-    assert!(errors.is_empty(), "unexpected formatting errors: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "unexpected formatting errors: {errors:?}"
+    );
     assert_eq!(text.trim(), inline.trim());
 
     // The output must also parse back cleanly.
