@@ -34,7 +34,7 @@ src/
 
 ### Textify Summary
 
-1. lib.rs — entry point, calls into textify
+1. lib.rs — entry point,  exposes the public API formatting
 2. textify/plan.rs —  resolves simple extension declarations, writes the Extensions section, then iterates relations
 3. textify/foundation.rs — not a sequential step but the shared infrastructure everything below uses (Textify trait, Scope, error accumulation)
 4. textify/rels.rs — writes each relation: header, then addenda, then children recursively
@@ -60,7 +60,7 @@ The `Scope` trait is the context object carried through every `textify` call. Ca
 ### `textify/rels.rs` — Relation Output
 
 Substrait proto relation types (Read, Filter, Project...) are converted to a single internal `Relation` shape before rendering. 
-Relations are made up of: arguments, columns output mapping(Emit), addenda(advanced extensions), and children.
+Proto relations can be represented in their arguments, columns output mapping(Emit), addenda(advanced extensions), and children; which we store in Relation internal type.
 
 **`Value`** is the universal type for anything that can appear in a relation's argument list or output columns. 
 
@@ -92,63 +92,76 @@ Called from `rels.rs` after the relation header, before child relations. Addendu
 
 ## `src/parser/` — Text to Proto
 
-The parser uses a PEG grammar (via [Pest](https://pest.rs)) to match text syntax; similar to regex. Each plan line is parsed individually by the grammar into a **`LineNode`**: either a **`RelationNode`** (a relation header line) or an **`Addendum`** (a `+ Enh:` / `+ Opt:` / `+ Ext:` line). `RelationNode` holds the raw grammar match for that line, its line number, and initially empty `addenda` and `children` lists.
+The parser converts text to `proto::Plan` in three phases, all orchestrated by `structural.rs`.
 
-**`TreeBuilder`** then assembles these flat `LineNode`s into a tree by using each line's indentation depth. A line at depth 0 becomes a new root. A line at depth N is attached as a child of the most recently seen node at depth N-1. Addendum lines are attached to the relation immediately above them at one less indent level, and must appear before any child relations. The result is a `RelationNode` tree that mirrors the visual indentation of the input text.
+**Phase 1 — Extensions**: `structural.rs` reads the `=== Extensions` section first, in full, building the `SimpleExtensions` anchor table. Every function, type, and variation anchor is resolved before any relation is parsed.
 
-Once the tree is built, it is walked depth-first: each `RelationNode` is converted to a `Rel` proto by `relations.rs`, which calls into `expressions.rs` and `types.rs` for its arguments and type annotations. This two-phase approach — build the tree first, convert to proto second — is what allows the parser to construct properly nested `Rel` messages without backtracking.
+**Phase 2 — Tree building**: `structural.rs` reads the `=== Plan` section line by line. For each line, it calls `ChunkCursor` (from `chunks.rs`) to merge any continuation lines into a single complete chunk. Each chunk is then run through the PEG grammar (via [Pest](https://pest.rs)), producing a **`Pair<Rule>`**.
+
+A **`Pair<Rule>`** is Pest's fundamental match type: it records which grammar rule matched, the text it covers, and a list of inner `Pair`s for sub-expressions within that match. For example, parsing `Read[my_table => a:i64, b:string?]` produces a `Pair` for the `read_relation` rule with two inner pairs: a `table_name` pair covering `my_table`, and a `named_column_list` pair covering `a:i64, b:string?`. That `named_column_list` pair itself contains two `named_column` inner pairs — one for `a:i64`, one for `b:string?` — each of which contains a `name` pair and a `type` pair. This inner-pair nesting captures the structure within a single line — the parent-child relationships between relations come from indentation, not the grammar.
+
+`structural.rs` wraps each top-level `Pair` into a **`LineNode`**: either a **`RelationNode`** (a relation line) or an **`Addendum`** (a `+ Enh:` / `+ Opt:` / `+ Ext:` line). `RelationNode` holds the pair, its line number, `addenda` and `children` lists. **`TreeBuilder`** then places each `LineNode` into the tree by indentation depth.
+
+**Phase 3 — Proto conversion**: once all lines are consumed, the completed `RelationNode` trees are walked depth-first, leaves first, then parents. This order is required because `RelationParsePair` (the trait each relation type implements) receives its children as already-converted `Rel` messages, and the field count flowing up from them, both of which are only available after the subtree below is resolved.
 
 ### Parser Summary
 
-1. `expression_grammar.pest` — PEG grammar rules; all text syntax is defined here
-2. `lib.rs` — entry point, calls into parser
-3. `parser/mod.rs` — re-exports types from the submodules
-4. `parser/chunks.rs` — merges continuation lines into single logical chunks before grammar parsing
-5. `parser/structural.rs` — builds a `RelationNode` tree from the chunked plan lines using indentation depth
-6. `parser/extensions.rs` — parses simple extension declarations and addendum(advanced extension) lines
-7. `parser/relations.rs` — converts each `RelationNode` into a `Rel` proto message
-8. `parser/expressions.rs` — called from relations to parse expression arguments
-9. `parser/types.rs` — called from expressions and relations to parse type annotations
-10. `parser/common.rs` — shared parsing infrastructure and traits used throughout
+- `lib.rs` — entry point,  exposes the public API for parsing
+- `expression_grammar.pest` — defines the grammar rules every file below depends on
+- `parser/mod.rs` — re-exports types from the submodules
+- `parser/chunks.rs` — provides the mechanism for grouping physical lines into chunks
+- `parser/structural.rs` — hub; orchestrates all three phases: extensions, tree building, proto conversion
+- `parser/extensions.rs` — parses simple extension declarations and addendum lines
+- `parser/relations.rs` — converts each `RelationNode` into a `Rel` proto message
+- `parser/expressions.rs` — called from relations to parse expression arguments
+- `parser/types.rs` — called from expressions and relations to parse type annotations
+- `parser/common.rs` — shared parsing traits and infrastructure used throughout
 
 ### Entry Point
 
-The public entry points in `lib.rs` are `parse()` and `parse_with_registry()`. Unlike the textify side where all format functions funnel into `format_with_registry`, here there are two independent paths. The parser processes input in two passes: the simple Extensions section first to build the anchor lookup tables, then the Plan section to convert relations. Every anchor referenced in a relation is already resolved by the time that relation is parsed.
+The public entry points in `lib.rs` are `parse()` and `parse_with_registry()`. Unlike the textify side where `format()` and `format_with_options()` are thin wrappers that delegate to `format_with_registry`, here `parse()` does not delegate to `parse_with_registry()` — they are separate implementations.
 
-The `ExtensionRegistry` is needed for the same reason as in the textifier: advanced extension payloads (`+ Enh:`, `+ Opt:`, extension relations) are `google.protobuf.Any` blobs, and the registry knows which registered type to encode them into. In the textifier, a missing registration produces a soft error token in the output and continues formatting. In the parser, a missing registration is a hard `ParseError::UnregisteredExtension` — there is no way to produce a valid `Any` blob without the registered type. This is why `parse()` does not supply a default empty registry with a silent fallback. Plans with advanced extensions must use `parse_with_registry()`.
+The parser carries an `ExtensionRegistry` for the same reason as the textifier: advanced extension payloads (`+ Enh:`, `+ Opt:`, `+ Ext:`, and extension relations) are `google.protobuf.Any` blobs. `parse()` uses a default empty registry through `Parser::new()`, while `parse_with_registry()` supplies a caller-provided registry. The difference is in error handling: when textifying, an unregistered advanced extension can be represented as a soft error token output. When parsing, an unregistered advanced extension is a hard `ParseError::UnregisteredExtension`, because the parser cannot create a valid `Any` payload without the registered type. Plans with advanced extensions therefore need `parse_with_registry()`.
+
+### `expression_grammar.pest` — PEG Grammar
+
+The canonical grammar for the text format. Covers relation line syntax (one rule per relation type), argument lists, expression forms, etc... Section markers (`=== Plan`, `=== Extensions`) are not grammar rules — they are matched as string constants in `structural.rs`.
 
 ### `parser/chunks.rs` — Line Grouping
 
-Operates before any grammar parsing. The text format allows long argument lists to continue on the next line if that line is indented one level deeper and prefixed with `- `. `ChunkCursor` merges these continuation lines back into a single logical chunk so that the grammar parser always sees complete, self-contained expressions.
+`ChunkCursor` provides the mechanism for grouping physical lines from the text into chunks. The policy of what to merge — recognizing continuation lines prefixed with `- ` and deciding when a chunk is complete — belongs to `structural.rs`, which drives the cursor.
 
 ### `parser/structural.rs` — Section Routing and Tree Construction
 
-The main orchestrator for parsing. It reads the input section by section and routes each line accordingly: extension declaration lines go to `extensions.rs`, plan lines are parsed into `LineNode`s and placed into the `RelationNode` tree by `TreeBuilder`. Once all lines are consumed, the completed `RelationNode` trees are walked depth-first to produce the final `proto::Plan`.
+The main orchestrator. Matches `=== Extensions` and `=== Plan` as string constants to switch between sections, drives `ChunkCursor` for line grouping, routes extension declarations to `extensions.rs`, and builds the `RelationNode` tree via `TreeBuilder`.
 
 ### `parser/extensions.rs` — Extension and Addendum Parsing
 
-Handles two distinct jobs. Parses the Extensions section: URN declarations and function/type/variation anchor assignments, producing a `SimpleExtensions` anchor table that the rest of the parser uses to resolve function, type, and variation anchors to their declared names. Second, it parses addendum lines (`+ Enh:`, `+ Opt:`, `+ Ext:`) that appear attached to relations in the Plan section, decoding their names and arguments through the `ExtensionRegistry`.
+Handles two distinct jobs: parsing URN declarations and anchor assignments in the Extensions section to produce the `SimpleExtensions` table, and parsing addendum lines (`+ Enh:`, `+ Opt:`, `+ Ext:`) attached to plan relations, decoding their names and arguments through the `ExtensionRegistry`.
 
 ### `parser/relations.rs` — Relation Construction
 
 Converts each `RelationNode` into a `Rel` proto message. Implements the conversion for supported relation types: Read, Filter, Project etc... Also handles emit mapping — reconstructing the `RelCommon` output column remapping from the text representation.
 
+Each relation type implements **`RelationParsePair`**, a third parsing trait alongside `ParsePair` and `ScopedParsePair`, which additionally accepts pre-converted child `Rel` messages and propagates output field counts up the tree.
+
+`RelationParsingContext` is the context object used when a relation or addendum must turn parsed `ExtensionArgs` into a `google.protobuf.Any` payload. It carries the `ExtensionRegistry` plus source location so registry failures become contextual `ParseError`s.
+
+
 ### `parser/expressions.rs` — Expression Parsing
 
-Called from `relations.rs` to parse expression arguments into `proto::Expression` messages. Covers expression types.
+Called from `relations.rs` to parse supported expression arguments types into `proto::Expression` messages.
 
 ### `parser/types.rs` — Type Parsing
 
-Called from `expressions.rs` and `relations.rs` to parse type annotations into `proto::Type` messages. Handles simple types, compound types, precision types, nullability suffixes, type variations, and user-defined types.
+Called from `expressions.rs` and `relations.rs` to parse type annotations into `proto::Type` messages.
 
 ### `parser/common.rs` — Shared Infrastructure
 
-Defines two traits that all relation, expression, and type parsers implement — the parser-side equivalent of the `Textify` trait.
+Defines the parsing traits used throughout the parser — the parser-side equivalent of the `Textify` trait. There are three, each handling a different level of context dependency.
 
 **`ParsePair`** converts a pest grammar match into a Rust type for constructs whose meaning is fully determined by syntax — literals, operators, nullability suffixes — with no anchor resolution needed.
 
 **`ScopedParsePair`** does the same but takes a `&SimpleExtensions` context argument. It is used for constructs that require anchor lookups — function calls, type references, type variations — where the conversion can fail with a `MessageParseError` if the anchor is not in the table.
 
-### `expression_grammar.pest` — PEG Grammar
-
-The canonical grammar for the text format. Defines rules for relation headers, argument lists, all expression forms, type syntax, and extension arguments. All text parsing ultimately flows through Pest rules defined here; the rest of the parser translates the resulting `Pair<Rule>` matches into proto types.
+**`RuleIter`** wraps Pest's pair iterator with `try_pop` (consume the next pair only if it matches a specific rule, otherwise leave it) and `pop` (consume and assert).
