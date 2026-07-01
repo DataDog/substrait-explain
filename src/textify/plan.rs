@@ -4,13 +4,14 @@ use substrait::proto;
 
 use super::Textify;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
-use crate::parser::PLAN_HEADER;
+use crate::parser::{PLAN_HEADER, VERSION_HEADER};
 use crate::textify::foundation::ErrorAccumulator;
 use crate::textify::{OutputOptions, ScopedContext};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlanWriter<'a, E: ErrorAccumulator + Default> {
     options: &'a OutputOptions,
+    version: Option<&'a proto::Version>,
     extensions: SimpleExtensions,
     relations: &'a [proto::PlanRel],
     errors: E,
@@ -36,6 +37,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         (
             Self {
                 options,
+                version: plan.version.as_ref(),
                 extensions,
                 relations,
                 errors: errors.clone(),
@@ -52,6 +54,33 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
             &self.extensions,
             self.extension_registry,
         )
+    }
+
+    /// Write the `=== Version` section. Emits nothing unless option is
+    /// enabled and the plan carries a version that is not entirely empty
+    pub(crate) fn write_version(&self, w: &mut impl fmt::Write) -> fmt::Result {
+        if !self.options.show_version {
+            return Ok(());
+        }
+        let Some(version) = self.version else {
+            return Ok(());
+        };
+        if version == &proto::Version::default() {
+            return Ok(());
+        }
+
+        writeln!(
+            w,
+            "{VERSION_HEADER} {}.{}.{}",
+            version.major_number, version.minor_number, version.patch_number
+        )?;
+        if !version.producer.is_empty() {
+            writeln!(w, "{}producer: {}", self.options.indent, version.producer)?;
+        }
+        if !version.git_hash.is_empty() {
+            writeln!(w, "{}git_hash: {}", self.options.indent, version.git_hash)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn write_extensions(&self, w: &mut impl fmt::Write) -> fmt::Result {
@@ -75,6 +104,7 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
 
 impl<'a, E: ErrorAccumulator + Default> fmt::Display for PlanWriter<'a, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_version(f)?;
         self.write_extensions(f)?;
         if !self.extensions.is_empty() {
             writeln!(f)?;
