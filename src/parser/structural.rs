@@ -10,7 +10,7 @@ use pest::iterators::Pair;
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
-    SortRel, plan_rel,
+    SortRel, Version, plan_rel,
 };
 
 use crate::extensions::any::Any;
@@ -26,6 +26,7 @@ use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, Virtual
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
+pub const VERSION_HEADER: &str = "=== Version";
 
 /// Represents an input line, trimmed of leading two-space indents and final
 /// whitespace. Contains the number of indents and the trimmed line.
@@ -165,6 +166,9 @@ impl<'a> LineNode<'a> {
 pub enum State {
     // The initial state, before we have parsed any lines.
     Initial,
+    // The version section, after parsing the `=== Version` header. Accepts the
+    // optional indented `producer:` / `git_hash:` detail lines.
+    Version,
     // The extensions section, after parsing the header and any other Extension lines.
     Extensions,
     // The plan section, after parsing the header and any other Plan lines.
@@ -812,6 +816,8 @@ pub struct Parser<'a> {
     /// [`next_chunk`](Self::next_chunk). `None` before parsing starts and once
     /// the input is exhausted.
     cursor: Option<ChunkCursor<'a>>,
+    /// The plan version from an optional `=== Version` section
+    version: Option<Version>,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
@@ -861,6 +867,7 @@ impl<'a> Parser<'a> {
             line_no: 1,
             state: State::Initial,
             cursor: None,
+            version: None,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -945,6 +952,7 @@ impl<'a> Parser<'a> {
 
         match self.state {
             State::Initial => self.parse_initial(indented_line),
+            State::Version => self.parse_version(indented_line),
             State::Extensions => self
                 .parse_extensions(indented_line)
                 .map_err(|e| ParseError::Extension(ctx(), e)),
@@ -968,6 +976,13 @@ impl<'a> Parser<'a> {
     fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
             IndentedLine(0, l) if l.trim().is_empty() => {}
+            IndentedLine(0, l)
+                if l.strip_prefix(VERSION_HEADER)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' ')) =>
+            {
+                self.parse_version_header(l)?;
+                self.state = State::Version;
+            }
             IndentedLine(0, simple::EXTENSIONS_HEADER) => {
                 self.state = State::Extensions;
             }
@@ -988,6 +1003,104 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse the `=== Version <major>.<minor>.<patch>` header line and store
+    /// the resulting [`Version`], leaving `producer` / `git_hash` empty
+    fn parse_version_header(&mut self, line: &str) -> Result<(), ParseError> {
+        let ctx = || ParseContext::new(self.line_no, line.to_string());
+        let rest = line
+            .strip_prefix(VERSION_HEADER)
+            .expect("version header prefix checked by caller")
+            .trim();
+
+        let mut numbers = rest.split('.');
+        let mut next_number = |field: &str| -> Result<u32, ParseError> {
+            let part = numbers.next().filter(|p| !p.is_empty()).ok_or_else(|| {
+                ParseError::ValidationError(
+                    ctx(),
+                    format!("version header is missing the {field} number, expected '{VERSION_HEADER} <major>.<minor>.<patch>'"),
+                )
+            })?;
+            part.parse::<u32>().map_err(|e| {
+                ParseError::ValidationError(
+                    ctx(),
+                    format!("invalid {field} version number {part:?}: {e}"),
+                )
+            })
+        };
+
+        let major_number = next_number("major")?;
+        let minor_number = next_number("minor")?;
+        let patch_number = next_number("patch")?;
+        if numbers.next().is_some() {
+            return Err(ParseError::ValidationError(
+                ctx(),
+                format!(
+                    "version {rest:?} has too many components, expected '<major>.<minor>.<patch>'"
+                ),
+            ));
+        }
+
+        self.version = Some(Version {
+            major_number,
+            minor_number,
+            patch_number,
+            ..Default::default()
+        });
+        Ok(())
+    }
+
+    /// Parses a single line from the version section: either an indented
+    /// `producer:` / `git_hash:` detail line, or a section header
+    fn parse_version(&mut self, line: IndentedLine) -> Result<(), ParseError> {
+        match line {
+            IndentedLine(0, l) if l.trim().is_empty() => Ok(()),
+            IndentedLine(0, simple::EXTENSIONS_HEADER) => {
+                self.state = State::Extensions;
+                Ok(())
+            }
+            IndentedLine(0, PLAN_HEADER) => {
+                self.state = State::Plan;
+                Ok(())
+            }
+            IndentedLine(1, l) => self.parse_version_detail(l),
+            IndentedLine(_, l) => Err(ParseError::ValidationError(
+                ParseContext::new(self.line_no, l.to_string()),
+                format!(
+                    "unexpected line in version section: {l:?}; expected an indented 'producer:' \
+                     or 'git_hash:' line, or a section header"
+                ),
+            )),
+        }
+    }
+
+    /// Parse an indented `producer:` / `git_hash:` detail line, mutating the
+    /// [`Version`] set by [`parse_version_header`](Self::parse_version_header).
+    fn parse_version_detail(&mut self, line: &str) -> Result<(), ParseError> {
+        let ctx = || ParseContext::new(self.line_no, line.to_string());
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            ParseError::ValidationError(
+                ctx(),
+                format!("expected 'producer:' or 'git_hash:' in version section, found {line:?}"),
+            )
+        })?;
+        let value = value.trim().to_string();
+        let version = self
+            .version
+            .as_mut()
+            .expect("version is set on entry to the version section");
+        match key.trim() {
+            "producer" => version.producer = value,
+            "git_hash" => version.git_hash = value,
+            other => {
+                return Err(ParseError::ValidationError(
+                    ctx(),
+                    format!("unknown version field {other:?}, expected 'producer' or 'git_hash'"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Parse a single line from the extensions section of the input, updating
     /// the parser state.
     fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
@@ -1001,6 +1114,7 @@ impl<'a> Parser<'a> {
     /// Build the plan from the parser state with warning collection.
     fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
+            version,
             relation_parser,
             extension_parser,
             extension_registry,
@@ -1014,6 +1128,7 @@ impl<'a> Parser<'a> {
 
         // Build the final plan
         Ok(Plan {
+            version,
             extension_urns: extensions.to_extension_urns(),
             extensions: extensions.to_extension_declarations(),
             relations: root_relations,

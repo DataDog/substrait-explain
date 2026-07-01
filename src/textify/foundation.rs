@@ -26,6 +26,8 @@ pub enum Visibility {
 /// OutputOptions holds the options for textifying a Substrait type.
 #[derive(Debug, Clone)]
 pub struct OutputOptions {
+    /// Show the `=== Version` section when the plan carries a non-empty version
+    pub show_version: bool,
     /// Show the extension URNs in the output.
     pub show_extension_urns: bool,
     /// Show the extensions in the output. By default, simple extensions are
@@ -60,6 +62,7 @@ pub struct OutputOptions {
 impl Default for OutputOptions {
     fn default() -> Self {
         Self {
+            show_version: true,
             show_extension_urns: false,
             show_simple_extensions: false,
             show_simple_extension_anchors: Visibility::Required,
@@ -79,6 +82,7 @@ impl OutputOptions {
     /// reconstructing a plan.
     pub fn verbose() -> Self {
         Self {
+            show_version: true,
             show_extension_urns: true,
             show_simple_extensions: true,
             show_simple_extension_anchors: Visibility::Always,

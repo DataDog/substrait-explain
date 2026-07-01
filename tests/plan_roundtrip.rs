@@ -871,3 +871,123 @@ Root[sum]
 
     roundtrip_plan(plan);
 }
+
+// === Version section tests ===
+
+/// A `=== Version` section with just the semver round-trips, and appears
+/// before the plan (and before extensions, when present).
+#[test]
+fn test_version_semver_only_roundtrip() {
+    let plan = r#"=== Version 0.55.0
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+
+    let parsed = Parser::parse(plan).unwrap();
+    let version = parsed.version.expect("version should be set");
+    assert_eq!(version.major_number, 0);
+    assert_eq!(version.minor_number, 55);
+    assert_eq!(version.patch_number, 0);
+    assert!(version.producer.is_empty());
+    assert!(version.git_hash.is_empty());
+}
+
+/// The optional `producer:` / `git_hash:` detail lines round-trip and sit
+/// under the version header, above the extensions section.
+#[test]
+fn test_version_with_detail_and_extensions_roundtrip() {
+    let plan = r#"=== Version 1.2.3
+  producer: substrait-explain tests
+  git_hash: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[sum]
+  Project[add($0, $1):i64]
+    Read[t => a:i64, b:i64]"#;
+
+    roundtrip_plan(plan);
+
+    let version = Parser::parse(plan).unwrap().version.unwrap();
+    assert_eq!(
+        (
+            version.major_number,
+            version.minor_number,
+            version.patch_number
+        ),
+        (1, 2, 3)
+    );
+    assert_eq!(version.producer, "substrait-explain tests");
+    assert_eq!(version.git_hash, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b");
+}
+
+/// A `git_hash` without a `producer` is emitted on its own, even at version
+/// 0.0.0, because it carries real information.
+#[test]
+fn test_version_git_hash_only_roundtrip() {
+    let plan = r#"=== Version 0.0.0
+  git_hash: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A plan with no version section parses to `version: None` and emits no
+/// `=== Version` line.
+#[test]
+fn test_version_absent() {
+    let plan = r#"=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    let parsed = Parser::parse(plan).unwrap();
+    assert!(parsed.version.is_none());
+
+    let (text, errors) = substrait_explain::format(&parsed);
+    assert!(errors.is_empty());
+    assert!(
+        !text.contains("=== Version"),
+        "no version section expected, got:\n{text}"
+    );
+}
+
+/// An all-default `Version` (0.0.0 with no producer/git_hash) is treated as
+/// "no version" and is not emitted, even though it is present in the proto.
+#[test]
+fn test_version_all_zero_suppressed() {
+    let plan = r#"=== Version 0.0.0
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    // The parser preserves the (empty) version it was given...
+    let parsed = Parser::parse(plan).unwrap();
+    assert!(parsed.version.is_some());
+
+    // ...but the formatter suppresses an all-default version.
+    let (text, errors) = substrait_explain::format(&parsed);
+    assert!(errors.is_empty());
+    assert!(
+        !text.contains("=== Version"),
+        "all-zero version should be suppressed, got:\n{text}"
+    );
+}
+
+/// An unparseable version number is a hard error (structural, not lenient).
+#[test]
+fn test_version_invalid_number_errors() {
+    let plan = r#"=== Version 0.x.0
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}

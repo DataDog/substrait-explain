@@ -15,5 +15,5 @@ pub(crate) use common::{
 pub use errors::{ParseContext, ParseError, ParseResult};
 pub use extensions::{ExpectedExtensionLine, ExtensionParseError};
 pub(crate) use relations::RelationParsePair;
-pub(crate) use structural::PLAN_HEADER;
 pub use structural::Parser;
+pub(crate) use structural::{PLAN_HEADER, VERSION_HEADER};
