@@ -1,15 +1,17 @@
 //! Round-trip tests for multi-line relation syntax.
 //!
 //! A `Read:Virtual` may be written across several lines using `- ` continuation
-//! markers. Layout is handled entirely in the chunk layer (grouping physical
+//! markers. Parsing is handled entirely in the chunk layer (grouping physical
 //! lines) and the grammar (silent continuation rules), so a multi-line relation
-//! parses to the same plan as its inline form — and currently formats back to
-//! the inline canonical, since multi-line output is not yet implemented.
+//! parses to the same plan as its inline form. Formatting emits the multi-line
+//! form once a virtual table reaches
+//! [`OutputOptions::virtual_table_multiline_threshold`] rows (default 3), and
+//! the inline form below that.
 
 mod common;
 
 use common::assert_roundtrip_canonical;
-use substrait_explain::Parser;
+use substrait_explain::{OutputOptions, Parser, format_with_options};
 
 #[test]
 fn test_virtual_read_multiline_single_row() {
@@ -30,12 +32,8 @@ Root[id, name]
 
 #[test]
 fn test_virtual_read_multiline_multi_row() {
-    // Rows carry trailing commas; the last row before `=>` does not.
-    let inline = r#"
-=== Plan
-Root[id, name]
-  Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
-
+    // With three rows (the default threshold) the multi-line form is canonical:
+    // rows carry trailing commas, and the last row before `=>` does not.
     let multiline = r#"
 === Plan
 Root[id, name]
@@ -45,7 +43,12 @@ Root[id, name]
     - (3, 'carol')
     - => id:i64, name:string]"#;
 
-    assert_roundtrip_canonical(inline.trim(), multiline.trim());
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
+
+    assert_roundtrip_canonical(multiline.trim(), inline.trim());
 }
 
 #[test]
@@ -170,4 +173,73 @@ Root[id]
         Parser::parse(plan.trim()).is_err(),
         "malformed continuation row should fail to parse"
     );
+}
+
+#[test]
+fn test_virtual_read_two_rows_stays_inline() {
+    // Two rows is below the default threshold (3), so the canonical output is
+    // inline even though the multi-line form parses to the same plan.
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]"#;
+
+    let multiline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[
+    - (1, 'alice'),
+    - (2, 'bob')
+    - => id:i64, name:string]"#;
+
+    assert_roundtrip_canonical(inline.trim(), multiline.trim());
+}
+
+#[test]
+fn test_virtual_read_threshold_is_configurable() {
+    // Raising the threshold keeps an otherwise multi-line table (3 rows) inline.
+    let inline = r#"
+=== Plan
+Root[id]
+  Read:Virtual[(1), (2), (3) => id:i64]"#;
+
+    let plan = Parser::parse(inline.trim()).expect("parse failed");
+    let options = OutputOptions {
+        virtual_table_multiline_threshold: 100,
+        ..OutputOptions::default()
+    };
+    let (text, errors) = format_with_options(&plan, &options);
+
+    assert!(
+        errors.is_empty(),
+        "unexpected formatting errors: {errors:?}"
+    );
+    assert_eq!(text.trim(), inline.trim());
+}
+
+#[test]
+fn test_virtual_read_empty_stays_inline_even_at_zero_threshold() {
+    // An empty virtual table is written `_`; there is no `- _` row form, so it
+    // must stay inline even when the threshold (0) would otherwise force rows —
+    // otherwise the formatted text would not parse back.
+    let inline = r#"
+=== Plan
+Root[id, name]
+  Read:Virtual[_ => id:i64, name:string]"#;
+
+    let plan = Parser::parse(inline.trim()).expect("parse failed");
+    let options = OutputOptions {
+        virtual_table_multiline_threshold: 0,
+        ..OutputOptions::default()
+    };
+    let (text, errors) = format_with_options(&plan, &options);
+
+    assert!(
+        errors.is_empty(),
+        "unexpected formatting errors: {errors:?}"
+    );
+    assert_eq!(text.trim(), inline.trim());
+
+    // The output must also parse back cleanly.
+    Parser::parse(text.trim()).expect("formatted empty virtual table should re-parse");
 }

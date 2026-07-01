@@ -665,10 +665,16 @@ Root[id, name]
 
 #[test]
 fn test_virtual_read_single_column() {
+    // Three rows reaches the multi-line threshold, so the canonical output
+    // spreads the rows across lines.
     let plan = r#"
 === Plan
 Root[id]
-  Read:Virtual[(1), (2), (3) => id:i64]"#;
+  Read:Virtual[
+    - (1),
+    - (2),
+    - (3)
+    - => id:i64]"#;
 
     roundtrip_plan(plan);
 }
@@ -686,7 +692,11 @@ Functions:
 === Plan
 Root[name]
   Filter[gt($0, 1):boolean => $0, $1]
-    Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol') => id:i64, name:string]"#;
+    Read:Virtual[
+      - (1, 'alice'),
+      - (2, 'bob'),
+      - (3, 'carol')
+      - => id:i64, name:string]"#;
 
     roundtrip_plan(plan);
 }

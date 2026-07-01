@@ -655,8 +655,7 @@ Root[id, name]
 ```
 
 The multi-line form is purely a layout convenience: it parses to exactly the
-same plan as the inline form above. (Formatting currently always emits the
-inline form.)
+same plan as the inline form above. The standard output may use inline or multi-line form depending on the length of the `VirtualTable`.
 
 ### `ExtensionTable` Read Relation
 
