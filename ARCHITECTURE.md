@@ -30,6 +30,14 @@ src/
 ```
 ---
 
+## `src/json.rs` — JSON to Proto
+
+Substrait plans can be encoded as JSON, but two incompatible JSON formats exist. Rust's pbjson library encodes `google.protobuf.Any` fields as `{"typeUrl": "...", "value": "<base64>"}`. Go's protojson library uses the protobuf standard encoding: `{"@type": "...", field1: val, ...}` where the concrete message's fields are inlined. A plan produced by a Go system will fail to parse with the Rust pbjson deserializer. `json.rs` handles both. It tries the pbjson serde path first; if that fails it falls back to `prost-reflect`, which implements the full protobuf JSON mapping spec and can handle the Go format as long as a `DescriptorPool` containing the schema for every referenced type URL is provided. Both paths produce the same `proto::Plan`. When outputting JSON, the CLI always produces the pbjson format (`{"typeUrl": "...", "value": "<base64>"}`) via `serde_json`. There is no option to emit Go-style protojson.
+
+The Go-format path requires a `DescriptorPool` with the schema for any extension types stored as `google.protobuf.Any` blobs — the Substrait core types are already bundled, but custom extension schemas must be provided. Callers do this by adding their compiled proto descriptor blob to the `ExtensionRegistry` via `add_descriptor`. When the CLI receives JSON input, it builds the pool from those registered blobs before calling `parse_json`. `build.rs` is an example of building the descriptor blob. It compiles the test proto at build time producing the binary descriptor and generated Rust types.
+
+---
+
 ## `src/textify/` — Proto to Text
 
 ### Textify Summary
@@ -165,3 +173,48 @@ Defines the parsing traits used throughout the parser — the parser-side equiva
 **`ScopedParsePair`** does the same but takes a `&SimpleExtensions` context argument. It is used for constructs that require anchor lookups — function calls, type references, type variations — where the conversion can fail with a `MessageParseError` if the anchor is not in the table.
 
 **`RuleIter`** wraps Pest's pair iterator with `try_pop` (consume the next pair only if it matches a specific rule, otherwise leave it) and `pop` (consume and assert).
+
+---
+
+## `src/extensions/` — Extension Support
+
+Both simple and advanced extension code is found in this folder.
+
+**Simple Extensions** are the Substrait standard mechanism for declaring custom functions, types, and type variations. In the text format these appear in the `=== Extensions` section as URN declarations and anchor assignments. `SimpleExtensions` is the in-memory lookup table built from those declarations — mapping integer anchors to qualified names and back.
+
+**Advanced Extensions** are custom relation types, enhancements (`+ Enh:`), optimizations (`+ Opt:`), and extension table reads (`+ Ext:`, an addendum attached to a `ReadRel`) that are stored as a `google.protobuf.Any` blob in the proto. `substrait-explain` cannot parse or textify them from the plan alone. The caller supplies an `ExtensionRegistry` with registered Rust types that knows both the text representation and the protobuf `Any` representation.
+
+**`AnyConvertible`** handles proto serialization. `to_any()` encodes the Rust type into a `google.protobuf.Any` blob; `from_any()` decodes it back to custom type. For prost-generated types (`prost::Message + prost::Name + Default`), this is provided automatically via a blanket impl. Custom types implement it manually.
+
+**`Explainable`** handles text format conversion. `to_args()` converts the Rust type into an `ExtensionArgs` for the textifier to render; `from_args()` constructs the type from parsed `ExtensionArgs`.
+
+A type registers as an extension by implementing both `AnyConvertible` and `Explainable`. **`Extension`** is an empty supertrait that groups them into a single bound used by the registry.
+
+Together, the textifier path of a registered type is: `AnyRef` → `AnyConvertible::from_any` → Rust type → `Explainable::to_args` → `ExtensionArgs`. The parse path is the reverse: `ExtensionArgs` → `Explainable::from_args` → Rust type → `AnyConvertible::to_any` → proto `Any`
+
+### File Map
+
+- `extensions/simple.rs` — `SimpleExtensions`: anchor to name lookup table for functions, types, and type variations
+- `extensions/registry.rs` — `ExtensionRegistry`: user-provided handler registry for advanced extension payloads
+- `extensions/args.rs` — `ExtensionArgs`: the structured intermediate type that bridges text format and proto blobs
+- `extensions/any.rs` — `Any` / `AnyRef`: owned and borrowed wrappers around `google.protobuf.Any`
+- `extensions/examples.rs` — example of `Explainable` implementations used in documentation and tests
+
+### `extensions/simple.rs` — Anchor Lookup
+
+`SimpleExtensions` is the anchor lookup table built from the `=== Extensions` section. It maps integer anchors to URN strings a
+nd qualified names for functions, types, and type variations.
+
+### `extensions/registry.rs` — Advanced Extension Registry
+
+`ExtensionRegistry` maps registered types to handlers that know how to convert between their `google.protobuf.Any` blob and their text representation.
+
+### `extensions/args.rs` — Extension Arguments
+
+`ExtensionArgs` is the structured intermediate that extension handlers read and write — a collection of positional values, named values, and output column declarations. `ExtensionValue` covers the scalar and expression types that can appear as argument values. Extension relations that declare an output schema use `ExtensionColumn` to describe it, which converts to and from the `NamedStruct` proto type.
+
+Handlers read from `ExtensionArgs` via an `ArgsExtractor`, which tracks which arguments have been consumed. This enforces that no unexpected arguments are silently ignored — the extractor errors if unconsumed named arguments remain after parsing, catching mismatches between what the text format provides and what the handler expects.
+
+### `extensions/any.rs` — Any Wrapper
+
+`prost_types::Any` is always owned — there is no borrowed form. When the textifier encounters an extension blob inside a proto struct it only has a reference to it, not ownership. Passing that blob to `from_any` without a local borrowed type would require cloning it every time. `AnyRef<'a>` solves this without cloning. Created from a reference to a `prost_types::Any`. `Any` (owned) is used when ownership is required, such as the return type of `to_any`. Using these local types in the `AnyConvertible` API also means extension implementors do not need to depend on prost directly.
