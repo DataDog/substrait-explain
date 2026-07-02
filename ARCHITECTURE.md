@@ -24,10 +24,13 @@ src/
 ├── cli.rs              # CLI argument handling
 ├── json.rs             # JSON/YAML → proto::Plan (cli feature only)
 ├── grammar.rs          # Re-exports GRAMMAR.md as rustdoc / doctests
+├── fixtures.rs         # Shared test helpers (cfg(test) only)
+├── types_tests.rs      # Type roundtrip tests (cfg(test) only)
 ├── parser/             # Text → proto::Plan
 ├── textify/            # proto::Plan → Text
 └── extensions/         # Extension lookup, registry, argument types
 ```
+
 ---
 
 ## `src/json.rs` — JSON to Proto
@@ -124,6 +127,7 @@ A **`Pair<Rule>`** is Pest's fundamental match type: it records which grammar ru
 - `parser/expressions.rs` — called from relations to parse expression arguments
 - `parser/types.rs` — called from expressions and relations to parse type annotations
 - `parser/common.rs` — shared parsing traits and infrastructure used throughout
+- `parser/errors.rs` — defines `ParseError`, `ParseContext`, and `ParseResult`: the public error types returned by `parse()` and `parse_with_registry()`
 
 ### Entry Point
 
@@ -218,3 +222,32 @@ Handlers read from `ExtensionArgs` via an `ArgsExtractor`, which tracks which ar
 ### `extensions/any.rs` — Any Wrapper
 
 `prost_types::Any` is always owned — there is no borrowed form. When the textifier encounters an extension blob inside a proto struct it only has a reference to it, not ownership. Passing that blob to `from_any` without a local borrowed type would require cloning it every time. `AnyRef<'a>` solves this without cloning. Created from a reference to a `prost_types::Any`. `Any` (owned) is used when ownership is required, such as the return type of `to_any`. Using these local types in the `AnyConvertible` API also means extension implementors do not need to depend on prost directly.
+
+---
+
+## Testing
+
+The test suite is split between unit tests inside source files and integration tests under `tests/`.
+
+Unit tests live alongside the code they test following standard Rust convention. `src/fixtures.rs` provides `TestContext` and other helpers shared across many test modules. `types_tests.rs` contains type round-trip tests that span both the parser and textifier and has no single source file it naturally belongs to. They both need access to `pub(crate)` types, so they cannot be in `tests/`, which is compiled as a separate crate and cannot see crate-internal items.
+
+Integration tests under `tests/` are compiled as a separate crate and test the public API as an external caller would — they can only access what `lib.rs` exports. The primary strategy is round-trip: parse a text plan to proto, textify it back to text, and assert the output matches. This catches most correctness bugs without requiring proto-level assertions.
+
+- `plan_roundtrip.rs` — broad round-trip coverage across relation types and features
+- `literal_roundtrip.rs` — round-trips for literal value parsing and formatting
+- `multi_line_roundtrip.rs` — round-trips for multi-line `Read:Virtual` continuation syntax
+- `extension_roundtrip.rs` — round-trips for custom extension handlers
+- `adv_extension_roundtrip.rs` — round-trips for `+ Enh:` and `+ Opt:` advanced extension annotations
+- `extension_table.rs` — round-trips for `Read:Extension` and `+ Ext:` extension table reads
+- `json_parsing.rs` — exercises both JSON input formats (pbjson and Go protojson) against a real custom extension type
+
+`tests/common/mod.rs` provides shared helpers used across the integration test files — primarily `roundtrip_plan`, which parses a text plan and formats it back, asserting the output matches.
+
+## Examples and Reference Plans
+
+`examples/` contains runnable Cargo examples (`cargo run --example <name>`) demonstrating the public API:
+- `basic_usage.rs` covers parsing and formatting, 
+- `advanced_usage.rs` covers output options
+- `extensions.rs` shows the full custom extension handler pattern end-to-end — defining a type, implementing `Explainable`, registering it, and round-tripping through the registry.
+
+`example-plans/` contains sample `.substrait` text files at different feature levels — basic relations, scalar functions, user-defined types. These are useful as manual test inputs and as reference when working on the parser or textifier.
