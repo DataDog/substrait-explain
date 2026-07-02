@@ -11,7 +11,7 @@ This document describes the structure and design of `substrait-explain` for cont
 - **Text format** — the human-readable format defined in `GRAMMAR.md`
 - **Substrait protobuf** — the `proto::Plan` type from the `substrait` crate
 
-The CLI (behind the `cli` feature flag) can accept JSON or YAML files. These are converted to `proto::Plan` by `src/json.rs` and    `src/cli.rs` at the CLI boundary before anything else touches them. Internally, `proto::Plan` is the handoff point between the two directions — there is no shared IR that both the parser and textifier use. 
+The CLI(behind the `cli` feature flag) can accept text, JSON, protobuf, or YAML files. `cli.rs` routes each format and converts non-text input into `proto::Plan` at the boundary. JSON is handled in `json.rs`. Where we normalize Rust pbjson and Go protojson encodings to `proto::Plan`. Internally, `proto::Plan` is the handoff point between the two directions — there is no shared IR that both the parser and textifier use.
 
 ---
 
@@ -21,8 +21,8 @@ The CLI (behind the `cli` feature flag) can accept JSON or YAML files. These are
 src/
 ├── lib.rs              # Public API — parse() and format*() entry points
 ├── main.rs             # CLI binary
-├── cli.rs              # CLI argument handling
-├── json.rs             # JSON/YAML → proto::Plan (cli feature only)
+├── cli.rs              # CLI argument handling and routing for text, JSON, YAML, and protobuf formats
+├── json.rs             # JSON → proto::Plan (cli feature only), including pbjson and Go protojson Any handling
 ├── grammar.rs          # Re-exports GRAMMAR.md as rustdoc / doctests
 ├── fixtures.rs         # Shared test helpers (cfg(test) only)
 ├── types_tests.rs      # Type roundtrip tests (cfg(test) only)
@@ -37,11 +37,13 @@ src/
 
 Substrait plans can be encoded as JSON, but two incompatible JSON formats exist. Rust's pbjson library encodes `google.protobuf.Any` fields as `{"typeUrl": "...", "value": "<base64>"}`. Go's protojson library uses the protobuf standard encoding: `{"@type": "...", field1: val, ...}` where the concrete message's fields are inlined. A plan produced by a Go system will fail to parse with the Rust pbjson deserializer. `json.rs` handles both. It tries the pbjson serde path first; if that fails it falls back to `prost-reflect`, which implements the full protobuf JSON mapping spec and can handle the Go format as long as a `DescriptorPool` containing the schema for every referenced type URL is provided. Both paths produce the same `proto::Plan`. When outputting JSON, the CLI always produces the pbjson format (`{"typeUrl": "...", "value": "<base64>"}`) via `serde_json`. There is no option to emit Go-style protojson.
 
-The Go-format path requires a `DescriptorPool` with the schema for any extension types stored as `google.protobuf.Any` blobs — the Substrait core types are already bundled, but custom extension schemas must be provided. Callers do this by adding their compiled proto descriptor blob to the `ExtensionRegistry` via `add_descriptor`. When the CLI receives JSON input, it builds the pool from those registered blobs before calling `parse_json`. `build.rs` is an example of building the descriptor blob. It compiles the test proto at build time producing the binary descriptor and generated Rust types.
+The Go-format path requires a `DescriptorPool` with the schema for any extension types stored as `google.protobuf.Any` blobs — the Substrait core types are already bundled, but custom extension schemas must be provided. Callers do this by adding their compiled proto descriptor blob to the `ExtensionRegistry` via `add_descriptor`. When the CLI receives JSON input, it builds the pool from those registered blobs before calling `parse_json`. `build.rs` demonstrates this pattern: it compiles a test proto at build time to produce the descriptor blob and generated Rust types used in tests.
 
 ---
 
 ## `src/textify/` — Proto to Text
+
+Textifying means to generate substrait-explain text from a plan. A plan shouldn't fail to produce output for unsupported proto. The textifier writes what it can and pushes problems onto a shared ErrorQueue (textify/foundation.rs), which the caller can inspect after the fact (FormatError, PlanError).
 
 ### Textify Summary
 
@@ -56,7 +58,7 @@ The Go-format path requires a `DescriptorPool` with the schema for any extension
 
 ### Entry Point
 
-The public entry points in `lib.rs` are `format()`, `format_with_options()`, and `format_with_registry()`. All three ultimately call `format_with_registry`, which is the real implementation. `format()` and `format_with_options()` are convenience wrappers that supply a default empty `ExtensionRegistry`. The registry is always required even as a default, because advanced extensions; Enhancements(`+ Enh:`), Optimizations(`+ Opt:`), and extension relations(LeafRel, SingleRel, MultiRel), carry their payload as a `google.protobuf.Any` blob. The registry knows how to decode those blobs into readable text. 
+The public entry points in `lib.rs` are `format()`, `format_with_options()`, and `format_with_registry()`. All three ultimately call `format_with_registry`, which is the real implementation. `format()` and `format_with_options()` are convenience wrappers that supply a default empty `ExtensionRegistry`. The registry is always required because advanced extensions: Enhancements(`+ Enh:`), Optimizations(`+ Opt:`), and extension relations(LeafRel, SingleRel, MultiRel), carry their payload as a `google.protobuf.Any` blob. The registry knows how to decode those blobs into readable text.
 
 ### `textify/plan.rs` — Top-Level Output
 
@@ -64,14 +66,13 @@ This file is responsible for the overall structure of the output text and writes
 
 ### `textify/foundation.rs` — Shared Infrastructure
 
-This file defines the core  shared infrastructure that every other textify file depends on:
+This file defines the core shared infrastructure that every other textify file depends on:
 The `Textify` trait is implemented by every type that can be rendered to text and describes how they should be written to text. 
 The `Scope` trait is the context object carried through every `textify` call. Carrying output options, extension registry, error accumulator etc.. 
 
 ### `textify/rels.rs` — Relation Output
 
-Substrait proto relation types (Read, Filter, Project...) are converted to a single internal `Relation` shape before rendering. 
-Proto relations can be represented in their arguments, columns output mapping(Emit), addenda(advanced extensions), and children; which we store in Relation internal type.
+At the top level, a Substrait `Plan` contains `PlanRel` entries. Each `PlanRel` is either a `Root` or a regular `Rel`. The textifier handles `Root` separately in the `Textify for RelRoot` implementation. Regular protobuf relation types such as `Read`, `Filter`, and `Project` are converted into the `Relation` shape before rendering. Proto relations can be represented by their arguments, columns output mapping(Emit), addenda(advanced extensions), and children; which we store in the Relation internal type.
 
 **`Value`** is the universal type for anything that can appear in a relation's argument list or output columns. 
 
@@ -91,7 +92,7 @@ Called from `expressions.rs` and `rels.rs` whenever a type annotation, column na
 
 ### `textify/extensions.rs` — Extension Argument Rendering
 
-Called from `rels.rs` and `addenda.rs` to render  advanced extension arguments. This file gives `ExtensionValue`, `ExtensionArgs`, `ExtensionColumn`, and `Expr` their `Textify` implementations.
+Called from `rels.rs` and `addenda.rs` to render advanced extension arguments. This file gives `ExtensionValue`, `ExtensionArgs`, `ExtensionColumn`, and `Expr` their `Textify` implementations.
 
 The key intermediate type is **`ExtensionArgs`** (defined in `src/extensions/args.rs`). When the textifier encounters an advanced extension payload — a `google.protobuf.Any` blob — the `ExtensionRegistry` decodes it into `(name, ExtensionArgs)`: a text-format name and a generic argument bag holding positional `ExtensionValue`s, named `ExtensionValue`s, and `ExtensionColumn`s for output columns.
 
@@ -111,7 +112,7 @@ The parser converts text to `proto::Plan` in three phases, all orchestrated by `
 
 A **`Pair<Rule>`** is Pest's fundamental match type: it records which grammar rule matched, the text it covers, and a list of inner `Pair`s for sub-expressions within that match. For example, parsing `Read[my_table => a:i64, b:string?]` produces a `Pair` for the `read_relation` rule with two inner pairs: a `table_name` pair covering `my_table`, and a `named_column_list` pair covering `a:i64, b:string?`. That `named_column_list` pair itself contains two `named_column` inner pairs — one for `a:i64`, one for `b:string?` — each of which contains a `name` pair and a `type` pair. This inner-pair nesting captures the structure within a single line — the parent-child relationships between relations come from indentation, not the grammar.
 
-`structural.rs` wraps each top-level `Pair` into a **`LineNode`**: either a **`RelationNode`** (a relation line) or an **`Addendum`** (a `+ Enh:` / `+ Opt:` / `+ Ext:` line). `RelationNode` holds the pair, its line number, `addenda` and `children` lists. **`TreeBuilder`** then places each `LineNode` into the tree by indentation depth.
+`structural.rs` wraps each top-level `Pair` into a **`LineNode`**: either a **`RelationNode`** (a relation line) or an **`Addendum`** (a `+ Enh:` / `+ Opt:` / `+ Ext:` line). `RelationNode` holds the pair, its line number, `addenda` and `children` list. **`TreeBuilder`** then places each `LineNode` into the tree by indentation depth.
 
 **Phase 3 — Proto conversion**: once all lines are consumed, the completed `RelationNode` trees are walked depth-first, leaves first, then parents. This order is required because `RelationParsePair` (the trait each relation type implements) receives its children as already-converted `Rel` messages, and the field count flowing up from them, both of which are only available after the subtree below is resolved.
 
@@ -155,7 +156,7 @@ Handles two distinct jobs: parsing URN declarations and anchor assignments in th
 
 Converts each `RelationNode` into a `Rel` proto message. Implements the conversion for supported relation types: Read, Filter, Project etc... Also handles emit mapping — reconstructing the `RelCommon` output column remapping from the text representation.
 
-Each relation type implements **`RelationParsePair`**, a third parsing trait alongside `ParsePair` and `ScopedParsePair`, which additionally accepts pre-converted child `Rel` messages and propagates output field counts up the tree.
+Each relation type implements **`RelationParsePair`**, a third parsing trait alongside `ParsePair` and `ScopedParsePair`(both described in Shared Infrastructure), which additionally accepts pre-converted child `Rel` messages and propagates output field counts up the tree.
 
 `RelationParsingContext` is the context object used when a relation or addendum must turn parsed `ExtensionArgs` into a `google.protobuf.Any` payload. It carries the `ExtensionRegistry` plus source location so registry failures become contextual `ParseError`s.
 
@@ -176,7 +177,7 @@ Defines the parsing traits used throughout the parser — the parser-side equiva
 
 **`ScopedParsePair`** does the same but takes a `&SimpleExtensions` context argument. It is used for constructs that require anchor lookups — function calls, type references, type variations — where the conversion can fail with a `MessageParseError` if the anchor is not in the table.
 
-**`RuleIter`** wraps Pest's pair iterator with `try_pop` (consume the next pair only if it matches a specific rule, otherwise leave it) and `pop` (consume and assert).
+**`RuleIter`** helps parser code walk through Pest's nested parse results in the order the grammar defines them.
 
 ---
 
@@ -184,7 +185,7 @@ Defines the parsing traits used throughout the parser — the parser-side equiva
 
 Both simple and advanced extension code is found in this folder.
 
-**Simple Extensions** are the Substrait standard mechanism for declaring custom functions, types, and type variations. In the text format these appear in the `=== Extensions` section as URN declarations and anchor assignments. `SimpleExtensions` is the in-memory lookup table built from those declarations — mapping integer anchors to qualified names and back.
+**Simple Extensions** are the Substrait standard mechanism for declaring custom functions, types, and type variations. In the text format these appear in the `=== Extensions` section as URN declarations and anchor assignments. `SimpleExtensions` is the lookup table built from those declarations — mapping integer anchors to qualified names and back.
 
 **Advanced Extensions** are custom relation types, enhancements (`+ Enh:`), optimizations (`+ Opt:`), and extension table reads (`+ Ext:`, an addendum attached to a `ReadRel`) that are stored as a `google.protobuf.Any` blob in the proto. `substrait-explain` cannot parse or textify them from the plan alone. The caller supplies an `ExtensionRegistry` with registered Rust types that knows both the text representation and the protobuf `Any` representation.
 
@@ -192,7 +193,7 @@ Both simple and advanced extension code is found in this folder.
 
 **`Explainable`** handles text format conversion. `to_args()` converts the Rust type into an `ExtensionArgs` for the textifier to render; `from_args()` constructs the type from parsed `ExtensionArgs`.
 
-A type registers as an extension by implementing both `AnyConvertible` and `Explainable`. **`Extension`** is an empty supertrait that groups them into a single bound used by the registry.
+A type registers as an advanced extension by implementing both `AnyConvertible` and `Explainable`. **`Extension`** is an empty supertrait that groups them into a single bound used by the registry.
 
 Together, the textifier path of a registered type is: `AnyRef` → `AnyConvertible::from_any` → Rust type → `Explainable::to_args` → `ExtensionArgs`. The parse path is the reverse: `ExtensionArgs` → `Explainable::from_args` → Rust type → `AnyConvertible::to_any` → proto `Any`
 
@@ -206,8 +207,7 @@ Together, the textifier path of a registered type is: `AnyRef` → `AnyConvertib
 
 ### `extensions/simple.rs` — Anchor Lookup
 
-`SimpleExtensions` is the anchor lookup table built from the `=== Extensions` section. It maps integer anchors to URN strings a
-nd qualified names for functions, types, and type variations.
+`SimpleExtensions` is the anchor lookup table built from the `=== Extensions` section. It maps integer anchors to URN strings and qualified names for functions, types, and type variations.
 
 ### `extensions/registry.rs` — Advanced Extension Registry
 
@@ -221,7 +221,7 @@ Handlers read from `ExtensionArgs` via an `ArgsExtractor`, which tracks which ar
 
 ### `extensions/any.rs` — Any Wrapper
 
-`prost_types::Any` is always owned — there is no borrowed form. When the textifier encounters an extension blob inside a proto struct it only has a reference to it, not ownership. Passing that blob to `from_any` without a local borrowed type would require cloning it every time. `AnyRef<'a>` solves this without cloning. Created from a reference to a `prost_types::Any`. `Any` (owned) is used when ownership is required, such as the return type of `to_any`. Using these local types in the `AnyConvertible` API also means extension implementors do not need to depend on prost directly.
+`any.rs` defines local owned and borrowed representations for protobuf `Any` payloads. `Any` is the crate-owned form used when code needs to build a new payload, such as the value returned by `AnyConvertible::to_any()`. `AnyRef<'a>` is a borrowed view over an existing payload and can be created from `prost_types::Any`, `pbjson_types::Any`, or the crate's own `Any`. The registry and textifier use these wrappers so extension code works with one stable `Any` API instead of depending on the concrete `Any` type used by a particular serialization crate. Prost-generated extension types can still use the blanket `AnyConvertible` implementation; custom types can implement `AnyConvertible` manually. `AnyRef<'a>` gives the API a way to pass existing `Any` payloads by reference instead of requiring ownership at every call site.
 
 ---
 
@@ -231,7 +231,7 @@ The test suite is split between unit tests inside source files and integration t
 
 Unit tests live alongside the code they test following standard Rust convention. `src/fixtures.rs` provides `TestContext` and other helpers shared across many test modules. `types_tests.rs` contains type round-trip tests that span both the parser and textifier and has no single source file it naturally belongs to. They both need access to `pub(crate)` types, so they cannot be in `tests/`, which is compiled as a separate crate and cannot see crate-internal items.
 
-Integration tests under `tests/` are compiled as a separate crate and test the public API as an external caller would — they can only access what `lib.rs` exports. The primary strategy is round-trip: parse a text plan to proto, textify it back to text, and assert the output matches. This catches most correctness bugs without requiring proto-level assertions.
+Integration tests under `tests/` test the public API as an external caller would — they can only access what `lib.rs` exports. The primary strategy is round-trip: parse a text plan to proto, textify it back to text, and assert the output matches. This catches most correctness bugs without requiring proto-level assertions.
 
 - `plan_roundtrip.rs` — broad round-trip coverage across relation types and features
 - `literal_roundtrip.rs` — round-trips for literal value parsing and formatting
