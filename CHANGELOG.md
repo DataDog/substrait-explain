@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/DataDog/substrait-explain/compare/v0.6.0...v0.7.0) - 2026-07-02
+
+### Bug Fixes
+
+- require output type on scalar and aggregate function calls ([#153](https://github.com/DataDog/substrait-explain/pull/153))
+- zero arg textification and parsing fix ([#150](https://github.com/DataDog/substrait-explain/pull/150))
+
+### Documentation
+
+- add agent contribution guidance ([#164](https://github.com/DataDog/substrait-explain/pull/164))
+
+### Features
+
+- [**breaking**] Allow multi-row virtual tables to be emitted ([#167](https://github.com/DataDog/substrait-explain/pull/167))
+- Added chunk logic to support multi-line virtual tables ([#166](https://github.com/DataDog/substrait-explain/pull/166))
+- u!-prefix support for user-defined types and function signatures ([#154](https://github.com/DataDog/substrait-explain/pull/154))
+- *(parser)* support typed null literals ([#156](https://github.com/DataDog/substrait-explain/pull/156))
+- adding precision time compound types ([#149](https://github.com/DataDog/substrait-explain/pull/149))
+
+### Refactoring
+
+- *(api)* privatize parser and textifier internals ([#140](https://github.com/DataDog/substrait-explain/pull/140))
+- refactor!(api): narrow parser internals ([#138](https://github.com/DataDog/substrait-explain/pull/138))
+
+### Test
+
+- *(api)* move tests and examples to public surface ([#139](https://github.com/DataDog/substrait-explain/pull/139))
+
 ## [0.6.0](https://github.com/DataDog/substrait-explain/compare/v0.5.0...v0.6.0) - 2026-06-01
 
 ### Features
