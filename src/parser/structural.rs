@@ -950,8 +950,28 @@ impl<'a> Parser<'a> {
             line: line.to_string(),
         };
 
+        // A `===`-prefixed line at indent 0 is always a section header,
+        // regardless of the current state: it transitions us into the next
+        // section.
+        if let IndentedLine(0, l) = indented_line
+            && l.starts_with("===")
+        {
+            self.state = self.parse_section_header(l)?;
+            return Ok(());
+        }
+
         match self.state {
-            State::Initial => self.parse_initial(indented_line),
+            State::Initial => match indented_line {
+                IndentedLine(0, l) if l.trim().is_empty() => Ok(()),
+                IndentedLine(n, l) => Err(ParseError::Initial(
+                    ParseContext::new(n as i64, l.to_string()),
+                    MessageParseError::invalid(
+                        "initial",
+                        pest::Span::new(l, 0, l.len()).expect("Invalid span?!"),
+                        format!("Unknown initial line: {l:?}"),
+                    ),
+                )),
+            },
             State::Version => self.parse_version(indented_line),
             State::Extensions => self
                 .parse_extensions(indented_line)
@@ -971,41 +991,38 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the initial line(s) of the input, which is either a blank line or
-    /// the extensions or plan header.
-    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
-        match line {
-            IndentedLine(0, l) if l.trim().is_empty() => {}
-            IndentedLine(0, l)
-                if l.strip_prefix(VERSION_HEADER)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' ')) =>
-            {
-                self.parse_version_header(l)?;
-                self.state = State::Version;
-            }
-            IndentedLine(0, simple::EXTENSIONS_HEADER) => {
-                self.state = State::Extensions;
-            }
-            IndentedLine(0, PLAN_HEADER) => {
-                self.state = State::Plan;
-            }
-            IndentedLine(n, l) => {
-                return Err(ParseError::Initial(
-                    ParseContext::new(n as i64, l.to_string()),
-                    MessageParseError::invalid(
-                        "initial",
-                        pest::Span::new(l, 0, l.len()).expect("Invalid span?!"),
-                        format!("Unknown initial line: {l:?}"),
-                    ),
-                ));
-            }
+    /// Parse a `===`-prefixed section header line (at indent 0), returning
+    /// the [`State`] to transition into. Also performs any header-specific
+    /// parsing, e.g. storing the plan [`Version`] from a `=== Version`
+    /// header.
+    fn parse_section_header(&mut self, line: &str) -> Result<State, ParseError> {
+        if line == simple::EXTENSIONS_HEADER {
+            return Ok(State::Extensions);
         }
-        Ok(())
+        if line == PLAN_HEADER {
+            return Ok(State::Plan);
+        }
+        if line
+            .strip_prefix(VERSION_HEADER)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.version = Some(self.parse_version_header(line)?);
+            return Ok(State::Version);
+        }
+
+        Err(ParseError::Initial(
+            ParseContext::new(self.line_no, line.to_string()),
+            MessageParseError::invalid(
+                "initial",
+                pest::Span::new(line, 0, line.len()).expect("Invalid span?!"),
+                format!("Unknown section header: {line:?}"),
+            ),
+        ))
     }
 
     /// Parse the `=== Version <major>.<minor>.<patch>` header line and store
     /// the resulting [`Version`], leaving `producer` / `git_hash` empty
-    fn parse_version_header(&mut self, line: &str) -> Result<(), ParseError> {
+    fn parse_version_header(&self, line: &str) -> Result<Version, ParseError> {
         let ctx = || ParseContext::new(self.line_no, line.to_string());
         let rest = line
             .strip_prefix(VERSION_HEADER)
@@ -1040,28 +1057,20 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        self.version = Some(Version {
+        Ok(Version {
             major_number,
             minor_number,
             patch_number,
             ..Default::default()
-        });
-        Ok(())
+        })
     }
 
-    /// Parses a single line from the version section: either an indented
-    /// `producer:` / `git_hash:` detail line, or a section header
+    /// Parses a single line from the version section: an indented
+    /// `producer:` / `git_hash:` detail line. Section headers are
+    /// intercepted by [`parse_line`](Self::parse_line) before reaching here.
     fn parse_version(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
             IndentedLine(0, l) if l.trim().is_empty() => Ok(()),
-            IndentedLine(0, simple::EXTENSIONS_HEADER) => {
-                self.state = State::Extensions;
-                Ok(())
-            }
-            IndentedLine(0, PLAN_HEADER) => {
-                self.state = State::Plan;
-                Ok(())
-            }
             IndentedLine(1, l) => self.parse_version_detail(l),
             IndentedLine(_, l) => Err(ParseError::ValidationError(
                 ParseContext::new(self.line_no, l.to_string()),
@@ -1101,13 +1110,10 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Parse a single line from the extensions section of the input, updating
-    /// the parser state.
+    /// Parse a single line from the extensions section of the input.
+    /// Section headers are intercepted by [`parse_line`](Self::parse_line)
+    /// before reaching here.
     fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
-        if line == IndentedLine(0, PLAN_HEADER) {
-            self.state = State::Plan;
-            return Ok(());
-        }
         self.extension_parser.parse_line(line)
     }
 

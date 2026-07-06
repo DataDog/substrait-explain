@@ -56,12 +56,9 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         )
     }
 
-    /// Write the `=== Version` section. Emits nothing unless option is
-    /// enabled and the plan carries a version that is not entirely empty
+    /// Write the `=== Version` section. Emits nothing unless the plan
+    /// carries a version that is not entirely empty
     pub(crate) fn write_version(&self, w: &mut impl fmt::Write) -> fmt::Result {
-        if !self.options.show_version {
-            return Ok(());
-        }
         let Some(version) = self.version else {
             return Ok(());
         };
@@ -75,10 +72,20 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
             version.major_number, version.minor_number, version.patch_number
         )?;
         if !version.producer.is_empty() {
-            writeln!(w, "{}producer: {}", self.options.indent, version.producer)?;
+            writeln!(
+                w,
+                "{}producer: {}",
+                self.options.indent,
+                version.producer.trim()
+            )?;
         }
         if !version.git_hash.is_empty() {
-            writeln!(w, "{}git_hash: {}", self.options.indent, version.git_hash)?;
+            writeln!(
+                w,
+                "{}git_hash: {}",
+                self.options.indent,
+                version.git_hash.trim()
+            )?;
         }
         Ok(())
     }

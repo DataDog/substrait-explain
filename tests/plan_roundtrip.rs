@@ -862,10 +862,6 @@ Root[sum]
     roundtrip_plan(plan);
 }
 
-// === Version section tests ===
-
-/// A `=== Version` section with just the semver round-trips, and appears
-/// before the plan (and before extensions, when present).
 #[test]
 fn test_version_semver_only_roundtrip() {
     let plan = r#"=== Version 0.55.0
