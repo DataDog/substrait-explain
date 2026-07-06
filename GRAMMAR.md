@@ -882,6 +882,43 @@ Root[user_orders]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
+### Set Relation
+
+**Syntax**: `"Set" "[" set_op "=>" reference_list "]"`
+
+**Components**:
+
+- `set_op` - Set operation enum with `&` prefix, using Substrait's `SetOp`
+  variant names directly: `&UnionAll`, `&UnionDistinct`,
+  `&IntersectionPrimary`, `&IntersectionMultiset`,
+  `&IntersectionMultisetAll`, `&MinusPrimary`, `&MinusPrimaryAll`,
+  `&MinusMultiset`
+- `reference_list` - Comma-separated list of field references for output columns
+
+A `Set` relation combines two or more inputs (written as indented children,
+like any other multi-input relation), which must all share the same output
+schema. Field references map to that common schema, not a concatenation of
+all inputs' fields (unlike `Join`):
+
+- `$0`, `$1`, ... refer to fields of the shared input schema
+
+**Example**:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Set[&UnionAll => $0, $1]
+    Read[active_users => id:i64, name:string]
+    Read[archived_users => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ### Extension Relations
 
 Extension relations allow custom relation types with user-defined protobuf payloads. They enable integration with custom data sources, optimizations, or specialized operations beyond standard Substrait relations.

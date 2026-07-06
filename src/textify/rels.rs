@@ -14,7 +14,7 @@ use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
     AggregateFunction, AggregateRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
     ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel,
-    Rel, RelCommon, RelRoot, SortField, SortRel, Type, join_rel,
+    Rel, RelCommon, RelRoot, SetRel, SortField, SortRel, Type, join_rel, set_rel,
 };
 
 use super::addenda::AddendumLines;
@@ -583,6 +583,7 @@ impl<'a> Relation<'a> {
             Some(RelType::Sort(r)) => Relation::from_sort(r, ctx),
             Some(RelType::Fetch(r)) => Relation::from_fetch(r, ctx),
             Some(RelType::Join(r)) => Relation::from_join(r, ctx),
+            Some(RelType::Set(r)) => Relation::from_set(r, ctx),
             Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
             Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
             Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
@@ -1034,6 +1035,44 @@ impl<'a> Relation<'a> {
             children,
         }
     }
+
+    fn from_set<S: Scope>(rel: &'a SetRel, ctx: &S) -> Self {
+        let child_refs: Vec<Option<&'a Rel>> = rel.inputs.iter().map(Some).collect();
+        let (children, _total_columns) = Relation::convert_children(child_refs, ctx);
+
+        // Set relation output has the same width as any one of its inputs
+        // (it's a pass-through, not a concatenation like Join).
+        let width = children
+            .first()
+            .and_then(|c| c.as_ref())
+            .map(|c| c.emitted())
+            .unwrap_or(0);
+
+        let op_value = match set_rel::SetOp::try_from(rel.op) {
+            Ok(op) => match op.as_enum_str() {
+                Ok(s) => Value::Enum(s),
+                Err(e) => Value::Missing(e),
+            },
+            Err(_) => Value::Missing(PlanError::invalid(
+                "SetRel",
+                Some("op"),
+                format!("Unknown set op: {}", rel.op),
+            )),
+        };
+
+        let arguments = Some(Arguments::inline(vec![op_value], vec![]));
+        let emit = get_emit(rel.common.as_ref());
+        let columns = (0..width).map(|i| Value::Reference(i as i32)).collect();
+
+        Relation {
+            name: Cow::Borrowed("Set"),
+            arguments,
+            columns,
+            emit,
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
+            children,
+        }
+    }
 }
 
 impl<'a> From<&'a SortField> for Value<'a> {
@@ -1139,6 +1178,29 @@ impl ValueEnum for join_rel::JoinType {
             join_rel::JoinType::RightSingle => "RightSingle",
             join_rel::JoinType::LeftMark => "LeftMark",
             join_rel::JoinType::RightMark => "RightMark",
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl ValueEnum for set_rel::SetOp {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let s = match self {
+            set_rel::SetOp::Unspecified => {
+                return Err(PlanError::invalid(
+                    "SetOp",
+                    Option::<Cow<str>>::None,
+                    "Unspecified SetOp",
+                ));
+            }
+            set_rel::SetOp::MinusPrimary => "MinusPrimary",
+            set_rel::SetOp::MinusPrimaryAll => "MinusPrimaryAll",
+            set_rel::SetOp::MinusMultiset => "MinusMultiset",
+            set_rel::SetOp::IntersectionPrimary => "IntersectionPrimary",
+            set_rel::SetOp::IntersectionMultiset => "IntersectionMultiset",
+            set_rel::SetOp::IntersectionMultisetAll => "IntersectionMultisetAll",
+            set_rel::SetOp::UnionDistinct => "UnionDistinct",
+            set_rel::SetOp::UnionAll => "UnionAll",
         };
         Ok(Cow::Borrowed(s))
     }
@@ -1586,6 +1648,98 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
         assert!(
             result.contains("Join["),
             "Expected Join relation to be formatted"
+        );
+    }
+
+    #[test]
+    fn test_set_relation_union_all() {
+        let ctx = TestContext::new();
+
+        let read = |name: &str| Rel {
+            rel_type: Some(RelType::Read(Box::new(ReadRel {
+                common: None,
+                base_schema: Some(NamedStruct {
+                    names: vec!["a".to_string(), "b".to_string()],
+                    r#struct: Some(Struct {
+                        type_variation_reference: 0,
+                        types: vec![
+                            Type {
+                                kind: Some(Kind::I64(ptype::I64 {
+                                    type_variation_reference: 0,
+                                    nullability: Nullability::Nullable as i32,
+                                })),
+                            },
+                            Type {
+                                kind: Some(Kind::String(ptype::String {
+                                    type_variation_reference: 0,
+                                    nullability: Nullability::Nullable as i32,
+                                })),
+                            },
+                        ],
+                        nullability: Nullability::Nullable as i32,
+                    }),
+                }),
+                filter: None,
+                best_effort_filter: None,
+                projection: None,
+                advanced_extension: None,
+                read_type: Some(ReadType::NamedTable(
+                    substrait::proto::read_rel::NamedTable {
+                        names: vec![name.to_string()],
+                        advanced_extension: None,
+                    },
+                )),
+            }))),
+        };
+
+        let set_rel = SetRel {
+            common: None,
+            inputs: vec![read("table1"), read("table2")],
+            op: set_rel::SetOp::UnionAll as i32,
+            advanced_extension: None,
+        };
+        let rel = Rel {
+            rel_type: Some(RelType::Set(set_rel)),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+        assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
+        assert!(
+            result.contains("Set[&UnionAll => $0, $1]"),
+            "Unexpected output: {result}"
+        );
+    }
+
+    #[test]
+    fn test_set_relation_unknown_op() {
+        let ctx = TestContext::new();
+
+        let set_rel = SetRel {
+            common: None,
+            inputs: vec![
+                Rel {
+                    rel_type: Some(RelType::Read(Box::default())),
+                },
+                Rel {
+                    rel_type: Some(RelType::Read(Box::default())),
+                },
+            ],
+            op: 999, // Invalid set op
+            advanced_extension: None,
+        };
+        let rel = Rel {
+            rel_type: Some(RelType::Set(set_rel)),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+        assert!(!errors.is_empty(), "Expected errors for unknown set op");
+        assert!(
+            result.contains("!{SetRel}"),
+            "Expected error token for unknown set op, got: {result}"
+        );
+        assert!(
+            result.contains("Set["),
+            "Expected Set relation to be formatted"
         );
     }
 

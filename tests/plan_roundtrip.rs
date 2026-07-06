@@ -448,6 +448,40 @@ Root[d, mark]
 }
 
 #[test]
+fn test_set_relation_union_all_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b]
+  Set[&UnionAll => $0, $1]
+    Read[table1 => a:i64, b:string]
+    Read[table2 => c:i64, d:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_set_relation_union_distinct_multi_input_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b]
+  Set[&UnionDistinct => $0, $1]
+    Read[table1 => a:i64, b:string]
+    Read[table2 => c:i64, d:string]
+    Read[table3 => e:i64, f:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_set_relation_minus_primary_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b]
+  Set[&MinusPrimary => $0, $1]
+    Read[table1 => a:i64, b:string]
+    Read[table2 => c:i64, d:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_unregistered_extension_error() {
     let plan_text = r#"=== Plan
 Root[result]
