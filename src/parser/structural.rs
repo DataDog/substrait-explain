@@ -162,7 +162,7 @@ impl<'a> LineNode<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum State {
     // The initial state, before we have parsed any lines.
     Initial,
@@ -173,6 +173,21 @@ pub enum State {
     Extensions,
     // The plan section, after parsing the header and any other Plan lines.
     Plan,
+}
+
+impl State {
+    /// Position of this section in the required document order (`Version`,
+    /// `Extensions`, `Plan`). Sections must appear in strictly increasing
+    /// order, so a `===` header may only transition to a state with a higher
+    /// rank than the current one.
+    fn section_rank(&self) -> u8 {
+        match self {
+            State::Initial => 0,
+            State::Version => 1,
+            State::Extensions => 2,
+            State::Plan => 3,
+        }
+    }
 }
 
 impl fmt::Display for State {
@@ -950,13 +965,26 @@ impl<'a> Parser<'a> {
             line: line.to_string(),
         };
 
-        // A `===`-prefixed line at indent 0 is always a section header,
-        // regardless of the current state: it transitions us into the next
-        // section.
+        // A `===`-prefixed line at indent 0 is always a section header: it
+        // transitions us into the next section. Sections must appear in
+        // strictly increasing order (`Version`, `Extensions`, `Plan`,
+        // mirroring the Substrait `Plan` protobuf field order), so a header
+        // cannot repeat a section or move backwards.
         if let IndentedLine(0, l) = indented_line
             && l.starts_with("===")
         {
-            self.state = self.parse_section_header(l)?;
+            let next = self.parse_section_header(l)?;
+            if next.section_rank() <= self.state.section_rank() {
+                return Err(ParseError::ValidationError(
+                    ctx(),
+                    format!(
+                        "section {next} is out of order after {current}; sections must appear \
+                         in the order Version, Extensions, Plan",
+                        current = self.state,
+                    ),
+                ));
+            }
+            self.state = next;
             return Ok(());
         }
 
@@ -1002,8 +1030,8 @@ impl<'a> Parser<'a> {
         if line == PLAN_HEADER {
             return Ok(State::Plan);
         }
-        if line
-            .strip_prefix(VERSION_HEADER)
+        if let Some(rest) = line.strip_prefix(VERSION_HEADER)
+            && (rest.is_empty() || rest.starts_with(' '))
         {
             self.version = Some(self.parse_version_header(line)?);
             return Ok(State::Version);
@@ -1503,5 +1531,85 @@ Project[$0, $1, 42, 84]
             }
             other => panic!("Expected Rel type, got {other:?}"),
         }
+    }
+
+    /// Sections must appear in the order `Version`, `Extensions`, `Plan`
+    /// (each optional except `Plan`); a header out of that order is rejected.
+    #[test]
+    fn test_section_headers_out_of_order_rejected() {
+        let input = r#"
+=== Plan
+Root[result]
+  Read[t => a:i32]
+
+=== Extensions
+URNs:
+  @  1: /urn/common
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_repeated_section_header_rejected() {
+        let input = r#"
+=== Extensions
+URNs:
+  @  1: /urn/common
+
+=== Extensions
+URNs:
+  @  2: /urn/other
+
+=== Plan
+Root[result]
+  Read[t => a:i32]
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_version_after_plan_rejected() {
+        let input = r#"
+=== Plan
+Root[result]
+  Read[t => a:i32]
+
+=== Version 1.0.0
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    /// The full, valid section order (`Version`, `Extensions`, `Plan`) is
+    /// still accepted.
+    #[test]
+    fn test_all_sections_in_order_accepted() {
+        let input = r#"
+=== Version 1.2.3
+=== Extensions
+URNs:
+  @  1: /urn/common
+
+=== Plan
+Root[result]
+  Read[t => a:i32]
+"#;
+        let plan = Parser::parse(input).unwrap();
+        assert_eq!(plan.relations.len(), 1);
+        assert!(plan.version.is_some());
     }
 }
