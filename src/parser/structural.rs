@@ -1004,7 +1004,6 @@ impl<'a> Parser<'a> {
         }
         if line
             .strip_prefix(VERSION_HEADER)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
         {
             self.version = Some(self.parse_version_header(line)?);
             return Ok(State::Version);
