@@ -10,7 +10,7 @@ use pest::iterators::Pair;
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
-    SortRel, plan_rel,
+    SortRel, Version, plan_rel,
 };
 
 use crate::extensions::any::Any;
@@ -26,6 +26,7 @@ use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, Virtual
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
+pub const VERSION_HEADER: &str = "=== Version";
 
 /// Represents an input line, trimmed of leading two-space indents and final
 /// whitespace. Contains the number of indents and the trimmed line.
@@ -161,14 +162,32 @@ impl<'a> LineNode<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum State {
     // The initial state, before we have parsed any lines.
     Initial,
+    // The version section, after parsing the `=== Version` header. Accepts the
+    // optional indented `producer:` / `git_hash:` detail lines.
+    Version,
     // The extensions section, after parsing the header and any other Extension lines.
     Extensions,
     // The plan section, after parsing the header and any other Plan lines.
     Plan,
+}
+
+impl State {
+    /// Position of this section in the required document order (`Version`,
+    /// `Extensions`, `Plan`). Sections must appear in strictly increasing
+    /// order, so a `===` header may only transition to a state with a higher
+    /// rank than the current one.
+    fn section_rank(&self) -> u8 {
+        match self {
+            State::Initial => 0,
+            State::Version => 1,
+            State::Extensions => 2,
+            State::Plan => 3,
+        }
+    }
 }
 
 impl fmt::Display for State {
@@ -812,6 +831,8 @@ pub struct Parser<'a> {
     /// [`next_chunk`](Self::next_chunk). `None` before parsing starts and once
     /// the input is exhausted.
     cursor: Option<ChunkCursor<'a>>,
+    /// The plan version from an optional `=== Version` section
+    version: Option<Version>,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
     relation_parser: RelationParser<'a>,
@@ -861,6 +882,7 @@ impl<'a> Parser<'a> {
             line_no: 1,
             state: State::Initial,
             cursor: None,
+            version: None,
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -943,8 +965,42 @@ impl<'a> Parser<'a> {
             line: line.to_string(),
         };
 
+        // A `===`-prefixed line at indent 0 is always a section header: it
+        // transitions us into the next section. Sections must appear in
+        // strictly increasing order (`Version`, `Extensions`, `Plan`,
+        // mirroring the Substrait `Plan` protobuf field order), so a header
+        // cannot repeat a section or move backwards.
+        if let IndentedLine(0, l) = indented_line
+            && l.starts_with("===")
+        {
+            let next = self.parse_section_header(l)?;
+            if next.section_rank() <= self.state.section_rank() {
+                return Err(ParseError::ValidationError(
+                    ctx(),
+                    format!(
+                        "section {next} is out of order after {current}; sections must appear \
+                         in the order Version, Extensions, Plan",
+                        current = self.state,
+                    ),
+                ));
+            }
+            self.state = next;
+            return Ok(());
+        }
+
         match self.state {
-            State::Initial => self.parse_initial(indented_line),
+            State::Initial => match indented_line {
+                IndentedLine(0, l) if l.trim().is_empty() => Ok(()),
+                IndentedLine(n, l) => Err(ParseError::Initial(
+                    ParseContext::new(n as i64, l.to_string()),
+                    MessageParseError::invalid(
+                        "initial",
+                        pest::Span::new(l, 0, l.len()).expect("Invalid span?!"),
+                        format!("Unknown initial line: {l:?}"),
+                    ),
+                )),
+            },
+            State::Version => self.parse_version(indented_line),
             State::Extensions => self
                 .parse_extensions(indented_line)
                 .map_err(|e| ParseError::Extension(ctx(), e)),
@@ -963,44 +1019,135 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the initial line(s) of the input, which is either a blank line or
-    /// the extensions or plan header.
-    fn parse_initial(&mut self, line: IndentedLine) -> Result<(), ParseError> {
+    /// Parse a `===`-prefixed section header line (at indent 0), returning
+    /// the [`State`] to transition into. Also performs any header-specific
+    /// parsing, e.g. storing the plan [`Version`] from a `=== Version`
+    /// header.
+    fn parse_section_header(&mut self, line: &str) -> Result<State, ParseError> {
+        if line == simple::EXTENSIONS_HEADER {
+            return Ok(State::Extensions);
+        }
+        if line == PLAN_HEADER {
+            return Ok(State::Plan);
+        }
+        if let Some(rest) = line.strip_prefix(VERSION_HEADER)
+            && (rest.is_empty() || rest.starts_with(' '))
+        {
+            self.version = Some(self.parse_version_header(line)?);
+            return Ok(State::Version);
+        }
+
+        Err(ParseError::Initial(
+            ParseContext::new(self.line_no, line.to_string()),
+            MessageParseError::invalid(
+                "initial",
+                pest::Span::new(line, 0, line.len()).expect("Invalid span?!"),
+                format!("Unknown section header: {line:?}"),
+            ),
+        ))
+    }
+
+    /// Parse the `=== Version <major>.<minor>.<patch>` header line and store
+    /// the resulting [`Version`], leaving `producer` / `git_hash` empty
+    fn parse_version_header(&self, line: &str) -> Result<Version, ParseError> {
+        let ctx = || ParseContext::new(self.line_no, line.to_string());
+        let rest = line
+            .strip_prefix(VERSION_HEADER)
+            .expect("version header prefix checked by caller")
+            .trim();
+
+        let mut numbers = rest.split('.');
+        let mut next_number = |field: &str| -> Result<u32, ParseError> {
+            let part = numbers.next().filter(|p| !p.is_empty()).ok_or_else(|| {
+                ParseError::ValidationError(
+                    ctx(),
+                    format!("version header is missing the {field} number, expected '{VERSION_HEADER} <major>.<minor>.<patch>'"),
+                )
+            })?;
+            part.parse::<u32>().map_err(|e| {
+                ParseError::ValidationError(
+                    ctx(),
+                    format!("invalid {field} version number {part:?}: {e}"),
+                )
+            })
+        };
+
+        let major_number = next_number("major")?;
+        let minor_number = next_number("minor")?;
+        let patch_number = next_number("patch")?;
+        if numbers.next().is_some() {
+            return Err(ParseError::ValidationError(
+                ctx(),
+                format!(
+                    "version {rest:?} has too many components, expected '<major>.<minor>.<patch>'"
+                ),
+            ));
+        }
+
+        Ok(Version {
+            major_number,
+            minor_number,
+            patch_number,
+            ..Default::default()
+        })
+    }
+
+    /// Parses a single line from the version section: an indented
+    /// `producer:` / `git_hash:` detail line. Section headers are
+    /// intercepted by [`parse_line`](Self::parse_line) before reaching here.
+    fn parse_version(&mut self, line: IndentedLine) -> Result<(), ParseError> {
         match line {
-            IndentedLine(0, l) if l.trim().is_empty() => {}
-            IndentedLine(0, simple::EXTENSIONS_HEADER) => {
-                self.state = State::Extensions;
-            }
-            IndentedLine(0, PLAN_HEADER) => {
-                self.state = State::Plan;
-            }
-            IndentedLine(n, l) => {
-                return Err(ParseError::Initial(
-                    ParseContext::new(n as i64, l.to_string()),
-                    MessageParseError::invalid(
-                        "initial",
-                        pest::Span::new(l, 0, l.len()).expect("Invalid span?!"),
-                        format!("Unknown initial line: {l:?}"),
-                    ),
+            IndentedLine(0, l) if l.trim().is_empty() => Ok(()),
+            IndentedLine(1, l) => self.parse_version_detail(l),
+            IndentedLine(_, l) => Err(ParseError::ValidationError(
+                ParseContext::new(self.line_no, l.to_string()),
+                format!(
+                    "unexpected line in version section: {l:?}; expected an indented 'producer:' \
+                     or 'git_hash:' line, or a section header"
+                ),
+            )),
+        }
+    }
+
+    /// Parse an indented `producer:` / `git_hash:` detail line, mutating the
+    /// [`Version`] set by [`parse_version_header`](Self::parse_version_header).
+    fn parse_version_detail(&mut self, line: &str) -> Result<(), ParseError> {
+        let ctx = || ParseContext::new(self.line_no, line.to_string());
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            ParseError::ValidationError(
+                ctx(),
+                format!("expected 'producer:' or 'git_hash:' in version section, found {line:?}"),
+            )
+        })?;
+        let value = value.trim().to_string();
+        let version = self
+            .version
+            .as_mut()
+            .expect("version is set on entry to the version section");
+        match key.trim() {
+            "producer" => version.producer = value,
+            "git_hash" => version.git_hash = value,
+            other => {
+                return Err(ParseError::ValidationError(
+                    ctx(),
+                    format!("unknown version field {other:?}, expected 'producer' or 'git_hash'"),
                 ));
             }
         }
         Ok(())
     }
 
-    /// Parse a single line from the extensions section of the input, updating
-    /// the parser state.
+    /// Parse a single line from the extensions section of the input.
+    /// Section headers are intercepted by [`parse_line`](Self::parse_line)
+    /// before reaching here.
     fn parse_extensions(&mut self, line: IndentedLine<'_>) -> Result<(), ExtensionParseError> {
-        if line == IndentedLine(0, PLAN_HEADER) {
-            self.state = State::Plan;
-            return Ok(());
-        }
         self.extension_parser.parse_line(line)
     }
 
     /// Build the plan from the parser state with warning collection.
     fn build_plan(self) -> Result<Plan, ParseError> {
         let Parser {
+            version,
             relation_parser,
             extension_parser,
             extension_registry,
@@ -1014,6 +1161,7 @@ impl<'a> Parser<'a> {
 
         // Build the final plan
         Ok(Plan {
+            version,
             extension_urns: extensions.to_extension_urns(),
             extensions: extensions.to_extension_declarations(),
             relations: root_relations,
@@ -1383,5 +1531,85 @@ Project[$0, $1, 42, 84]
             }
             other => panic!("Expected Rel type, got {other:?}"),
         }
+    }
+
+    /// Sections must appear in the order `Version`, `Extensions`, `Plan`
+    /// (each optional except `Plan`); a header out of that order is rejected.
+    #[test]
+    fn test_section_headers_out_of_order_rejected() {
+        let input = r#"
+=== Plan
+Root[result]
+  Read[t => a:i32]
+
+=== Extensions
+URNs:
+  @  1: /urn/common
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_repeated_section_header_rejected() {
+        let input = r#"
+=== Extensions
+URNs:
+  @  1: /urn/common
+
+=== Extensions
+URNs:
+  @  2: /urn/other
+
+=== Plan
+Root[result]
+  Read[t => a:i32]
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_version_after_plan_rejected() {
+        let input = r#"
+=== Plan
+Root[result]
+  Read[t => a:i32]
+
+=== Version 1.0.0
+"#;
+        let err = Parser::parse(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of order"),
+            "expected an out-of-order error, got: {msg}"
+        );
+    }
+
+    /// The full, valid section order (`Version`, `Extensions`, `Plan`) is
+    /// still accepted.
+    #[test]
+    fn test_all_sections_in_order_accepted() {
+        let input = r#"
+=== Version 1.2.3
+=== Extensions
+URNs:
+  @  1: /urn/common
+
+=== Plan
+Root[result]
+  Read[t => a:i32]
+"#;
+        let plan = Parser::parse(input).unwrap();
+        assert_eq!(plan.relations.len(), 1);
+        assert!(plan.version.is_some());
     }
 }

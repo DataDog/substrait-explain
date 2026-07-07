@@ -4,10 +4,11 @@ This document describes the grammar for the human-readable Substrait text format
 
 ## Overview
 
-The Substrait text format consists of two main sections:
+The Substrait text format consists of three sections:
 
-1. **Extensions Section** (optional) - Defines URNs and function/type extensions
-2. **Plan Section** - Contains the actual query plan with relations
+1. **Version Section** (optional) - Declares the Substrait version of the plan
+2. **Extensions Section** (optional) - Defines URNs and function/type extensions
+3. **Plan Section** - Contains the actual query plan with relations
 
 ## Design Principles
 
@@ -96,8 +97,44 @@ A Substrait text format document consists of two main sections with specific for
 
 The document uses `===` headers to separate major sections:
 
+- **`=== Version`** - Declares the plan's Substrait version (optional)
 - **`=== Extensions`** - Defines URNs and function/type mappings (optional)
 - **`=== Plan`** - Contains the actual query plan (required)
+
+When present, the sections appear in this order, mirroring the field order of
+the Substrait `Plan` protobuf.
+
+#### Version format
+
+```text
+=== Version major.minor.patch
+  producer: producer string
+  git_hash: git hash
+```
+
+The header carries the version number as `major.minor.patch` (three
+non-negative integers). The indented `producer:` and `git_hash:` lines are
+optional and may appear in either order beneath the header.
+
+The `=== Version` section as a whole is optional; a document with no version
+section is valid and denotes a plan without a declared version.
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Version 0.55.0
+  producer: my-optimizer
+=== Plan
+Root[result]
+  Read[orders => quantity:i32?]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# let version = plan.version.unwrap();
+# assert_eq!(version.minor_number, 55);
+# assert_eq!(version.producer, "my-optimizer");
+```
 
 #### Extension format
 
