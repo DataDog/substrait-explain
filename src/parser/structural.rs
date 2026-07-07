@@ -10,7 +10,7 @@ use pest::iterators::Pair;
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{
     AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
-    SetRel, SortRel, plan_rel,
+    SortRel, plan_rel,
 };
 
 use crate::extensions::any::Any;
@@ -22,7 +22,9 @@ use crate::parser::expressions::Name;
 use crate::parser::extensions::{
     AddendumInvocation, ExtensionInvocation, ExtensionParseError, ExtensionParser,
 };
-use crate::parser::relations::{ExtensionReadRel, RelationParsingContext, VirtualReadRel};
+use crate::parser::relations::{
+    ExtensionReadRel, RelationParsingContext, VirtualReadRel, parse_set_relation_pair,
+};
 use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap_single_pair};
 
 pub const PLAN_HEADER: &str = "=== Plan";
@@ -280,6 +282,8 @@ struct RelationContext<'a> {
     line_no: i64,
     children: Vec<Rel>,
     input_field_count: usize,
+    /// Output field count of each child individually
+    child_field_counts: Vec<usize>,
     addenda: Addenda<'a>,
 }
 
@@ -472,7 +476,7 @@ impl<'a> RelationParser<'a> {
             Rule::sort_relation => self.parse_rel::<SortRel>(extensions, registry, ctx),
             Rule::fetch_relation => self.parse_rel::<FetchRel>(extensions, registry, ctx),
             Rule::join_relation => self.parse_rel::<JoinRel>(extensions, registry, ctx),
-            Rule::set_relation => self.parse_rel::<SetRel>(extensions, registry, ctx),
+            Rule::set_relation => self.parse_set_relation(registry, ctx),
             Rule::extension_relation => self.parse_extension_relation(extensions, registry, ctx),
             _ => unreachable!("unhandled relation rule: {:?}", ctx.pair.as_rule()),
         }
@@ -493,6 +497,7 @@ impl<'a> RelationParser<'a> {
             line_no,
             children,
             input_field_count,
+            child_field_counts: _,
             addenda,
         } = ctx;
         assert_eq!(pair.as_rule(), T::rule());
@@ -506,6 +511,30 @@ impl<'a> RelationParser<'a> {
                 e,
             )),
         }
+    }
+
+    /// Handle `Set` relations separately from [`parse_rel`](Self::parse_rel)
+    /// because validating that every input shares the same output width
+    /// needs each child's field count individually, not their sum.
+    fn parse_set_relation(
+        &self,
+        registry: &ExtensionRegistry,
+        ctx: RelationContext,
+    ) -> Result<(Rel, usize), ParseError> {
+        assert_eq!(ctx.pair.as_rule(), Rule::set_relation);
+        let RelationContext {
+            pair,
+            line_no,
+            children,
+            input_field_count: _,
+            child_field_counts,
+            addenda,
+        } = ctx;
+        let line = pair.as_str().to_string();
+        let advanced_extension = addenda.into_standard_advanced_extension(registry)?;
+
+        parse_set_relation_pair(pair, children, &child_field_counts, advanced_extension)
+            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line), e))
     }
 
     /// Handle extension relations separately from [`parse_rel`](Self::parse_rel)
@@ -593,9 +622,11 @@ impl<'a> RelationParser<'a> {
     ) -> Result<(Rel, usize), ParseError> {
         let mut children: Vec<Rel> = Vec::new();
         let mut input_field_count: usize = 0;
+        let mut child_field_counts: Vec<usize> = Vec::new();
         for child in node.children {
             let (rel, count) = self.build_rel(extensions, registry, child)?;
             input_field_count += count;
+            child_field_counts.push(count);
             children.push(rel);
         }
 
@@ -609,6 +640,7 @@ impl<'a> RelationParser<'a> {
                 line_no: node.line_no,
                 children,
                 input_field_count,
+                child_field_counts,
                 addenda,
             },
         )

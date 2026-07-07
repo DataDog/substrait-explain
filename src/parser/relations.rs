@@ -1233,78 +1233,62 @@ impl ParsePair for set_rel::SetOp {
     }
 }
 
-impl RelationParsePair for SetRel {
-    fn rule() -> Rule {
-        Rule::set_relation
+/// Parse a `set_relation` pair given the real per-child output widths (not
+/// just their sum), so mismatched input schemas are always caught
+pub(crate) fn parse_set_relation_pair(
+    pair: Pair<Rule>,
+    input_children: Vec<Rel>,
+    child_field_counts: &[usize],
+    advanced_extension: Option<AdvancedExtension>,
+) -> Result<(Rel, usize), MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::set_relation);
+
+    if input_children.len() < 2 {
+        return Err(MessageParseError::invalid(
+            "SetRel",
+            pair.as_span(),
+            format!(
+                "SetRel should have at least 2 input children, got {}",
+                input_children.len()
+            ),
+        ));
     }
 
-    fn message() -> &'static str {
-        "SetRel"
+    // All inputs must share the same output width (Set is a pass-through
+    // over a common schema, not a concatenation like Join).
+    let child_width = child_field_counts[0];
+    if child_field_counts.iter().any(|&w| w != child_width) {
+        return Err(MessageParseError::invalid(
+            "SetRel",
+            pair.as_span(),
+            format!(
+                "SetRel inputs must all have the same number of columns, got widths {child_field_counts:?}"
+            ),
+        ));
     }
 
-    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
-        self.advanced_extension = adv_ext;
+    let mut iter = RuleIter::from(pair.into_inner());
+    let op = iter.parse_next::<set_rel::SetOp>();
+    let reference_list_pair = iter.pop(Rule::reference_list);
+    iter.done();
+
+    let (emit, output_count) = parse_emit(reference_list_pair, child_width);
+    let common = RelCommon {
+        emit_kind: Some(emit),
+        ..Default::default()
+    };
+
+    Ok((
         Rel {
-            rel_type: Some(RelType::Set(self)),
-        }
-    }
-
-    fn parse_pair_with_context(
-        _extensions: &SimpleExtensions,
-        pair: Pair<Rule>,
-        input_children: Vec<Rel>,
-        input_field_count: usize,
-    ) -> Result<(Self, usize), MessageParseError> {
-        assert_eq!(pair.as_rule(), Self::rule());
-
-        if input_children.len() < 2 {
-            return Err(MessageParseError::invalid(
-                Self::message(),
-                pair.as_span(),
-                format!(
-                    "SetRel should have at least 2 input children, got {}",
-                    input_children.len()
-                ),
-            ));
-        }
-
-        // All inputs must share the same output width (Set is a pass-through
-        // over a common schema, not a concatenation like Join), so the total
-        // field count must divide evenly across the children.
-        if !input_field_count.is_multiple_of(input_children.len()) {
-            return Err(MessageParseError::invalid(
-                Self::message(),
-                pair.as_span(),
-                format!(
-                    "SetRel inputs must all have the same number of columns; got {} children with {} total columns",
-                    input_children.len(),
-                    input_field_count
-                ),
-            ));
-        }
-        let child_width = input_field_count / input_children.len();
-
-        let mut iter = RuleIter::from(pair.into_inner());
-        let op = iter.parse_next::<set_rel::SetOp>();
-        let reference_list_pair = iter.pop(Rule::reference_list);
-        iter.done();
-
-        let (emit, output_count) = parse_emit(reference_list_pair, child_width);
-        let common = RelCommon {
-            emit_kind: Some(emit),
-            ..Default::default()
-        };
-
-        Ok((
-            SetRel {
+            rel_type: Some(RelType::Set(SetRel {
                 common: Some(common),
                 inputs: input_children,
                 op: op as i32,
-                advanced_extension: None,
-            },
-            output_count,
-        ))
-    }
+                advanced_extension,
+            })),
+        },
+        output_count,
+    ))
 }
 
 #[cfg(test)]
@@ -1860,19 +1844,18 @@ mod tests {
 
     #[test]
     fn test_parse_set_relation() {
-        let extensions = SimpleExtensions::default();
-
         let left_rel = example_read_relation().into_rel(None);
         let right_rel = example_read_relation().into_rel(None);
 
-        let set = SetRel::parse_pair_with_context(
-            &extensions,
+        let rel = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1, $2]"),
             vec![left_rel, right_rel],
-            6, // two 3-column inputs
+            &[3, 3], // two 3-column inputs
+            None,
         )
         .unwrap()
         .0;
+        let set = unwrap_set_rel(rel);
 
         assert_eq!(set.op, set_rel::SetOp::UnionAll as i32);
         assert_eq!(set.inputs.len(), 2);
@@ -1886,22 +1869,21 @@ mod tests {
 
     #[test]
     fn test_parse_set_relation_multiple_inputs() {
-        let extensions = SimpleExtensions::default();
-
         let inputs = vec![
             example_read_relation().into_rel(None),
             example_read_relation().into_rel(None),
             example_read_relation().into_rel(None),
         ];
 
-        let set = SetRel::parse_pair_with_context(
-            &extensions,
+        let rel = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionDistinct => $0, $2]"),
             inputs,
-            9, // three 3-column inputs
+            &[3, 3, 3], // three 3-column inputs
+            None,
         )
         .unwrap()
         .0;
+        let set = unwrap_set_rel(rel);
 
         assert_eq!(set.op, set_rel::SetOp::UnionDistinct as i32);
         assert_eq!(set.inputs.len(), 3);
@@ -1916,42 +1898,62 @@ mod tests {
 
     #[test]
     fn test_parse_set_relation_requires_two_children() {
-        let extensions = SimpleExtensions::default();
-
         // 0 children
-        let result = SetRel::parse_pair_with_context(
-            &extensions,
+        let result = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1]"),
             vec![],
-            0,
+            &[],
+            None,
         );
         assert!(result.is_err());
 
         // 1 child
-        let result = SetRel::parse_pair_with_context(
-            &extensions,
+        let result = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1, $2]"),
             vec![example_read_relation().into_rel(None)],
-            3,
+            &[3],
+            None,
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_set_relation_requires_matching_input_widths() {
-        let extensions = SimpleExtensions::default();
-
         // 2 children with a total of 5 columns can't split evenly.
-        let result = SetRel::parse_pair_with_context(
-            &extensions,
+        let result = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1, $2]"),
             vec![
                 example_read_relation().into_rel(None),
                 example_read_relation().into_rel(None),
             ],
-            5,
+            &[2, 3],
+            None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_set_relation_rejects_widths_with_evenly_dividing_sum() {
+        // Regression test: widths [2, 4] sum to 6, which divides evenly by 2
+        // children into 3 — a naive sum/len check would wrongly accept this
+        // even though neither input actually has 3 columns.
+        let result = parse_set_relation_pair(
+            parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1, $2]"),
+            vec![
+                example_read_relation().into_rel(None),
+                example_read_relation().into_rel(None),
+            ],
+            &[2, 4],
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    fn unwrap_set_rel(rel: Rel) -> SetRel {
+        match rel.rel_type {
+            Some(RelType::Set(set)) => set,
+            other => panic!("Expected RelType::Set, got {other:?}"),
+        }
     }
 
     fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
