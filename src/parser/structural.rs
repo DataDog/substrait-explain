@@ -274,17 +274,44 @@ impl<'a> TreeBuilder<'a> {
     }
 }
 
+/// A child relation that has already been converted to a
+///  proto `Rel`, paired with its own output field count.
+struct ParsedChild {
+    rel: Rel,
+    field_count: usize,
+}
+
 /// Intermediate state for relation parsing: the structural tree data
 /// (children, addenda) has been parsed, but the relation's own grammar pair
 /// hasn't been converted to a protobuf relation yet.
 struct RelationContext<'a> {
     pair: Pair<'a, Rule>,
     line_no: i64,
-    children: Vec<Rel>,
-    input_field_count: usize,
-    /// Output field count of each child individually
-    child_field_counts: Vec<usize>,
+    children: Vec<ParsedChild>,
     addenda: Addenda<'a>,
+}
+
+impl<'a> RelationContext<'a> {
+    /// Total input field count across all children.
+    fn input_field_count(&self) -> usize {
+        self.children.iter().map(|c| c.field_count).sum()
+    }
+
+    /// Per-child field counts, in order. Needed only by `Set`, to validate
+    /// all inputs share the same width
+    fn child_field_counts(&self) -> impl Iterator<Item = usize> + '_ {
+        self.children.iter().map(|c| c.field_count)
+    }
+
+    /// `ParseContext` for error reporting
+    fn as_parse_context(&self) -> ParseContext {
+        ParseContext::new(self.line_no, self.pair.as_str().to_string())
+    }
+}
+
+/// Discards field counts, keeping only the child relations.
+fn into_rels(children: Vec<ParsedChild>) -> Vec<Rel> {
+    children.into_iter().map(|c| c.rel).collect()
 }
 
 /// A parsed addendum line plus enough source location to build later errors.
@@ -496,15 +523,15 @@ impl<'a> RelationParser<'a> {
             pair,
             line_no,
             children,
-            input_field_count,
-            child_field_counts: _,
             addenda,
         } = ctx;
         assert_eq!(pair.as_rule(), T::rule());
         let line = pair.as_str();
         let advanced_extension = addenda.into_standard_advanced_extension(registry)?;
+        let input_field_count: usize = children.iter().map(|c| c.field_count).sum();
+        let input_children = into_rels(children);
 
-        match T::parse_pair_with_context(extensions, pair, children, input_field_count) {
+        match T::parse_pair_with_context(extensions, pair, input_children, input_field_count) {
             Ok((parsed, count)) => Ok((parsed.into_rel(advanced_extension), count)),
             Err(e) => Err(ParseError::Plan(
                 ParseContext::new(line_no, line.to_string()),
@@ -522,19 +549,19 @@ impl<'a> RelationParser<'a> {
         ctx: RelationContext,
     ) -> Result<(Rel, usize), ParseError> {
         assert_eq!(ctx.pair.as_rule(), Rule::set_relation);
+        let context = ctx.as_parse_context();
+        let child_field_counts: Vec<usize> = ctx.child_field_counts().collect();
         let RelationContext {
             pair,
-            line_no,
             children,
-            input_field_count: _,
-            child_field_counts,
             addenda,
+            ..
         } = ctx;
-        let line = pair.as_str().to_string();
         let advanced_extension = addenda.into_standard_advanced_extension(registry)?;
+        let input_children = into_rels(children);
 
-        parse_set_relation_pair(pair, children, &child_field_counts, advanced_extension)
-            .map_err(|e| ParseError::Plan(ParseContext::new(line_no, line), e))
+        parse_set_relation_pair(pair, input_children, &child_field_counts, advanced_extension)
+            .map_err(|e| ParseError::Plan(context, e))
     }
 
     /// Handle extension relations separately from [`parse_rel`](Self::parse_rel)
@@ -580,7 +607,7 @@ impl<'a> RelationParser<'a> {
         let detail = context.resolve_extension_detail(&name, &extension_args)?;
         let output_column_count = extension_args.output_columns.len();
 
-        let rel = relation_kind.create_rel(detail, ctx.children);
+        let rel = relation_kind.create_rel(detail, into_rels(ctx.children));
 
         Ok((rel, output_column_count))
     }
@@ -595,6 +622,7 @@ impl<'a> RelationParser<'a> {
     ) -> Result<(Rel, usize), ParseError> {
         assert_eq!(ctx.pair.as_rule(), Rule::extension_read_relation);
         let context = ParseContext::new(ctx.line_no, ctx.pair.as_str().to_string());
+        let input_field_count = ctx.input_field_count();
         let (detail, advanced_extension) = ctx
             .addenda
             .into_extension_read_parts(registry, context.clone())?;
@@ -602,8 +630,8 @@ impl<'a> RelationParser<'a> {
         ExtensionReadRel::parse_pair_with_detail(
             extensions,
             ctx.pair,
-            ctx.children,
-            ctx.input_field_count,
+            into_rels(ctx.children),
+            input_field_count,
             detail,
             advanced_extension,
         )
@@ -620,14 +648,10 @@ impl<'a> RelationParser<'a> {
         registry: &ExtensionRegistry,
         node: RelationNode,
     ) -> Result<(Rel, usize), ParseError> {
-        let mut children: Vec<Rel> = Vec::new();
-        let mut input_field_count: usize = 0;
-        let mut child_field_counts: Vec<usize> = Vec::new();
+        let mut children: Vec<ParsedChild> = Vec::new();
         for child in node.children {
-            let (rel, count) = self.build_rel(extensions, registry, child)?;
-            input_field_count += count;
-            child_field_counts.push(count);
-            children.push(rel);
+            let (rel, field_count) = self.build_rel(extensions, registry, child)?;
+            children.push(ParsedChild { rel, field_count });
         }
 
         let addenda = Addenda::parse(extensions, node.addenda)?;
@@ -639,8 +663,6 @@ impl<'a> RelationParser<'a> {
                 pair: node.pair,
                 line_no: node.line_no,
                 children,
-                input_field_count,
-                child_field_counts,
                 addenda,
             },
         )

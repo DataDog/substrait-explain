@@ -884,25 +884,24 @@ Root[user_orders]
 
 ### Set Relation
 
-**Syntax**: `"Set" "[" set_op "=>" reference_list "]"`
+#### Syntax 
 
-**Components**:
+`"Set" "[" set_op "=>" reference_list "]"`
 
-- `set_op` - Set operation enum with `&` prefix, using Substrait's `SetOp`
-  variant names directly: `&UnionAll`, `&UnionDistinct`,
-  `&IntersectionPrimary`, `&IntersectionMultiset`,
-  `&IntersectionMultisetAll`, `&MinusPrimary`, `&MinusPrimaryAll`,
-  `&MinusMultiset`
+#### Components
+
+- `set_op` - Set operation enum with `&` prefix, using Substrait's protobuf `SetOp`
+  variant names directly
 - `reference_list` - Comma-separated list of field references for output columns
 
 A `Set` relation combines two or more inputs (written as indented children,
 like any other multi-input relation), which must all share the same output
 schema. Field references map to that common schema, not a concatenation of
-all inputs' fields (unlike `Join`):
+all inputs' fields:
 
 - `$0`, `$1`, ... refer to fields of the shared input schema
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::Parser;

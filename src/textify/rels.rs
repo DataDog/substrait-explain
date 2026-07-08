@@ -1038,15 +1038,17 @@ impl<'a> Relation<'a> {
 
     fn from_set<S: Scope>(rel: &'a SetRel, ctx: &S) -> Self {
         let child_refs: Vec<Option<&'a Rel>> = rel.inputs.iter().map(Some).collect();
-        let (children, _total_columns) = Relation::convert_children(child_refs, ctx);
+        let (children, total_columns) = Relation::convert_children(child_refs, ctx);
 
         // Set relation output has the same width as any one of its inputs
         // (it's a pass-through, not a concatenation like Join).
-        let width = children
-            .first()
-            .and_then(|c| c.as_ref())
-            .map(|c| c.emitted())
-            .unwrap_or(0);
+        // TODO: we may want to validate that all inputs have the same width 
+        // (and schema, if possible...), and provide a warning if they do not.
+        let width = if children.is_empty() {
+            0
+        } else {
+            total_columns / children.len()
+        };
 
         let op_value = match set_rel::SetOp::try_from(rel.op) {
             Ok(op) => match op.as_enum_str() {

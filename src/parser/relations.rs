@@ -1919,7 +1919,7 @@ mod tests {
 
     #[test]
     fn test_parse_set_relation_requires_matching_input_widths() {
-        // 2 children with a total of 5 columns can't split evenly.
+        // Total value of children indivisible by number of children.
         let result = parse_set_relation_pair(
             parse_exact(Rule::set_relation, "Set[&UnionAll => $0, $1, $2]"),
             vec![
@@ -1933,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_set_relation_rejects_widths_with_evenly_dividing_sum() {
+    fn test_parse_set_relation_rejects_invalid_but_divisible_widths() {
         // Regression test: widths [2, 4] sum to 6, which divides evenly by 2
         // children into 3 — a naive sum/len check would wrongly accept this
         // even though neither input actually has 3 columns.
