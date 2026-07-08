@@ -235,7 +235,7 @@ fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKi
 
 /// Parse an `output_emit` pair (`direct_emit` | `explicit_emit`) for relations
 /// whose direct output domain is entirely determined by their child(ren)
-/// `direct_emit` (`=>`): the mapping collapses to `Direct` when it is the identity permutation, 
+/// `direct_emit` (`=>`): the mapping collapses to `Direct` when it is the identity permutation,
 /// `explicit_emit (`|>`) always produces `Emit`, even for an identity mapping
 fn parse_output_emit(output_emit: Pair<Rule>, direct_output_count: usize) -> (EmitKind, usize) {
     assert_eq!(output_emit.as_rule(), Rule::output_emit);
