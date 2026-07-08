@@ -523,6 +523,7 @@ Where:
 - **`named_arguments`**: Named arguments (optional)
 - **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
 - **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
+- **`|>`**: An alternative/additional separator introducing an explicit `RelCommon.emit` mapping that is always preserved as `Emit`
 
 #### Example
 
@@ -592,12 +593,13 @@ Root[c, d]           // root with output columns c and d
 
 #### Syntax
 
-`"Read" "[" table_name "=>" (named_column ("," named_column)*)? "]"`
+`"Read" "[" table_name "=>" (named_column ("," named_column)*)? explicit_emit_suffix "]"`
 
 #### Components
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
+- `explicit_emit_suffix := ("|>" reference_list)?` - optional explicit `RelCommon.emit` mapping
 
 #### Example
 
@@ -616,6 +618,21 @@ Root[result2]
 #
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
+```
+Use `|>` when the read's base schema
+records the real table schema but only some fields should flow downstream:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[b, a]
+  Read[my_table => a:i64, b:string, c:i64 |> $1, $0]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### VirtualTable Read Relation
@@ -761,15 +778,39 @@ Root[id]
 # assert_eq!(formatted.trim(), plan_text.trim());
 ```
 
+### Explicit Emit Mappings
+
+`Filter`, `Sort`, `Fetch`, and `Join` each have a direct output domain that is
+entirely determined by their child relation(s) (the child's columns, or for
+`Join`, the concatenation of both children's columns). For these four, the
+trailing clause is one of two alternatives:
+
+```text
+output_emit := ("=>" reference_list) / ("|>" reference_list)
+```
+
+- `"=>" reference_list` - the existing form. `RelCommon.emit_kind` collapses
+  to `Direct` when the reference list is exactly the identity permutation
+  `$0, $1, ..., $n-1`; otherwise it's `Emit` with that mapping.
+- `"|>" reference_list` - an explicit emit. `RelCommon.emit_kind` is always
+  `Emit` with exactly the written mapping, even when it happens to be the
+  identity permutation. Use `|>` when it matters that the plan explicitly
+  carries `Emit` rather than `Direct` — e.g. round-tripping a plan that came
+  from another system with the two shapes intentionally distinguished.
+
+Only one of `=>` or `|>` may appear — they are alternatives, not a
+`=>` list followed by an additional `|>` mapping.
+
 ### Filter Relation
 
 #### Syntax
 
-`"Filter" "[" expression "=>" reference_list "]"`
+`"Filter" "[" expression output_emit "]"`
 
 #### Components
 
 - `expression` - boolean expression for filtering
+- `output_emit` - see [Explicit Emit Mappings](#explicit-emit-mappings)
 - `reference_list := reference ("," reference)*` - comma-separated list of field references to pass through
 
 #### Example
@@ -787,6 +828,29 @@ Functions:
 === Plan
 Root[result]
   Filter[gt($2, 100):boolean => $0, $1, $2]
+    Project[$0, $1, $2]
+      Read[data => a:i64, b:string, c:i32]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+An explicit emit preserves `RelCommon.emit_kind` as `Emit` even for an identity mapping:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: gt
+
+=== Plan
+Root[result]
+  Filter[gt($2, 100):boolean |> $0, $1, $2]
     Project[$0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 # "#;
@@ -867,7 +931,7 @@ Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
 #### Syntax
 
 ```text
-sort_relation := "Sort" "[" sort_fields "=>" reference_list "]"
+sort_relation := "Sort" "[" sort_fields output_emit "]"
 sort_fields := sort_field ("," sort_field)*
 sort_field := "(" reference "," sort_direction ")"
 sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&DescNullsLast"
@@ -877,17 +941,17 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 - Each sort field is a tuple: `(reference, sort_direction)`
 - Sort directions follow the general `enum` syntax and specify null handling
-- The columns after `=>` specify the output field order (typically a reference list)
+- `output_emit` - see [Explicit Emit Mappings](#explicit-emit-mappings); e.g. `Sort[($0, &AscNullsFirst) |> $1, $0]` for an explicit emit
 
 ### Join Relation
 
-**Syntax**: `"Join" "[" join_type "," expression "=>" reference_list "]"`
+**Syntax**: `"Join" "[" join_type "," expression output_emit "]"`
 
 **Components**:
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
 - `expression` - Join condition (boolean expression relating left and right inputs)
-- `reference_list` - Comma-separated list of field references for output columns
+- `output_emit` - see [Explicit Emit Mappings](#explicit-emit-mappings)
 
 **Field Reference Mapping**:
 
