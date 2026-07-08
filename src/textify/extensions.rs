@@ -7,7 +7,9 @@
 
 use std::fmt;
 
-use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
+use crate::extensions::{
+    Expr, ExtensionArgs, ExtensionColumn, ExtensionLiteral, ExtensionValue, TupleValue,
+};
 use crate::textify::foundation::{Scope, Textify};
 use crate::textify::types::{Name, escaped};
 
@@ -40,9 +42,20 @@ impl Textify for ExtensionValue {
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Expr(expr) => expr.textify(ctx, w),
+            ExtensionValue::Literal(literal) => literal.textify(ctx, w),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Tuple(tv) => tv.textify(ctx, w),
         }
+    }
+}
+
+impl Textify for ExtensionLiteral {
+    fn name() -> &'static str {
+        "ExtensionLiteral"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        write!(w, "{}", ctx.display(self.as_proto()))
     }
 }
 
