@@ -560,8 +560,13 @@ impl<'a> RelationParser<'a> {
         let advanced_extension = addenda.into_standard_advanced_extension(registry)?;
         let input_children = into_rels(children);
 
-        parse_set_relation_pair(pair, input_children, &child_field_counts, advanced_extension)
-            .map_err(|e| ParseError::Plan(context, e))
+        parse_set_relation_pair(
+            pair,
+            input_children,
+            &child_field_counts,
+            advanced_extension,
+        )
+        .map_err(|e| ParseError::Plan(context, e))
     }
 
     /// Handle extension relations separately from [`parse_rel`](Self::parse_rel)

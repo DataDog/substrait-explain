@@ -1042,7 +1042,7 @@ impl<'a> Relation<'a> {
 
         // Set relation output has the same width as any one of its inputs
         // (it's a pass-through, not a concatenation like Join).
-        // TODO: we may want to validate that all inputs have the same width 
+        // TODO: we may want to validate that all inputs have the same width
         // (and schema, if possible...), and provide a warning if they do not.
         let width = if children.is_empty() {
             0
