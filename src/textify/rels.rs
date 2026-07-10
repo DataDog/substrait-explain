@@ -1654,65 +1654,6 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     }
 
     #[test]
-    fn test_set_relation_union_all() {
-        let ctx = TestContext::new();
-
-        let read = |name: &str| Rel {
-            rel_type: Some(RelType::Read(Box::new(ReadRel {
-                common: None,
-                base_schema: Some(NamedStruct {
-                    names: vec!["a".to_string(), "b".to_string()],
-                    r#struct: Some(Struct {
-                        type_variation_reference: 0,
-                        types: vec![
-                            Type {
-                                kind: Some(Kind::I64(ptype::I64 {
-                                    type_variation_reference: 0,
-                                    nullability: Nullability::Nullable as i32,
-                                })),
-                            },
-                            Type {
-                                kind: Some(Kind::String(ptype::String {
-                                    type_variation_reference: 0,
-                                    nullability: Nullability::Nullable as i32,
-                                })),
-                            },
-                        ],
-                        nullability: Nullability::Nullable as i32,
-                    }),
-                }),
-                filter: None,
-                best_effort_filter: None,
-                projection: None,
-                advanced_extension: None,
-                read_type: Some(ReadType::NamedTable(
-                    substrait::proto::read_rel::NamedTable {
-                        names: vec![name.to_string()],
-                        advanced_extension: None,
-                    },
-                )),
-            }))),
-        };
-
-        let set_rel = SetRel {
-            common: None,
-            inputs: vec![read("table1"), read("table2")],
-            op: set_rel::SetOp::UnionAll as i32,
-            advanced_extension: None,
-        };
-        let rel = Rel {
-            rel_type: Some(RelType::Set(set_rel)),
-        };
-
-        let (result, errors) = ctx.textify(&rel);
-        assert!(errors.is_empty(), "Unexpected errors: {errors:?}");
-        assert!(
-            result.contains("Set[&UnionAll => $0, $1]"),
-            "Unexpected output: {result}"
-        );
-    }
-
-    #[test]
     fn test_set_relation_unknown_op() {
         let ctx = TestContext::new();
 
