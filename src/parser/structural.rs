@@ -531,6 +531,9 @@ impl<'a> RelationParser<'a> {
         let input_field_count: usize = children.iter().map(|c| c.field_count).sum();
         let input_children = into_rels(children);
 
+        // TODO: pass `ParsedChildren` into `parse_pair_with_context`, instead
+        // of this overall 'input_field_count'; for some relations (e.g. a LEFT
+        // SEMI JOIN), the field count sum is not the correct count.
         match T::parse_pair_with_context(extensions, pair, input_children, input_field_count) {
             Ok((parsed, count)) => Ok((parsed.into_rel(advanced_extension), count)),
             Err(e) => Err(ParseError::Plan(
