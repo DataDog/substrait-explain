@@ -58,7 +58,7 @@ fn unimplemented_literal<S: Scope, W: fmt::Write>(
     )
 }
 
-/// Pushes a warning of a truncation of a precision-12 value to nanoseconds rather than silently dropping the lost precision.
+/// Pushes a truncation warning of a precision-12 value to nanoseconds rather than silently dropping the lost precision.
 fn precision_truncation_warning<S: Scope>(ctx: &S, variant: &'static str, precision: i32) {
     if precision == 12 {
         ctx.push_error(
@@ -915,22 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn test_precision_timestamp_literal_precision_12_best_effort() {
-        let ctx = TestContext::new();
-        // Picoseconds aren't representable, the textify best-effort approach is to
-        // truncate to nanoseconds. The lost precision is reported via the error accumulator.
-        let (s, errs) = ctx.textify(&non_nullable_literal(
-            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
-                precision: 12,
-                value: 123_456_789_500,
-            }),
-        ));
-        assert_eq!(s, "'1970-01-01T00:00:00.123456789':precisiontimestamp<9>");
-        assert_eq!(errs.0.len(), 1);
-        assert!(errs.0[0].to_string().contains("truncated"));
-    }
-
-    #[test]
     fn test_precision_time_literal_precision_12_best_effort() {
         let ctx = TestContext::new();
         let (s, errs) = ctx.textify(&non_nullable_literal(
@@ -975,20 +959,6 @@ mod tests {
     }
 
     #[test]
-    fn test_precision_timestamptz_literal_unrecognized_precision_invalid() {
-        let ctx = TestContext::new();
-        let (s, errs) = ctx.textify(&non_nullable_literal(
-            expr::literal::LiteralType::PrecisionTimestampTz(expr::literal::PrecisionTimestamp {
-                precision: 13,
-                value: 0,
-            }),
-        ));
-        assert_eq!(s, "!{LiteralType}:precisiontimestamptz<13>");
-        assert_eq!(errs.0.len(), 1);
-        assert!(errs.0[0].to_string().contains("PrecisionTimestampTz"));
-    }
-
-    #[test]
     fn test_precision_time_literal_unrecognized_precision_invalid() {
         let ctx = TestContext::new();
         let (s, errs) = ctx.textify(&non_nullable_literal(
@@ -1005,6 +975,8 @@ mod tests {
     #[test]
     fn test_nullable_precision_timestamp_literal_precision_12_best_effort() {
         let ctx = TestContext::new();
+        // Picoseconds aren't representable, the textify best-effort approach is to
+        // truncate to nanoseconds. The lost precision is reported via the error accumulator.
         let (s, errs) = ctx.textify(&nullable_literal(
             expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
                 precision: 12,

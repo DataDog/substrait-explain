@@ -202,18 +202,6 @@ fn to_boolean_literal(
     })
 }
 
-fn precision_literal(
-    nullability: i32,
-    type_variation_reference: u32,
-    literal: LiteralType,
-) -> Literal {
-    Literal {
-        literal_type: Some(literal),
-        nullable: nullability != Nullability::Required as i32,
-        type_variation_reference,
-    }
-}
-
 fn to_string_literal(
     value: pest::iterators::Pair<Rule>,
     typ: Option<Type>,
@@ -277,14 +265,14 @@ fn to_string_literal(
                 "precisiontimestamp",
                 value.as_span(),
             )?;
-            Ok(precision_literal(
-                pt.nullability,
-                pt.type_variation_reference,
-                LiteralType::PrecisionTimestamp(LitPrecisionTimestamp {
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTimestamp(LitPrecisionTimestamp {
                     precision,
                     value: timestamp_value,
-                }),
-            ))
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
         }
         Kind::PrecisionTimestampTz(pt) => {
             let precision = pt.precision;
@@ -294,14 +282,14 @@ fn to_string_literal(
                 "precisiontimestamptz",
                 value.as_span(),
             )?;
-            Ok(precision_literal(
-                pt.nullability,
-                pt.type_variation_reference,
-                LiteralType::PrecisionTimestampTz(LitPrecisionTimestamp {
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTimestampTz(LitPrecisionTimestamp {
                     precision,
                     value: timestamp_value,
-                }),
-            ))
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
         }
         Kind::PrecisionTime(pt) => {
             let precision = pt.precision;
@@ -311,14 +299,14 @@ fn to_string_literal(
                 "precisiontime",
                 value.as_span(),
             )?;
-            Ok(precision_literal(
-                pt.nullability,
-                pt.type_variation_reference,
-                LiteralType::PrecisionTime(LitPrecisionTime {
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTime(LitPrecisionTime {
                     precision,
                     value: time_value,
-                }),
-            ))
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
         }
         _ => {
             // For other types, treat as string
@@ -372,7 +360,7 @@ fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessagePa
     ))
 }
 
-/// Parse a time string to microseconds precision 6 since midnight.
+/// Parse a time string to microseconds(precision 6) since midnight.
 fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, MessageParseError> {
     parse_time_to_precision_units(time_str, 6, "time", span)
 }
@@ -482,6 +470,7 @@ fn parse_time_to_precision_units(
 ) -> Result<i64, MessageParseError> {
     check_supported_precision(precision, literal_kind, span)?;
 
+    // Try multiple time formats for flexibility
     let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
 
     for format in &formats {
@@ -1135,8 +1124,7 @@ mod tests {
     #[test]
     fn test_parse_precision_timestamp_literal_invalid_precision() {
         let extensions = SimpleExtensions::default();
-        // 5 isn't a precision-12 picosecond case, it's just not one of the
-        // 0/3/6/9 supported precisions - a distinct error message/branch.
+        // 5 isn't a recognized precision for precisiontimestamp, so this should error.
         let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':precisiontimestamp<5>");
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("Invalid precision 5"));
