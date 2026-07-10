@@ -676,7 +676,7 @@ impl RelationParsePair for AggregateRel {
         let (groupings, grouping_expressions) = build_grouping_fields(&grouping_sets);
 
         let (measures, output_mapping) =
-            parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
+            parse_aggregate_output(extensions, output_pair, &grouping_expressions)?;
 
         let output_count = output_mapping.len();
         let direct_count = grouping_expressions.len() + measures.len();
@@ -704,31 +704,51 @@ impl RelationParsePair for AggregateRel {
 ///
 /// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
 /// this parses `sum($2), $0, count($2)`.
-fn parse_aggregate_measures(
+fn parse_aggregate_output(
     extensions: &SimpleExtensions,
     output_pair: Pair<'_, Rule>,
     grouping_expressions: &[Expression],
 ) -> Result<(Vec<aggregate_rel::Measure>, Vec<i32>), MessageParseError> {
     assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
+
+    //  every output item is either:
+    // - a function call, which becomes a new aggregate measure, or
+    // - an expression which must already be one of `grouping_expressions`.
+    let grouping_positions: HashMap<Vec<u8>, usize> = grouping_expressions
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| (expression.encode_to_vec(), index))
+        .collect();
+
     let mut measures = Vec::new();
     let mut output_mapping = Vec::new();
 
-    for aggregate_output_item in output_pair.into_inner() {
-        let inner_item = unwrap_single_pair(aggregate_output_item);
-        match inner_item.as_rule() {
-            Rule::reference => {
-                let field_index = FieldIndex::parse_pair(inner_item);
-                output_mapping.push(field_index.0);
+    for output_item in output_pair.into_inner() {
+        assert_eq!(output_item.as_rule(), Rule::expression);
+        let span = output_item.as_span();
+        let is_function_call = matches!(
+            output_item.clone().into_inner().next().map(|p| p.as_rule()),
+            Some(Rule::function_call)
+        );
+
+        if is_function_call {
+            let function_call_pair = unwrap_single_pair(output_item);
+            let measure = aggregate_rel::Measure::parse_pair(extensions, function_call_pair)?;
+            output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
+            measures.push(measure);
+            continue;
+        }
+
+        let expression = Expression::parse_pair(extensions, output_item)?;
+        match grouping_positions.get(&expression.encode_to_vec()) {
+            Some(&index) => output_mapping.push(index as i32),
+            None => {
+                return Err(MessageParseError::invalid(
+                    "AggregateRel",
+                    span,
+                    "output expression is not an aggregate measure and does not match any grouping expression",
+                ));
             }
-            Rule::aggregate_measure => {
-                let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
-                output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
-                measures.push(measure);
-            }
-            _ => panic!(
-                "Unexpected inner output item rule: {:?}",
-                inner_item.as_rule()
-            ),
         }
     }
 
@@ -1517,6 +1537,66 @@ mod tests {
         assert_eq!(aggregate.groupings.len(), 1);
         // expression_references must be positions [0, 1], not raw field indices [2, 0]
         assert_eq!(aggregate.groupings[0].expression_references, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_reference_uses_grouping_position() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // grouping_expressions ends up as [$2, $0] (grouping's textual order),
+        // so `$0`/`$2` in the output must resolve to their grouping
+        // positions (1 and 0 respectively), not their literal reference
+        // indices. Output order is swapped relative to grouping order so
+        // the resulting mapping isn't an identity (which would collapse to
+        // EmitKind::Direct and give us nothing to assert on).
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[$2, $0 => $0, $2, sum($1):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // direct schema is [$2, $0, sum($1)]; output is [$0, $2, sum($1)] -> [1, 0, 2]
+        assert_eq!(emit, &[1, 0, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_not_in_grouping_expressions_errors() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // $1 is not part of the grouping expressions ($0) and is not an
+        // aggregate measure, so it has no valid slot in the output schema.
+        let result = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::aggregate_relation, "Aggregate[$0 => $1, sum($1):i64]"),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

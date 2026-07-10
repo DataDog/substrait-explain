@@ -652,7 +652,7 @@ impl ParsePair for CompoundName {
 
 impl ScopedParsePair for Measure {
     fn rule() -> Rule {
-        Rule::aggregate_measure
+        Rule::function_call
     }
 
     fn message() -> &'static str {
@@ -665,12 +665,8 @@ impl ScopedParsePair for Measure {
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
-        // Extract the inner function_call from aggregate_measure
-        let function_call_pair = unwrap_single_pair(pair);
-        assert_eq!(function_call_pair.as_rule(), Rule::function_call);
-
         // Parse as ScalarFunction, then convert to AggregateFunction
-        let scalar = ScalarFunction::parse_pair(extensions, function_call_pair)?;
+        let scalar = ScalarFunction::parse_pair(extensions, pair)?;
         Ok(Measure {
             measure: Some(AggregateFunction {
                 function_reference: scalar.function_reference,

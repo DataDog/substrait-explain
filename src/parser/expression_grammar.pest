@@ -308,10 +308,7 @@ grouping_set_list  = { grouping_set ~ sp ~ ("," ~ sp ~ grouping_set)* }
 grouping_set       = { ("(" ~ sp ~ expression_list ~ sp ~ ")") | empty }
 expression_list    = { expression ~ sp ~ ("," ~ sp ~ expression)* }
 
-aggregate_output      = { (aggregate_output_item ~ (sp ~ "," ~ sp ~ aggregate_output_item)*)? }
-aggregate_output_item = { reference | aggregate_measure }
-// TODO: Add support for filter, invocation, etc.
-aggregate_measure = { function_call }
+aggregate_output      = { (expression ~ (sp ~ "," ~ sp ~ expression)*)? }
 
 // Empty grouping symbol
 empty = { "_" }
