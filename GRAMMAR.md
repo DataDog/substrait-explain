@@ -896,8 +896,7 @@ Root[user_orders]
 
 A `Set` relation combines two or more inputs (written as indented children,
 like any other multi-input relation), which must all share the same output
-schema. Field references map to that common schema, not a concatenation of
-all inputs' fields:
+schema. Field references map to that common schema:
 
 - `$0`, `$1`, ... refer to fields of the shared input schema
 
