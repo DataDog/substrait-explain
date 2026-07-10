@@ -142,6 +142,25 @@ fn test_expression() {
 
     assert_roundtrip::<Literal>(&ctx, "12");
     assert_roundtrip::<Literal>(&ctx, "12:i32");
+
+    assert_roundtrip::<Literal>(
+        &ctx,
+        "'2023-01-01T12:00:00.123456789':precisiontimestamp<9>",
+    );
+    assert_roundtrip::<Literal>(
+        &ctx,
+        "'2023-01-01T12:00:00.123456789':precisiontimestamp?<9>",
+    );
+    assert_roundtrip::<Literal>(&ctx, "'2023-01-01T12:00:00.123':precisiontimestamptz<3>");
+    assert_roundtrip::<Literal>(&ctx, "'2023-01-01T12:00:00.123':precisiontimestamptz?<3>");
+    assert_roundtrip::<Literal>(&ctx, "'14:30:45.123456':precisiontime<6>");
+    assert_roundtrip::<Literal>(&ctx, "'14:30:45.123456':precisiontime?<6>");
+
+    // Precision 0 (seconds, no fractional part) for all three kinds.
+    assert_roundtrip::<Literal>(&ctx, "'2023-01-01T12:00:00':precisiontimestamp<0>");
+    assert_roundtrip::<Literal>(&ctx, "'2023-01-01T12:00:00':precisiontimestamptz<0>");
+    assert_roundtrip::<Literal>(&ctx, "'14:30:45':precisiontime<0>");
+
     roundtrip_parse::<FieldReference>(&ctx, "$1");
     assert_roundtrip::<ScalarFunction>(&ctx, "foo():i64");
     assert_roundtrip::<Expression>(&ctx, "bar(12):i64");
