@@ -981,8 +981,8 @@ references map to the combined schema:
 === Plan
 Root[id, name, order_id, amount]
   Cross[$0, $1, $2, $3]
-    Read[users => id:i64, name:string]        // Fields $0, $1
-    Read[orders => order_id:i64, amount:i32]  // Fields $2, $3
+    Read[users => id:i64, name:string]
+    Read[orders => order_id:i64, amount:i32]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();
