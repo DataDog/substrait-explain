@@ -243,7 +243,7 @@ A literal can be an integer, float, boolean, string, or null. Literals may inclu
   - String literals with type annotations for non-primitive types
   - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
 
 ## Types
 
@@ -322,7 +322,9 @@ precision_timestamp_type    := "precisiontimestamp" nullability? "<" integer ">"
 precision_timestamp_tz_type := "precisiontimestamptz" nullability? "<" integer ">"
 ```
 
-The precision parameter follows Substrait's unit convention: `0` means seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12` picoseconds. Type syntax accepts values from `0` through `12`; precision literal parsing currently supports `0`, `3`, `6`, and `9`.
+The precision parameter supports the following unit convention: `0` means seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12` picoseconds. We restrict to this set for literals while the *type* syntax accepts the full Substrait range, `0` through `12`. This is contrary to the Substrait specs where any precision in the range of 0 to 12 is fully supported. 
+
+*Literals* only support the subset `0`, `3`, `6`, and `9` because chrono (the underlying date/time library) has no sub-nanosecond resolution, so precision-12 literals cannot be parsed. Textifying a precision-12 value from a protobuf plan is still supported, but it is truncated to nanoseconds (precision 9) and emits a truncation warning.
 
 #### Examples
 

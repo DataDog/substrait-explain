@@ -110,16 +110,6 @@ fn days_to_date_string(days: i32) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
-/// Convert microseconds since midnight to time string (microseconds is precision 6).
-fn microseconds_to_time_string(microseconds: i64) -> String {
-    precision_time_to_string(microseconds, 6).expect("precision 6 is always supported")
-}
-
-/// Convert microseconds since Unix epoch to timestamp string (microseconds is precision 6).
-fn microseconds_to_timestamp_string(microseconds: i64) -> String {
-    precision_timestamp_to_string(microseconds, 6).expect("precision 6 is always supported")
-}
-
 /// Convert a value in `precision` units, to a `chrono::Duration`.
 /// Precision 12 (picoseconds) is truncated to nanoseconds: chrono can't represent sub-nanosecond resolution.
 fn duration_from_precision_units(value: i64, precision: i32) -> Option<chrono::Duration> {
@@ -134,10 +124,11 @@ fn duration_from_precision_units(value: i64, precision: i32) -> Option<chrono::D
 }
 
 /// Convert a value in precision units since the Unix epoch, to a timestamp string.
+/// Returns `None` if `value` is out of chrono's representable date range.
 fn precision_timestamp_to_string(value: i64, precision: i32) -> Option<String> {
     let duration = duration_from_precision_units(value, precision)?;
     let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
-    let datetime = epoch + duration;
+    let datetime = epoch.checked_add_signed(duration)?;
 
     let formatted = datetime.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
     Some(if formatted.contains('.') {
@@ -151,8 +142,13 @@ fn precision_timestamp_to_string(value: i64, precision: i32) -> Option<String> {
 }
 
 /// Convert a value in precision units since midnight, to a time-of-day string.
+/// Returns `None` if `value` falls outside a single day: `NaiveTime + Duration`
+/// wraps modulo 24 hours, which would otherwise silently misrepresent the value.
 fn precision_time_to_string(value: i64, precision: i32) -> Option<String> {
     let duration = duration_from_precision_units(value, precision)?;
+    if duration < chrono::Duration::zero() || duration >= chrono::Duration::days(1) {
+        return None;
+    }
     let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
     let time = midnight + duration;
 
@@ -189,20 +185,17 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         }
         #[allow(deprecated)]
         LiteralType::Time(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_time_string(*microseconds))
-            )
+            write_precision_literal("Time", *microseconds, 6, precision_time_to_string, ctx, w)
         }
         #[allow(deprecated)]
-        LiteralType::Timestamp(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_timestamp_string(*microseconds))
-            )
-        }
+        LiteralType::Timestamp(microseconds) => write_precision_literal(
+            "Timestamp",
+            *microseconds,
+            6,
+            precision_timestamp_to_string,
+            ctx,
+            w,
+        ),
         LiteralType::IntervalYearToMonth(_) => unimplemented_literal("IntervalYearToMonth", ctx, w),
         LiteralType::IntervalDayToSecond(_) => unimplemented_literal("IntervalDayToSecond", ctx, w),
         LiteralType::IntervalCompound(_) => unimplemented_literal("IntervalCompound", ctx, w),
@@ -956,6 +949,39 @@ mod tests {
         assert_eq!(s, "!{LiteralType}:precisiontimestamp<13>");
         assert_eq!(errs.0.len(), 1);
         assert!(errs.0[0].to_string().contains("PrecisionTimestamp"));
+    }
+
+    #[test]
+    fn test_precision_timestamp_literal_out_of_range_does_not_panic() {
+        let ctx = TestContext::new();
+        // 9e12 seconds since epoch is a valid i64 and a valid `chrono::Duration`,
+        // but it's outside NaiveDateTime's representable range: adding it to the
+        // epoch with `+` would panic. Textification should report a failure
+        // token instead.
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                precision: 0,
+                value: 9_000_000_000_000,
+            }),
+        ));
+        assert_eq!(s, "!{LiteralType}:precisiontimestamp<0>");
+        assert_eq!(errs.0.len(), 1);
+    }
+
+    #[test]
+    fn test_precision_time_literal_beyond_one_day_invalid() {
+        let ctx = TestContext::new();
+        // 86,460 seconds since midnight is more than a day; `NaiveTime + Duration`
+        // wraps modulo 24 hours rather than erroring, which would otherwise
+        // silently misrepresent the value as 00:01:00.
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTime(expr::literal::PrecisionTime {
+                precision: 0,
+                value: 86_460,
+            }),
+        ));
+        assert_eq!(s, "!{LiteralType}:precisiontime<0>");
+        assert_eq!(errs.0.len(), 1);
     }
 
     #[test]

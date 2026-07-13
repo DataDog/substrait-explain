@@ -388,6 +388,9 @@ fn duration_to_precision_units(
             format!("value is out of range for a {literal_kind} literal at precision {precision}"),
         )
     };
+    // TODO: reject fractional components that can't be represented at `precision`.
+    // E.g. `.999` at precision 0 currently reaches `num_seconds()` and is silently
+    // truncated away rather than raising an error.
     match precision {
         0 => Ok(duration.num_seconds()),
         3 => Ok(duration.num_milliseconds()),
