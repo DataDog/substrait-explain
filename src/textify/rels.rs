@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Debug;
@@ -722,7 +722,18 @@ impl<'a> Relation<'a> {
             for group in &rel.groupings {
                 let mut grouping_set: Vec<Value> = vec![];
                 for i in &group.expression_references {
-                    grouping_set.push(Value::Reference(*i as i32));
+                    let value = match rel.grouping_expressions.get(*i as usize) {
+                        Some(expr) => Value::Expression(expr),
+                        None => Value::Missing(PlanError::invalid(
+                            "AggregateRel",
+                            Some("groupings.expression_references"),
+                            format!(
+                                "expression_reference {i} is out of bounds for grouping_expressions of length {}",
+                                rel.grouping_expressions.len()
+                            ),
+                        )),
+                    };
+                    grouping_set.push(value);
                 }
                 grouping_sets.push(grouping_set);
             }
@@ -775,9 +786,10 @@ impl<'a> Relation<'a> {
         let mut grouping_sets: Vec<Vec<Value>> = vec![];
         let mut expression_list: Vec<Value> = Vec::new();
 
-        // groupings might have the same expressions in their set so we use a map to get unique expressions
-        let mut expression_index_map = HashMap::new();
-        let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
+        // groupings might have the same expressions in their set, so we track
+        // which byte-encoded expressions have already been added to
+        // `expression_list` to keep it deduplicated.
+        let mut seen_expressions = HashSet::new();
 
         for group in &rel.groupings {
             let mut grouping_set: Vec<Value> = vec![];
@@ -786,16 +798,10 @@ impl<'a> Relation<'a> {
                 // TODO: use a better key here than encoding to bytes.
                 // Ideally, substrait-rs would support `PartialEq` and `Hash`,
                 // but as there isn't an easy way to do that now, we'll skip.
-                let key = exp.encode_to_vec();
-                expression_index_map.entry(key.clone()).or_insert_with(|| {
-                    let value = Value::Expression(exp);
-                    expression_list.push(value); // new unique expression found
-                    // mapping the byte encoded expression to its index in the group_expression list
-                    let index = i;
-                    i += 1;
-                    index // is expression returned by this closure and inserted into map
-                });
-                grouping_set.push(Value::Reference(expression_index_map[&key]));
+                if seen_expressions.insert(exp.encode_to_vec()) {
+                    expression_list.push(Value::Expression(exp)); // new unique expression found
+                }
+                grouping_set.push(Value::Expression(exp));
             }
             grouping_sets.push(grouping_set);
         }
@@ -1585,6 +1591,83 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
                 "Aggregate[($0, $1), ($0, $1), ($1), ($1, $1), _ => $0, $1, count($2):i64]"
             )
         );
+    }
+
+    #[test]
+    fn test_deprecated_reordered_grouping() {
+        // Protobuf plan that uses the deprecated per-Grouping
+        // `grouping_expressions`, leaving `AggregateRel.grouping_expressions`
+        // empty. The lone unique expression here is $5, but it is the first
+        // (index 0) expression discovered during deduplication - so if the
+        // grouping set were rendered from that dedup index rather than from
+        // the expression itself, it would wrongly print as `$0` instead of
+        // `$5`.
+        let ctx = TestContext::new();
+        let grouping_expr_5 = create_exp(5);
+
+        let grouping_sets = vec![aggregate_rel::Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![grouping_expr_5],
+            expression_references: vec![],
+        }];
+
+        let aggregate_rel = create_aggregate_rel(vec![], grouping_sets, vec![], None);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[$5 => $5]"));
+    }
+
+    #[test]
+    fn test_reordered_grouping_textifies_expression_not_raw_index() {
+        let ctx = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 11, "count");
+
+        let agg_fn2 = get_aggregate_func(11, 1);
+
+        // grouping_expressions is [$2, $0] (textual order); the single
+        // grouping set references both by index into grouping_expressions:
+        // [0, 1]. Those indexes must resolve back through
+        // grouping_expressions ([$2, $0]), not be printed directly as `$0,
+        // $1`.
+        let grouping_expressions = vec![
+            Expression {
+                rex_type: Some(RexType::Selection(Box::new(
+                    FieldIndex(2).to_field_reference(),
+                ))),
+            },
+            Expression {
+                rex_type: Some(RexType::Selection(Box::new(
+                    FieldIndex(0).to_field_reference(),
+                ))),
+            },
+        ];
+
+        let grouping_sets = vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0, 1],
+        }];
+
+        let measures = vec![aggregate_rel::Measure {
+            measure: Some(agg_fn2),
+            filter: None,
+        }];
+
+        let aggregate_rel =
+            create_aggregate_rel(grouping_expressions, grouping_sets, measures, None);
+
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[$2, $0 => $2, $0, count($1):i64]"));
     }
 
     #[test]

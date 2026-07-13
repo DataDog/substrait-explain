@@ -460,19 +460,9 @@ count:():i64
 
 ### Aggregate Measures
 
-Aggregate measures are used in the output of Aggregate relations. They can be either field references (to pass through existing fields) or aggregate function calls (to compute aggregates).
+Aggregate measures are used in the output of Aggregate relations to compute aggregates. An aggregate measure is written as a plain `function_call` (see [Function Calls section](#function-calls)) in the output position of an Aggregate relation - the syntax is identical, e.g. `sum($2):i64`, `count($1):i64`, `avg($3):fp64`.
 
-#### Syntax
-
-- `aggregate_measure := name anchor? urn_anchor? "(" (expression ("," expression)*)? ")" ":" type` - aggregate function call with optional extension anchors and required output type
-- Field references: `$0`, `$1`, ...
-
-#### Examples
-
-- `sum($2):i64`
-- `count($1):i64`
-- `avg($3):fp64`
-- `$0` (field reference to grouping field)
+This syntax only captures a measure's `function_reference`, `arguments`, and `output_type`. The Substrait `Measure` message also carries a `filter` (a per-measure filter expression, separate from the aggregate function) and the `AggregateFunction` itself has `invocation` (e.g. `DISTINCT`), `phase`, and `sorts` (for ordered aggregates) - none of which can currently be expressed in this text format. Parsing always produces `invocation: UNSPECIFIED`, `phase: UNSPECIFIED`, no `sorts`, and no `filter`, regardless of what the original plan contained.
 
 ### IfThen
 
@@ -832,8 +822,8 @@ Root[result]
 - `grouping_sets := grouping_set_list / expression_list` - can be a list of grouping sets (each parenthesized), or a single unparenthesized list for the common, single-set case
 - `grouping_set_list := grouping_set ("," grouping_set)*`
 - `grouping_set := "(" expression_list ")" / "_"` - a grouping set can be (1) a list of expressions, or (2) `_`, the standard we use for empty lists
-- `aggregate_output := (reference | aggregate_measure) ("," (reference | aggregate_measure))*` - comma-separated list of output items
-- `aggregate_measure` - field references or aggregate function calls. See [Aggregate Measures section](#aggregate-measures)
+- `aggregate_output := expression ("," expression)*` - comma-separated list of output items
+- Each output item is either an aggregate function call (which becomes a new measure), or an expression that must match one of the `grouping_sets` expressions by value - since an Aggregate relation's output schema is always exactly `grouping_expressions + measures`. See [Aggregate Measures section](#aggregate-measures)
 
 #### Example
 

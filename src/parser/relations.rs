@@ -21,7 +21,7 @@ use crate::extensions::any::Any;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
 use crate::parser::errors::{ParseContext, ParseError};
-use crate::parser::expressions::{FieldIndex, Name};
+use crate::parser::expressions::{FieldIndex, Name, parse_expression_inner};
 
 /// Parsing context for relations that includes extensions, registry, and optional warning collection
 pub struct RelationParsingContext<'a> {
@@ -700,6 +700,14 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
+/// Encodes an expression to bytes for use as a structural-equality map key.
+/// TODO: use a better key here than encoding to bytes. Ideally, substrait-rs
+/// would support `PartialEq` and `Hash`, but as there isn't an easy way to do
+/// that now, we'll skip.
+fn expression_key(expression: &Expression) -> Vec<u8> {
+    expression.encode_to_vec()
+}
+
 /// Parses the output section of an aggregate (everything after `=>`).
 ///
 /// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
@@ -711,13 +719,13 @@ fn parse_aggregate_output(
 ) -> Result<(Vec<aggregate_rel::Measure>, Vec<i32>), MessageParseError> {
     assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
 
-    //  every output item is either:
+    // every output item is either:
     // - a function call, which becomes a new aggregate measure, or
     // - an expression which must already be one of `grouping_expressions`.
     let grouping_positions: HashMap<Vec<u8>, usize> = grouping_expressions
         .iter()
         .enumerate()
-        .map(|(index, expression)| (expression.encode_to_vec(), index))
+        .map(|(index, expression)| (expression_key(expression), index))
         .collect();
 
     let mut measures = Vec::new();
@@ -726,21 +734,23 @@ fn parse_aggregate_output(
     for output_item in output_pair.into_inner() {
         assert_eq!(output_item.as_rule(), Rule::expression);
         let span = output_item.as_span();
-        let is_function_call = matches!(
-            output_item.clone().into_inner().next().map(|p| p.as_rule()),
-            Some(Rule::function_call)
-        );
+        let inner_item = unwrap_single_pair(output_item);
 
-        if is_function_call {
-            let function_call_pair = unwrap_single_pair(output_item);
-            let measure = aggregate_rel::Measure::parse_pair(extensions, function_call_pair)?;
+        if inner_item.as_rule() == Rule::function_call {
+            let expression = parse_expression_inner(extensions, inner_item.clone())?;
+            if let Some(&index) = grouping_positions.get(&expression_key(&expression)) {
+                output_mapping.push(index as i32);
+                continue;
+            }
+
+            let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
             output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
             measures.push(measure);
             continue;
         }
 
-        let expression = Expression::parse_pair(extensions, output_item)?;
-        match grouping_positions.get(&expression.encode_to_vec()) {
+        let expression = parse_expression_inner(extensions, inner_item)?;
+        match grouping_positions.get(&expression_key(&expression)) {
             Some(&index) => output_mapping.push(index as i32),
             None => {
                 return Err(MessageParseError::invalid(
@@ -830,10 +840,7 @@ fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>,
             let expression_references = set
                 .iter()
                 .map(|exp| {
-                    // TODO: use a better key here than encoding to bytes.
-                    // Ideally, substrait-rs would support `PartialEq` and `Hash`,
-                    // but as there isn't an easy way to do that now, we'll skip.
-                    let key = exp.encode_to_vec();
+                    let key = expression_key(exp);
                     let next_idx = expressions.len() as u32;
                     *seen.entry(key).or_insert_with(|| {
                         expressions.push(exp.clone());
@@ -1596,7 +1603,85 @@ mod tests {
             3,
         );
 
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains(
+            "output expression is not an aggregate measure and does not match any grouping expression"
+        ));
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_with_literal_expression() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // The first grouping expression is a literal, not a reference or a
+        // function call, so it can only match the output item by structural
+        // equality (encode_to_vec).
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[42, $0 => $0, 42, sum($1):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // direct schema is [42, $0, sum($1)]; output is [$0, 42, sum($1)] -> [1, 0, 2]
+        assert_eq!(emit, &[1, 0, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_function_call_is_not_a_measure() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_urn(2, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "eq")
+            .with_function(2, 11, "sum")
+            .extensions;
+
+        // `eq($0, $1)` is both the grouping expression and repeated
+        // verbatim in the output, so it must resolve to the grouping
+        // position rather than being parsed as a second, duplicate
+        // aggregate measure.
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[eq($0, $1):boolean => eq($0, $1):boolean, sum($2):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 1);
+        assert_eq!(aggregate.measures.len(), 1);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        assert!(matches!(emit_kind, EmitKind::Direct(_)));
     }
 
     #[test]
