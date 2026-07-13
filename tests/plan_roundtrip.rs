@@ -536,8 +536,8 @@ Root[a, b, c, d]
 }
 
 #[test]
+/// Cross product can handle inputs of differing widths
 fn test_cross_relation_uneven_widths_roundtrip() {
-    // Unlike Set, a cross product allows inputs of differing widths.
     let plan = r#"=== Plan
 Root[a, b, c]
   Cross[$0, $1, $2]
