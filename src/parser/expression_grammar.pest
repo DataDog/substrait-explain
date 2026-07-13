@@ -239,6 +239,7 @@ planNode = {
   | fetch_relation
   | join_relation
   | set_relation
+  | cross_relation
   | extension_relation
   | addendum
 }
@@ -341,6 +342,9 @@ join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ "
 // before "&IntersectionMultiset") so that the parser doesn't stop at the shorter match.
 set_op        = { "&IntersectionMultisetAll" | "&IntersectionMultiset" | "&IntersectionPrimary" | "&MinusPrimaryAll" | "&MinusPrimary" | "&MinusMultiset" | "&UnionAll" | "&UnionDistinct" }
 set_relation  = { "Set" ~ "[" ~ set_op ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+
+// CrossRel: Cross[$0, $1, $2, $3]  (Cartesian product of left and right; no args)
+cross_relation = { "Cross" ~ "[" ~ reference_list ~ "]" }
 
 // Extension relations for custom operators not covered by standard Substrait
 // Format: ExtensionType:ExtensionName[arguments, named_arguments => columns]

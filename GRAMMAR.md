@@ -954,6 +954,41 @@ Root[id, name]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
+### Cross Relation
+
+#### Syntax
+
+`"Cross" "[" reference_list "]"`
+
+#### Components
+
+- `reference_list` - Comma-separated list of field references for output columns
+
+A `Cross` relation is the Cartesian product of its two inputs (written as
+indented children). It takes no arguments, so the bracket body is just the
+output columns. The output concatenates the left and right inputs, so field
+references map to the combined schema:
+
+- `$0`, `$1`, ... refer to left input fields
+- `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
+
+#### Example
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name, order_id, amount]
+  Cross[$0, $1, $2, $3]
+    Read[users => id:i64, name:string]        // Fields $0, $1
+    Read[orders => order_id:i64, amount:i32]   // Fields $2, $3
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ### Extension Relations
 
 Extension relations allow custom relation types with user-defined protobuf payloads. They enable integration with custom data sources, optimizations, or specialized operations beyond standard Substrait relations.

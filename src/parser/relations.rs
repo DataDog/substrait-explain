@@ -11,9 +11,9 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Direct, Emit, EmitKind};
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel, ReadRel, Rel,
-    RelCommon, SetRel, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, set_rel,
-    r#type,
+    AggregateRel, CrossRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel,
+    ReadRel, Rel, RelCommon, SetRel, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel,
+    set_rel, r#type,
 };
 
 use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
@@ -1207,6 +1207,67 @@ impl RelationParsePair for JoinRel {
     }
 }
 
+impl RelationParsePair for CrossRel {
+    fn rule() -> Rule {
+        Rule::cross_relation
+    }
+
+    fn message() -> &'static str {
+        "CrossRel"
+    }
+
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
+        Rel {
+            rel_type: Some(RelType::Cross(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+        input_children: Vec<Rel>,
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        if input_children.len() != 2 {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "CrossRel should have exactly 2 input children, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        let mut children_iter = input_children.into_iter();
+        let left = Box::new(children_iter.next().unwrap());
+        let right = Box::new(children_iter.next().unwrap());
+
+        let mut iter = RuleIter::from(pair.into_inner());
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        iter.done();
+
+        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+
+        Ok((
+            CrossRel {
+                common: Some(common),
+                left: Some(left),
+                right: Some(right),
+                advanced_extension: None,
+            },
+            output_count,
+        ))
+    }
+}
+
 impl ParsePair for set_rel::SetOp {
     fn rule() -> Rule {
         Rule::set_op
@@ -1832,6 +1893,96 @@ mod tests {
                 Rule::join_relation,
                 "Join[&Inner, eq($0, $1):boolean => $0, $1]",
             ),
+            vec![
+                example_read_relation().into_rel(None),
+                example_read_relation().into_rel(None),
+                example_read_relation().into_rel(None),
+            ],
+            9,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_cross_relation() {
+        let extensions = SimpleExtensions::default();
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let cross = CrossRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::cross_relation, "Cross[$0, $1, $2, $3, $4, $5]"),
+            vec![left_rel, right_rel],
+            6, // left (3) + right (3) = 6 total input fields
+        )
+        .unwrap()
+        .0;
+
+        // Should have left and right relations, and no advanced extension yet.
+        assert!(cross.left.is_some());
+        assert!(cross.right.is_some());
+
+        // Identity output mapping should collapse to Direct.
+        let emit_kind = cross.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected EmitKind::Direct for identity output, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_cross_relation_prunes_columns() {
+        let extensions = SimpleExtensions::default();
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let (cross, output_count) = CrossRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::cross_relation, "Cross[$0, $3]"),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap();
+
+        assert_eq!(output_count, 2);
+
+        // A non-identity reference list should produce an explicit emit mapping.
+        let emit_kind = cross.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        assert_eq!(emit, &[0, 3]);
+    }
+
+    #[test]
+    fn test_parse_cross_relation_requires_two_children() {
+        let extensions = SimpleExtensions::default();
+
+        // Zero children.
+        let result = CrossRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::cross_relation, "Cross[$0, $1]"),
+            vec![],
+            0,
+        );
+        assert!(result.is_err());
+
+        // One child.
+        let result = CrossRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::cross_relation, "Cross[$0, $1]"),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        );
+        assert!(result.is_err());
+
+        // Three children.
+        let result = CrossRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::cross_relation, "Cross[$0, $1]"),
             vec![
                 example_read_relation().into_rel(None),
                 example_read_relation().into_rel(None),
