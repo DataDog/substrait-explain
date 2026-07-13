@@ -505,8 +505,6 @@ pub fn get_emit(rel: Option<&RelCommon>) -> Option<&EmitKind> {
 
 impl<'a> Relation<'a> {
     /// Convert a vector of relation references into their structured form.
-    ///
-    /// Returns a list of children (with None for ones missing), and a count of input columns.
     pub fn convert_children<S: Scope>(
         refs: Vec<Option<&'a Rel>>,
         ctx: &S,
@@ -521,7 +519,21 @@ impl<'a> Relation<'a> {
                     inputs += child.emitted();
                     children.push(Some(child));
                 }
-                None => children.push(None),
+                None => {
+                    let token = ctx.failure(FormatError::Format(PlanError::invalid(
+                        "Rel",
+                        Some("input"),
+                        "Required input relation expected, None found",
+                    )));
+                    children.push(Some(Relation {
+                        name: Cow::Owned(format!("{token}")),
+                        arguments: None,
+                        columns: vec![],
+                        emit: None,
+                        addenda: AddendumLines::none(),
+                        children: vec![],
+                    }));
+                }
             }
         }
 
@@ -1780,6 +1792,42 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
         assert!(
             result.contains("Cross[$0, $3]"),
             "Expected pruned cross output, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_cross_relation_missing_input_reports_failure() {
+        let ctx = TestContext::new();
+
+        // A malformed CrossRel with an unset `left` must not silently produce
+        // a clean-looking `Cross[...]`; it should emit a `!{Rel}` placeholder
+        // child and accumulate an error.
+        let cross = CrossRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            left: None,
+            right: Some(Box::new(basic_read("right_tbl"))),
+            advanced_extension: None,
+        };
+        let rel = Rel {
+            rel_type: Some(RelType::Cross(Box::new(cross))),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+        assert!(
+            !errors.is_empty(),
+            "Expected an error for the missing Cross input, got none: {result}"
+        );
+        assert!(
+            result.contains("!{Rel}"),
+            "Expected a placeholder for the missing input, got: {result}"
+        );
+        // The populated right input should still be rendered.
+        assert!(
+            result.contains("Read[right_tbl"),
+            "Expected the present input to be formatted, got: {result}"
         );
     }
 
