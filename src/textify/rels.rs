@@ -1745,14 +1745,12 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
 
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert!(
-            result.contains("Cross[$0, $1, $2, $3, $4, $5]"),
-            "Expected concatenated cross output, got: {result}"
-        );
-        assert!(
-            result.contains("Read[left_tbl") && result.contains("Read[right_tbl"),
-            "Expected both children to be formatted, got: {result}"
-        );
+        let expected = r#"
+Cross[$0, $1, $2, $3, $4, $5]
+  Read[left_tbl => category:string?, amount:fp64?, value:i32?]
+  Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
+            .trim_start();
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -1777,10 +1775,12 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
 
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert!(
-            result.contains("Cross[$0, $3]"),
-            "Expected pruned cross output, got: {result}"
-        );
+        let expected = r#"
+Cross[$0, $3]
+  Read[left_tbl => category:string?, amount:fp64?, value:i32?]
+  Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
+            .trim_start();
+        assert_eq!(result, expected);
     }
 
     #[test]
