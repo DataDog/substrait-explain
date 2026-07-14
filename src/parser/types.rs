@@ -6,6 +6,7 @@ use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{ExtensionKind, MissingReference};
 use crate::parser::MessageParseError;
+use crate::precision::Precision;
 
 /// Given a name (plain or compound) and an optional anchor, resolve and
 /// validate the extension anchor.
@@ -192,8 +193,28 @@ fn parse_compound_type(
         Rule::precision_timestamp_tz_type
         | Rule::precision_timestamp_type
         | Rule::precision_time_type => parse_precision_type(inner),
+        Rule::interval_day_type => parse_interval_day_type(inner),
         _ => unimplemented!("{:?}", inner.as_rule()),
     }
+}
+
+/// Parse a sub-second precision parameter into a validated [`Precision`].
+fn parse_precision(
+    precision_pair: Pair<Rule>,
+    context: &'static str,
+) -> Result<Precision, MessageParseError> {
+    let precision_span = precision_pair.as_span();
+    let value = precision_pair.as_str().parse::<i32>().ok();
+    value.and_then(Precision::new).ok_or_else(|| {
+        MessageParseError::invalid(
+            context,
+            precision_span,
+            format!(
+                "precision must be between 0 and 12, got {}",
+                precision_pair.as_str()
+            ),
+        )
+    })
 }
 
 fn parse_precision_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
@@ -201,15 +222,7 @@ fn parse_precision_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
     let mut iter = iter_pairs(pair.into_inner());
     let nullability = iter.parse_next::<Nullability>();
     let precision_pair = iter.pop(Rule::integer);
-    let precision_span = precision_pair.as_span();
-    let precision = precision_pair.as_str().parse::<i32>().unwrap();
-    if !(0..=12).contains(&precision) {
-        return Err(MessageParseError::invalid(
-            "precision time type",
-            precision_span,
-            format!("precision must be between 0 and 12, got {precision}"),
-        ));
-    }
+    let precision = parse_precision(precision_pair, "precision time type")?.value();
     iter.done();
     let kind = match rule {
         Rule::precision_timestamp_type => {
@@ -234,6 +247,22 @@ fn parse_precision_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
         _ => unreachable!("parse_precision_type called with rule {:?}", rule),
     };
     Ok(Type { kind: Some(kind) })
+}
+
+fn parse_interval_day_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::interval_day_type);
+    let mut iter = iter_pairs(pair.into_inner());
+    let nullability = iter.parse_next::<Nullability>();
+    let precision_pair = iter.pop(Rule::integer);
+    let precision = parse_precision(precision_pair, "interval day type")?.value();
+    iter.done();
+    Ok(Type {
+        kind: Some(Kind::IntervalDay(proto::r#type::IntervalDay {
+            nullability: nullability.into(),
+            type_variation_reference: 0,
+            precision: Some(precision),
+        })),
+    })
 }
 
 fn parse_list_type(
@@ -412,6 +441,40 @@ mod tests {
                 })))
             }
         );
+    }
+
+    #[test]
+    fn test_parse_interval_day_type() {
+        for (input, nullability, precision) in [
+            ("interval_day<9>", Nullability::Required, 9),
+            ("interval_day?<6>", Nullability::Nullable, 6),
+        ] {
+            let mut pairs = ExpressionParser::parse(Rule::interval_day_type, input).unwrap();
+            let pair = pairs.next().unwrap();
+            assert_eq!(pairs.next(), None);
+            let t = parse_interval_day_type(pair).unwrap();
+            assert_eq!(
+                t,
+                Type {
+                    kind: Some(Kind::IntervalDay(proto::r#type::IntervalDay {
+                        nullability: nullability as i32,
+                        type_variation_reference: 0,
+                        precision: Some(precision),
+                    })),
+                },
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_interval_day_type_invalid_precision() {
+        for input in ["interval_day<13>", "interval_day<-1>"] {
+            let mut pairs = ExpressionParser::parse(Rule::interval_day_type, input).unwrap();
+            let pair = pairs.next().unwrap();
+            assert_eq!(pairs.next(), None);
+            assert!(parse_interval_day_type(pair).is_err(), "input: {input}");
+        }
     }
 
     #[test]

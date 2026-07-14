@@ -83,6 +83,17 @@ Root[result]
 }
 
 #[test]
+fn test_interval_day_literal_roundtrip() {
+    let plan = r#"
+=== Plan
+Root[result]
+  Project['-5d 3s':interval_day<0>, '5d 3s 100ns':interval_day<9>]
+    Read[data => a:i64]
+"#;
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_nullable_integer_literal_roundtrip() {
     let plan = r#"
 === Plan

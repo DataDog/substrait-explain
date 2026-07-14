@@ -3,7 +3,7 @@ use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
 use substrait::proto::expression::literal::{
-    LiteralType, PrecisionTime as LitPrecisionTime, PrecisionTimestamp as LitPrecisionTimestamp,
+    interval_day_to_second::PrecisionMode, IntervalDayToSecond, LiteralType, PrecisionTime as LitPrecisionTime, PrecisionTimestamp as LitPrecisionTimestamp,
 };
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
@@ -15,11 +15,12 @@ use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
 
 use super::types::get_and_validate_anchor;
 use super::{
-    MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
-    unwrap_single_pair,
+    ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
+    unescape_string, unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{CompoundName, ExtensionKind};
+use crate::precision::Precision;
 
 /// A field index (e.g., parsed from "$0" -> 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +235,25 @@ fn to_string_literal(
                 literal_type: Some(LiteralType::Date(date_days)),
                 nullable: d.nullability != Nullability::Required as i32,
                 type_variation_reference: d.type_variation_reference,
+            })
+        }
+        Kind::IntervalDay(i) => {
+            // Sub-second precision comes from the type ascription, as it does for
+            // every other parameterized type: `'5d 100ns':interval_day<9>`. The
+            // grammar requires the parameter, so `precision` is always set here
+            // for text input; a caller-constructed type might not have it.
+            let precision = i.precision.and_then(Precision::new).ok_or_else(|| {
+                MessageParseError::invalid(
+                    "interval_day_literal_type",
+                    value.as_span(),
+                    "interval_day literals require an explicit sub-second precision between 0 and 12, e.g. 'interval_day<6>'",
+                )
+            })?;
+            let interval = parse_interval_day_duration(&string_value, precision, value.as_span())?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::IntervalDayToSecond(interval)),
+                nullable: i.nullability != Nullability::Required as i32,
+                type_variation_reference: i.type_variation_reference,
             })
         }
         #[allow(deprecated)]
@@ -545,6 +565,112 @@ fn parse_time_to_precision_units(
         span,
         format!("Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"),
     ))
+}
+
+/// Parse the integer part of a duration term, e.g. the `-5` of `-5d`.
+///
+/// The grammar guarantees an optionally-signed run of digits, so the only way
+/// this can fail is a value too large for the protobuf field it is stored in.
+fn parse_duration_number<T: std::str::FromStr>(
+    number: &str,
+    unit: &str,
+    duration_str: &str,
+    span: pest::Span,
+) -> Result<T, MessageParseError> {
+    number.parse().map_err(|_| {
+        MessageParseError::invalid(
+            "interval_day_duration",
+            span,
+            format!(
+                "Invalid duration '{duration_str}': the '{unit}' term {number} does not fit in a {}-bit integer",
+                std::mem::size_of::<T>() * 8
+            ),
+        )
+    })
+}
+
+/// Parse the contents of an `interval_day` literal string - e.g. "5d",
+/// "4d 5s", "5d 3s 100ns", "-5d -3s" - into an `IntervalDayToSecond` with the
+/// sub-second precision taken from the literal's type ascription.
+///
+/// The shape of the string is enforced by [`Rule::interval_day_duration`],
+/// which fixes term order and allows each unit at most once, so this only has
+/// to convert the matched terms and check that a sub-second unit, if present,
+/// agrees with `precision`.
+fn parse_interval_day_duration(
+    duration_str: &str,
+    precision: Precision,
+    span: pest::Span,
+) -> Result<IntervalDayToSecond, MessageParseError> {
+    let parsed =
+        <ExpressionParser as pest::Parser<Rule>>::parse(Rule::interval_day_duration, duration_str);
+    let mut pairs = parsed.map_err(|e| {
+        MessageParseError::invalid(
+            "interval_day_duration",
+            span,
+            format!(
+                "Invalid duration '{duration_str}': {}. Expected one to three terms, separated by single spaces, in the order days ('d'), seconds ('s'), sub-seconds ('ms', 'us', 'ns', or 'ps'); e.g. '5d', '4d 5s', '5d 3s 100ns'",
+                e.variant.message()
+            ),
+        )
+    })?;
+    let pair = pairs.next().expect("interval_day_duration matched");
+    assert_eq!(pair.as_rule(), Rule::interval_day_duration);
+
+    let mut interval = IntervalDayToSecond {
+        days: 0,
+        seconds: 0,
+        subseconds: 0,
+        precision_mode: Some(PrecisionMode::Precision(precision.value())),
+    };
+
+    for term in pair.into_inner() {
+        match term.as_rule() {
+            Rule::duration_days => {
+                let number = unwrap_single_pair(term);
+                interval.days = parse_duration_number(number.as_str(), "d", duration_str, span)?;
+            }
+            Rule::duration_seconds => {
+                let number = unwrap_single_pair(term);
+                interval.seconds = parse_duration_number(number.as_str(), "s", duration_str, span)?;
+            }
+            Rule::duration_subseconds => {
+                let mut iter = RuleIter::from(term.into_inner());
+                let number = iter.pop(Rule::integer);
+                let unit = iter.pop(Rule::subsecond_unit);
+                iter.done();
+
+                let unit = unit.as_str();
+                let unit_precision = Precision::from_subsecond_unit(unit)
+                    .expect("the grammar restricts sub-second units to ms/us/ns/ps");
+                // Precision has a single source - the type - so a unit that
+                // disagrees with it is ambiguous rather than redundant.
+                if unit_precision != precision {
+                    return Err(MessageParseError::invalid(
+                        "interval_day_duration",
+                        span,
+                        format!(
+                            "Invalid duration '{duration_str}': the sub-second unit '{unit}' means precision {unit_precision}, but the type is interval_day<{precision}>"
+                        ),
+                    ));
+                }
+                interval.subseconds =
+                    parse_duration_number(number.as_str(), unit, duration_str, span)?;
+            }
+            // `interval_day_duration` is anchored with `EOI` so that trailing
+            // input is a parse error rather than silently ignored.
+            Rule::EOI => {}
+            rule => unreachable!("unexpected rule in interval_day_duration: {rule:?}"),
+        }
+    }
+
+    // TODO: Range validation. Substrait bounds `interval_day` to
+    // [-3,650,000..3,650,000] days and defines `subseconds` as the fraction of a
+    // second below `precision`, but this crate converts rather than validates:
+    // out-of-range values have an unambiguous text form, so parse them and leave
+    // range checking to consumers. The conversions above reject only what the
+    // protobuf fields cannot hold.
+    Ok(interval)
 }
 
 impl ScopedParsePair for Literal {
@@ -1235,6 +1361,117 @@ mod tests {
         let pair = parse_exact(Rule::literal, "'2300-01-01T00:00:00':precisiontimestamp<9>");
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("out of range"));
+    }
+
+    fn parse_interval_day_literal(input: &str) -> Result<IntervalDayToSecond, MessageParseError> {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, input);
+        let result = Literal::parse_pair(&extensions, pair)?;
+        match result.literal_type {
+            Some(LiteralType::IntervalDayToSecond(interval)) => Ok(interval),
+            other => panic!("Expected IntervalDayToSecond literal type, got: {other:?}"),
+        }
+    }
+
+    fn assert_interval_day(input: &str, days: i32, seconds: i32, subseconds: i64, precision: i32) {
+        let interval = parse_interval_day_literal(input).unwrap();
+        assert_eq!(
+            interval,
+            IntervalDayToSecond {
+                days,
+                seconds,
+                subseconds,
+                precision_mode: Some(PrecisionMode::Precision(precision)),
+            },
+            "input: {input}"
+        );
+    }
+
+    #[test]
+    fn test_parse_interval_day_literals() {
+        for (input, days, seconds, subseconds, precision) in [
+            // Precision comes from the type ascription, so a value with no
+            // sub-second term can still carry a sub-second precision.
+            ("'5d':interval_day<0>", 5, 0, 0, 0),
+            ("'5d':interval_day<9>", 5, 0, 0, 9),
+            ("'4d 5s':interval_day<0>", 4, 5, 0, 0),
+            ("'123ms':interval_day<3>", 0, 0, 123, 3),
+            ("'123456us':interval_day<6>", 0, 0, 123_456, 6),
+            ("'123456789ns':interval_day<9>", 0, 0, 123_456_789, 9),
+            ("'5d 3s 100ns':interval_day<9>", 5, 3, 100, 9),
+            // Each term carries its own sign, matching the separate proto fields.
+            ("'-5d 3s':interval_day<0>", -5, 3, 0, 0),
+            ("'-500000000ns':interval_day<9>", 0, 0, -500_000_000, 9),
+            // Nullability is written before the precision parameter.
+            ("'5d':interval_day?<6>", 5, 0, 0, 6),
+            // A precision with no duration unit is fine as long as there is no
+            // sub-second term to write.
+            ("'5d 3s':interval_day<4>", 5, 3, 0, 4),
+            // This crate converts rather than validates, so values outside the
+            // Substrait ranges parse as long as the proto fields can hold them.
+            ("'3650001d':interval_day<0>", 3_650_001, 0, 0, 0),
+            ("'1000000000ns':interval_day<9>", 0, 0, 1_000_000_000, 9),
+        ] {
+            assert_interval_day(input, days, seconds, subseconds, precision);
+        }
+    }
+
+    #[test]
+    fn test_parse_interval_day_literal_errors() {
+        for input in [
+            // Shape errors, all caught by the interval_day_duration rule.
+            "'':interval_day<0>",
+            "'5x':interval_day<0>",
+            "'5':interval_day<0>",
+            // Each unit may appear at most once...
+            "'5d 3d':interval_day<0>",
+            "'5s 3s':interval_day<0>",
+            "'3ms 5us':interval_day<3>",
+            // ...and terms must be in descending order.
+            "'3s 5d':interval_day<0>",
+            "'100ns 5d 3s':interval_day<9>",
+            // Terms are separated by exactly one space, with none around them.
+            "'5d   3s':interval_day<0>",
+            "'  5d 3s  ':interval_day<0>",
+            "'5d\t3s':interval_day<0>",
+            // The sub-second unit has to agree with the type's precision.
+            "'100ns':interval_day<6>",
+            "'100ns':interval_day<4>",
+            // Out-of-range precision is rejected by the type, not the string.
+            "'5d':interval_day<13>",
+            "'5d':interval_day<-1>",
+            // Values the proto fields cannot hold.
+            "'2200000000s':interval_day<0>",
+            "'99999999999d':interval_day<0>",
+            "'99999999999999999999ns':interval_day<9>",
+        ] {
+            assert!(
+                parse_interval_day_literal(input).is_err(),
+                "expected {input} to fail"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_interval_day_literal_requires_precision() {
+        // Bare `interval_day` has no precision, so it isn't a type name; it falls
+        // through to the user-defined type rule and fails to resolve.
+        let err = parse_interval_day_literal("'5d':interval_day")
+            .expect_err("bare interval_day should not be a known type");
+        assert!(
+            err.to_string().contains("interval_day"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_interval_day_literal_unit_precision_mismatch_message() {
+        let err = parse_interval_day_literal("'100ns':interval_day<6>")
+            .expect_err("a sub-second unit that disagrees with the type should fail");
+        assert!(
+            err.to_string().contains("means precision 9"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Helper function to create a literal boolean expression

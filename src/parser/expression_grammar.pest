@@ -57,6 +57,33 @@ reference = { "$" ~ integer }
 // Literal
 literal = { (float | integer | boolean | string_literal | null) ~ (":" ~ sp ~ type)? }
 
+// -- interval_day durations --
+//
+// The contents of an `interval_day` literal string, e.g. "5d", "4d 5s",
+// "5d 3s 100ns". A day term, a seconds term, and a sub-second term, in that
+// order; each is optional, but at least one is required, so each unit can
+// appear at most once.
+//
+// This rule is deliberately not referenced from `literal`: the string is
+// unescaped first, then re-parsed with this rule as the start rule. Terms are
+// separated by exactly one space, with no leading or trailing whitespace -
+// literals don't need the looser whitespace the surrounding grammar allows.
+interval_day_duration = {
+    SOI ~ (
+        duration_days ~ (whitespace ~ duration_seconds)? ~ (whitespace ~ duration_subseconds)?
+      | duration_seconds ~ (whitespace ~ duration_subseconds)?
+      | duration_subseconds
+    ) ~ EOI
+}
+
+duration_days       = { integer ~ "d" }
+duration_seconds    = { integer ~ "s" }
+duration_subseconds = { integer ~ subsecond_unit }
+
+// The sub-second units that correspond to a writable `interval_day` precision:
+// ms = 3, us = 6, ns = 9, ps = 12.
+subsecond_unit = { "ms" | "us" | "ns" | "ps" }
+
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
 urn_anchor = { "@" ~ sp ~ integer }
@@ -125,10 +152,14 @@ precision_timestamp_tz_type = { ^"precisiontimestamptz" ~ nullability ~ "<" ~ in
 precision_timestamp_type    = { ^"precisiontimestamp"   ~ nullability ~ "<" ~ integer ~ ">" }
 precision_time_type         = { ^"precisiontime"        ~ nullability ~ "<" ~ integer ~ ">" }
 
+// interval_day takes an integer sub-second precision parameter, like the
+// precision timestamp types above.
+// Example: interval_day<6>, interval_day?<9>
+interval_day_type = { ^"interval_day" ~ nullability ~ "<" ~ integer ~ ">" }
+
 // A compound type expression, composed of a name, optional parameters, and optional nullability.
 // Example: LIST?<fp64?>, MAP<i64, string>
-// TODO: interval_day
-compound_type = { list_type | map_type | struct_type | precision_timestamp_tz_type | precision_timestamp_type | precision_time_type }
+compound_type = { list_type | map_type | struct_type | precision_timestamp_tz_type | precision_timestamp_type | precision_time_type | interval_day_type }
 
 // A user-defined type expression. The u! prefix is optional and ignored for lookup purposes;
 // both "json" and "u!json" resolve to the same extension.

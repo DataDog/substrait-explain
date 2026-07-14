@@ -101,6 +101,9 @@ fn test_types() {
     assert_roundtrip::<Type>(&ctx, "time?");
     assert_roundtrip::<Type>(&ctx, "interval_year");
     assert_roundtrip::<Type>(&ctx, "interval_year?");
+    assert_roundtrip::<Type>(&ctx, "interval_day<9>");
+    assert_roundtrip::<Type>(&ctx, "interval_day?<6>");
+    assert_roundtrip::<Type>(&ctx, "interval_day?<0>");
     assert_roundtrip::<Type>(&ctx, "uuid");
     assert_roundtrip::<Type>(&ctx, "uuid?");
 
@@ -161,6 +164,14 @@ fn test_expression() {
     assert_roundtrip::<Literal>(&ctx, "'2023-01-01T12:00:00':precisiontimestamptz<0>");
     assert_roundtrip::<Literal>(&ctx, "'14:30:45':precisiontime<0>");
 
+    assert_roundtrip::<Literal>(&ctx, "'5d':interval_day<0>");
+    assert_roundtrip::<Literal>(&ctx, "'5d':interval_day<9>");
+    assert_roundtrip::<Literal>(&ctx, "'4d 5s':interval_day<6>");
+    assert_roundtrip::<Literal>(&ctx, "'123456789ns':interval_day<9>");
+    assert_roundtrip::<Literal>(&ctx, "'5d 3s 100ms':interval_day<3>");
+    assert_roundtrip::<Literal>(&ctx, "'-5d 3s':interval_day<0>");
+    assert_roundtrip::<Literal>(&ctx, "'0s':interval_day<0>");
+    assert_roundtrip::<Literal>(&ctx, "'5d':interval_day?<6>");
     roundtrip_parse::<FieldReference>(&ctx, "$1");
     assert_roundtrip::<ScalarFunction>(&ctx, "foo():i64");
     assert_roundtrip::<Expression>(&ctx, "bar(12):i64");
