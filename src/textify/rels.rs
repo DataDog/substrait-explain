@@ -234,16 +234,12 @@ pub enum ArgsLayout {
     /// `arg, arg, arg` on a single line.
     #[default]
     Inline,
+    /// `arg +> col, col`, used by named `Read` when the direct output domain
+    /// must be shown separately from an explicit emit mapping.
+    DirectDomain,
     /// One `- arg` per line, used for `Read:Virtual` rows. See
     /// [`Relation::write_header`] for the exact layout.
     Rows,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum OutputSyntax {
-    #[default]
-    Implicit,
-    DirectDomain,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +261,16 @@ impl<'a> Arguments<'a> {
             positional,
             named,
             layout: ArgsLayout::Inline,
+        }
+    }
+
+    /// An explicit direct-domain argument list (`arg +> col, col`), currently
+    /// used by named `Read` when `RelCommon.emit_kind` is present.
+    pub fn direct_domain(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        Arguments {
+            positional,
+            named,
+            layout: ArgsLayout::DirectDomain,
         }
     }
 
@@ -313,7 +319,6 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
-    output_syntax: OutputSyntax,
     /// `+`-prefixed addendum lines to emit between this relation's header and
     /// children.  This owns the canonical ordering for `+ Ext`, `+ Enh`, and
     /// `+ Opt` lines rather than making the generic relation shape grow one
@@ -377,7 +382,7 @@ impl Relation<'_> {
                 }
                 write!(w, "{child_indent}- => {cols}]")
             }
-            Some(args) if self.output_syntax == OutputSyntax::DirectDomain => {
+            Some(args) if args.layout == ArgsLayout::DirectDomain => {
                 let args = ctx.display(args);
                 let cols = ctx.separated(self.columns.iter(), ", ");
                 write!(w, "{indent}{name}[{args} +> {cols}")?;
@@ -436,16 +441,16 @@ impl<'a> Relation<'a> {
         match &rel.read_type {
             Some(ReadType::NamedTable(table)) => {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
+                let arguments = if emit.is_some() {
+                    Arguments::direct_domain(vec![table_name], vec![])
+                } else {
+                    Arguments::inline(vec![table_name], vec![])
+                };
                 Relation {
                     name: Cow::Borrowed("Read"),
-                    arguments: Some(Arguments::inline(vec![table_name], vec![])),
+                    arguments: Some(arguments),
                     columns,
                     emit,
-                    output_syntax: if emit.is_some() {
-                        OutputSyntax::DirectDomain
-                    } else {
-                        OutputSyntax::Implicit
-                    },
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -477,7 +482,6 @@ impl<'a> Relation<'a> {
                     arguments: Some(arguments),
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -496,7 +500,6 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::extension_table(
                         ctx,
                         decoded,
@@ -516,7 +519,6 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -589,7 +591,6 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -610,7 +611,6 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -640,7 +640,6 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns: vec![],
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children: vec![],
                 }
@@ -708,7 +707,6 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(positional, named)),
                     columns,
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
                     // Extension relations use `detail` rather than
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
@@ -727,7 +725,6 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children,
                 }
@@ -810,7 +807,6 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -916,7 +912,6 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -969,7 +964,6 @@ impl<'a> Relation<'a> {
             arguments: Some(Arguments::inline(vec![], named_args)),
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1078,7 +1072,6 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
