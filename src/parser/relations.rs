@@ -266,8 +266,8 @@ fn parse_read_output(
     }
 }
 
-fn parse_read_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
-    assert_eq!(suffix.as_rule(), Rule::read_emit_suffix);
+fn parse_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
+    assert_eq!(suffix.as_rule(), Rule::emit_suffix);
     let reference_list = suffix.into_inner().next()?;
     assert_eq!(reference_list.as_rule(), Rule::reference_list);
     let output_mapping = parse_output_mapping(reference_list);
