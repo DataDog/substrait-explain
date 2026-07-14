@@ -462,7 +462,7 @@ count:():i64
 
 Aggregate measures are used in the output of Aggregate relations to compute aggregates. An aggregate measure is written as a plain `function_call` (see [Function Calls section](#function-calls)) in the output position of an Aggregate relation - the syntax is identical, e.g. `sum($2):i64`, `count($1):i64`, `avg($3):fp64`.
 
-This syntax only captures a measure's `function_reference`, `arguments`, and `output_type`. The Substrait `Measure` message also carries a `filter` (a per-measure filter expression, separate from the aggregate function) and the `AggregateFunction` itself has `invocation` (e.g. `DISTINCT`), `phase`, and `sorts` (for ordered aggregates) - none of which can currently be expressed in this text format. Parsing always produces `invocation: UNSPECIFIED`, `phase: UNSPECIFIED`, no `sorts`, and no `filter`, regardless of what the original plan contained.
+This syntax only captures a measure's `function_reference`, `arguments`, and `output_type`. The Substrait `Measure` message also carries a `filter` (a per-measure filter expression, separate from the aggregate function) and the `AggregateFunction` itself has `invocation` (e.g. `DISTINCT`), `phase`, and `sorts` (for ordered aggregates), which are currently unsupported. Parsing always produces `invocation: UNSPECIFIED`, `phase: UNSPECIFIED`, no `sorts`, and no `filter`, regardless of what the original plan contained.
 
 ### IfThen
 

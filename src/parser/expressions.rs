@@ -502,42 +502,6 @@ impl ScopedParsePair for Cast {
     }
 }
 
-/// Parses an already-unwrapped inner pair of `Rule::expression`.
-pub(crate) fn parse_expression_inner(
-    extensions: &SimpleExtensions,
-    inner: pest::iterators::Pair<Rule>,
-) -> Result<Expression, MessageParseError> {
-    match inner.as_rule() {
-        Rule::literal => Ok(Expression {
-            rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
-        }),
-        Rule::function_call => Ok(Expression {
-            rex_type: Some(RexType::ScalarFunction(ScalarFunction::parse_pair(
-                extensions, inner,
-            )?)),
-        }),
-        Rule::reference => Ok(Expression {
-            rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
-                inner,
-            )))),
-        }),
-        Rule::if_then => Ok(Expression {
-            rex_type: Some(RexType::IfThen(Box::new(IfThen::parse_pair(
-                extensions, inner,
-            )?))),
-        }),
-        Rule::cast_expression => Ok(Expression {
-            rex_type: Some(RexType::Cast(Box::new(Cast::parse_pair(
-                extensions, inner,
-            )?))),
-        }),
-        _ => unreachable!(
-            "Grammar guarantees expression can only be literal, function_call, reference, if_then, or cast_expression, got: {:?}",
-            inner.as_rule()
-        ),
-    }
-}
-
 impl ScopedParsePair for Expression {
     fn rule() -> Rule {
         Rule::expression
@@ -552,7 +516,36 @@ impl ScopedParsePair for Expression {
         pair: pest::iterators::Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
-        parse_expression_inner(extensions, unwrap_single_pair(pair))
+        let inner = unwrap_single_pair(pair);
+        match inner.as_rule() {
+            Rule::literal => Ok(Expression {
+                rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
+            }),
+            Rule::function_call => Ok(Expression {
+                rex_type: Some(RexType::ScalarFunction(ScalarFunction::parse_pair(
+                    extensions, inner,
+                )?)),
+            }),
+            Rule::reference => Ok(Expression {
+                rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
+                    inner,
+                )))),
+            }),
+            Rule::if_then => Ok(Expression {
+                rex_type: Some(RexType::IfThen(Box::new(IfThen::parse_pair(
+                    extensions, inner,
+                )?))),
+            }),
+            Rule::cast_expression => Ok(Expression {
+                rex_type: Some(RexType::Cast(Box::new(Cast::parse_pair(
+                    extensions, inner,
+                )?))),
+            }),
+            _ => unreachable!(
+                "Grammar guarantees expression can only be literal, function_call, reference, if_then, or cast_expression, got: {:?}",
+                inner.as_rule()
+            ),
+        }
     }
 }
 

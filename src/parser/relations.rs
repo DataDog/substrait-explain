@@ -21,7 +21,7 @@ use crate::extensions::any::Any;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
 use crate::parser::errors::{ParseContext, ParseError};
-use crate::parser::expressions::{FieldIndex, Name, parse_expression_inner};
+use crate::parser::expressions::{FieldIndex, Name};
 
 /// Parsing context for relations that includes extensions, registry, and optional warning collection
 pub struct RelationParsingContext<'a> {
@@ -720,8 +720,15 @@ fn parse_aggregate_output(
     assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
 
     // every output item is either:
-    // - a function call, which becomes a new aggregate measure, or
-    // - an expression which must already be one of `grouping_expressions`.
+    // - an expression which must already be one of `grouping_expressions`,
+    // - a new function call, which we assume must be an aggregate measure.
+    //
+    // While it would probably be best to check if a function call was an
+    // aggregate function, the substrait-explain text does not distinguish
+    // between aggregate measures and grouping expressions, and the
+    // `SimpleExtensions` do not have that information either (neither here in
+    // the Registry nor in the actual Protobuf `ExtensionFunction` definition),
+    // so we can only check whether it's a previous expression.
     let grouping_positions: HashMap<Vec<u8>, usize> = grouping_expressions
         .iter()
         .enumerate()
@@ -734,10 +741,10 @@ fn parse_aggregate_output(
     for output_item in output_pair.into_inner() {
         assert_eq!(output_item.as_rule(), Rule::expression);
         let span = output_item.as_span();
-        let inner_item = unwrap_single_pair(output_item);
+        let inner_item = unwrap_single_pair(output_item.clone());
 
         if inner_item.as_rule() == Rule::function_call {
-            let expression = parse_expression_inner(extensions, inner_item.clone())?;
+            let expression = Expression::parse_pair(extensions, output_item)?;
             if let Some(&index) = grouping_positions.get(&expression_key(&expression)) {
                 output_mapping.push(index as i32);
                 continue;
@@ -749,7 +756,7 @@ fn parse_aggregate_output(
             continue;
         }
 
-        let expression = parse_expression_inner(extensions, inner_item)?;
+        let expression = Expression::parse_pair(extensions, output_item)?;
         match grouping_positions.get(&expression_key(&expression)) {
             Some(&index) => output_mapping.push(index as i32),
             None => {
