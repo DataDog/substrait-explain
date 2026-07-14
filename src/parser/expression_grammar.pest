@@ -232,7 +232,7 @@ named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 read_output          = { read_implicit_output | read_direct_output }
 read_implicit_output = { "=>" ~ sp ~ named_column_list }
 read_direct_output   = { "+>" ~ sp ~ named_column_list ~ read_emit_suffix }
-read_emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
+emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
 
 planNode = {
     // Specialized read relations must precede read_relation: all start with
