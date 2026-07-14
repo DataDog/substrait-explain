@@ -9,8 +9,8 @@ use std::fmt;
 use pest::iterators::Pair;
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{
-    AggregateRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel, RelRoot,
-    SortRel, Version, plan_rel,
+    AggregateRel, CrossRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel,
+    RelRoot, SortRel, Version, plan_rel,
 };
 
 use crate::extensions::any::Any;
@@ -523,6 +523,7 @@ impl<'a> RelationParser<'a> {
             Rule::fetch_relation => self.parse_rel::<FetchRel>(extensions, registry, ctx),
             Rule::join_relation => self.parse_rel::<JoinRel>(extensions, registry, ctx),
             Rule::set_relation => self.parse_set_relation(registry, ctx),
+            Rule::cross_relation => self.parse_rel::<CrossRel>(extensions, registry, ctx),
             Rule::extension_relation => self.parse_extension_relation(extensions, registry, ctx),
             _ => unreachable!("unhandled relation rule: {:?}", ctx.pair.as_rule()),
         }

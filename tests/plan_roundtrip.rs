@@ -525,6 +525,55 @@ Root[a, b]
 }
 
 #[test]
+fn test_cross_relation_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b, c, d]
+  Cross[$0, $1, $2, $3]
+    Read[table1 => a:i64, b:string]
+    Read[table2 => c:i64, d:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+/// Cross product can handle inputs of differing widths
+fn test_cross_relation_uneven_widths_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b, c]
+  Cross[$0, $1, $2]
+    Read[table1 => a:i64]
+    Read[table2 => c:i64, d:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_cross_relation_non_identity_emit_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, c]
+  Cross[$0, $2]
+    Read[table1 => a:i64, b:string]
+    Read[table2 => c:i64, d:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_cross_relation_requires_two_children() {
+    let one_child = r#"=== Plan
+Root[a, b]
+  Cross[$0, $1]
+    Read[table1 => a:i64, b:string]"#;
+
+    let err = Parser::parse(one_child).expect_err("CrossRel with one child should fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("exactly 2 input children") || msg.contains("CrossRel"),
+        "expected CrossRel child-count error, got: {msg}"
+    );
+}
+
+#[test]
 fn test_set_relation_rejects_invalid_but_divisible_widths() {
     // Regression test: widths [2, 4] sum to 6, which divides evenly by 2
     // children into 3 — a naive sum/len check would wrongly accept this

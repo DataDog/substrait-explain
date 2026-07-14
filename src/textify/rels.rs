@@ -12,7 +12,7 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
+    AggregateFunction, AggregateRel, CrossRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
     ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel,
     Rel, RelCommon, RelRoot, SetRel, SortField, SortRel, Type, join_rel, set_rel,
 };
@@ -584,6 +584,7 @@ impl<'a> Relation<'a> {
             Some(RelType::Fetch(r)) => Relation::from_fetch(r, ctx),
             Some(RelType::Join(r)) => Relation::from_join(r, ctx),
             Some(RelType::Set(r)) => Relation::from_set(r, ctx),
+            Some(RelType::Cross(r)) => Relation::from_cross(r, ctx),
             Some(RelType::ExtensionLeaf(r)) => Relation::from_extension_leaf(r, ctx),
             Some(RelType::ExtensionSingle(r)) => Relation::from_extension_single(r, ctx),
             Some(RelType::ExtensionMulti(r)) => Relation::from_extension_multi(r, ctx),
@@ -1071,6 +1072,26 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
+            children,
+        }
+    }
+
+    fn from_cross<S: Scope>(rel: &'a CrossRel, ctx: &S) -> Self {
+        let (children, total_columns) =
+            Relation::convert_children(vec![rel.left.as_deref(), rel.right.as_deref()], ctx);
+
+        // Output columns concatenate the left and right inputs; there is no
+        // join-type column dropping, since CrossRel has none.
+        let columns = (0..total_columns)
+            .map(|i| Value::Reference(i as i32))
+            .collect();
+
+        Relation {
+            name: Cow::Borrowed("Cross"),
+            arguments: None,
+            columns,
+            emit: get_emit(rel.common.as_ref()),
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1686,6 +1707,82 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
         );
     }
 
+    fn basic_read(table: &str) -> Rel {
+        Rel {
+            rel_type: Some(RelType::Read(Box::new(ReadRel {
+                common: None,
+                base_schema: Some(get_basic_schema()),
+                filter: None,
+                best_effort_filter: None,
+                projection: None,
+                advanced_extension: None,
+                read_type: Some(ReadType::NamedTable(NamedTable {
+                    names: vec![table.into()],
+                    advanced_extension: None,
+                })),
+            }))),
+        }
+    }
+
+    #[test]
+    fn test_cross_relation() {
+        let ctx = TestContext::new();
+
+        // Two 3-column reads: the cross output concatenates both, giving 6
+        // columns ($0..$5), with no arguments.
+        let cross = CrossRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            }),
+            left: Some(Box::new(basic_read("left_tbl"))),
+            right: Some(Box::new(basic_read("right_tbl"))),
+            advanced_extension: None,
+        };
+        let rel = Rel {
+            rel_type: Some(RelType::Cross(Box::new(cross))),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        let expected = r#"
+Cross[$0, $1, $2, $3, $4, $5]
+  Read[left_tbl => category:string?, amount:fp64?, value:i32?]
+  Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
+            .trim_start();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_cross_relation_prunes_columns() {
+        let ctx = TestContext::new();
+
+        // A non-identity emit selects only two of the six columns.
+        let cross = CrossRel {
+            common: Some(RelCommon {
+                emit_kind: Some(EmitKind::Emit(Emit {
+                    output_mapping: vec![0, 3],
+                })),
+                ..Default::default()
+            }),
+            left: Some(Box::new(basic_read("left_tbl"))),
+            right: Some(Box::new(basic_read("right_tbl"))),
+            advanced_extension: None,
+        };
+        let rel = Rel {
+            rel_type: Some(RelType::Cross(Box::new(cross))),
+        };
+
+        let (result, errors) = ctx.textify(&rel);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        let expected = r#"
+Cross[$0, $3]
+  Read[left_tbl => category:string?, amount:fp64?, value:i32?]
+  Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
+            .trim_start();
+        assert_eq!(result, expected);
+    }
+
     #[test]
     fn test_arguments_textify_both() {
         let ctx = TestContext::new();
@@ -1880,20 +1977,15 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
 
     #[test]
     fn test_unsupported_rel_type_produces_failure_token() {
-        use substrait::proto::CrossRel;
+        use substrait::proto::ReferenceRel;
 
         let ctx = TestContext::new();
 
-        // CrossRel is a valid Substrait relation type that the textifier
+        // ReferenceRel is a valid Substrait relation type that the textifier
         // does not yet support.  Wrapping it in a Rel and textifying should
         // produce a `!{Rel}` failure token rather than panicking.
         let rel = Rel {
-            rel_type: Some(RelType::Cross(Box::new(CrossRel {
-                common: None,
-                left: None,
-                right: None,
-                advanced_extension: None,
-            }))),
+            rel_type: Some(RelType::Reference(ReferenceRel { subtree_ordinal: 0 })),
         };
 
         let (result, errors) = ctx.textify(&rel);
@@ -1907,7 +1999,7 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
         // Exactly one error should have been collected.
         assert_eq!(errors.0.len(), 1, "Expected exactly one error: {errors:?}");
 
-        // The error should be a Format / Unimplemented error mentioning CrossRel.
+        // The error should be a Format / Unimplemented error mentioning ReferenceRel.
         match &errors.0[0] {
             FormatError::Format(plan_err) => {
                 assert_eq!(plan_err.message, "Rel");
@@ -1916,8 +2008,12 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
                     crate::textify::foundation::FormatErrorType::Unimplemented
                 );
                 assert!(
-                    plan_err.lookup.as_deref().unwrap_or("").contains("Cross"),
-                    "Expected lookup to mention 'Cross', got: {:?}",
+                    plan_err
+                        .lookup
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("Reference"),
+                    "Expected lookup to mention 'Reference', got: {:?}",
                     plan_err.lookup
                 );
             }

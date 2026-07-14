@@ -11,9 +11,9 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Direct, Emit, EmitKind};
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel, ReadRel, Rel,
-    RelCommon, SetRel, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel, set_rel,
-    r#type,
+    AggregateRel, CrossRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel,
+    ReadRel, Rel, RelCommon, SetRel, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel,
+    set_rel, r#type,
 };
 
 use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
@@ -1200,6 +1200,67 @@ impl RelationParsePair for JoinRel {
                 expression: Some(Box::new(condition)),
                 post_join_filter: None, // not yet represented in the grammar
                 r#type: join_type as i32,
+                advanced_extension: None,
+            },
+            output_count,
+        ))
+    }
+}
+
+impl RelationParsePair for CrossRel {
+    fn rule() -> Rule {
+        Rule::cross_relation
+    }
+
+    fn message() -> &'static str {
+        "CrossRel"
+    }
+
+    fn into_rel(mut self, adv_ext: Option<AdvancedExtension>) -> Rel {
+        self.advanced_extension = adv_ext;
+        Rel {
+            rel_type: Some(RelType::Cross(Box::new(self))),
+        }
+    }
+
+    fn parse_pair_with_context(
+        _extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+        input_children: Vec<Rel>,
+        input_field_count: usize,
+    ) -> Result<(Self, usize), MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+
+        if input_children.len() != 2 {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                pair.as_span(),
+                format!(
+                    "CrossRel should have exactly 2 input children, got {}",
+                    input_children.len()
+                ),
+            ));
+        }
+
+        let mut children_iter = input_children.into_iter();
+        let left = Box::new(children_iter.next().unwrap());
+        let right = Box::new(children_iter.next().unwrap());
+
+        let mut iter = RuleIter::from(pair.into_inner());
+        let reference_list_pair = iter.pop(Rule::reference_list);
+        iter.done();
+
+        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let common = RelCommon {
+            emit_kind: Some(emit),
+            ..Default::default()
+        };
+
+        Ok((
+            CrossRel {
+                common: Some(common),
+                left: Some(left),
+                right: Some(right),
                 advanced_extension: None,
             },
             output_count,
