@@ -639,7 +639,7 @@ Root[a, b]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
-Use `+> ... |>` when the read's base schema records the direct output domain but
+Use `+> ... |>` to specify an Emit / output ordering different from the table's base schema:
 only some fields should flow downstream:
 
 ```rust
