@@ -233,33 +233,41 @@ fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKi
     (emit, output_count)
 }
 
-/// Parse an `output_emit` pair (`direct_emit` | `explicit_emit`) for relations
-/// whose direct output domain is entirely determined by their child(ren)
-/// `direct_emit` (`=>`): the mapping collapses to `Direct` when it is the identity permutation,
-/// `explicit_emit (`|>`) always produces `Emit`, even for an identity mapping
-fn parse_output_emit(output_emit: Pair<Rule>, direct_output_count: usize) -> (EmitKind, usize) {
-    assert_eq!(output_emit.as_rule(), Rule::output_emit);
-    let clause = unwrap_single_pair(output_emit);
-    match clause.as_rule() {
-        Rule::direct_emit => {
-            let reference_list = unwrap_single_pair(clause);
-            parse_emit(reference_list, direct_output_count)
+fn parse_read_output(
+    extensions: &SimpleExtensions,
+    output: Pair<Rule>,
+) -> Result<(Vec<Column>, Option<RelCommon>, usize), MessageParseError> {
+    assert_eq!(output.as_rule(), Rule::read_output);
+    let output = unwrap_single_pair(output);
+    match output.as_rule() {
+        Rule::read_implicit_output => {
+            let mut iter = RuleIter::from(output.into_inner());
+            let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+            iter.done();
+            let output_count = columns.len();
+            Ok((columns, None, output_count))
         }
-        Rule::explicit_emit => {
-            let reference_list = unwrap_single_pair(clause);
-            let output_mapping = parse_output_mapping(reference_list);
-            let output_count = output_mapping.len();
-            (EmitKind::Emit(Emit { output_mapping }), output_count)
+        Rule::read_direct_output => {
+            let mut iter = RuleIter::from(output.into_inner());
+            let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+            let emit_suffix = iter.pop(Rule::read_emit_suffix);
+            iter.done();
+
+            let direct_output_count = columns.len();
+            let (emit, output_count) = parse_read_emit_suffix(emit_suffix)
+                .unwrap_or((EmitKind::Direct(Direct {}), direct_output_count));
+            let common = Some(RelCommon {
+                emit_kind: Some(emit),
+                ..Default::default()
+            });
+            Ok((columns, common, output_count))
         }
-        other => unreachable!("Unexpected rule in output_emit: {other:?}"),
+        other => unreachable!("Unexpected rule in read_output: {other:?}"),
     }
 }
 
-/// Parse an `explicit_emit_suffix` pair for relations with their own direct
-/// output domain (Read, and eventually Project/Aggregate). Returns `None` if
-/// the optional `|>` clause is absent
-fn parse_explicit_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
-    assert_eq!(suffix.as_rule(), Rule::explicit_emit_suffix);
+fn parse_read_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
+    assert_eq!(suffix.as_rule(), Rule::read_emit_suffix);
     let reference_list = suffix.into_inner().next()?;
     assert_eq!(reference_list.as_rule(), Rule::reference_list);
     let output_mapping = parse_output_mapping(reference_list);
@@ -359,21 +367,10 @@ impl RelationParsePair for ReadRel {
 
         let mut iter = RuleIter::from(pair.into_inner());
         let table = iter.parse_next::<TableName>().0;
-        let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
-        let emit_suffix_pair = iter.pop(Rule::explicit_emit_suffix);
+        let output_pair = iter.pop(Rule::read_output);
         iter.done();
 
-        let direct_output_count = columns.len();
-        let (common, output_count) = match parse_explicit_emit_suffix(emit_suffix_pair) {
-            Some((emit, output_count)) => (
-                Some(RelCommon {
-                    emit_kind: Some(emit),
-                    ..Default::default()
-                }),
-                output_count,
-            ),
-            None => (None, direct_output_count),
-        };
+        let (columns, common, output_count) = parse_read_output(extensions, output_pair)?;
 
         Ok((
             ReadRel {
@@ -593,10 +590,10 @@ impl RelationParsePair for FilterRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-        let output_emit_pair = iter.pop(Rule::output_emit);
+        let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        let (emit, output_count) = parse_output_emit(output_emit_pair, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -950,13 +947,13 @@ impl RelationParsePair for SortRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
         let sort_field_list_pair = iter.pop(Rule::sort_field_list);
-        let output_emit_pair = iter.pop(Rule::output_emit);
+        let references_pair = iter.pop(Rule::reference_list);
         let mut sorts = Vec::new();
         for sort_field_pair in sort_field_list_pair.into_inner() {
             let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
             sorts.push(sort_field);
         }
-        let (emit, output_count) = parse_output_emit(output_emit_pair, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1126,8 +1123,8 @@ impl RelationParsePair for FetchRel {
             }
         };
 
-        let output_emit_pair = iter.pop(Rule::output_emit);
-        let (emit, output_count) = parse_output_emit(output_emit_pair, input_field_count);
+        let references_pair = iter.pop(Rule::reference_list);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1225,13 +1222,13 @@ impl RelationParsePair for JoinRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let join_type = iter.parse_next::<join_rel::JoinType>();
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-        let output_emit_pair = iter.pop(Rule::output_emit);
+        let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
         // TODO: For semi/anti joins, the direct output width differs from
         // left+right — `input_field_count` would misclassify the emit as Direct.
         // Revisit when those join types are supported.
-        let (emit, output_count) = parse_output_emit(output_emit_pair, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1300,7 +1297,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::read_relation,
-                "Read[ab.cd.ef => a:i32, b:string?, c:i64 |> $2, $0]",
+                "Read[ab.cd.ef +> a:i32, b:string?, c:i64 |> $2, $0]",
             ),
             vec![],
             0,
@@ -1324,7 +1321,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::read_relation,
-                "Read[ab.cd.ef => a:i32, b:string? |> $0, $1]",
+                "Read[ab.cd.ef +> a:i32, b:string? |> $0, $1]",
             ),
             vec![],
             0,
@@ -1335,6 +1332,36 @@ mod tests {
         assert!(
             matches!(emit_kind, EmitKind::Emit(_)),
             "Expected explicit Emit to survive even with an identity mapping, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_read_relation_explicit_direct() {
+        let extensions = SimpleExtensions::default();
+        let (read, output_count) = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::read_relation, "Read[ab.cd.ef +> a:i32, b:string?]"),
+            vec![],
+            0,
+        )
+        .unwrap();
+        assert_eq!(output_count, 2);
+        let emit_kind = read.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected +> without |> to produce Direct, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_read_relation_rejects_arrow_with_emit() {
+        let parsed = ExpressionParser::parse(
+            Rule::read_relation,
+            "Read[ab.cd.ef => a:i32, b:string? |> $0, $1]",
+        );
+        assert!(
+            parsed.is_err(),
+            "Read cannot combine legacy => output with explicit |>"
         );
     }
 
@@ -1371,44 +1398,6 @@ mod tests {
             matches!(emit_kind, EmitKind::Direct(_)),
             "Expected Direct for identity emit, got {emit_kind:?}"
         );
-    }
-
-    #[test]
-    fn test_parse_filter_relation_explicit_emit_not_collapsed() {
-        // `|>` with an identity mapping must stay Emit, unlike the `=>` form
-        // above which collapses identity mappings to Direct.
-        let extensions = SimpleExtensions::default();
-        let filter = FilterRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(Rule::filter_relation, "Filter[$1 |> $0, $1, $2]"),
-            vec![example_read_relation().into_rel(None)],
-            3,
-        )
-        .unwrap()
-        .0;
-        let emit_kind = filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        match emit_kind {
-            EmitKind::Emit(emit) => assert_eq!(emit.output_mapping, vec![0, 1, 2]),
-            other => panic!("Expected EmitKind::Emit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_parse_filter_relation_explicit_emit_reorders() {
-        let extensions = SimpleExtensions::default();
-        let (filter, output_count) = FilterRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(Rule::filter_relation, "Filter[$1 |> $2, $0]"),
-            vec![example_read_relation().into_rel(None)],
-            3,
-        )
-        .unwrap();
-        assert_eq!(output_count, 2);
-        let emit_kind = filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        match emit_kind {
-            EmitKind::Emit(emit) => assert_eq!(emit.output_mapping, vec![2, 0]),
-            other => panic!("Expected EmitKind::Emit, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1649,49 +1638,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sort_relation_explicit_emit() {
-        let extensions = SimpleExtensions::default();
-        let (sort, output_count) = SortRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(Rule::sort_relation, "Sort[($0, &AscNullsFirst) |> $1, $0]"),
-            vec![example_read_relation().into_rel(None)],
-            3,
-        )
-        .unwrap();
-        assert_eq!(sort.sorts.len(), 1);
-        assert_eq!(output_count, 2);
-        let emit_kind = sort.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        match emit_kind {
-            EmitKind::Emit(emit) => assert_eq!(emit.output_mapping, vec![1, 0]),
-            other => panic!("Expected EmitKind::Emit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_fetch_relation_explicit_emit_not_collapsed() {
-        let extensions = SimpleExtensions::default();
-        let fetch_rel = FetchRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(Rule::fetch_relation, "Fetch[limit=10 |> $0, $1, $2]"),
-            vec![example_read_relation().into_rel(None)],
-            3,
-        )
-        .unwrap()
-        .0;
-        let emit_kind = fetch_rel
-            .common
-            .as_ref()
-            .unwrap()
-            .emit_kind
-            .as_ref()
-            .unwrap();
-        assert!(
-            matches!(emit_kind, EmitKind::Emit(_)),
-            "Expected explicit Emit to survive even with an identity mapping, got {emit_kind:?}"
-        );
-    }
-
-    #[test]
     fn test_fetch_relation_positive_values() {
         let extensions = SimpleExtensions::default();
 
@@ -1849,35 +1795,6 @@ mod tests {
         };
         // Output mapping should be [0, 1, 2]
         assert_eq!(emit, &[0, 1, 2]);
-    }
-
-    #[test]
-    fn test_parse_join_relation_explicit_emit_not_collapsed() {
-        let extensions = TestContext::new()
-            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
-            .with_function(1, 10, "eq")
-            .extensions;
-
-        let left_rel = example_read_relation().into_rel(None);
-        let right_rel = example_read_relation().into_rel(None);
-
-        let join = JoinRel::parse_pair_with_context(
-            &extensions,
-            parse_exact(
-                Rule::join_relation,
-                "Join[&Inner, eq($0, $3):boolean |> $0, $1, $2, $3, $4, $5]",
-            ),
-            vec![left_rel, right_rel],
-            6,
-        )
-        .unwrap()
-        .0;
-
-        let emit_kind = join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        assert!(
-            matches!(emit_kind, EmitKind::Emit(_)),
-            "Expected explicit Emit to survive even with an identity mapping, got {emit_kind:?}"
-        );
     }
 
     #[test]

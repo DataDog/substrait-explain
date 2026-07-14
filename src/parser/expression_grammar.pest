@@ -225,21 +225,14 @@ table_name = { (name ~ ("." ~ name)*) }
 named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
-// -- Explicit emit mapping (`RelCommon.emit`) --
-//
-// For relations whose direct output domain is entirely determined by their
-// child (Filter, Sort, Fetch, Join), the trailing clause is either the
-// implicit direct passthrough (`=>`, collapsed to `Direct` when possible) or
-// an explicit emit mapping (`|>`, always preserved as `Emit` even if the
-// mapping happens to be the identity permutation).
-direct_emit   = { "=>" ~ sp ~ reference_list }
-explicit_emit = { "|>" ~ sp ~ reference_list }
-output_emit   = { direct_emit | explicit_emit }
-
-// For relations with their own direct output domain (Read, and eventually
-// Project/Aggregate), an explicit emit mapping is an optional trailing
-// addition after the domain is declared - it does not replace `=>`.
-explicit_emit_suffix = { (sp ~ "|>" ~ sp ~ reference_list)? }
+// -- Read output clauses --
+// `=>` declares the final visible output columns without preserving a RelCommon.emit distinction.
+// `+>` declares the Read direct output domain. Without `|>`, it is an explicit
+// `|>` the trailing reference list is preserved as an explicit Emit over that direct output domain.
+read_output          = { read_implicit_output | read_direct_output }
+read_implicit_output = { "=>" ~ sp ~ named_column_list }
+read_direct_output   = { "+>" ~ sp ~ named_column_list ~ read_emit_suffix }
+read_emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
 
 planNode = {
     // Specialized read relations must precede read_relation: all start with
@@ -267,7 +260,7 @@ top_level_relation = {
 root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
 root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
 
-read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ "=>" ~ sp ~ named_column_list ~ explicit_emit_suffix ~ "]" }
+read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ read_output ~ "]" }
 
 // ExtensionTable read: Read:Extension[columns], with detail in a required + Ext addendum.
 extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
@@ -302,7 +295,7 @@ virtual_read_args     = { virtual_row_list | empty }
 virtual_row_list      = { virtual_row ~ (relation_comma ~ virtual_row)* }
 virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }
 
-filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ output_emit ~ "]" }
+filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 reference_list  = { (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
 
 project_relation      = { "Project" ~ "[" ~ project_argument_list ~ "]" }
@@ -332,7 +325,7 @@ aggregate_measure = { function_call }
 empty = { "_" }
 
 // SortRel: Sort[($0, &AscNullsFirst), ($2, &DescNullsLast) => ...]
-sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ sp ~ output_emit ~ "]" }
+sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 sort_field_list = { (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*)? }
 sort_field      = { "(" ~ sp ~ reference ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
 sort_direction  = { "&AscNullsFirst" | "&AscNullsLast" | "&DescNullsFirst" | "&DescNullsLast" }
@@ -343,13 +336,13 @@ fetch_value          =  { integer | expression }
 fetch_named_arg      =  { fetch_arg_name ~ sp ~ "=" ~ sp ~ fetch_value }
 fetch_named_arg_list =  { fetch_named_arg ~ (sp ~ "," ~ sp ~ fetch_named_arg)* }
 fetch_args           = _{ fetch_named_arg_list | empty }
-fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ sp ~ output_emit ~ "]" }
+fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 
 // JoinRel: Join[&Inner, eq($0, $2) => $0, $1, $2, $3]
 // Note: Longer prefixes must come before shorter ones (e.g., "&LeftSemi" before "&Left")
 // so that the parser doesn't match "&Left" when it should match "&LeftSemi"
 join_type     = { "&Inner" | "&LeftSemi" | "&LeftAnti" | "&LeftSingle" | "&LeftMark" | "&Left" | "&RightSemi" | "&RightAnti" | "&RightSingle" | "&RightMark" | "&Right" | "&Outer" }
-join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ output_emit ~ "]" }
+join_relation = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 
 // Extension relations for custom operators not covered by standard Substrait
 // Format: ExtensionType:ExtensionName[arguments, named_arguments => columns]

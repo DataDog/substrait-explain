@@ -239,6 +239,13 @@ pub enum ArgsLayout {
     Rows,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum OutputSyntax {
+    #[default]
+    Implicit,
+    DirectDomain,
+}
+
 #[derive(Debug, Clone)]
 pub struct Arguments<'a> {
     /// Positional arguments (e.g., a filter condition, group-bys, etc.)
@@ -306,6 +313,7 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    output_syntax: OutputSyntax,
     /// `+`-prefixed addendum lines to emit between this relation's header and
     /// children.  This owns the canonical ordering for `+ Ext`, `+ Enh`, and
     /// `+ Opt` lines rather than making the generic relation shape grow one
@@ -345,17 +353,19 @@ impl Relation<'_> {
     /// Does not write a trailing newline; callers are responsible for any
     /// newline that follows (either from an addendum or from the next child).
     pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
         let name = &self.name;
-        let cols = ctx.display(&cols);
         match &self.arguments {
             None => {
+                let cols = Emitted::new(&self.columns, self.emit);
+                let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{cols}]")
             }
             Some(args) if args.layout == ArgsLayout::Rows => {
                 // One `- row` per line, one indent level deeper, with a trailing
                 // comma on every row but the last, then `- => cols]`.
+                let cols = Emitted::new(&self.columns, self.emit);
+                let cols = ctx.display(&cols);
                 let child = ctx.push_indent();
                 let child_indent = child.indent();
                 writeln!(w, "{indent}{name}[")?;
@@ -367,11 +377,33 @@ impl Relation<'_> {
                 }
                 write!(w, "{child_indent}- => {cols}]")
             }
+            Some(args) if self.output_syntax == OutputSyntax::DirectDomain => {
+                let args = ctx.display(args);
+                let cols = ctx.separated(self.columns.iter(), ", ");
+                write!(w, "{indent}{name}[{args} +> {cols}")?;
+                self.write_emit_suffix(ctx, w)?;
+                write!(w, "]")
+            }
             Some(args) => {
                 let args = ctx.display(args);
+                let cols = Emitted::new(&self.columns, self.emit);
+                let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{args} => {cols}]")
             }
         }
+    }
+
+    fn write_emit_suffix<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let Some(EmitKind::Emit(emit)) = self.emit else {
+            return Ok(());
+        };
+        let mapping = emit
+            .output_mapping
+            .iter()
+            .copied()
+            .map(Value::Reference)
+            .collect::<Vec<_>>();
+        write!(w, " |> {}", ctx.separated(mapping.iter(), ", "))
     }
 
     /// Write each child relation at one indent level deeper than `ctx`.
@@ -409,6 +441,11 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(vec![table_name], vec![])),
                     columns,
                     emit,
+                    output_syntax: if emit.is_some() {
+                        OutputSyntax::DirectDomain
+                    } else {
+                        OutputSyntax::Implicit
+                    },
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -440,6 +477,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(arguments),
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -458,6 +496,7 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::extension_table(
                         ctx,
                         decoded,
@@ -477,6 +516,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -549,6 +589,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -569,6 +610,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -598,6 +640,7 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns: vec![],
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children: vec![],
                 }
@@ -665,6 +708,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(positional, named)),
                     columns,
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     // Extension relations use `detail` rather than
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
@@ -683,6 +727,7 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children,
                 }
@@ -765,6 +810,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -870,6 +916,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -922,6 +969,7 @@ impl<'a> Relation<'a> {
             arguments: Some(Arguments::inline(vec![], named_args)),
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1030,6 +1078,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
