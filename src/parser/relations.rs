@@ -720,8 +720,15 @@ fn parse_aggregate_output(
     assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
 
     // every output item is either:
-    // - a function call, which becomes a new aggregate measure, or
-    // - an expression which must already be one of `grouping_expressions`.
+    // - an expression which must already be one of `grouping_expressions`,
+    // - a new function call, which we assume must be an aggregate measure.
+    //
+    // While it would probably be best to check if a function call was an
+    // aggregate function, the substrait-explain text does not distinguish
+    // between aggregate measures and grouping expressions, and the
+    // `SimpleExtensions` do not have that information either (neither here in
+    // the Registry nor in the actual Protobuf `ExtensionFunction` definition),
+    // so we can only check whether it's a previous expression.
     let grouping_positions: HashMap<Vec<u8>, usize> = grouping_expressions
         .iter()
         .enumerate()
@@ -732,8 +739,7 @@ fn parse_aggregate_output(
     let mut output_mapping = Vec::new();
 
     for output_item in output_pair.into_inner() {
-        assert_eq!(output_item.as_rule(), Rule::expression);
-        let span = output_item.as_span();
+        let expression = Expression::parse_pair(extensions, output_item.clone())?;
         let inner_item = unwrap_single_pair(output_item);
 
         if inner_item.as_rule() == Rule::function_call {
