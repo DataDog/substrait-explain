@@ -601,9 +601,10 @@ read_output := ("=>" named_column_list) / ("+>" named_column_list ("|>" referenc
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
-- `"=>" named_column_list` - legacy implicit output form. It declares the visible output columns without preserving an explicit `RelCommon.emit_kind`.
-- `"+>" named_column_list` - explicit direct output domain. It preserves `RelCommon.emit_kind` as `Direct`.
-- `"+>" named_column_list "|>" reference_list` - explicit direct output domain followed by an explicit `Emit` mapping over that domain.
+- `named_column_list := (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`.
+  - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
+  - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
+  - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
 
 #### Example
 
@@ -638,7 +639,7 @@ Root[a, b]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
-Use `+> ... |>` when the read's base schema records the direct output domain but
+Use `+> ... |>` to specify an Emit / output ordering different from the table's base schema:
 only some fields should flow downstream:
 
 ```rust
