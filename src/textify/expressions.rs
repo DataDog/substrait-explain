@@ -1,15 +1,20 @@
-use std::fmt::{self};
+use std::fmt::{self, Write as _};
 
 use chrono::{DateTime, NaiveDate};
 use expr::RexType;
+use substrait::proto::aggregate_function::AggregationInvocation;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::window_function::{self, bound};
 use substrait::proto::expression::{
-    Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
+    Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, WindowFunction, cast,
+    reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
+use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, Expression, FunctionArgument, FunctionOption, expression as expr,
+    AggregateFunction, AggregationPhase, Expression, FunctionArgument, FunctionOption, SortField,
+    expression as expr,
 };
 
 use super::{PlanError, Scope, Textify, Visibility};
@@ -522,6 +527,204 @@ impl Textify for IfThen {
     }
 }
 
+/// Resolve a `SortField`'s direction to its enum variant name, for `order=`.
+fn sort_direction_str(sk: Option<&SortKind>) -> Result<&'static str, PlanError> {
+    match sk {
+        Some(SortKind::Direction(d)) => match SortDirection::try_from(*d) {
+            Ok(SortDirection::AscNullsFirst) => Ok("AscNullsFirst"),
+            Ok(SortDirection::AscNullsLast) => Ok("AscNullsLast"),
+            Ok(SortDirection::DescNullsFirst) => Ok("DescNullsFirst"),
+            Ok(SortDirection::DescNullsLast) => Ok("DescNullsLast"),
+            Ok(SortDirection::Clustered) => Ok("Clustered"),
+            Ok(SortDirection::Unspecified) => Err(PlanError::invalid(
+                "SortField",
+                Some("sort_kind"),
+                "Unspecified SortDirection",
+            )),
+            Err(_) => Err(PlanError::invalid(
+                "SortField",
+                Some("sort_kind"),
+                format!("Unknown SortDirection: {d}"),
+            )),
+        },
+        Some(SortKind::ComparisonFunctionReference(f)) => Err(PlanError::unimplemented(
+            "SortField",
+            Some("sort_kind"),
+            format!("ComparisonFunctionReference {f} textification not implemented"),
+        )),
+        None => Err(PlanError::invalid(
+            "SortField",
+            Some("sort_kind"),
+            "Missing sort_kind",
+        )),
+    }
+}
+
+/// Write a single sort field as `($ref,&Direction)`, for use in `order=`.
+fn textify_sort_field<S: Scope, W: fmt::Write>(sf: &SortField, ctx: &S, w: &mut W) -> fmt::Result {
+    let expr = ctx.expect(sf.expr.as_ref());
+    write!(w, "({expr},")?;
+    match sort_direction_str(sf.sort_kind.as_ref()) {
+        Ok(s) => textify_enum(s, ctx, w)?,
+        Err(e) => write!(w, "{}", ctx.failure(e))?,
+    }
+    write!(w, ")")
+}
+
+/// Resolve an `AggregationPhase` value to its enum variant name, for `phase=`.
+fn aggregation_phase_str(phase: i32) -> Result<&'static str, PlanError> {
+    match AggregationPhase::try_from(phase) {
+        Ok(AggregationPhase::Unspecified) => Ok("Unspecified"),
+        Ok(AggregationPhase::InitialToIntermediate) => Ok("InitialToIntermediate"),
+        Ok(AggregationPhase::IntermediateToIntermediate) => Ok("IntermediateToIntermediate"),
+        Ok(AggregationPhase::InitialToResult) => Ok("InitialToResult"),
+        Ok(AggregationPhase::IntermediateToResult) => Ok("IntermediateToResult"),
+        Err(_) => Err(PlanError::invalid(
+            "WindowFunction",
+            Some("phase"),
+            format!("Unknown AggregationPhase: {phase}"),
+        )),
+    }
+}
+
+/// Resolve an `AggregationInvocation` value to its enum variant name, for `invocation=`.
+fn aggregation_invocation_str(invocation: i32) -> Result<&'static str, PlanError> {
+    match AggregationInvocation::try_from(invocation) {
+        Ok(AggregationInvocation::Unspecified) => Ok("Unspecified"),
+        Ok(AggregationInvocation::All) => Ok("All"),
+        Ok(AggregationInvocation::Distinct) => Ok("Distinct"),
+        Err(_) => Err(PlanError::invalid(
+            "WindowFunction",
+            Some("invocation"),
+            format!("Unknown AggregationInvocation: {invocation}"),
+        )),
+    }
+}
+
+/// Write a window bound as an integer offset (negative preceding, positive
+/// following, `0` for the current row) or `_` for unbounded/unspecified.
+fn textify_window_bound<S: Scope, W: fmt::Write>(
+    bound: Option<&window_function::Bound>,
+    _ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    match bound.and_then(|b| b.kind.as_ref()) {
+        None | Some(bound::Kind::Unbounded(_)) => write!(w, "_"),
+        Some(bound::Kind::CurrentRow(_)) => write!(w, "0"),
+        Some(bound::Kind::Preceding(p)) => write!(w, "{}", -p.offset),
+        Some(bound::Kind::Following(f)) => write!(w, "{}", f.offset),
+    }
+}
+
+impl Textify for WindowFunction {
+    fn name() -> &'static str {
+        "WindowFunction"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // Shared with ScalarFunction/AggregateFunction textification
+        let name_and_anchor =
+            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
+        let name_and_anchor = ctx.display(&name_and_anchor);
+
+        let args = ctx.separated(&self.arguments, ", ");
+        let options = ctx.separated(&self.options, ", ");
+        let between = if self.arguments.is_empty() || self.options.is_empty() {
+            ""
+        } else {
+            ", "
+        };
+
+        let output = OutputType(self.output_type.as_ref());
+        let output_type = ctx.display(&output);
+
+        write!(w, "{name_and_anchor}({args}{between}{options}) over(")?;
+
+        let mut named_args: Vec<String> = Vec::new();
+
+        let mut phase_str = String::new();
+        match aggregation_phase_str(self.phase) {
+            Ok(s) => textify_enum(s, ctx, &mut phase_str)?,
+            Err(e) => write!(phase_str, "{}", ctx.failure(e))?,
+        }
+        named_args.push(format!("phase={phase_str}"));
+
+        // order= is omitted when there are no sort fields. A single sort field
+        // is written bare; two or more are wrapped in a parenthesized list of
+        // tuples.
+        if !self.sorts.is_empty() {
+            let mut order_str = String::new();
+            if self.sorts.len() == 1 {
+                textify_sort_field(&self.sorts[0], ctx, &mut order_str)?;
+            } else {
+                write!(order_str, "(")?;
+                for (i, sf) in self.sorts.iter().enumerate() {
+                    if i > 0 {
+                        write!(order_str, ",")?;
+                    }
+                    textify_sort_field(sf, ctx, &mut order_str)?;
+                }
+                write!(order_str, ")")?;
+            }
+            named_args.push(format!("order={order_str}"));
+        }
+
+        if self.invocation != AggregationInvocation::Unspecified as i32 {
+            let mut invocation_str = String::new();
+            match aggregation_invocation_str(self.invocation) {
+                Ok(s) => textify_enum(s, ctx, &mut invocation_str)?,
+                Err(e) => write!(invocation_str, "{}", ctx.failure(e))?,
+            }
+            named_args.push(format!("invocation={invocation_str}"));
+        }
+
+        if !self.partitions.is_empty() {
+            let parts = ctx.separated(&self.partitions, ", ");
+            named_args.push(format!("partition=({parts})"));
+        }
+
+        let bounds_type = window_function::BoundsType::try_from(self.bounds_type);
+        let has_bounds = self.lower_bound.is_some() || self.upper_bound.is_some();
+        if !matches!(bounds_type, Ok(window_function::BoundsType::Unspecified)) || has_bounds {
+            let keyword = match bounds_type {
+                Ok(window_function::BoundsType::Rows) => "rows",
+                Ok(window_function::BoundsType::Range) => "range",
+                Ok(window_function::BoundsType::Unspecified) => {
+                    // bounds_type is required whenever a frame is present.
+                    ctx.push_error(
+                        PlanError::invalid(
+                            "WindowFunction",
+                            Some("bounds_type"),
+                            "bounds_type is Unspecified but lower_bound/upper_bound are set",
+                        )
+                        .into(),
+                    );
+                    "rows"
+                }
+                Err(_) => {
+                    ctx.push_error(
+                        PlanError::invalid(
+                            "WindowFunction",
+                            Some("bounds_type"),
+                            format!("Unknown BoundsType: {}", self.bounds_type),
+                        )
+                        .into(),
+                    );
+                    "rows"
+                }
+            };
+            let mut lower_str = String::new();
+            textify_window_bound(self.lower_bound.as_ref(), ctx, &mut lower_str)?;
+            let mut upper_str = String::new();
+            textify_window_bound(self.upper_bound.as_ref(), ctx, &mut upper_str)?;
+            named_args.push(format!("{keyword}=({lower_str}, {upper_str})"));
+        }
+
+        write!(w, "{}", named_args.join(", "))?;
+        write!(w, "){output_type}")
+    }
+}
+
 impl Textify for RexType {
     fn name() -> &'static str {
         "RexType"
@@ -532,15 +735,7 @@ impl Textify for RexType {
             RexType::Literal(literal) => literal.textify(ctx, w),
             RexType::Selection(f) => f.textify(ctx, w),
             RexType::ScalarFunction(s) => s.textify(ctx, w),
-            RexType::WindowFunction(_w) => write!(
-                w,
-                "{}",
-                ctx.failure(PlanError::unimplemented(
-                    "RexType",
-                    Some("WindowFunction"),
-                    "WindowFunction textification not implemented",
-                ))
-            ),
+            RexType::WindowFunction(f) => f.textify(ctx, w),
             RexType::IfThen(i) => i.textify(ctx, w),
             RexType::SwitchExpression(_s) => write!(
                 w,
@@ -1134,5 +1329,120 @@ mod tests {
             failure_behavior: 0,
         };
         assert_eq!(ctx.textify_no_errors(&cast), "(1:i32)::json");
+    }
+
+    fn base_window_function() -> WindowFunction {
+        WindowFunction {
+            function_reference: 10,
+            arguments: vec![],
+            options: vec![],
+            output_type: Some(make_i16_type()),
+            phase: AggregationPhase::InitialToResult as i32,
+            sorts: vec![],
+            invocation: AggregationInvocation::Unspecified as i32,
+            partitions: vec![],
+            bounds_type: window_function::BoundsType::Unspecified as i32,
+            lower_bound: None,
+            upper_bound: None,
+            #[allow(deprecated)]
+            args: vec![],
+        }
+    }
+
+    fn field_expr(field: i32) -> Expression {
+        Expression {
+            rex_type: Some(RexType::Selection(Box::new(struct_field_reference(field)))),
+        }
+    }
+
+    fn sort_field(field: i32, direction: SortDirection) -> SortField {
+        SortField {
+            expr: Some(field_expr(field)),
+            sort_kind: Some(SortKind::Direction(direction as i32)),
+        }
+    }
+
+    #[test]
+    fn test_window_function_no_bound() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "row_number");
+        let f = base_window_function();
+        assert_eq!(
+            ctx.textify_no_errors(&f),
+            "row_number() over(phase=&InitialToResult):i16"
+        );
+    }
+
+    #[test]
+    fn test_window_function_full() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.partitions = vec![field_expr(0)];
+        f.sorts = vec![sort_field(1, SortDirection::AscNullsLast)];
+        f.invocation = AggregationInvocation::Distinct as i32;
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 3 })),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        assert_eq!(
+            ctx.textify_no_errors(&f),
+            "sum() over(phase=&InitialToResult, order=($1,&AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):i16"
+        );
+    }
+
+    #[test]
+    fn test_window_function_multiple_order_fields() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.sorts = vec![
+            sort_field(0, SortDirection::AscNullsLast),
+            sort_field(1, SortDirection::DescNullsFirst),
+        ];
+        assert_eq!(
+            ctx.textify_no_errors(&f),
+            "sum() over(phase=&InitialToResult, order=(($0,&AscNullsLast),($1,&DescNullsFirst))):i16"
+        );
+    }
+
+    #[test]
+    fn test_window_function_unbounded_bounds() {
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = None;
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
+        });
+        assert_eq!(
+            ctx.textify_no_errors(&f),
+            "sum() over(phase=&InitialToResult, rows=(_, _)):i16"
+        );
+    }
+
+    #[test]
+    fn test_window_function_unspecified_bounds_type_with_bounds_is_lossy() {
+        // bounds_type is Unspecified, but a frame is set anyway.
+        // The textifier still emits best-effort rows=/range= output but surfaces
+        // the loss as an accumulated error rather than silently dropping it.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(s, "sum() over(phase=&InitialToResult, rows=(0, _)):i16");
+        assert!(!errs.is_empty(), "expected a diagnostic about bounds_type");
     }
 }

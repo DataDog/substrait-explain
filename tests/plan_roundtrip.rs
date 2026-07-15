@@ -1133,3 +1133,89 @@ Root[a]
 
     assert!(Parser::parse(plan).is_err());
 }
+
+#[test]
+fn test_window_function_all_named_args_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[a, b, s]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1,&AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
+    Read[t => a:i32, b:fp64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_window_function_unbounded_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, r]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0,&AscNullsLast), partition=($0)):i64]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// Minimal, isolated regression test for the bare (non-tuple) rendering of a
+/// single `order=` sort field.
+#[test]
+fn test_window_function_single_order_field_bare_form() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[r]
+  Project[row_number() over(phase=&InitialToResult, order=($0,&AscNullsLast)):i64]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// `_` for an unbounded lower bound round-trips as `_`, alongside a bounded
+/// (current row) upper bound.
+#[test]
+fn test_window_function_unbounded_lower_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(_, 0)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `range=` frame with more than one `order=` field is rejected at parse
+/// time: Substrait only allows `RANGE` bounds with a single ordering column.
+#[test]
+fn test_window_function_range_frame_requires_single_order_field() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(order=(($0,&AscNullsLast),($1,&AscNullsLast)), range=(_, 0), phase=&InitialToResult):i64?]
+    Read[t => a:i64, b:i64]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}

@@ -501,6 +501,71 @@ Root[status]
 #  assert_eq!(plan.relations.len(), 1);
 ```
 
+### Window Functions
+
+A window function computes a value over a "window" of rows related to the current row (partitioning, ordering, and an optional frame), rather than collapsing rows the way an aggregate does.
+
+#### Syntax
+
+`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" window_named_arg ("," window_named_arg)* ")" ":" type`
+
+`window_named_arg` is one of:
+
+- `partition=(expression, ...)` - partitioning expressions
+- `order=sort_field` or `order=(sort_field, sort_field, ...)` - ordering field(s); a single sort field is written bare (e.g. `order=($1,&AscNullsLast)`), two or more are wrapped in a parenthesized list of tuples (e.g. `order=(($1,&AscNullsLast),($2,&DescNullsLast))`)
+- `invocation=&Distinct` / `invocation=&All` - aggregation invocation
+- `phase=&InitialToResult` (etc.) - aggregation phase
+- `rows=(lower, upper)` / `range=(lower, upper)` - the window frame, each bound is an integer (negative = preceding,
+  positive = following, `0` = current row) or `_` for unbounded
+
+`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all
+optional and are omitted when empty; `phase=` is always required and
+always printed. A `range=` frame requires exactly one `order=` field.
+
+#### Examples
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  ## 10 @  1: sum
+
+=== Plan
+Root[a, b, s]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1,&AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
+    Read[t => a:i32, b:fp64]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+Ranking-style window functions have no meaningful frame, so the `rows=`/`range=` clause is omitted entirely:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  ## 10 @  1: row_number
+
+=== Plan
+Root[a, r]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0,&AscNullsLast), partition=($0)):i64]
+    Read[t => a:i32]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ## Relations
 
 Relations represent the operations in a query plan. Each relation is displayed on a single line with indentation showing the hierarchy.

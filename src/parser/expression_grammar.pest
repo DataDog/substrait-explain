@@ -179,10 +179,43 @@ cast_failure_behavior = { "?" | "!" }
 // (78:i32)::!i16     THROW_EXCEPTION
 cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_failure_behavior? ~ sp ~ type }
 
+// -- Window Function Calls --
+//
+// WindowFunction[Expression.WindowFunction]: a function_call followed
+// by a "over(...)" clause carrying window-specific named arguments.
+// Example: sum($0) over(partition=($1,$2), order=($3,&AscNullsLast), rows=(-3, 0), phase=&InitialToResult, invocation=&Distinct):fp64
+//
+// - `partition=(...)` - optional list of partitioning expressions
+// - `order=...` - optional sort key(s); a single sort field is written bare
+//   (e.g. `order=($3,&AscNullsLast)`), two or more are wrapped in a list
+//   (e.g. `order=(($3,&AscNullsLast),($4,&DescNullsLast))`)
+// - `rows=(lower,upper)` / `range=(lower,upper)` - optional frame bounds, encodes `bounds_type` with rows and range.
+// Each bound is an integer offset (negative preceding, positive following, 0 for the current row)
+//  or `_` for unbounded/unspecified.
+// - `phase=&...` - required aggregation phase
+// - `invocation=&...` - optional invocation (e.g. `&All`, `&Distinct`)
+window_partition_arg  = { "partition" ~ sp ~ "=" ~ sp ~ "(" ~ sp ~ expression_list? ~ sp ~ ")" }
+order_value            = { sort_field | ("(" ~ sp ~ sort_field ~ (sp ~ "," ~ sp ~ sort_field)+ ~ sp ~ ")") }
+window_order_arg       = { "order" ~ sp ~ "=" ~ sp ~ order_value }
+window_bound           = { integer | empty }
+window_frame_kind      = { "rows" | "range" }
+window_frame_arg       = { window_frame_kind ~ sp ~ "=" ~ sp ~ "(" ~ sp ~ window_bound ~ sp ~ "," ~ sp ~ window_bound ~ sp ~ ")" }
+window_phase_arg       = { "phase" ~ sp ~ "=" ~ sp ~ enum_value }
+window_invocation_arg  = { "invocation" ~ sp ~ "=" ~ sp ~ enum_value }
+
+window_named_arg      = { window_partition_arg | window_order_arg | window_frame_arg | window_phase_arg | window_invocation_arg }
+window_named_arg_list = { (window_named_arg ~ (sp ~ "," ~ sp ~ window_named_arg)*)? }
+
+window_function_call = {
+    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ window_named_arg_list ~ sp ~ ")" ~ ":" ~ sp ~ type
+}
+
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifier can be a function call, we put that first.
 // cast_expression must come before literal/function_call since it starts with "("
-expression = { if_then | cast_expression | function_call | reference | literal }
+// window_function_call must come before function_call: both share the same
+// prefix, but window_function_call requires the trailing "over(...)" clause.
+expression = { if_then | cast_expression | window_function_call | function_call | reference | literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
