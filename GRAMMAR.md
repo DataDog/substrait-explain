@@ -593,8 +593,10 @@ Root[c, d]           // root with output columns c and d
 #### Syntax
 
 ```text
-read_relation := "Read" "[" table_name read_output "]"
-read_output := ("=>" named_column_list) / ("+>" named_column_list ("|>" reference_list)?)
+read_relation := "Read" "[" table_name output "]"
+output := implicit_output / direct_output
+implicit_output := "=>" named_column_list
+direct_output := "+>" named_column_list ("|>" reference_list)?
 ```
 
 #### Components

@@ -225,13 +225,13 @@ table_name = { (name ~ ("." ~ name)*) }
 named_column      = { name ~ ":" ~ type }
 named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
 
-// -- Read output clauses --
+// -- Output clauses --
 // `=>` declares the final visible output columns without preserving a RelCommon.emit distinction.
-// `+>` declares the Read direct output domain. Without `|>`, it is an explicit
+// `+>` declares the direct output domain. Without `|>`, it is an explicit
 // `|>` the trailing reference list is preserved as an explicit Emit over that direct output domain.
-read_output          = { read_implicit_output | read_direct_output }
-read_implicit_output = { "=>" ~ sp ~ named_column_list }
-read_direct_output   = { "+>" ~ sp ~ named_column_list ~ read_emit_suffix }
+output          = { implicit_output | direct_output }
+implicit_output = { "=>" ~ sp ~ named_column_list }
+direct_output   = { "+>" ~ sp ~ named_column_list ~ emit_suffix }
 emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
 
 planNode = {
@@ -260,7 +260,7 @@ top_level_relation = {
 root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
 root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
 
-read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ read_output ~ "]" }
+read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ output ~ "]" }
 
 // ExtensionTable read: Read:Extension[columns], with detail in a required + Ext addendum.
 extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }

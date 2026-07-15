@@ -233,28 +233,28 @@ fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKi
     (emit, output_count)
 }
 
-fn parse_read_output(
+fn parse_output(
     extensions: &SimpleExtensions,
     output: Pair<Rule>,
 ) -> Result<(Vec<Column>, Option<RelCommon>, usize), MessageParseError> {
-    assert_eq!(output.as_rule(), Rule::read_output);
+    assert_eq!(output.as_rule(), Rule::output);
     let output = unwrap_single_pair(output);
     match output.as_rule() {
-        Rule::read_implicit_output => {
+        Rule::implicit_output => {
             let mut iter = RuleIter::from(output.into_inner());
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
             iter.done();
             let output_count = columns.len();
             Ok((columns, None, output_count))
         }
-        Rule::read_direct_output => {
+        Rule::direct_output => {
             let mut iter = RuleIter::from(output.into_inner());
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
-            let emit_suffix = iter.pop(Rule::read_emit_suffix);
+            let emit_suffix = iter.pop(Rule::emit_suffix);
             iter.done();
 
             let direct_output_count = columns.len();
-            let (emit, output_count) = parse_read_emit_suffix(emit_suffix)
+            let (emit, output_count) = parse_emit_suffix(emit_suffix)
                 .unwrap_or((EmitKind::Direct(Direct {}), direct_output_count));
             let common = Some(RelCommon {
                 emit_kind: Some(emit),
@@ -262,7 +262,7 @@ fn parse_read_output(
             });
             Ok((columns, common, output_count))
         }
-        other => unreachable!("Unexpected rule in read_output: {other:?}"),
+        other => unreachable!("Unexpected rule in output: {other:?}"),
     }
 }
 
@@ -367,10 +367,10 @@ impl RelationParsePair for ReadRel {
 
         let mut iter = RuleIter::from(pair.into_inner());
         let table = iter.parse_next::<TableName>().0;
-        let output_pair = iter.pop(Rule::read_output);
+        let output_pair = iter.pop(Rule::output);
         iter.done();
 
-        let (columns, common, output_count) = parse_read_output(extensions, output_pair)?;
+        let (columns, common, output_count) = parse_output(extensions, output_pair)?;
 
         Ok((
             ReadRel {
