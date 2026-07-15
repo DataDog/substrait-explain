@@ -1164,6 +1164,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1184,6 +1185,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
