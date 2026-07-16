@@ -516,9 +516,10 @@ window_named_arg := "partition=" "(" expression ("," expression)* ")"
                    / "invocation=" enum
                    / "phase=" enum
                    / ("rows=" / "range=") "(" window_bound "," window_bound ")"
-sort_field := "(" reference "," enum ")"
 window_bound := integer / "_"
 ```
+
+`sort_field` is the same production used by the Sort relation (see below): `"(" reference "," sort_direction ")"`.
 
 - `partition=(expression, ...)` - partitioning expressions
 - `order=sort_field` or `order=(sort_field, sort_field, ...)` - ordering field(s); a single sort field is written bare (e.g. `order=($1, &AscNullsLast)`), two or more are wrapped in a parenthesized list of tuples (e.g. `order=(($1, &AscNullsLast), ($2, &DescNullsLast))`)

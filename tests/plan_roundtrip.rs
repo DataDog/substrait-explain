@@ -1293,3 +1293,56 @@ Root[r]
 
     roundtrip_plan(plan);
 }
+
+/// `partition=(...)` with more than one expression round-trips, preserving
+/// both order and count.
+#[test]
+fn test_window_function_multi_expression_partition_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, b, r]
+  Project[$0, $1, row_number() over(phase=&InitialToResult, partition=($0, $1)):i64]
+    Read[t => a:i32, b:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `rows=` frame that is unbounded on both sides round-trips.
+#[test]
+fn test_window_function_fully_unbounded_bounds_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(_, _)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `rows=` frame with a bounded (`PRECEDING`) lower bound and an unbounded
+/// upper bound round-trips, mirroring the lower-unbounded case above.
+#[test]
+fn test_window_function_unbounded_upper_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-3, _)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}

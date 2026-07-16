@@ -1,5 +1,3 @@
-use std::fmt;
-
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_function::AggregationInvocation;
 use substrait::proto::aggregate_rel::Measure;
@@ -504,22 +502,24 @@ fn parse_window_bound(
             kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
         })),
         Rule::integer => {
-            let out_of_range = |value: &dyn fmt::Display| {
+            let offset: i64 = inner.as_str().parse().map_err(|_| {
                 MessageParseError::invalid(
                     "window_bound",
                     inner.as_span(),
-                    format!("Window bound offset '{value}' is out of range"),
+                    format!("Window bound offset '{}' is out of range", inner.as_str()),
                 )
-            };
-            let offset: i64 = inner
-                .as_str()
-                .parse()
-                .map_err(|_| out_of_range(&inner.as_str()))?;
+            })?;
             let kind = match offset {
                 0 => bound::Kind::CurrentRow(bound::CurrentRow {}),
                 n if n > 0 => bound::Kind::Following(bound::Following { offset: n }),
                 n => {
-                    let offset = n.checked_neg().ok_or_else(|| out_of_range(&n))?;
+                    let offset = n.checked_neg().ok_or_else(|| {
+                        MessageParseError::invalid(
+                            "window_bound",
+                            inner.as_span(),
+                            format!("Window bound offset '{n}' is out of range"),
+                        )
+                    })?;
                     bound::Kind::Preceding(bound::Preceding { offset })
                 }
             };
@@ -1753,6 +1753,24 @@ mod tests {
             Some(window_function::Bound {
                 kind: Some(bound::Kind::Following(bound::Following { offset: 5 })),
             })
+        );
+    }
+
+    #[test]
+    fn test_window_function_bound_offset_too_many_digits_fails() {
+        // The grammar's `integer` rule permits arbitrarily many digits, so a
+        // literal wider than i64 range must be rejected by the `.parse()`
+        // call itself, not just by the separate i64::MIN-negation overflow
+        // path exercised elsewhere.
+        let exts = make_extensions_for_fn_tests();
+        let pair = parse_exact(
+            Rule::window_function_call,
+            "add:i64_i64($0, $1) over(rows=(-99999999999999999999, 0), phase=&InitialToResult):i64",
+        );
+        let result = WindowFunction::parse_pair(&exts, pair);
+        assert!(
+            result.is_err(),
+            "a bound literal wider than i64 range must be rejected"
         );
     }
 

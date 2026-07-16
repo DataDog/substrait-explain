@@ -19,7 +19,7 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::rels::{Arguments, NamedArg, Value, ValueEnum};
+use crate::textify::rels::{Arguments, NamedArg, Value, ValueEnum, enum_str_value};
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
@@ -546,10 +546,7 @@ fn window_enum_value<'a, T: TryFrom<i32> + ValueEnum>(
     field_name: &'static str,
 ) -> Value<'a> {
     match T::try_from(raw) {
-        Ok(v) => match v.as_enum_str() {
-            Ok(s) => Value::Enum(s),
-            Err(e) => Value::Missing(e),
-        },
+        Ok(v) => enum_str_value(v.as_enum_str()),
         Err(_) => Value::Missing(PlanError::invalid(
             "WindowFunction",
             Some(field_name),
@@ -572,14 +569,17 @@ fn window_bound_value<'a>(
     match bound.and_then(|b| b.kind.as_ref()) {
         None | Some(bound::Kind::Unbounded(_)) => Value::EmptyGroup,
         Some(bound::Kind::CurrentRow(_)) => Value::Integer(0),
-        Some(bound::Kind::Preceding(p)) => match p.offset.checked_neg() {
-            Some(offset) => Value::Integer(offset),
-            None => Value::Missing(PlanError::invalid(
-                "WindowFunction",
-                Some(field_name),
-                format!("Window bound offset {} cannot be negated", p.offset),
-            )),
-        },
+        Some(bound::Kind::Preceding(p)) if p.offset < 0 => Value::Missing(PlanError::invalid(
+            "WindowFunction",
+            Some(field_name),
+            format!("Preceding bound offset {} must not be negative", p.offset),
+        )),
+        Some(bound::Kind::Preceding(p)) => Value::Integer(-p.offset),
+        Some(bound::Kind::Following(f)) if f.offset < 0 => Value::Missing(PlanError::invalid(
+            "WindowFunction",
+            Some(field_name),
+            format!("Following bound offset {} must not be negative", f.offset),
+        )),
         Some(bound::Kind::Following(f)) => Value::Integer(f.offset),
     }
 }
@@ -1406,19 +1406,45 @@ mod tests {
     }
 
     #[test]
-    fn test_window_function_i64_min_preceding_bound_does_not_panic() {
-        // i64::MIN has no positive counterpart, so negating it as a
-        // "preceding" offset must surface an accumulated error instead of
-        // panicking (or silently wrapping) via unary negation.
+    fn test_window_function_negative_following_bound_surfaces_error() {
+        // A negative "following" offset would textify as a bare negative integer, which re-parses
+        // as a "preceding" bound of the opposite sign. Surface an accumulated
+        // error instead of silently flipping the bound's direction.
         let ctx = TestContext::new()
             .with_urn(1, "urn:example")
             .with_function(1, 10, "sum");
         let mut f = base_window_function();
         f.bounds_type = window_function::BoundsType::Rows as i32;
         f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Preceding(bound::Preceding {
-                offset: i64::MIN,
-            })),
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Following(bound::Following { offset: -5 })),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(
+            s,
+            "sum() over(phase=&InitialToResult, rows=(0, !{WindowFunction})):i16"
+        );
+        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
+    }
+
+    #[test]
+    fn test_window_function_negative_preceding_bound_surfaces_error() {
+        // A negative "preceding" offset would be negated into a bare positive integer, which
+        // re-parses as a "following" bound of the opposite sign. Surface an
+        // accumulated error instead of silently flipping the bound's
+        // direction. The guard is magnitude-agnostic (`offset < 0`), so this
+        // also covers i64::MIN: negation is never attempted on a negative
+        // offset, so there's no separate overflow-at-the-boundary path to
+        // test beyond this.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: -5 })),
         });
         f.upper_bound = Some(window_function::Bound {
             kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),

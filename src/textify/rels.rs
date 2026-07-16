@@ -1135,12 +1135,19 @@ impl<'a> From<&'a SortField> for Value<'a> {
     }
 }
 
+/// Converts an [`ValueEnum::as_enum_str`] result into a [`Value`]. Shared by
+/// the blanket `From<&T>` impl below and by callers that only have an owned
+/// enum value (and so can't borrow it for the lifetime `Value<'a>` requires).
+pub(crate) fn enum_str_value<'a>(result: Result<Cow<'static, str>, PlanError>) -> Value<'a> {
+    match result {
+        Ok(s) => Value::Enum(s),
+        Err(e) => Value::Missing(e),
+    }
+}
+
 impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
     fn from(enum_val: &'a T) -> Self {
-        match enum_val.as_enum_str() {
-            Ok(s) => Value::Enum(s),
-            Err(e) => Value::Missing(e),
-        }
+        enum_str_value(enum_val.as_enum_str())
     }
 }
 
