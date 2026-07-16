@@ -507,7 +507,7 @@ A window function computes a value over a "window" of rows related to the curren
 
 #### Syntax
 
-`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" window_named_arg ("," window_named_arg)* ")" ":" type`
+`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" (window_named_arg ("," window_named_arg)*)? ")" ":" type`
 
 `window_named_arg` is one of:
 
@@ -518,9 +518,7 @@ A window function computes a value over a "window" of rows related to the curren
 - `rows=(lower, upper)` / `range=(lower, upper)` - the window frame, each bound is an integer (negative = preceding,
   positive = following, `0` = current row) or `_` for unbounded
 
-`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all
-optional and are omitted when empty; `phase=` is always required and
-always printed. A `range=` frame requires exactly one `order=` field.
+`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed, though this is enforced when parsing rather than by the grammar itself (the named-arg list as a whole is syntactically optional). A `range=` frame requires exactly one `order=` field.
 
 #### Examples
 

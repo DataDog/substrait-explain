@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Debug;
 
 use prost::{Message, UnknownEnumValue};
+use substrait::proto::aggregate_function::AggregationInvocation;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
@@ -12,9 +13,10 @@ use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, CrossRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
-    ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel,
-    Rel, RelCommon, RelRoot, SetRel, SortField, SortRel, Type, join_rel, set_rel,
+    AggregateFunction, AggregateRel, AggregationPhase, CrossRel, Expression, ExtensionLeafRel,
+    ExtensionMultiRel, ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel,
+    ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SetRel, SortField, SortRel, Type, join_rel,
+    set_rel,
 };
 
 use super::addenda::AddendumLines;
@@ -1224,6 +1226,30 @@ impl ValueEnum for set_rel::SetOp {
             set_rel::SetOp::IntersectionMultisetAll => "IntersectionMultisetAll",
             set_rel::SetOp::UnionDistinct => "UnionDistinct",
             set_rel::SetOp::UnionAll => "UnionAll",
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl ValueEnum for AggregationPhase {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let s = match self {
+            AggregationPhase::Unspecified => "Unspecified",
+            AggregationPhase::InitialToIntermediate => "InitialToIntermediate",
+            AggregationPhase::IntermediateToIntermediate => "IntermediateToIntermediate",
+            AggregationPhase::InitialToResult => "InitialToResult",
+            AggregationPhase::IntermediateToResult => "IntermediateToResult",
+        };
+        Ok(Cow::Borrowed(s))
+    }
+}
+
+impl ValueEnum for AggregationInvocation {
+    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
+        let s = match self {
+            AggregationInvocation::Unspecified => "Unspecified",
+            AggregationInvocation::All => "All",
+            AggregationInvocation::Distinct => "Distinct",
         };
         Ok(Cow::Borrowed(s))
     }

@@ -1219,3 +1219,39 @@ Root[s]
 
     assert!(Parser::parse(plan).is_err());
 }
+
+/// A `range=` frame (with exactly one `order=` field), a positive bound
+/// offset (`FOLLOWING`), and a non-default `invocation=&All` all round-trip.
+#[test]
+fn test_window_function_range_following_and_invocation_all_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, order=($0,&AscNullsLast), invocation=&All, range=(_, 5)):fp64?]
+    Read[t => a:fp64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// `phase=` is a required named argument in `over(...)`; a window function
+/// call missing it fails to parse at the full-plan level.
+#[test]
+fn test_window_function_missing_phase_fails_at_plan_level() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[r]
+  Project[row_number() over(partition=($0)):i64]
+    Read[t => a:i32]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}

@@ -153,8 +153,12 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Required output type annotation after closing paren, e.g. :i64
 //   (unambiguous because function_signature is atomic and ends before the opening paren)
+function_call_prefix = _{
+    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list
+}
+
 function_call = {
-    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ ":" ~ sp ~ type
+    function_call_prefix ~ ":" ~ sp ~ type
 }
 
 if_clause = {
@@ -207,7 +211,7 @@ window_named_arg      = { window_partition_arg | window_order_arg | window_frame
 window_named_arg_list = { (window_named_arg ~ (sp ~ "," ~ sp ~ window_named_arg)*)? }
 
 window_function_call = {
-    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ window_named_arg_list ~ sp ~ ")" ~ ":" ~ sp ~ type
+    function_call_prefix ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ window_named_arg_list ~ sp ~ ")" ~ ":" ~ sp ~ type
 }
 
 // Top-level Expression Rule

@@ -11,7 +11,6 @@ use substrait::proto::expression::{
     reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
-use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
     AggregateFunction, AggregationPhase, Expression, FunctionArgument, FunctionOption, SortField,
     expression as expr,
@@ -19,6 +18,7 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
+use crate::textify::rels::ValueEnum;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
@@ -407,32 +407,45 @@ impl Textify for FieldReference {
     }
 }
 
+/// Write the `name(args, options)` prefix shared by `ScalarFunction`,
+/// `AggregateFunction`, and `WindowFunction` textification.
+fn textify_function_call_prefix<S: Scope, W: fmt::Write>(
+    function_reference: u32,
+    arguments: &[FunctionArgument],
+    options: &[FunctionOption],
+    ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    let name_and_anchor = NamedAnchor::lookup(ctx, ExtensionKind::Function, function_reference);
+    let name_and_anchor = ctx.display(&name_and_anchor);
+
+    let between = if arguments.is_empty() || options.is_empty() {
+        ""
+    } else {
+        ", "
+    };
+    let args = ctx.separated(arguments, ", ");
+    let options = ctx.separated(options, ", ");
+
+    write!(w, "{name_and_anchor}({args}{between}{options})")
+}
+
 impl Textify for ScalarFunction {
     fn name() -> &'static str {
         "ScalarFunction"
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let name_and_anchor =
-            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
-        let name_and_anchor = ctx.display(&name_and_anchor);
-
-        let args = ctx.separated(&self.arguments, ", ");
-        let options = ctx.separated(&self.options, ", ");
-        let between = if self.arguments.is_empty() || self.options.is_empty() {
-            ""
-        } else {
-            ", "
-        };
+        textify_function_call_prefix(
+            self.function_reference,
+            &self.arguments,
+            &self.options,
+            ctx,
+            w,
+        )?;
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
-
-        write!(
-            w,
-            "{name_and_anchor}({args}{between}{options}){output_type}"
-        )?;
-        Ok(())
+        write!(w, "{}", ctx.display(&output))
     }
 }
 
@@ -527,85 +540,50 @@ impl Textify for IfThen {
     }
 }
 
-/// Resolve a `SortField`'s direction to its enum variant name, for `order=`.
-fn sort_direction_str(sk: Option<&SortKind>) -> Result<&'static str, PlanError> {
-    match sk {
-        Some(SortKind::Direction(d)) => match SortDirection::try_from(*d) {
-            Ok(SortDirection::AscNullsFirst) => Ok("AscNullsFirst"),
-            Ok(SortDirection::AscNullsLast) => Ok("AscNullsLast"),
-            Ok(SortDirection::DescNullsFirst) => Ok("DescNullsFirst"),
-            Ok(SortDirection::DescNullsLast) => Ok("DescNullsLast"),
-            Ok(SortDirection::Clustered) => Ok("Clustered"),
-            Ok(SortDirection::Unspecified) => Err(PlanError::invalid(
-                "SortField",
-                Some("sort_kind"),
-                "Unspecified SortDirection",
-            )),
-            Err(_) => Err(PlanError::invalid(
-                "SortField",
-                Some("sort_kind"),
-                format!("Unknown SortDirection: {d}"),
-            )),
-        },
-        Some(SortKind::ComparisonFunctionReference(f)) => Err(PlanError::unimplemented(
-            "SortField",
-            Some("sort_kind"),
-            format!("ComparisonFunctionReference {f} textification not implemented"),
-        )),
+/// Write a single sort field as `($ref,&Direction)`, for use in `order=`.
+fn textify_sort_field<S: Scope, W: fmt::Write>(sf: &SortField, ctx: &S, w: &mut W) -> fmt::Result {
+    let expr = ctx.expect(sf.expr.as_ref());
+    write!(w, "({expr},")?;
+    let result = match sf.sort_kind.as_ref() {
+        Some(sk) => sk.as_enum_str(),
         None => Err(PlanError::invalid(
             "SortField",
             Some("sort_kind"),
             "Missing sort_kind",
         )),
-    }
-}
-
-/// Write a single sort field as `($ref,&Direction)`, for use in `order=`.
-fn textify_sort_field<S: Scope, W: fmt::Write>(sf: &SortField, ctx: &S, w: &mut W) -> fmt::Result {
-    let expr = ctx.expect(sf.expr.as_ref());
-    write!(w, "({expr},")?;
-    match sort_direction_str(sf.sort_kind.as_ref()) {
-        Ok(s) => textify_enum(s, ctx, w)?,
+    };
+    match result {
+        Ok(s) => textify_enum(&s, ctx, w)?,
         Err(e) => write!(w, "{}", ctx.failure(e))?,
     }
     write!(w, ")")
 }
 
-/// Resolve an `AggregationPhase` value to its enum variant name, for `phase=`.
-fn aggregation_phase_str(phase: i32) -> Result<&'static str, PlanError> {
-    match AggregationPhase::try_from(phase) {
-        Ok(AggregationPhase::Unspecified) => Ok("Unspecified"),
-        Ok(AggregationPhase::InitialToIntermediate) => Ok("InitialToIntermediate"),
-        Ok(AggregationPhase::IntermediateToIntermediate) => Ok("IntermediateToIntermediate"),
-        Ok(AggregationPhase::InitialToResult) => Ok("InitialToResult"),
-        Ok(AggregationPhase::IntermediateToResult) => Ok("IntermediateToResult"),
+/// Resolve a raw `i32` discriminant to `T`, then render its name via `ValueEnum`, for enum fields.
+fn textify_i32_enum<T, S, W>(raw: i32, type_name: &'static str, ctx: &S, w: &mut W) -> fmt::Result
+where
+    T: TryFrom<i32> + ValueEnum,
+    S: Scope,
+    W: fmt::Write,
+{
+    let result = match T::try_from(raw) {
+        Ok(v) => v.as_enum_str(),
         Err(_) => Err(PlanError::invalid(
             "WindowFunction",
-            Some("phase"),
-            format!("Unknown AggregationPhase: {phase}"),
+            Some(type_name),
+            format!("Unknown {type_name}: {raw}"),
         )),
-    }
-}
-
-/// Resolve an `AggregationInvocation` value to its enum variant name, for `invocation=`.
-fn aggregation_invocation_str(invocation: i32) -> Result<&'static str, PlanError> {
-    match AggregationInvocation::try_from(invocation) {
-        Ok(AggregationInvocation::Unspecified) => Ok("Unspecified"),
-        Ok(AggregationInvocation::All) => Ok("All"),
-        Ok(AggregationInvocation::Distinct) => Ok("Distinct"),
-        Err(_) => Err(PlanError::invalid(
-            "WindowFunction",
-            Some("invocation"),
-            format!("Unknown AggregationInvocation: {invocation}"),
-        )),
+    };
+    match result {
+        Ok(s) => textify_enum(&s, ctx, w),
+        Err(e) => write!(w, "{}", ctx.failure(e)),
     }
 }
 
 /// Write a window bound as an integer offset (negative preceding, positive
 /// following, `0` for the current row) or `_` for unbounded/unspecified.
-fn textify_window_bound<S: Scope, W: fmt::Write>(
+fn textify_window_bound<W: fmt::Write>(
     bound: Option<&window_function::Bound>,
-    _ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
     match bound.and_then(|b| b.kind.as_ref()) {
@@ -622,31 +600,24 @@ impl Textify for WindowFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Shared with ScalarFunction/AggregateFunction textification
-        let name_and_anchor =
-            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
-        let name_and_anchor = ctx.display(&name_and_anchor);
-
-        let args = ctx.separated(&self.arguments, ", ");
-        let options = ctx.separated(&self.options, ", ");
-        let between = if self.arguments.is_empty() || self.options.is_empty() {
-            ""
-        } else {
-            ", "
-        };
-
+        textify_function_call_prefix(
+            self.function_reference,
+            &self.arguments,
+            &self.options,
+            ctx,
+            w,
+        )?;
         let output = OutputType(self.output_type.as_ref());
         let output_type = ctx.display(&output);
 
-        write!(w, "{name_and_anchor}({args}{between}{options}) over(")?;
+        write!(w, " over(")?;
 
         let mut named_args: Vec<String> = Vec::new();
 
+        // phase= is always written, even when Unspecified: unlike invocation=,
+        // the parser requires a phase= argument to be present in over(...).
         let mut phase_str = String::new();
-        match aggregation_phase_str(self.phase) {
-            Ok(s) => textify_enum(s, ctx, &mut phase_str)?,
-            Err(e) => write!(phase_str, "{}", ctx.failure(e))?,
-        }
+        textify_i32_enum::<AggregationPhase, _, _>(self.phase, "phase", ctx, &mut phase_str)?;
         named_args.push(format!("phase={phase_str}"));
 
         // order= is omitted when there are no sort fields. A single sort field
@@ -671,10 +642,12 @@ impl Textify for WindowFunction {
 
         if self.invocation != AggregationInvocation::Unspecified as i32 {
             let mut invocation_str = String::new();
-            match aggregation_invocation_str(self.invocation) {
-                Ok(s) => textify_enum(s, ctx, &mut invocation_str)?,
-                Err(e) => write!(invocation_str, "{}", ctx.failure(e))?,
-            }
+            textify_i32_enum::<AggregationInvocation, _, _>(
+                self.invocation,
+                "invocation",
+                ctx,
+                &mut invocation_str,
+            )?;
             named_args.push(format!("invocation={invocation_str}"));
         }
 
@@ -688,7 +661,25 @@ impl Textify for WindowFunction {
         if !matches!(bounds_type, Ok(window_function::BoundsType::Unspecified)) || has_bounds {
             let keyword = match bounds_type {
                 Ok(window_function::BoundsType::Rows) => "rows",
-                Ok(window_function::BoundsType::Range) => "range",
+                Ok(window_function::BoundsType::Range) => {
+                    // The parser rejects range= frames unless there is
+                    // exactly one order= field; enforce the same invariant
+                    // here so textified output always re-parses.
+                    if self.sorts.len() != 1 {
+                        ctx.push_error(
+                            PlanError::invalid(
+                                "WindowFunction",
+                                Some("bounds_type"),
+                                format!(
+                                    "range frame requires exactly one order= field, found {}",
+                                    self.sorts.len()
+                                ),
+                            )
+                            .into(),
+                        );
+                    }
+                    "range"
+                }
                 Ok(window_function::BoundsType::Unspecified) => {
                     // bounds_type is required whenever a frame is present.
                     ctx.push_error(
@@ -714,9 +705,9 @@ impl Textify for WindowFunction {
                 }
             };
             let mut lower_str = String::new();
-            textify_window_bound(self.lower_bound.as_ref(), ctx, &mut lower_str)?;
+            textify_window_bound(self.lower_bound.as_ref(), &mut lower_str)?;
             let mut upper_str = String::new();
-            textify_window_bound(self.upper_bound.as_ref(), ctx, &mut upper_str)?;
+            textify_window_bound(self.upper_bound.as_ref(), &mut upper_str)?;
             named_args.push(format!("{keyword}=({lower_str}, {upper_str})"));
         }
 
@@ -840,26 +831,16 @@ impl Textify for AggregateFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Similar to ScalarFunction textification
-        let name_and_anchor =
-            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
-        let name_and_anchor = ctx.display(&name_and_anchor);
-
-        let args = ctx.separated(&self.arguments, ", ");
-        let options = ctx.separated(&self.options, ", ");
-        let between = if self.arguments.is_empty() || self.options.is_empty() {
-            ""
-        } else {
-            ", "
-        };
+        textify_function_call_prefix(
+            self.function_reference,
+            &self.arguments,
+            &self.options,
+            ctx,
+            w,
+        )?;
 
         let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
-
-        write!(
-            w,
-            "{name_and_anchor}({args}{between}{options}){output_type}"
-        )
+        write!(w, "{}", ctx.display(&output))
     }
 }
 
@@ -867,6 +848,7 @@ impl Textify for AggregateFunction {
 mod tests {
     use substrait::proto::Type;
     use substrait::proto::expression::{cast, if_then};
+    use substrait::proto::sort_field::{SortDirection, SortKind};
     use substrait::proto::r#type::{Boolean, I16, I32, I64, Kind, Nullability, UserDefined};
 
     use super::*;
