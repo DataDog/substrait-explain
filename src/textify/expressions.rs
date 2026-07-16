@@ -1,4 +1,5 @@
-use std::fmt::{self, Write as _};
+use std::borrow::Cow;
+use std::fmt;
 
 use chrono::{DateTime, NaiveDate};
 use expr::RexType;
@@ -18,7 +19,7 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::rels::ValueEnum;
+use crate::textify::rels::{Arguments, NamedArg, Value, ValueEnum};
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
@@ -540,57 +541,46 @@ impl Textify for IfThen {
     }
 }
 
-/// Write a single sort field as `($ref,&Direction)`, for use in `order=`.
-fn textify_sort_field<S: Scope, W: fmt::Write>(sf: &SortField, ctx: &S, w: &mut W) -> fmt::Result {
-    let expr = ctx.expect(sf.expr.as_ref());
-    write!(w, "({expr},")?;
-    let result = match sf.sort_kind.as_ref() {
-        Some(sk) => sk.as_enum_str(),
-        None => Err(PlanError::invalid(
-            "SortField",
-            Some("sort_kind"),
-            "Missing sort_kind",
-        )),
-    };
-    match result {
-        Ok(s) => textify_enum(&s, ctx, w)?,
-        Err(e) => write!(w, "{}", ctx.failure(e))?,
-    }
-    write!(w, ")")
-}
-
-/// Resolve a raw `i32` discriminant to `T`, then render its name via `ValueEnum`, for enum fields.
-fn textify_i32_enum<T, S, W>(raw: i32, type_name: &'static str, ctx: &S, w: &mut W) -> fmt::Result
-where
-    T: TryFrom<i32> + ValueEnum,
-    S: Scope,
-    W: fmt::Write,
-{
-    let result = match T::try_from(raw) {
-        Ok(v) => v.as_enum_str(),
-        Err(_) => Err(PlanError::invalid(
+fn window_enum_value<'a, T: TryFrom<i32> + ValueEnum>(
+    raw: i32,
+    field_name: &'static str,
+) -> Value<'a> {
+    match T::try_from(raw) {
+        Ok(v) => match v.as_enum_str() {
+            Ok(s) => Value::Enum(s),
+            Err(e) => Value::Missing(e),
+        },
+        Err(_) => Value::Missing(PlanError::invalid(
             "WindowFunction",
-            Some(type_name),
-            format!("Unknown {type_name}: {raw}"),
+            Some(field_name),
+            format!("Unknown {field_name}: {raw}"),
         )),
-    };
-    match result {
-        Ok(s) => textify_enum(&s, ctx, w),
-        Err(e) => write!(w, "{}", ctx.failure(e)),
     }
 }
 
-/// Write a window bound as an integer offset (negative preceding, positive
-/// following, `0` for the current row) or `_` for unbounded/unspecified.
-fn textify_window_bound<W: fmt::Write>(
+fn window_sort_order<'a>(sorts: &'a [SortField]) -> Value<'a> {
+    match sorts {
+        [single] => Value::from(single),
+        many => Value::Tuple(many.iter().map(Value::from).collect()),
+    }
+}
+
+fn window_bound_value<'a>(
     bound: Option<&window_function::Bound>,
-    w: &mut W,
-) -> fmt::Result {
+    field_name: &'static str,
+) -> Value<'a> {
     match bound.and_then(|b| b.kind.as_ref()) {
-        None | Some(bound::Kind::Unbounded(_)) => write!(w, "_"),
-        Some(bound::Kind::CurrentRow(_)) => write!(w, "0"),
-        Some(bound::Kind::Preceding(p)) => write!(w, "{}", -p.offset),
-        Some(bound::Kind::Following(f)) => write!(w, "{}", f.offset),
+        None | Some(bound::Kind::Unbounded(_)) => Value::EmptyGroup,
+        Some(bound::Kind::CurrentRow(_)) => Value::Integer(0),
+        Some(bound::Kind::Preceding(p)) => match p.offset.checked_neg() {
+            Some(offset) => Value::Integer(offset),
+            None => Value::Missing(PlanError::invalid(
+                "WindowFunction",
+                Some(field_name),
+                format!("Window bound offset {} cannot be negated", p.offset),
+            )),
+        },
+        Some(bound::Kind::Following(f)) => Value::Integer(f.offset),
     }
 }
 
@@ -610,50 +600,35 @@ impl Textify for WindowFunction {
         let output = OutputType(self.output_type.as_ref());
         let output_type = ctx.display(&output);
 
-        write!(w, " over(")?;
-
-        let mut named_args: Vec<String> = Vec::new();
+        let mut named_args: Vec<NamedArg> = Vec::new();
 
         // phase= is always written, even when Unspecified: unlike invocation=,
         // the parser requires a phase= argument to be present in over(...).
-        let mut phase_str = String::new();
-        textify_i32_enum::<AggregationPhase, _, _>(self.phase, "phase", ctx, &mut phase_str)?;
-        named_args.push(format!("phase={phase_str}"));
+        named_args.push(NamedArg {
+            name: Cow::Borrowed("phase"),
+            value: window_enum_value::<AggregationPhase>(self.phase, "phase"),
+        });
 
-        // order= is omitted when there are no sort fields. A single sort field
-        // is written bare; two or more are wrapped in a parenthesized list of
-        // tuples.
+        // order= is omitted when there are no sort fields.
         if !self.sorts.is_empty() {
-            let mut order_str = String::new();
-            if self.sorts.len() == 1 {
-                textify_sort_field(&self.sorts[0], ctx, &mut order_str)?;
-            } else {
-                write!(order_str, "(")?;
-                for (i, sf) in self.sorts.iter().enumerate() {
-                    if i > 0 {
-                        write!(order_str, ",")?;
-                    }
-                    textify_sort_field(sf, ctx, &mut order_str)?;
-                }
-                write!(order_str, ")")?;
-            }
-            named_args.push(format!("order={order_str}"));
+            named_args.push(NamedArg {
+                name: Cow::Borrowed("order"),
+                value: window_sort_order(&self.sorts),
+            });
         }
 
         if self.invocation != AggregationInvocation::Unspecified as i32 {
-            let mut invocation_str = String::new();
-            textify_i32_enum::<AggregationInvocation, _, _>(
-                self.invocation,
-                "invocation",
-                ctx,
-                &mut invocation_str,
-            )?;
-            named_args.push(format!("invocation={invocation_str}"));
+            named_args.push(NamedArg {
+                name: Cow::Borrowed("invocation"),
+                value: window_enum_value::<AggregationInvocation>(self.invocation, "invocation"),
+            });
         }
 
         if !self.partitions.is_empty() {
-            let parts = ctx.separated(&self.partitions, ", ");
-            named_args.push(format!("partition=({parts})"));
+            named_args.push(NamedArg {
+                name: Cow::Borrowed("partition"),
+                value: Value::Tuple(self.partitions.iter().map(Value::Expression).collect()),
+            });
         }
 
         let bounds_type = window_function::BoundsType::try_from(self.bounds_type);
@@ -704,14 +679,16 @@ impl Textify for WindowFunction {
                     "rows"
                 }
             };
-            let mut lower_str = String::new();
-            textify_window_bound(self.lower_bound.as_ref(), &mut lower_str)?;
-            let mut upper_str = String::new();
-            textify_window_bound(self.upper_bound.as_ref(), &mut upper_str)?;
-            named_args.push(format!("{keyword}=({lower_str}, {upper_str})"));
+            let lower = window_bound_value(self.lower_bound.as_ref(), "lower_bound");
+            let upper = window_bound_value(self.upper_bound.as_ref(), "upper_bound");
+            named_args.push(NamedArg {
+                name: Cow::Borrowed(keyword),
+                value: Value::Tuple(vec![lower, upper]),
+            });
         }
 
-        write!(w, "{}", named_args.join(", "))?;
+        write!(w, " over(")?;
+        Arguments::inline(vec![], named_args).textify(ctx, w)?;
         write!(w, "){output_type}")
     }
 }
@@ -1374,7 +1351,7 @@ mod tests {
         });
         assert_eq!(
             ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, order=($1,&AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):i16"
+            "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):i16"
         );
     }
 
@@ -1390,7 +1367,7 @@ mod tests {
         ];
         assert_eq!(
             ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, order=(($0,&AscNullsLast),($1,&DescNullsFirst))):i16"
+            "sum() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i16"
         );
     }
 
@@ -1426,5 +1403,115 @@ mod tests {
         let (s, errs) = ctx.textify(&f);
         assert_eq!(s, "sum() over(phase=&InitialToResult, rows=(0, _)):i16");
         assert!(!errs.is_empty(), "expected a diagnostic about bounds_type");
+    }
+
+    #[test]
+    fn test_window_function_i64_min_preceding_bound_does_not_panic() {
+        // i64::MIN has no positive counterpart, so negating it as a
+        // "preceding" offset must surface an accumulated error instead of
+        // panicking (or silently wrapping) via unary negation.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Preceding(bound::Preceding {
+                offset: i64::MIN,
+            })),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(
+            s,
+            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16"
+        );
+        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
+    }
+
+    #[test]
+    fn test_window_function_i64_max_preceding_bound_roundtrips() {
+        // i64::MAX *does* have a negatable counterpart (-i64::MAX, which is
+        // one more than i64::MIN), so this boundary value must still
+        // textify cleanly rather than being caught by the i64::MIN check.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Preceding(bound::Preceding {
+                offset: i64::MAX,
+            })),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        assert_eq!(
+            ctx.textify_no_errors(&f),
+            "sum() over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i16"
+        );
+    }
+
+    #[test]
+    fn test_window_function_range_wrong_sort_count() {
+        // range= requires exactly one order= field; zero (or more than one)
+        // is still rendered best-effort but surfaces a diagnostic.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Range as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(s, "sum() over(phase=&InitialToResult, range=(_, 0)):i16");
+        assert!(!errs.is_empty(), "expected a diagnostic about sort count");
+    }
+
+    #[test]
+    fn test_window_function_unknown_bounds_type() {
+        // bounds_type 99 matches no BoundsType variant
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = 99;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(s, "sum() over(phase=&InitialToResult, rows=(0, 0)):i16");
+        assert!(!errs.is_empty(), "expected a diagnostic about bounds_type");
+    }
+
+    #[test]
+    fn test_window_function_unknown_phase_and_invocation() {
+        // phase 99 and invocation 99 match no know n enum variant, so both
+        // render as the same generic `!{WindowFunction}` error token.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.phase = 99;
+        f.invocation = 99;
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(
+            s,
+            "sum() over(phase=!{WindowFunction}, invocation=!{WindowFunction}):i16"
+        );
+        assert!(
+            !errs.is_empty(),
+            "expected diagnostics about phase/invocation"
+        );
     }
 }

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_function::AggregationInvocation;
 use substrait::proto::aggregate_rel::Measure;
@@ -401,14 +403,14 @@ impl ScopedParsePair for Literal {
     }
 }
 
-/// The shared prefix of a scalar/window function call.
+/// The shared prefix of function calls.
 struct FunctionHead {
     name: CompoundName,
     anchor: Option<u32>,
     arguments: Vec<FunctionArgument>,
 }
 
-/// Parse the `CompoundName ~ anchor? ~ urn_anchor? ~ argument_list` prefix shared by `ScalarFunction` and `WindowFunction`.
+/// Parse the `CompoundName ~ anchor? ~ urn_anchor? ~ argument_list` prefix of functions.
 fn parse_function_head(
     extensions: &SimpleExtensions,
     iter: &mut RuleIter<'_>,
@@ -492,70 +494,40 @@ impl ScopedParsePair for ScalarFunction {
 /// `_` (empty) means unbounded, represented explicitly as `Some(Bound { kind:
 /// Some(Unbounded{}) })` rather than `None`. `0` maps to `CurrentRow`;
 /// negative/positive integers map to `Preceding`/`Following`.
-fn parse_window_bound(pair: pest::iterators::Pair<Rule>) -> Option<window_function::Bound> {
+fn parse_window_bound(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<Option<window_function::Bound>, MessageParseError> {
     assert_eq!(pair.as_rule(), Rule::window_bound);
     let inner = unwrap_single_pair(pair);
     match inner.as_rule() {
-        Rule::empty => Some(window_function::Bound {
+        Rule::empty => Ok(Some(window_function::Bound {
             kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
-        }),
+        })),
         Rule::integer => {
-            let offset: i64 = inner.as_str().parse().unwrap();
+            let out_of_range = |value: &dyn fmt::Display| {
+                MessageParseError::invalid(
+                    "window_bound",
+                    inner.as_span(),
+                    format!("Window bound offset '{value}' is out of range"),
+                )
+            };
+            let offset: i64 = inner
+                .as_str()
+                .parse()
+                .map_err(|_| out_of_range(&inner.as_str()))?;
             let kind = match offset {
                 0 => bound::Kind::CurrentRow(bound::CurrentRow {}),
                 n if n > 0 => bound::Kind::Following(bound::Following { offset: n }),
-                n => bound::Kind::Preceding(bound::Preceding { offset: -n }),
+                n => {
+                    let offset = n.checked_neg().ok_or_else(|| out_of_range(&n))?;
+                    bound::Kind::Preceding(bound::Preceding { offset })
+                }
             };
-            Some(window_function::Bound { kind: Some(kind) })
+            Ok(Some(window_function::Bound { kind: Some(kind) }))
         }
         other => unreachable!("Grammar guarantees window_bound is integer or empty, got {other:?}"),
     }
 }
-
-/// Parse an `enum_value` pair (`&Identifier`) into the `i32` discriminant of
-/// one of `variants` (name, discriminant pairs), for enums that are looked up by name.
-fn parse_enum_value_by_name(
-    pair: pest::iterators::Pair<Rule>,
-    type_name: &'static str,
-    variants: &[(&str, i32)],
-) -> Result<i32, MessageParseError> {
-    assert_eq!(pair.as_rule(), Rule::enum_value);
-    let name = pair.as_str().trim_start_matches('&');
-    variants
-        .iter()
-        .find(|(variant, _)| *variant == name)
-        .map(|(_, value)| *value)
-        .ok_or_else(|| {
-            MessageParseError::invalid(
-                type_name,
-                pair.as_span(),
-                format!("Unknown {type_name}: {name}"),
-            )
-        })
-}
-
-const AGGREGATION_PHASE_VARIANTS: &[(&str, i32)] = &[
-    ("Unspecified", AggregationPhase::Unspecified as i32),
-    (
-        "InitialToIntermediate",
-        AggregationPhase::InitialToIntermediate as i32,
-    ),
-    (
-        "IntermediateToIntermediate",
-        AggregationPhase::IntermediateToIntermediate as i32,
-    ),
-    ("InitialToResult", AggregationPhase::InitialToResult as i32),
-    (
-        "IntermediateToResult",
-        AggregationPhase::IntermediateToResult as i32,
-    ),
-];
-
-const AGGREGATION_INVOCATION_VARIANTS: &[(&str, i32)] = &[
-    ("Unspecified", AggregationInvocation::Unspecified as i32),
-    ("All", AggregationInvocation::All as i32),
-    ("Distinct", AggregationInvocation::Distinct as i32),
-];
 
 impl ScopedParsePair for WindowFunction {
     fn rule() -> Rule {
@@ -608,9 +580,9 @@ impl ScopedParsePair for WindowFunction {
                 }
                 Rule::window_order_arg => {
                     let mut order_iter = RuleIter::from(inner.into_inner());
-                    let order_value = order_iter.pop(Rule::order_value);
+                    let sort_order = order_iter.pop(Rule::window_sort_order);
                     order_iter.done();
-                    for sf in order_value.into_inner() {
+                    for sf in sort_order.into_inner() {
                         sorts.push(SortField::parse_pair(extensions, sf)?);
                     }
                 }
@@ -627,28 +599,46 @@ impl ScopedParsePair for WindowFunction {
                             "Grammar guarantees window_frame_kind is rows or range, got {other:?}"
                         ),
                     };
-                    lower_bound = parse_window_bound(lower);
-                    upper_bound = parse_window_bound(upper);
+                    lower_bound = parse_window_bound(lower)?;
+                    upper_bound = parse_window_bound(upper)?;
                 }
                 Rule::window_phase_arg => {
                     let mut phase_iter = RuleIter::from(inner.into_inner());
                     let enum_pair = phase_iter.pop(Rule::enum_value);
                     phase_iter.done();
-                    phase = Some(parse_enum_value_by_name(
-                        enum_pair,
-                        "AggregationPhase",
-                        AGGREGATION_PHASE_VARIANTS,
-                    )?);
+                    phase = Some(match enum_pair.as_str().trim_start_matches('&') {
+                        "Unspecified" => AggregationPhase::Unspecified as i32,
+                        "InitialToIntermediate" => AggregationPhase::InitialToIntermediate as i32,
+                        "IntermediateToIntermediate" => {
+                            AggregationPhase::IntermediateToIntermediate as i32
+                        }
+                        "InitialToResult" => AggregationPhase::InitialToResult as i32,
+                        "IntermediateToResult" => AggregationPhase::IntermediateToResult as i32,
+                        other => {
+                            return Err(MessageParseError::invalid(
+                                "AggregationPhase",
+                                enum_pair.as_span(),
+                                format!("Unknown AggregationPhase: {other}"),
+                            ));
+                        }
+                    });
                 }
                 Rule::window_invocation_arg => {
                     let mut inv_iter = RuleIter::from(inner.into_inner());
                     let enum_pair = inv_iter.pop(Rule::enum_value);
                     inv_iter.done();
-                    invocation = parse_enum_value_by_name(
-                        enum_pair,
-                        "AggregationInvocation",
-                        AGGREGATION_INVOCATION_VARIANTS,
-                    )?;
+                    invocation = match enum_pair.as_str().trim_start_matches('&') {
+                        "Unspecified" => AggregationInvocation::Unspecified as i32,
+                        "All" => AggregationInvocation::All as i32,
+                        "Distinct" => AggregationInvocation::Distinct as i32,
+                        other => {
+                            return Err(MessageParseError::invalid(
+                                "AggregationInvocation",
+                                enum_pair.as_span(),
+                                format!("Unknown AggregationInvocation: {other}"),
+                            ));
+                        }
+                    };
                 }
                 other => {
                     unreachable!("Grammar guarantees window_named_arg alternatives, got {other:?}")
@@ -1403,7 +1393,7 @@ mod tests {
         assert_eq!(pairs.as_str(), "equal:any_any");
     }
 
-    fn make_extensions() -> SimpleExtensions {
+    fn make_extensions_for_fn_tests() -> SimpleExtensions {
         let mut exts = SimpleExtensions::default();
         exts.add_extension_urn("urn".to_string(), 1).unwrap();
         exts.add_extension(
@@ -1433,7 +1423,7 @@ mod tests {
     #[test]
     fn test_scalar_function_full_compound_name() {
         // Full compound name without anchor
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "equal:any_any($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
@@ -1446,7 +1436,7 @@ mod tests {
 
     #[test]
     fn test_scalar_function_second_overload() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "equal:str_str($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
@@ -1457,7 +1447,7 @@ mod tests {
     #[test]
     fn test_scalar_function_base_name_unique_overload() {
         // "add" has only one overload; base-name lookup should succeed
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "add($0, $1):i64");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
 
@@ -1472,7 +1462,7 @@ mod tests {
     #[test]
     fn test_scalar_function_base_name_ambiguous_fails() {
         // "equal" has two overloads; base-name lookup should fail
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "equal($0, $1):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "ambiguous base name should fail");
@@ -1480,7 +1470,7 @@ mod tests {
 
     #[test]
     fn test_scalar_function_compound_name_with_anchor() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "equal:any_any#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
@@ -1490,7 +1480,7 @@ mod tests {
     #[test]
     fn test_scalar_function_base_name_with_anchor() {
         // Base name + explicit anchor should resolve (anchor 1 stores equal:any_any)
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "equal#1($0, $1):boolean");
         let f = ScalarFunction::parse_pair(&exts, pair).unwrap();
         assert_eq!(f.function_reference, 1);
@@ -1499,7 +1489,7 @@ mod tests {
 
     #[test]
     fn test_scalar_function_wrong_name_for_anchor_fails() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(Rule::function_call, "like#1($0):boolean");
         let result = ScalarFunction::parse_pair(&exts, pair);
         assert!(result.is_err(), "mismatched name/anchor should fail");
@@ -1698,7 +1688,7 @@ mod tests {
 
     #[test]
     fn test_window_function_full() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::window_function_call,
             "add:i64_i64($0, $1) over(partition=($0), order=($1,&AscNullsLast), invocation=&Distinct, rows=(-3, 0), phase=&InitialToResult):i64",
@@ -1727,7 +1717,7 @@ mod tests {
 
     #[test]
     fn test_window_function_unbounded() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::window_function_call,
             "add:i64_i64($0, $1) over(phase=&InitialToResult):i64",
@@ -1746,7 +1736,7 @@ mod tests {
 
     #[test]
     fn test_window_function_unbounded_lower_bound() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::window_function_call,
             "add:i64_i64($0, $1) over(rows=(_, 5), phase=&InitialToResult):i64",
@@ -1768,7 +1758,7 @@ mod tests {
 
     #[test]
     fn test_window_function_missing_phase_fails() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::window_function_call,
             "add:i64_i64($0, $1) over(partition=($0)):i64",
@@ -1779,7 +1769,7 @@ mod tests {
 
     #[test]
     fn test_window_function_range_with_multiple_order_fields_fails() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::window_function_call,
             "add:i64_i64($0, $1) over(order=(($0,&AscNullsLast),($1,&AscNullsLast)), range=(_, 0), phase=&InitialToResult):i64",
@@ -1793,7 +1783,7 @@ mod tests {
 
     #[test]
     fn test_window_function_call_in_expression() {
-        let exts = make_extensions();
+        let exts = make_extensions_for_fn_tests();
         let pair = parse_exact(
             Rule::expression,
             "add:i64_i64($0, $1) over(phase=&InitialToResult):i64",

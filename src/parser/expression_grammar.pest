@@ -199,8 +199,8 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 // - `phase=&...` - required aggregation phase
 // - `invocation=&...` - optional invocation (e.g. `&All`, `&Distinct`)
 window_partition_arg  = { "partition" ~ sp ~ "=" ~ sp ~ "(" ~ sp ~ expression_list? ~ sp ~ ")" }
-order_value            = { sort_field | ("(" ~ sp ~ sort_field ~ (sp ~ "," ~ sp ~ sort_field)+ ~ sp ~ ")") }
-window_order_arg       = { "order" ~ sp ~ "=" ~ sp ~ order_value }
+window_sort_order      = { sort_field | ("(" ~ sp ~ sort_field ~ (sp ~ "," ~ sp ~ sort_field)+ ~ sp ~ ")") }
+window_order_arg       = { "order" ~ sp ~ "=" ~ sp ~ window_sort_order }
 window_bound           = { integer | empty }
 window_frame_kind      = { "rows" | "range" }
 window_frame_arg       = { window_frame_kind ~ sp ~ "=" ~ sp ~ "(" ~ sp ~ window_bound ~ sp ~ "," ~ sp ~ window_bound ~ sp ~ ")" }

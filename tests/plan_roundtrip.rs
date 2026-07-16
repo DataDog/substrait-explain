@@ -1144,7 +1144,7 @@ Functions:
 
 === Plan
 Root[a, b, s]
-  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1,&AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
     Read[t => a:i32, b:fp64]"#;
 
     roundtrip_plan(plan);
@@ -1160,7 +1160,7 @@ Functions:
 
 === Plan
 Root[a, r]
-  Project[$0, row_number() over(phase=&InitialToResult, order=($0,&AscNullsLast), partition=($0)):i64]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=($0)):i64]
     Read[t => a:i32]"#;
 
     roundtrip_plan(plan);
@@ -1178,7 +1178,7 @@ Functions:
 
 === Plan
 Root[r]
-  Project[row_number() over(phase=&InitialToResult, order=($0,&AscNullsLast)):i64]
+  Project[row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast)):i64]
     Read[t => a:i32]"#;
 
     roundtrip_plan(plan);
@@ -1232,7 +1232,7 @@ Functions:
 
 === Plan
 Root[s]
-  Project[sum($0) over(phase=&InitialToResult, order=($0,&AscNullsLast), invocation=&All, range=(_, 5)):fp64?]
+  Project[sum($0) over(phase=&InitialToResult, order=($0, &AscNullsLast), invocation=&All, range=(_, 5)):fp64?]
     Read[t => a:fp64]"#;
 
     roundtrip_plan(plan);
@@ -1254,4 +1254,42 @@ Root[r]
     Read[t => a:i32]"#;
 
     assert!(Parser::parse(plan).is_err());
+}
+
+/// A `rows=` lower bound of `i64::MIN` can't be negated into a valid
+/// `Preceding.offset` (`i64`); this must fail to parse with an error rather
+/// than panicking or overflowing.
+#[test]
+fn test_window_function_min_i64_bound_fails_to_parse() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[r]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-9223372036854775808, 0)):i64?]
+    Read[t => a:i32]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}
+
+/// A `rows=` lower bound of `-i64::MAX` (one more than `i64::MIN`) *can* be
+/// negated into a valid `Preceding.offset`, so it must parse and round-trip
+/// successfully, unlike `i64::MIN` above.
+#[test]
+fn test_window_function_max_i64_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[r]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i64?]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
 }
