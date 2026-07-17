@@ -58,42 +58,53 @@ fn unimplemented_literal<S: Scope, W: fmt::Write>(
     )
 }
 
-/// Pushes a truncation warning of a precision-12 value to nanoseconds rather than silently dropping the lost precision.
-fn precision_truncation_warning<S: Scope>(ctx: &S, variant: &'static str, precision: i32) {
-    if precision == 12 {
-        ctx.push_error(
-            PlanError::invalid(
-                variant,
-                Some("value"),
-                "precision 12 (picoseconds) truncated to nanoseconds; sub-nanosecond precision lost",
-            )
-            .into(),
-        );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrecisionFormatError {
+    /// `precision` isn't one of the precisions literals support (0, 3, 6, 9, 12).
+    UnsupportedPrecision,
+    /// `value` can't be represented at `precision`: it overflows the
+    /// representable range (timestamps) or falls outside a single day (times).
+    OutOfRange,
+}
+
+impl PrecisionFormatError {
+    fn into_plan_error(self, variant: &'static str, precision: i32) -> PlanError {
+        let message = match self {
+            PrecisionFormatError::UnsupportedPrecision => {
+                format!("unsupported precision {precision} for {variant}")
+            }
+            PrecisionFormatError::OutOfRange => {
+                format!("value is out of range for {variant} at precision {precision}")
+            }
+        };
+        PlanError::invalid("LiteralType", Some(variant), message)
     }
+}
+
+/// Returns the diagnostic for truncating a picosecond value to nanoseconds.
+fn picosecond_truncation_warning(variant: &'static str) -> PlanError {
+    PlanError::invalid(
+        variant,
+        Some("value"),
+        "precision 12 (picoseconds) truncated to nanoseconds; sub-nanosecond precision lost",
+    )
 }
 
 fn write_precision_literal<S: Scope, W: fmt::Write>(
     variant: &'static str,
-    value: i64,
     precision: i32,
-    to_string: impl FnOnce(i64, i32) -> Option<String>,
+    formatted: Result<String, PrecisionFormatError>,
     ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
-    match to_string(value, precision) {
-        Some(s) => {
-            precision_truncation_warning(ctx, variant, precision);
+    match formatted {
+        Ok(s) => {
+            if precision == 12 {
+                ctx.push_error(picosecond_truncation_warning(variant).into());
+            }
             write!(w, "'{}'", escaped(&s))
         }
-        None => write!(
-            w,
-            "{}",
-            ctx.failure(PlanError::invalid(
-                "LiteralType",
-                Some(variant),
-                format!("unsupported precision {precision} for {variant}"),
-            ))
-        ),
+        Err(e) => write!(w, "{}", ctx.failure(e.into_plan_error(variant, precision))),
     }
 }
 
@@ -112,26 +123,34 @@ fn days_to_date_string(days: i32) -> String {
 
 /// Convert a value in `precision` units, to a `chrono::Duration`.
 /// Precision 12 (picoseconds) is truncated to nanoseconds: chrono can't represent sub-nanosecond resolution.
-fn duration_from_precision_units(value: i64, precision: i32) -> Option<chrono::Duration> {
+fn duration_from_precision_units(
+    value: i64,
+    precision: i32,
+) -> Result<chrono::Duration, PrecisionFormatError> {
     match precision {
-        0 => chrono::Duration::try_seconds(value),
-        3 => chrono::Duration::try_milliseconds(value),
-        6 => Some(chrono::Duration::microseconds(value)),
-        9 => Some(chrono::Duration::nanoseconds(value)),
-        12 => Some(chrono::Duration::nanoseconds(value / 1000)),
-        _ => None,
+        0 => chrono::Duration::try_seconds(value).ok_or(PrecisionFormatError::OutOfRange),
+        3 => chrono::Duration::try_milliseconds(value).ok_or(PrecisionFormatError::OutOfRange),
+        6 => Ok(chrono::Duration::microseconds(value)),
+        9 => Ok(chrono::Duration::nanoseconds(value)),
+        12 => Ok(chrono::Duration::nanoseconds(value / 1000)),
+        _ => Err(PrecisionFormatError::UnsupportedPrecision),
     }
 }
 
 /// Convert a value in precision units since the Unix epoch, to a timestamp string.
-/// Returns `None` if `value` is out of chrono's representable date range.
-fn precision_timestamp_to_string(value: i64, precision: i32) -> Option<String> {
+/// Errors if `value` is out of chrono's representable date range.
+fn precision_timestamp_to_string(
+    value: i64,
+    precision: i32,
+) -> Result<String, PrecisionFormatError> {
     let duration = duration_from_precision_units(value, precision)?;
     let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
-    let datetime = epoch.checked_add_signed(duration)?;
+    let datetime = epoch
+        .checked_add_signed(duration)
+        .ok_or(PrecisionFormatError::OutOfRange)?;
 
     let formatted = datetime.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
-    Some(if formatted.contains('.') {
+    Ok(if formatted.contains('.') {
         formatted
             .trim_end_matches('0')
             .trim_end_matches('.')
@@ -142,18 +161,26 @@ fn precision_timestamp_to_string(value: i64, precision: i32) -> Option<String> {
 }
 
 /// Convert a value in precision units since midnight, to a time-of-day string.
-/// Returns `None` if `value` falls outside a single day: `NaiveTime + Duration`
-/// wraps modulo 24 hours, which would otherwise silently misrepresent the value.
-fn precision_time_to_string(value: i64, precision: i32) -> Option<String> {
+/// Errors if `value` falls outside a single day: `NaiveTime + Duration` wraps
+/// modulo 24 hours, which would otherwise silently misrepresent the value.
+///
+/// The sign check is on `value` itself, not the `chrono::Duration` derived from
+/// it: at precision 12, `duration_from_precision_units` truncates towards zero,
+/// so a small negative `value` (e.g. `-1`) would otherwise round to a
+/// zero/non-negative duration and be wrongly accepted.
+fn precision_time_to_string(value: i64, precision: i32) -> Result<String, PrecisionFormatError> {
+    if value < 0 {
+        return Err(PrecisionFormatError::OutOfRange);
+    }
     let duration = duration_from_precision_units(value, precision)?;
-    if duration < chrono::Duration::zero() || duration >= chrono::Duration::days(1) {
-        return None;
+    if duration >= chrono::Duration::days(1) {
+        return Err(PrecisionFormatError::OutOfRange);
     }
     let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
     let time = midnight + duration;
 
     let formatted = time.format("%H:%M:%S%.f").to_string();
-    Some(if formatted.contains('.') {
+    Ok(if formatted.contains('.') {
         formatted
             .trim_end_matches('0')
             .trim_end_matches('.')
@@ -184,15 +211,18 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
             write!(w, "'{}'", escaped(&days_to_date_string(*days)))
         }
         #[allow(deprecated)]
-        LiteralType::Time(microseconds) => {
-            write_precision_literal("Time", *microseconds, 6, precision_time_to_string, ctx, w)
-        }
+        LiteralType::Time(microseconds) => write_precision_literal(
+            "Time",
+            6,
+            precision_time_to_string(*microseconds, 6),
+            ctx,
+            w,
+        ),
         #[allow(deprecated)]
         LiteralType::Timestamp(microseconds) => write_precision_literal(
             "Timestamp",
-            *microseconds,
             6,
-            precision_timestamp_to_string,
+            precision_timestamp_to_string(*microseconds, 6),
             ctx,
             w,
         ),
@@ -205,25 +235,22 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::Decimal(_) => unimplemented_literal("Decimal", ctx, w),
         LiteralType::PrecisionTime(p) => write_precision_literal(
             "PrecisionTime",
-            p.value,
             p.precision,
-            precision_time_to_string,
+            precision_time_to_string(p.value, p.precision),
             ctx,
             w,
         ),
         LiteralType::PrecisionTimestamp(p) => write_precision_literal(
             "PrecisionTimestamp",
-            p.value,
             p.precision,
-            precision_timestamp_to_string,
+            precision_timestamp_to_string(p.value, p.precision),
             ctx,
             w,
         ),
         LiteralType::PrecisionTimestampTz(p) => write_precision_literal(
             "PrecisionTimestampTz",
-            p.value,
             p.precision,
-            precision_timestamp_to_string,
+            precision_timestamp_to_string(p.value, p.precision),
             ctx,
             w,
         ),
@@ -841,36 +868,49 @@ mod tests {
     fn test_precision_timestamp_to_string() {
         assert_eq!(
             precision_timestamp_to_string(10, 0),
-            Some("1970-01-01T00:00:10".to_string())
+            Ok("1970-01-01T00:00:10".to_string())
         );
         assert_eq!(
             precision_timestamp_to_string(123_456_789, 9),
-            Some("1970-01-01T00:00:00.123456789".to_string())
+            Ok("1970-01-01T00:00:00.123456789".to_string())
         );
         // Precision 12 (picoseconds) is truncated to nanoseconds (best-effort):
         // the trailing 500 picoseconds below don't survive.
         assert_eq!(
             precision_timestamp_to_string(123_456_789_500, 12),
-            Some("1970-01-01T00:00:00.123456789".to_string())
+            Ok("1970-01-01T00:00:00.123456789".to_string())
         );
-        assert_eq!(precision_timestamp_to_string(0, 13), None);
+        assert_eq!(
+            precision_timestamp_to_string(0, 13),
+            Err(PrecisionFormatError::UnsupportedPrecision)
+        );
     }
 
     #[test]
     fn test_precision_time_to_string() {
-        assert_eq!(precision_time_to_string(0, 0), Some("00:00:00".to_string()));
+        assert_eq!(precision_time_to_string(0, 0), Ok("00:00:00".to_string()));
         assert_eq!(
             // 01:01:01 = 3661 seconds, in microseconds
             precision_time_to_string(3_661_000_000, 6),
-            Some("01:01:01".to_string())
+            Ok("01:01:01".to_string())
         );
         assert_eq!(
             // 01:01:01 = 3661 seconds, in picoseconds, plus 500 ps that get
             // truncated away.
             precision_time_to_string(3_661_000_000_000_500, 12),
-            Some("01:01:01".to_string())
+            Ok("01:01:01".to_string())
         );
-        assert_eq!(precision_time_to_string(0, 13), None);
+        assert_eq!(
+            precision_time_to_string(0, 13),
+            Err(PrecisionFormatError::UnsupportedPrecision)
+        );
+        // A negative value at precision 12 truncates towards zero when converted
+        // to a `chrono::Duration` (-1 / 1000 == 0), so the sign must be checked
+        // on the raw value, not the derived duration.
+        assert_eq!(
+            precision_time_to_string(-1, 12),
+            Err(PrecisionFormatError::OutOfRange)
+        );
     }
 
     #[test]
