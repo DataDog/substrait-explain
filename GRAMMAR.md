@@ -513,6 +513,7 @@ Where:
 - **`named_arguments`**: Named arguments (optional)
 - **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
 - **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
+- **`reference_list := reference ("," reference)*`**: comma-separated list of field references
 
 #### Example
 
@@ -582,12 +583,21 @@ Root[c, d]           // root with output columns c and d
 
 #### Syntax
 
-`"Read" "[" table_name "=>" (named_column ("," named_column)*)? "]"`
+```text
+read_relation := "Read" "[" table_name output "]"
+output := implicit_output / direct_output
+implicit_output := "=>" named_column_list
+direct_output := "+>" named_column_list ("|>" reference_list)?
+```
 
 #### Components
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
+- `named_column_list := (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`.
+  - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
+  - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
+  - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
 
 #### Example
 
@@ -606,6 +616,36 @@ Root[result2]
 #
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
+```
+Use `+>` when the read's base schema records the direct output domain:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[a, b]
+  Read[my_table +> a:i64, b:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+Use `+> ... |>` to specify an Emit / output ordering different from the table's base schema:
+only some fields should flow downstream:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[b, a]
+  Read[my_table +> a:i64, b:string, c:i64 |> $1, $0]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
 ```
 
 ### VirtualTable Read Relation
@@ -760,7 +800,7 @@ Root[id]
 #### Components
 
 - `expression` - boolean expression for filtering
-- `reference_list := reference ("," reference)*` - comma-separated list of field references to pass through
+- `reference_list` - field references to pass through
 
 #### Example
 
@@ -867,7 +907,7 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 - Each sort field is a tuple: `(reference, sort_direction)`
 - Sort directions follow the general `enum` syntax and specify null handling
-- The columns after `=>` specify the output field order (typically a reference list)
+- `reference_list` - comma-separated list of field references to pass through
 
 ### Join Relation
 
@@ -877,7 +917,7 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
 - `expression` - Join condition (boolean expression relating left and right inputs)
-- `reference_list` - Comma-separated list of field references for output columns
+- `reference_list` - comma-separated list of field references for output columns
 
 **Field Reference Mapping**:
 
