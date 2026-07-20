@@ -523,6 +523,7 @@ Where:
 - **`named_arguments`**: Named arguments (optional)
 - **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
 - **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
+- **`reference_list := reference ("," reference)*`**: comma-separated list of field references
 
 #### Example
 
@@ -809,7 +810,7 @@ Root[id]
 #### Components
 
 - `expression` - boolean expression for filtering
-- `reference_list := reference ("," reference)*` - comma-separated list of field references to pass through
+- `reference_list` - field references to pass through
 
 #### Example
 
