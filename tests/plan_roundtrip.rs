@@ -22,6 +22,24 @@ Root[c, d]
 }
 
 #[test]
+fn test_read_explicit_direct_roundtrip() {
+    let plan = r#"=== Plan
+Root[a, b]
+  Read[my.table +> a:i32, b:string?]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_read_explicit_emit_roundtrip() {
+    let plan = r#"=== Plan
+Root[c, a]
+  Read[my.table +> a:i32, b:string?, c:boolean |> $2, $0]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_plan_with_extensions_roundtrip() {
     let plan = r#"=== Extensions
 URNs:
