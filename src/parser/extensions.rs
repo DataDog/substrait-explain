@@ -322,6 +322,16 @@ impl ScopedParsePair for ExtensionValue {
                 let expr = Expression::parse_pair(extensions, inner)?;
                 ExtensionValue::from(expr)
             }
+            // `_` (empty) is syntactically a valid `extension_argument` (it is meaningful
+            // as an unbounded window frame bound), but has no meaning as an
+            // extension-relation argument. Reject it explicitly.
+            Rule::empty => {
+                return Err(MessageParseError::invalid(
+                    "ExtensionValue",
+                    inner.as_span(),
+                    "'_' is not a valid argument value here",
+                ));
+            }
             _ => panic!("Unexpected extension argument type: {:?}", inner.as_rule()),
         })
     }
@@ -618,6 +628,18 @@ mod tests {
 
     fn parse_extension_value(text: &str) -> ExtensionValue {
         ExtensionValue::parse(&SimpleExtensions::default(), text).unwrap()
+    }
+
+    #[test]
+    fn test_extension_value_empty_is_rejected() {
+        // `_` is a syntactically valid `extension_argument` (it is meaningful as an
+        // unbounded window frame bound), but has no meaning as an
+        // extension-relation argument.
+        let result = ExtensionValue::parse(&SimpleExtensions::default(), "_");
+        assert!(
+            result.is_err(),
+            "expected `_` to be rejected as an extension value, got {result:?}"
+        );
     }
 
     #[test]
