@@ -1399,271 +1399,239 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_window_function_no_bound() {
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "row_number");
-        let f = base_window_function();
-        assert_eq!(
-            ctx.textify_no_errors(&f),
-            "row_number() over(phase=&InitialToResult):i16"
-        );
+    /// How many accumulated diagnostics a textify case expects.
+    enum Diag {
+        /// Clean render, no errors.
+        None,
+        /// At least one diagnostic (best-effort output that won't re-parse).
+        Some,
+        /// Exactly this many diagnostics.
+        Exactly(usize),
     }
 
-    #[test]
-    fn test_window_function_full() {
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.partitions = vec![field_expr(0)];
-        f.sorts = vec![sort_field(1, SortDirection::AscNullsLast)];
-        f.invocation = AggregationInvocation::Distinct as i32;
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 3 })),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        assert_eq!(
-            ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):i16"
-        );
+    fn bound(kind: bound::Kind) -> window_function::Bound {
+        window_function::Bound { kind: Some(kind) }
     }
 
+    /// Window-function textify cases. Each builds a `WindowFunction` proto,
+    /// renders it, and checks the output string plus how many diagnostics were
+    /// accumulated. Grouped as a table since they share one shape; the label on
+    /// each case states the behavior it pins down. All use base output type
+    /// `:i16`; the function name selects the rendered prefix.
     #[test]
-    fn test_window_function_multiple_order_fields() {
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.sorts = vec![
-            sort_field(0, SortDirection::AscNullsLast),
-            sort_field(1, SortDirection::DescNullsFirst),
+    fn test_window_function_textify() {
+        let rows = window_function::BoundsType::Rows as i32;
+        let current_row = || bound::Kind::CurrentRow(bound::CurrentRow {});
+        let unbounded = || bound::Kind::Unbounded(bound::Unbounded {});
+
+        let cases: Vec<(&str, &str, WindowFunction, &str, Diag)> = vec![
+            (
+                "no frame: only the always-present phase= is emitted",
+                "row_number",
+                base_window_function(),
+                "row_number() over(phase=&InitialToResult):i16",
+                Diag::None,
+            ),
+            (
+                "full: bare partition, order, invocation, rows frame",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.partitions = vec![field_expr(0)];
+                    f.sorts = vec![sort_field(1, SortDirection::AscNullsLast)];
+                    f.invocation = AggregationInvocation::Distinct as i32;
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
+                        offset: 3,
+                    })));
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):i16",
+                Diag::None,
+            ),
+            (
+                "multiple order= fields render as a tuple of tuples",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.sorts = vec![
+                        sort_field(0, SortDirection::AscNullsLast),
+                        sort_field(1, SortDirection::DescNullsFirst),
+                    ];
+                    f
+                },
+                "sum() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i16",
+                Diag::None,
+            ),
+            (
+                "unbounded upper (None lower renders `_` too)",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = None;
+                    f.upper_bound = Some(bound(unbounded()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(_, _)):i16",
+                Diag::None,
+            ),
+            (
+                "i64::MAX preceding negates cleanly (boundary above i64::MIN)",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
+                        offset: i64::MAX,
+                    })));
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i16",
+                Diag::None,
+            ),
+            (
+                // bounds_type Unspecified but a frame is set: best-effort output,
+                // but the loss is surfaced rather than silently dropped.
+                "bounds_type Unspecified with bounds set is lossy",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.lower_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(0, _)):i16",
+                Diag::Some,
+            ),
+            (
+                // A negative FOLLOWING offset would re-parse as PRECEDING of the
+                // opposite sign; surface an error instead of flipping direction.
+                "negative following offset surfaces error",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(bound(current_row()));
+                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
+                        offset: -5,
+                    })));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(0, !{WindowFunction})):i16",
+                Diag::Some,
+            ),
+            (
+                // Symmetric to the following case; also covers i64::MIN since the
+                // guard is magnitude-agnostic (offset < 0, no negation attempted).
+                "negative preceding offset surfaces error",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
+                        offset: -5,
+                    })));
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16",
+                Diag::Some,
+            ),
+            (
+                // A present Bound with no kind is malformed (the parser never
+                // produces one); must not collapse into the `_` unbounded render.
+                "present bound with no kind surfaces error",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(window_function::Bound { kind: None });
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16",
+                Diag::Some,
+            ),
+            (
+                // A 0 offset on PRECEDING/FOLLOWING would re-parse as CurrentRow;
+                // surface a diagnostic for each rather than rendering bare `0`.
+                "zero offset on each bound surfaces two errors",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = rows;
+                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
+                        offset: 0,
+                    })));
+                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
+                        offset: 0,
+                    })));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16",
+                Diag::Exactly(2),
+            ),
+            (
+                // range= requires exactly one order= field; wrong count still
+                // renders best-effort but surfaces a diagnostic.
+                "range= with wrong order-field count surfaces error",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = window_function::BoundsType::Range as i32;
+                    f.lower_bound = Some(bound(unbounded()));
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, range=(_, 0)):i16",
+                Diag::Some,
+            ),
+            (
+                "unknown bounds_type falls back to rows= with a diagnostic",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.bounds_type = 99;
+                    f.lower_bound = Some(bound(current_row()));
+                    f.upper_bound = Some(bound(current_row()));
+                    f
+                },
+                "sum() over(phase=&InitialToResult, rows=(0, 0)):i16",
+                Diag::Some,
+            ),
+            (
+                // Unknown enum ints render as an error token tagged with the
+                // field's own enum type.
+                "unknown phase= / invocation= enum ints surface errors",
+                "sum",
+                {
+                    let mut f = base_window_function();
+                    f.phase = 99;
+                    f.invocation = 99;
+                    f
+                },
+                "sum() over(phase=!{AggregationPhase}, invocation=!{AggregationInvocation}):i16",
+                Diag::Some,
+            ),
         ];
-        assert_eq!(
-            ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i16"
-        );
-    }
 
-    #[test]
-    fn test_window_function_unbounded_bounds() {
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = None;
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
-        });
-        assert_eq!(
-            ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, rows=(_, _)):i16"
-        );
-    }
-
-    #[test]
-    fn test_window_function_unspecified_bounds_type_with_bounds_is_lossy() {
-        // bounds_type is Unspecified, but a frame is set anyway.
-        // The textifier still emits best-effort rows=/range= output but surfaces
-        // the loss as an accumulated error rather than silently dropping it.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(s, "sum() over(phase=&InitialToResult, rows=(0, _)):i16");
-        assert!(!errs.is_empty(), "expected a diagnostic about bounds_type");
-    }
-
-    #[test]
-    fn test_window_function_negative_following_bound_surfaces_error() {
-        // A negative "following" offset would textify as a bare negative integer, which re-parses
-        // as a "preceding" bound of the opposite sign. Surface an accumulated
-        // error instead of silently flipping the bound's direction.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Following(bound::Following { offset: -5 })),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(
-            s,
-            "sum() over(phase=&InitialToResult, rows=(0, !{WindowFunction})):i16"
-        );
-        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
-    }
-
-    #[test]
-    fn test_window_function_negative_preceding_bound_surfaces_error() {
-        // A negative "preceding" offset would be negated into a bare positive integer, which
-        // re-parses as a "following" bound of the opposite sign. Surface an
-        // accumulated error instead of silently flipping the bound's
-        // direction. The guard is magnitude-agnostic (`offset < 0`), so this
-        // also covers i64::MIN: negation is never attempted on a negative
-        // offset, so there's no separate overflow-at-the-boundary path to
-        // test beyond this.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: -5 })),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(
-            s,
-            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16"
-        );
-        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
-    }
-
-    #[test]
-    fn test_window_function_bound_with_no_kind_surfaces_error() {
-        // A Bound message that is present but has no `kind` set is
-        // malformed - the parser never produces one. Collapsing it into the
-        // same `EmptyGroup` rendering as a genuinely absent bound would
-        // silently hide that the input was invalid.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound { kind: None });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(
-            s,
-            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16"
-        );
-        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
-    }
-
-    #[test]
-    fn test_window_function_zero_offset_bound_surfaces_error() {
-        // A `Preceding`/`Following` offset of 0 is semantically equivalent
-        // to `CurrentRow`, but rendering it as a bare `0` would re-parse as
-        // `CurrentRow`, silently changing the bound's kind. Surface a
-        // diagnostic instead of rendering it.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 0 })),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Following(bound::Following { offset: 0 })),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(
-            s,
-            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16"
-        );
-        assert_eq!(errs.0.len(), 2, "expected a diagnostic for each bound");
-    }
-
-    #[test]
-    fn test_window_function_i64_max_preceding_bound_roundtrips() {
-        // i64::MAX *does* have a negatable counterpart (-i64::MAX, which is
-        // one more than i64::MIN), so this boundary value must still
-        // textify cleanly rather than being caught by the i64::MIN check.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Rows as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Preceding(bound::Preceding {
-                offset: i64::MAX,
-            })),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        assert_eq!(
-            ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i16"
-        );
-    }
-
-    #[test]
-    fn test_window_function_range_wrong_sort_count() {
-        // range= requires exactly one order= field; zero (or more than one)
-        // is still rendered best-effort but surfaces a diagnostic.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = window_function::BoundsType::Range as i32;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(s, "sum() over(phase=&InitialToResult, range=(_, 0)):i16");
-        assert!(!errs.is_empty(), "expected a diagnostic about sort count");
-    }
-
-    #[test]
-    fn test_window_function_unknown_bounds_type() {
-        // bounds_type 99 matches no BoundsType variant
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.bounds_type = 99;
-        f.lower_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        f.upper_bound = Some(window_function::Bound {
-            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-        });
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(s, "sum() over(phase=&InitialToResult, rows=(0, 0)):i16");
-        assert!(!errs.is_empty(), "expected a diagnostic about bounds_type");
-    }
-
-    #[test]
-    fn test_window_function_unknown_phase_and_invocation() {
-        // phase 99 and invocation 99 match no known enum variant, so each
-        // renders as an error token tagged with that field's own enum type.
-        let ctx = TestContext::new()
-            .with_urn(1, "urn:example")
-            .with_function(1, 10, "sum");
-        let mut f = base_window_function();
-        f.phase = 99;
-        f.invocation = 99;
-        let (s, errs) = ctx.textify(&f);
-        assert_eq!(
-            s,
-            "sum() over(phase=!{AggregationPhase}, invocation=!{AggregationInvocation}):i16"
-        );
-        assert!(
-            !errs.is_empty(),
-            "expected diagnostics about phase/invocation"
-        );
+        for (what, func, f, expected, diag) in cases {
+            let ctx = TestContext::new()
+                .with_urn(1, "urn:example")
+                .with_function(1, 10, func);
+            let (s, errs) = ctx.textify(&f);
+            assert_eq!(s, expected, "case: {what}");
+            match diag {
+                Diag::None => {
+                    assert!(errs.0.is_empty(), "case: {what}: expected no diagnostics")
+                }
+                Diag::Some => assert!(!errs.0.is_empty(), "case: {what}: expected a diagnostic"),
+                Diag::Exactly(n) => {
+                    assert_eq!(errs.0.len(), n, "case: {what}: diagnostic count")
+                }
+            }
+        }
     }
 }

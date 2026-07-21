@@ -1972,73 +1972,80 @@ mod tests {
     }
 
     #[test]
-    fn test_window_function_full() {
+    fn test_window_function_parses() {
+        // Positive parse cases: each input parses to a WindowFunction whose
+        // fields the check asserts. Bound *parsing* is also
+        // exercised end-to-end by the roundtrip suite; these assert the exact
+        // proto values that a text round-trip does not pin down.
+        // (label, input, assertion on the parsed WindowFunction)
+        type ParseCase = (&'static str, &'static str, fn(&WindowFunction));
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(partition=($0,), order=($1,&AscNullsLast), invocation=&Distinct, rows=(-3, 0), phase=&InitialToResult):i64",
-        );
-        let f = WindowFunction::parse_pair(&exts, pair).unwrap();
-        assert_eq!(f.function_reference, 3);
-        assert_eq!(f.arguments.len(), 2);
-        assert_eq!(f.partitions.len(), 1);
-        assert_eq!(f.sorts.len(), 1);
-        assert_eq!(f.invocation, AggregationInvocation::Distinct as i32);
-        assert_eq!(f.phase, AggregationPhase::InitialToResult as i32);
-        assert_eq!(f.bounds_type, window_function::BoundsType::Rows as i32);
-        assert_eq!(
-            f.lower_bound,
-            Some(window_function::Bound {
-                kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 3 })),
-            })
-        );
-        assert_eq!(
-            f.upper_bound,
-            Some(window_function::Bound {
-                kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
-            })
-        );
-    }
-
-    #[test]
-    fn test_window_function_unbounded() {
-        let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(phase=&InitialToResult):i64",
-        );
-        let f = WindowFunction::parse_pair(&exts, pair).unwrap();
-        assert_eq!(
-            f.bounds_type,
-            window_function::BoundsType::Unspecified as i32
-        );
-        assert_eq!(f.lower_bound, None);
-        assert_eq!(f.upper_bound, None);
-        assert_eq!(f.invocation, AggregationInvocation::Unspecified as i32);
-        assert!(f.partitions.is_empty());
-        assert!(f.sorts.is_empty());
-    }
-
-    #[test]
-    fn test_window_function_unbounded_lower_bound() {
-        let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(rows=(_, 5), phase=&InitialToResult):i64",
-        );
-        let f = WindowFunction::parse_pair(&exts, pair).unwrap();
-        assert_eq!(
-            f.lower_bound,
-            Some(window_function::Bound {
-                kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
-            })
-        );
-        assert_eq!(
-            f.upper_bound,
-            Some(window_function::Bound {
-                kind: Some(bound::Kind::Following(bound::Following { offset: 5 })),
-            })
-        );
+        let cases: &[ParseCase] = &[
+            (
+                "rich: all named args parse into the expected fields",
+                "add:i64_i64($0, $1) over(partition=($0,), order=($1,&AscNullsLast), invocation=&Distinct, rows=(-3, 0), phase=&InitialToResult):i64",
+                |f| {
+                    assert_eq!(f.function_reference, 3);
+                    assert_eq!(f.arguments.len(), 2);
+                    assert_eq!(f.partitions.len(), 1);
+                    assert_eq!(f.sorts.len(), 1);
+                    assert_eq!(f.invocation, AggregationInvocation::Distinct as i32);
+                    assert_eq!(f.phase, AggregationPhase::InitialToResult as i32);
+                    assert_eq!(f.bounds_type, window_function::BoundsType::Rows as i32);
+                    assert_eq!(
+                        f.lower_bound,
+                        Some(window_function::Bound {
+                            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 3 })),
+                        })
+                    );
+                    assert_eq!(
+                        f.upper_bound,
+                        Some(window_function::Bound {
+                            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+                        })
+                    );
+                },
+            ),
+            (
+                "minimal: omitted clauses parse as unspecified / empty defaults",
+                "add:i64_i64($0, $1) over(phase=&InitialToResult):i64",
+                |f| {
+                    assert_eq!(
+                        f.bounds_type,
+                        window_function::BoundsType::Unspecified as i32
+                    );
+                    assert_eq!(f.lower_bound, None);
+                    assert_eq!(f.upper_bound, None);
+                    assert_eq!(f.invocation, AggregationInvocation::Unspecified as i32);
+                    assert!(f.partitions.is_empty());
+                    assert!(f.sorts.is_empty());
+                },
+            ),
+            (
+                "bounds: `_` parses as Unbounded, positive offset as Following",
+                "add:i64_i64($0, $1) over(rows=(_, 5), phase=&InitialToResult):i64",
+                |f| {
+                    assert_eq!(
+                        f.lower_bound,
+                        Some(window_function::Bound {
+                            kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
+                        })
+                    );
+                    assert_eq!(
+                        f.upper_bound,
+                        Some(window_function::Bound {
+                            kind: Some(bound::Kind::Following(bound::Following { offset: 5 })),
+                        })
+                    );
+                },
+            ),
+        ];
+        for (what, input, check) in cases {
+            let pair = parse_exact(Rule::window_function_call, input);
+            let f = WindowFunction::parse_pair(&exts, pair)
+                .unwrap_or_else(|e| panic!("case {what:?}: expected a successful parse, got {e}"));
+            check(&f);
+        }
     }
 
     #[test]
