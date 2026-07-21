@@ -212,7 +212,11 @@ pub(crate) fn enum_str_value<'a>(result: Result<Cow<'static, str>, PlanError>) -
 /// (window `phase=`/`invocation=`, `SetRel`'s `op`), so the
 /// decode-or-diagnose shape lives in one place. `message` is the proto message
 /// tag used for the failure token, `field` the offending field name.
-pub(crate) fn decode_enum_field<'a, T>(raw: i32, message: &'static str, field: &'static str) -> Value<'a>
+pub(crate) fn decode_enum_field<'a, T>(
+    raw: i32,
+    message: &'static str,
+    field: &'static str,
+) -> Value<'a>
 where
     T: TryFrom<i32> + ValueEnum,
 {

@@ -582,8 +582,10 @@ fn sort_field_from_tuple(
             ),
         ));
     }
-    let direction =
-        sort_direction_from_str(dir_inner.as_str().trim_start_matches('&'), dir_inner.as_span())?;
+    let direction = sort_direction_from_str(
+        dir_inner.as_str().trim_start_matches('&'),
+        dir_inner.as_span(),
+    )?;
     Ok(SortField {
         expr: Some(expr),
         sort_kind: Some(SortKind::Direction(direction as i32)),
@@ -2097,7 +2099,10 @@ mod tests {
         for (input, reason) in cases {
             let pair = parse_exact(Rule::window_function_call, input);
             let result = WindowFunction::parse_pair(&exts, pair);
-            assert!(result.is_err(), "should be rejected: {reason} -- input: {input}");
+            assert!(
+                result.is_err(),
+                "should be rejected: {reason} -- input: {input}"
+            );
         }
     }
 

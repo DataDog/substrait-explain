@@ -638,7 +638,7 @@ mod tests {
     fn test_extension_value_empty_is_rejected() {
         // `_` is a syntactically valid `extension_argument` (it is meaningful as an
         // unbounded window frame bound), but has no meaning as an
-        // extension-relation argument. 
+        // extension-relation argument.
         let result = ExtensionValue::parse(&SimpleExtensions::default(), "_");
         assert!(
             result.is_err(),
