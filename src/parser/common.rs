@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use pest_derive::Parser as PestDeriveParser;
+use substrait::proto::sort_field::SortDirection;
 use thiserror::Error;
 
 use crate::extensions::SimpleExtensions;
@@ -312,6 +314,97 @@ impl Drop for RuleIter<'_> {
         }
         // If the iterator is not done, something probably went wrong.
         assert_eq!(self.iter.next(), None);
+    }
+}
+
+/// A collection of named arguments (`name=value` pairs) extracted from a
+/// named-argument-list rule, keyed by name with duplicate-name rejection.
+///
+/// Shared by every consumer of the generic `name=value` grammar — the `Fetch`
+/// relation's `limit=`/`offset=`, and window functions' `over(...)` arguments.
+/// It lives here in `common` (rather than in `relations` or `expressions`) so
+/// that neither of those modules has to depend on the other for it.
+///
+/// The fluent API ensures all arguments are processed exactly once and none are
+/// forgotten: [`pop`](Self::pop) consumes a known argument, and
+/// [`done`](Self::done) errors on any that remain unconsumed.
+pub(crate) struct ParsedNamedArgs<'a> {
+    map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
+}
+
+impl<'a> ParsedNamedArgs<'a> {
+    pub(crate) fn new(
+        pairs: pest::iterators::Pairs<'a, Rule>,
+        rule: Rule,
+    ) -> Result<Self, MessageParseError> {
+        let mut map = HashMap::new();
+        for pair in pairs {
+            assert_eq!(pair.as_rule(), rule);
+            let mut inner = pair.clone().into_inner();
+            let name_pair = inner.next().unwrap();
+            let value_pair = inner.next().unwrap();
+            assert_eq!(inner.next(), None);
+            let name = name_pair.as_str();
+            if map.contains_key(name) {
+                return Err(MessageParseError::invalid(
+                    "NamedArg",
+                    name_pair.as_span(),
+                    format!("Duplicate argument: {name}"),
+                ));
+            }
+            map.insert(name, value_pair);
+        }
+        Ok(Self { map })
+    }
+
+    // Returns the pair if it exists and matches the rule, otherwise None.
+    // Asserts that the rule must match the rule of the pair (and therefore
+    // panics in non-release-mode if not)
+    pub(crate) fn pop(
+        mut self,
+        name: &str,
+        rule: Rule,
+    ) -> (Self, Option<pest::iterators::Pair<'a, Rule>>) {
+        let pair = self.map.remove(name).inspect(|pair| {
+            assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
+        });
+        (self, pair)
+    }
+
+    // Returns an error if there are any unused arguments.
+    pub(crate) fn done(self) -> Result<(), MessageParseError> {
+        if let Some((name, pair)) = self.map.iter().next() {
+            return Err(MessageParseError::invalid(
+                "NamedArgExtractor",
+                // No span available for all unused args; use default.
+                pair.as_span(),
+                format!("Unknown argument: {name}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Map a sort-direction enum identifier (without the leading `&`) to a
+/// [`SortDirection`]. Shared by the `Sort` relation's `sort_field` parser and
+/// the window function's `order=` parser, which reach it from different grammar
+/// rules (`sort_direction` vs a generic `enum_value`) but accept the same set
+/// of variant names. Lives in `common` so neither `relations` nor
+/// `expressions` depends on the other for it.
+pub(crate) fn sort_direction_from_str(
+    name: &str,
+    span: pest::Span,
+) -> Result<SortDirection, MessageParseError> {
+    match name {
+        "AscNullsFirst" => Ok(SortDirection::AscNullsFirst),
+        "AscNullsLast" => Ok(SortDirection::AscNullsLast),
+        "DescNullsFirst" => Ok(SortDirection::DescNullsFirst),
+        "DescNullsLast" => Ok(SortDirection::DescNullsLast),
+        other => Err(MessageParseError::invalid(
+            "SortDirection",
+            span,
+            format!("Unknown sort direction: {other}"),
+        )),
     }
 }
 
