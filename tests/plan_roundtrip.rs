@@ -1294,6 +1294,25 @@ Root[r]
     roundtrip_plan(plan);
 }
 
+/// A multi-field `order=` (a tuple of sort-field tuples) round-trips,
+/// exercising the `is_list_of_fields` parse branch end-to-end rather than only
+/// via rejection/textify-only tests.
+#[test]
+fn test_window_function_multi_order_field_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, b, r]
+  Project[$0, $1, row_number() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i64]
+    Read[t => a:i32, b:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
 /// `partition=(...)` with more than one expression round-trips, preserving
 /// both order and count.
 #[test]

@@ -20,7 +20,7 @@ use substrait::proto::{
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
-use crate::textify::values::{Arguments, NamedArg, Value, ValueEnum, enum_str_value};
+use crate::textify::values::{Arguments, NamedArg, Value, decode_enum_field};
 
 // …(…) for function call
 // […] for variant
@@ -632,22 +632,11 @@ fn window_over_named_args<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Vec<N
 
     // phase= is always written, even when Unspecified: unlike invocation=,
     // the parser requires a phase= argument to be present in over(...).
-    //
-    // The window textifier owns decoding of its raw enum fields: it decodes
-    // the i32, reports a field-specific error (tagged with the enum's own
-    // message type) on an unknown value, and otherwise hands the decoded
-    // value to the shared owned enum->Value conversion.
-    let phase_value = match AggregationPhase::try_from(f.phase) {
-        Ok(phase) => enum_str_value(phase.as_enum_str()),
-        Err(_) => Value::Missing(PlanError::invalid(
-            "AggregationPhase",
-            Some("phase"),
-            format!("Unknown AggregationPhase: {}", f.phase),
-        )),
-    };
+    // `decode_enum_field` decodes the raw i32 and reports a field-specific
+    // error (tagged with the enum's own message type) on an unknown value.
     named_args.push(NamedArg {
         name: Cow::Borrowed("phase"),
-        value: phase_value,
+        value: decode_enum_field::<AggregationPhase>(f.phase, "AggregationPhase", "phase"),
     });
 
     // order= is omitted when there are no sort fields.
@@ -659,17 +648,13 @@ fn window_over_named_args<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Vec<N
     }
 
     if f.invocation != AggregationInvocation::Unspecified as i32 {
-        let invocation_value = match AggregationInvocation::try_from(f.invocation) {
-            Ok(invocation) => enum_str_value(invocation.as_enum_str()),
-            Err(_) => Value::Missing(PlanError::invalid(
-                "AggregationInvocation",
-                Some("invocation"),
-                format!("Unknown AggregationInvocation: {}", f.invocation),
-            )),
-        };
         named_args.push(NamedArg {
             name: Cow::Borrowed("invocation"),
-            value: invocation_value,
+            value: decode_enum_field::<AggregationInvocation>(
+                f.invocation,
+                "AggregationInvocation",
+                "invocation",
+            ),
         });
     }
 

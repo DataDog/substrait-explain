@@ -185,8 +185,8 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 
 // -- Window Function Calls --
 //
-// WindowFunction[Expression.WindowFunction]: a function_call followed
-// by a "over(...)" clause carrying window-specific named arguments.
+// WindowFunction[Expression.WindowFunction]: a function_reference and
+// argument_list followed by an "over(...)" clause carrying named arguments.
 // Example: sum($0) over(partition=($1,$2), order=($3,&AscNullsLast), rows=(-3, 0), phase=&InitialToResult, invocation=&Distinct):fp64
 //
 // - `partition=(...)` - optional list of partitioning expressions; a single
@@ -201,20 +201,8 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 //   for the current row) or `_` for unbounded/unspecified.
 // - `phase=&...` - required aggregation phase
 // - `invocation=&...` - optional invocation (e.g. `&All`, `&Distinct`)
-window_tuple = {
-    // empty tuple (0-tuple)
-    "(" ~ sp ~ ")"
-    // Single element (1-tuple) - uses trailing comma to distinguish from a bare value
-  | "(" ~ sp ~ window_value ~ sp ~ "," ~ sp ~ ")"
-    // Multi-element tuple. Trailing comma optional.
-  | "(" ~ sp ~ window_value ~ (sp ~ "," ~ sp ~ window_value)+ ~ (sp ~ ",")? ~ sp ~ ")"
-}
-window_value     = { enum_value | untyped_literal | reference | expression | window_tuple | empty }
-window_named_arg = { name ~ sp ~ "=" ~ sp ~ window_value }
-window_named_arg_list = { (window_named_arg ~ (sp ~ "," ~ sp ~ window_named_arg)*)? }
-
 window_function_call = {
-    function_reference ~ sp ~ argument_list ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ window_named_arg_list ~ sp ~ ")" ~ ":" ~ sp ~ type
+    function_reference ~ sp ~ argument_list ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ extension_named_arguments ~ sp ~ ")" ~ ":" ~ sp ~ type
 }
 
 // Top-level Expression Rule
@@ -421,7 +409,12 @@ tuple = {
               ~ (sp ~ "," ~ sp ~ extension_argument)+
               ~ (sp ~ ",")? ~ sp ~ ")"
         }
-extension_argument  = { enum_value | untyped_literal | reference | expression | tuple }
+// The generic argument-value grammar, shared by extension-relation arguments
+// and window-function `over(...)` arguments. `empty` ("_") is syntactically
+// valid everywhere; each consumer's Rust parser decides where it is
+// semantically meaningful (window frame bounds) versus an error (everywhere
+// else - see `ExtensionValue::parse_pair`).
+extension_argument  = { enum_value | untyped_literal | reference | expression | tuple | empty }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }

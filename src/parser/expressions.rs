@@ -10,7 +10,7 @@ use substrait::proto::expression::{
     WindowFunction, cast, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
-use substrait::proto::sort_field::{SortDirection, SortKind};
+use substrait::proto::sort_field::SortKind;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
 use substrait::proto::{
     AggregateFunction, AggregationPhase, Expression, FunctionArgument, SortField, Type,
@@ -18,12 +18,11 @@ use substrait::proto::{
 
 use super::types::get_and_validate_anchor;
 use super::{
-    MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unescape_string,
-    unwrap_single_pair,
+    MessageParseError, ParsePair, ParsedNamedArgs, Rule, RuleIter, ScopedParsePair,
+    sort_direction_from_str, unescape_string, unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{CompoundName, ExtensionKind};
-use crate::parser::relations::ParsedNamedArgs;
 
 /// A field index (e.g., parsed from "$0" -> 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,13 +401,7 @@ impl ScopedParsePair for Literal {
     }
 }
 
-/// An unresolved reference to a function: its compound name plus an optional
-/// explicit anchor, before it is looked up against the extension registry.
-///
-/// This mirrors the `function_reference` grammar rule and is the shared
-/// leading component of both scalar and window function calls. Resolution to a
-/// concrete function anchor is a separate step ([`FunctionReference::resolve`])
-/// so that parsing stays free of extension lookups.
+/// An unresolved reference to a function: its compound name plus an optional explicit anchor.
 struct FunctionReference {
     name: CompoundName,
     anchor: Option<u32>,
@@ -478,16 +471,7 @@ fn parse_argument_list(
         .collect()
 }
 
-/// The parsed-but-unresolved form of a scalar function call:
-/// `name#anchor(args):type`. The function reference is resolved against the
-/// extension registry only in [`ScalarFunctionInvocation::resolve`].
-struct ScalarFunctionInvocation {
-    reference: FunctionReference,
-    arguments: Vec<FunctionArgument>,
-    output_type: Type,
-}
-
-impl ScopedParsePair for ScalarFunctionInvocation {
+impl ScopedParsePair for ScalarFunction {
     fn rule() -> Rule {
         Rule::function_call
     }
@@ -501,6 +485,7 @@ impl ScopedParsePair for ScalarFunctionInvocation {
         pair: pest::iterators::Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
 
         // Drain the iterator into raw pairs before any fallible parsing, so an
@@ -516,52 +501,21 @@ impl ScopedParsePair for ScalarFunctionInvocation {
         // Required output type (e.g., :i64); the grammar guarantees its presence.
         let output_type = Type::parse_pair(extensions, type_pair)?;
 
-        Ok(ScalarFunctionInvocation {
-            reference,
-            arguments,
-            output_type,
-        })
-    }
-}
-
-impl ScalarFunctionInvocation {
-    /// Resolve the function reference and build the protobuf message.
-    fn resolve(
-        self,
-        extensions: &SimpleExtensions,
-        span: pest::Span,
-    ) -> Result<ScalarFunction, MessageParseError> {
-        let function_reference = self.reference.resolve(extensions, span)?;
+        // Resolve the function reference against the registry last, once the
+        // rest of the call has parsed cleanly.
+        let function_reference = reference.resolve(extensions, span)?;
         Ok(ScalarFunction {
             function_reference,
-            arguments: self.arguments,
+            arguments,
             options: vec![], // TODO: Function Options
-            output_type: Some(self.output_type),
+            output_type: Some(output_type),
             #[allow(deprecated)]
             args: vec![],
         })
     }
 }
 
-impl ScopedParsePair for ScalarFunction {
-    fn rule() -> Rule {
-        Rule::function_call
-    }
-
-    fn message() -> &'static str {
-        "ScalarFunction"
-    }
-
-    fn parse_pair(
-        extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
-    ) -> Result<Self, MessageParseError> {
-        let span = pair.as_span();
-        ScalarFunctionInvocation::parse_pair(extensions, pair)?.resolve(extensions, span)
-    }
-}
-
-/// Resolve a `window_value` pair to an `Expression`, accepting either a bare
+/// Resolve a `argument` pair to an `Expression`, accepting either a bare
 /// field reference (`$0`) or a general expression.
 fn window_expression_from_value(
     extensions: &SimpleExtensions,
@@ -583,15 +537,13 @@ fn window_expression_from_value(
     }
 }
 
-/// `partition=` accepts either one bare expression or a `window_tuple` of
-/// expressions - a list-valued field written as a single item or a tuple.
 fn parse_window_partition(
     extensions: &SimpleExtensions,
     pair: pest::iterators::Pair<Rule>,
 ) -> Result<Vec<Expression>, MessageParseError> {
     let inner = unwrap_single_pair(pair.clone());
     match inner.as_rule() {
-        Rule::window_tuple => inner
+        Rule::tuple => inner
             .into_inner()
             .map(|item| window_expression_from_value(extensions, item))
             .collect(),
@@ -599,13 +551,11 @@ fn parse_window_partition(
     }
 }
 
-/// Build one `SortField` from a `window_tuple` with exactly two elements: a
-/// field reference/expression and a sort-direction enum value.
-fn sort_field_from_window_tuple(
+fn sort_field_from_tuple(
     extensions: &SimpleExtensions,
     tuple: pest::iterators::Pair<Rule>,
 ) -> Result<SortField, MessageParseError> {
-    assert_eq!(tuple.as_rule(), Rule::window_tuple);
+    assert_eq!(tuple.as_rule(), Rule::tuple);
     let span = tuple.as_span();
     let items: Vec<_> = tuple.into_inner().collect();
     let [expr_pair, dir_pair] = <[_; 2]>::try_from(items).map_err(|items| {
@@ -632,34 +582,20 @@ fn sort_field_from_window_tuple(
             ),
         ));
     }
-    let direction = match dir_inner.as_str().trim_start_matches('&') {
-        "AscNullsFirst" => SortDirection::AscNullsFirst,
-        "AscNullsLast" => SortDirection::AscNullsLast,
-        "DescNullsFirst" => SortDirection::DescNullsFirst,
-        "DescNullsLast" => SortDirection::DescNullsLast,
-        other => {
-            return Err(MessageParseError::invalid(
-                "SortDirection",
-                dir_inner.as_span(),
-                format!("Unknown sort direction: {other}"),
-            ));
-        }
-    };
+    let direction =
+        sort_direction_from_str(dir_inner.as_str().trim_start_matches('&'), dir_inner.as_span())?;
     Ok(SortField {
         expr: Some(expr),
         sort_kind: Some(SortKind::Direction(direction as i32)),
     })
 }
 
-/// `order=` accepts one bare sort field (a `window_tuple` of `(reference,
-/// direction)`) or a `window_tuple` of such sort fields, per the same
-/// single-item-or-tuple convention as `partition=`.
 fn parse_window_order(
     extensions: &SimpleExtensions,
     pair: pest::iterators::Pair<Rule>,
 ) -> Result<Vec<SortField>, MessageParseError> {
     let inner = unwrap_single_pair(pair);
-    if inner.as_rule() != Rule::window_tuple {
+    if inner.as_rule() != Rule::tuple {
         return Err(MessageParseError::invalid(
             "WindowFunction",
             inner.as_span(),
@@ -673,22 +609,22 @@ fn parse_window_order(
     let items: Vec<_> = inner.clone().into_inner().collect();
     let is_list_of_fields = items
         .first()
-        .map(|first| unwrap_single_pair(first.clone()).as_rule() == Rule::window_tuple)
+        .map(|first| unwrap_single_pair(first.clone()).as_rule() == Rule::tuple)
         .unwrap_or(false);
 
     if is_list_of_fields {
         items
             .into_iter()
-            .map(|item| sort_field_from_window_tuple(extensions, unwrap_single_pair(item)))
+            .map(|item| sort_field_from_tuple(extensions, unwrap_single_pair(item)))
             .collect()
     } else {
-        Ok(vec![sort_field_from_window_tuple(extensions, inner)?])
+        Ok(vec![sort_field_from_tuple(extensions, inner)?])
     }
 }
 
 impl ScopedParsePair for window_function::Bound {
     fn rule() -> Rule {
-        Rule::window_value
+        Rule::extension_argument
     }
 
     fn message() -> &'static str {
@@ -751,13 +687,12 @@ impl ScopedParsePair for window_function::Bound {
     }
 }
 
-/// `rows=`/`range=` accept a `window_tuple` of exactly two bounds (lower, upper).
 fn parse_window_frame(
     extensions: &SimpleExtensions,
     pair: pest::iterators::Pair<Rule>,
 ) -> Result<(window_function::Bound, window_function::Bound), MessageParseError> {
     let inner = unwrap_single_pair(pair);
-    if inner.as_rule() != Rule::window_tuple {
+    if inner.as_rule() != Rule::tuple {
         return Err(MessageParseError::invalid(
             "WindowFunction",
             inner.as_span(),
@@ -784,8 +719,6 @@ fn parse_window_frame(
     Ok((lower, upper))
 }
 
-/// Resolve a `window_value` pair expected to hold an `enum_value` (e.g.
-/// `&InitialToResult`), returning the identifier with its `&` prefix stripped.
 fn window_enum_str(
     pair: pest::iterators::Pair<Rule>,
     field: &'static str,
@@ -818,7 +751,7 @@ struct OverClause {
 
 impl ScopedParsePair for OverClause {
     fn rule() -> Rule {
-        Rule::window_named_arg_list
+        Rule::extension_named_arguments
     }
 
     fn message() -> &'static str {
@@ -834,15 +767,15 @@ impl ScopedParsePair for OverClause {
 
         // `over(...)` reuses the same duplicate/unknown-argument-rejecting
         // extractor used for Fetch's `limit=`/`offset=` (see
-        // `ParsedNamedArgs` in `src/parser/relations.rs`), instead of
+        // `ParsedNamedArgs` in `src/parser/common.rs`), instead of
         // silently overwriting on duplicate names.
-        let extractor = ParsedNamedArgs::new(pair.into_inner(), Rule::window_named_arg)?;
-        let (extractor, partition_pair) = extractor.pop("partition", Rule::window_value);
-        let (extractor, order_pair) = extractor.pop("order", Rule::window_value);
-        let (extractor, phase_pair) = extractor.pop("phase", Rule::window_value);
-        let (extractor, invocation_pair) = extractor.pop("invocation", Rule::window_value);
-        let (extractor, rows_pair) = extractor.pop("rows", Rule::window_value);
-        let (extractor, range_pair) = extractor.pop("range", Rule::window_value);
+        let extractor = ParsedNamedArgs::new(pair.into_inner(), Rule::extension_named_argument)?;
+        let (extractor, partition_pair) = extractor.pop("partition", Rule::extension_argument);
+        let (extractor, order_pair) = extractor.pop("order", Rule::extension_argument);
+        let (extractor, phase_pair) = extractor.pop("phase", Rule::extension_argument);
+        let (extractor, invocation_pair) = extractor.pop("invocation", Rule::extension_argument);
+        let (extractor, rows_pair) = extractor.pop("rows", Rule::extension_argument);
+        let (extractor, range_pair) = extractor.pop("range", Rule::extension_argument);
         extractor.done()?;
 
         if rows_pair.is_some() && range_pair.is_some() {
@@ -972,7 +905,7 @@ impl ScopedParsePair for WindowFunctionInvocation {
         // pending.
         let reference_pair = iter.pop(Rule::function_reference);
         let args_pair = iter.pop(Rule::argument_list);
-        let over_pair = iter.pop(Rule::window_named_arg_list);
+        let over_pair = iter.pop(Rule::extension_named_arguments);
         let type_pair = iter.pop(Rule::r#type);
         iter.done();
 
@@ -2111,46 +2044,61 @@ mod tests {
     }
 
     #[test]
-    fn test_window_function_bound_offset_too_many_digits_fails() {
-        // The grammar's `integer` rule permits arbitrarily many digits, so a
-        // literal wider than i64 range must be rejected by the `.parse()`
-        // call itself, not just by the separate i64::MIN-negation overflow
-        // path exercised elsewhere.
+    fn test_window_function_invalid_over_clauses_rejected() {
+        // Each over(...) input below is syntactically parseable but violates a
+        // semantic rule enforced in Rust, so must be rejected rather than
+        // silently accepted. Grouped as a table since every case is the same
+        // shape (parse -> expect error); the reason labels the failing case.
         let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(rows=(-99999999999999999999, 0), phase=&InitialToResult):i64",
-        );
-        let result = WindowFunction::parse_pair(&exts, pair);
-        assert!(
-            result.is_err(),
-            "a bound literal wider than i64 range must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_window_function_missing_phase_fails() {
-        let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(partition=($0,)):i64",
-        );
-        let result = WindowFunction::parse_pair(&exts, pair);
-        assert!(result.is_err(), "missing phase= must be rejected");
-    }
-
-    #[test]
-    fn test_window_function_range_with_multiple_order_fields_fails() {
-        let exts = make_extensions_for_fn_tests();
-        let pair = parse_exact(
-            Rule::window_function_call,
-            "add:i64_i64($0, $1) over(order=(($0,&AscNullsLast),($1,&AscNullsLast)), range=(_, 0), phase=&InitialToResult):i64",
-        );
-        let result = WindowFunction::parse_pair(&exts, pair);
-        assert!(
-            result.is_err(),
-            "range= with more than one order= field must be rejected"
-        );
+        let cases = [
+            (
+                "add:i64_i64($0, $1) over(partition=($0,)):i64",
+                "missing required phase= argument",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, phase=&InitialToResult):i64",
+                "duplicate named argument (ParsedNamedArgs must not silently overwrite)",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, bogus=$0):i64",
+                "unknown named argument (extractor done() completeness check)",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=(0, 0), range=(0, 0)):i64",
+                "rows= and range= are mutually exclusive",
+            ),
+            (
+                "add:i64_i64($0, $1) over(order=(($0,&AscNullsLast),($1,&AscNullsLast)), range=(_, 0), phase=&InitialToResult):i64",
+                "range= frame requires exactly one order= field",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&Bogus):i64",
+                "unknown phase= enum value",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, invocation=&Bogus):i64",
+                "unknown invocation= enum value",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=($0, 0)):i64",
+                "non-integer window bound (a reference is not a valid bound)",
+            ),
+            (
+                "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=(0,)):i64",
+                "window frame with != 2 bounds",
+            ),
+            // A literal wider than i64 range is rejected by the `.parse()`
+            // itself, distinct from the i64::MIN-negation overflow path.
+            (
+                "add:i64_i64($0, $1) over(rows=(-99999999999999999999, 0), phase=&InitialToResult):i64",
+                "bound literal wider than i64 range",
+            ),
+        ];
+        for (input, reason) in cases {
+            let pair = parse_exact(Rule::window_function_call, input);
+            let result = WindowFunction::parse_pair(&exts, pair);
+            assert!(result.is_err(), "should be rejected: {reason} -- input: {input}");
+        }
     }
 
     #[test]

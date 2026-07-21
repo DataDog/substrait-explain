@@ -9,14 +9,17 @@ use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::{Direct, Emit, EmitKind};
-use substrait::proto::sort_field::{SortDirection, SortKind};
+use substrait::proto::sort_field::SortKind;
 use substrait::proto::{
     AggregateRel, CrossRel, Expression, FetchRel, FilterRel, JoinRel, NamedStruct, ProjectRel,
     ReadRel, Rel, RelCommon, SetRel, SortField, SortRel, Type, aggregate_rel, join_rel, read_rel,
     set_rel, r#type,
 };
 
-use super::{MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair, unwrap_single_pair};
+use super::{
+    MessageParseError, ParsePair, ParsedNamedArgs, Rule, RuleIter, ScopedParsePair,
+    sort_direction_from_str, unwrap_single_pair,
+};
 use crate::extensions::any::Any;
 use crate::extensions::registry::ExtensionError;
 use crate::extensions::{AddendumKind, ExtensionArgs, ExtensionRegistry, SimpleExtensions};
@@ -232,64 +235,6 @@ fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKi
     let output_count = output_mapping.len();
     let emit = make_emit(output_mapping, direct_output_count);
     (emit, output_count)
-}
-
-/// Extracts named arguments from pest pairs with duplicate detection and completeness checking.
-///
-/// Usage: `extractor.pop("limit", Rule::fetch_value).0.pop("offset", Rule::fetch_value).0.done()`
-///
-/// The fluent API ensures all arguments are processed exactly once and none are forgotten.
-pub struct ParsedNamedArgs<'a> {
-    map: HashMap<&'a str, Pair<'a, Rule>>,
-}
-
-impl<'a> ParsedNamedArgs<'a> {
-    pub fn new(
-        pairs: pest::iterators::Pairs<'a, Rule>,
-        rule: Rule,
-    ) -> Result<Self, MessageParseError> {
-        let mut map = HashMap::new();
-        for pair in pairs {
-            assert_eq!(pair.as_rule(), rule);
-            let mut inner = pair.clone().into_inner();
-            let name_pair = inner.next().unwrap();
-            let value_pair = inner.next().unwrap();
-            assert_eq!(inner.next(), None);
-            let name = name_pair.as_str();
-            if map.contains_key(name) {
-                return Err(MessageParseError::invalid(
-                    "NamedArg",
-                    name_pair.as_span(),
-                    format!("Duplicate argument: {name}"),
-                ));
-            }
-            map.insert(name, value_pair);
-        }
-        Ok(Self { map })
-    }
-
-    // Returns the pair if it exists and matches the rule, otherwise None.
-    // Asserts that the rule must match the rule of the pair (and therefore
-    // panics in non-release-mode if not)
-    pub fn pop(mut self, name: &str, rule: Rule) -> (Self, Option<Pair<'a, Rule>>) {
-        let pair = self.map.remove(name).inspect(|pair| {
-            assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
-        });
-        (self, pair)
-    }
-
-    // Returns an error if there are any unused arguments.
-    pub fn done(self) -> Result<(), MessageParseError> {
-        if let Some((name, pair)) = self.map.iter().next() {
-            return Err(MessageParseError::invalid(
-                "NamedArgExtractor",
-                // No span available for all unused args; use default.
-                pair.as_span(),
-                format!("Unknown argument: {name}"),
-            ));
-        }
-        Ok(())
-    }
 }
 
 impl RelationParsePair for ReadRel {
@@ -850,22 +795,10 @@ impl ScopedParsePair for SortField {
         let reference_pair = iter.pop(Rule::reference);
         let field_index = FieldIndex::parse_pair(reference_pair);
         let direction_pair = iter.pop(Rule::sort_direction);
-        // Strip the '&' prefix from enum syntax (e.g., "&AscNullsFirst" ->
-        // "AscNullsFirst") The grammar includes '&' to distinguish enums from
-        // identifiers, but the enum variant names don't include it
-        let direction = match direction_pair.as_str().trim_start_matches('&') {
-            "AscNullsFirst" => SortDirection::AscNullsFirst,
-            "AscNullsLast" => SortDirection::AscNullsLast,
-            "DescNullsFirst" => SortDirection::DescNullsFirst,
-            "DescNullsLast" => SortDirection::DescNullsLast,
-            other => {
-                return Err(MessageParseError::invalid(
-                    "SortDirection",
-                    direction_pair.as_span(),
-                    format!("Unknown sort direction: {other}"),
-                ));
-            }
-        };
+        let direction = sort_direction_from_str(
+            direction_pair.as_str().trim_start_matches('&'),
+            direction_pair.as_span(),
+        )?;
         iter.done();
         Ok(SortField {
             expr: Some(Expression {

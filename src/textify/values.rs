@@ -1,9 +1,5 @@
 //! Shared value-rendering primitives ([`Value`], [`NamedArg`], [`Arguments`])
 //! used by both relation and expression textification.
-//!
-//! This module has no dependency on [`super::rels`] or [`super::expressions`]
-//! beyond the tiny [`Reference`] display helper - relations and expressions
-//! both build on top of it, rather than one depending on the other.
 
 use std::borrow::Cow;
 use std::convert::TryFrom;
@@ -16,16 +12,12 @@ use substrait::proto::{
     AggregateFunction, AggregationPhase, Expression, SortField, join_rel, set_rel,
 };
 
-use super::expressions::Reference;
 use super::types::Name;
 use super::{PlanError, Scope, Textify};
 use crate::extensions::{ExtensionColumn, ExtensionValue};
 
 /// A trait for enum types that can be rendered as `&VariantName` in the text
 /// format.
-///
-/// Returns Ok(str) for valid enum values, or Err([PlanError]) for invalid or
-/// unknown values.
 pub trait ValueEnum {
     fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError>;
 }
@@ -86,7 +78,8 @@ impl<'a> Textify for Value<'a> {
                 write!(w, "{}:{}", ctx.expect(name.as_ref()), ctx.expect(*typ))
             }
             Value::Tuple(values) => write!(w, "({})", ctx.separated(values, ", ")),
-            Value::Reference(i) => write!(w, "{}", Reference(*i)),
+            // Field-reference syntax (`$N`); inlined rather than importing `expressions::Reference`.
+            Value::Reference(i) => write!(w, "${i}"),
             Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
             Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
             Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
@@ -208,6 +201,28 @@ pub(crate) fn enum_str_value<'a>(result: Result<Cow<'static, str>, PlanError>) -
     match result {
         Ok(s) => Value::Enum(s),
         Err(e) => Value::Missing(e),
+    }
+}
+
+/// Decode a raw protobuf enum field (`i32`) into its shared [`Value`]
+/// rendering: convert to the enum type and then to its `&Variant` string, or
+/// produce a field-specific diagnostic when the raw value matches no variant.
+///
+/// Shared by the callers that render an enum field straight from its `i32`
+/// (window `phase=`/`invocation=`, `SetRel`'s `op`), so the
+/// decode-or-diagnose shape lives in one place. `message` is the proto message
+/// tag used for the failure token, `field` the offending field name.
+pub(crate) fn decode_enum_field<'a, T>(raw: i32, message: &'static str, field: &'static str) -> Value<'a>
+where
+    T: TryFrom<i32> + ValueEnum,
+{
+    match T::try_from(raw) {
+        Ok(v) => enum_str_value(v.as_enum_str()),
+        Err(_) => Value::Missing(PlanError::invalid(
+            message,
+            Some(field),
+            format!("Unknown {message}: {raw}"),
+        )),
     }
 }
 

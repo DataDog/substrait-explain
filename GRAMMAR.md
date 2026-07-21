@@ -507,7 +507,7 @@ A window function computes a value over a "window" of rows related to the curren
 
 #### Syntax
 
-`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" window_named_arguments? ")" ":" type`
+`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" named_arguments ")" ":" type`
 
 Rather than a bespoke grammar production per named argument, `over(...)` reuses the same
 generic [`named_arguments`](#arguments) production used elsewhere (`name "=" argument`,
@@ -526,7 +526,7 @@ and what shape each value must have:
   each bound is an integer (negative = preceding, positive = following, `0` = current row) or
   `_` for unbounded
 
-`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed, though this (along with the mutual exclusion of `rows=`/`range=`, and the requirement that a `range=` frame have exactly one `order=` field) is enforced when parsing rather than by the grammar itself (the named-arg list as a whole is syntactically optional).
+`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed. The grammar itself only requires that at least one named argument be present; the specific rules — that `phase=` must appear, that `rows=`/`range=` are mutually exclusive, and that a `range=` frame have exactly one `order=` field — are all enforced by the parser rather than by the grammar.
 
 #### Examples
 
@@ -616,13 +616,17 @@ Arguments in relations can be literals, expressions, enums, or tuples thereof.
 #### Syntax
 
 ```text
-argument := enum / reference / literal / expression / tuple
+argument := enum / reference / literal / expression / tuple / "_"
 tuple := "(" ")"                                        // 0-tuple
        / "(" argument "," ")"                           // 1-tuple (trailing comma required)
        / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
 ```
+
+`_` is accepted syntactically as an argument (it denotes an unbounded window frame
+bound in `over(...)`), but is only meaningful there; consumers that don't support it —
+extension-relation arguments, for example — reject it during parsing.
 
 Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to

@@ -16,7 +16,7 @@ use substrait::proto::{
 
 use super::addenda::AddendumLines;
 use super::types::Name;
-use super::values::{ArgsLayout, Arguments, NamedArg, Value, ValueEnum};
+use super::values::{ArgsLayout, Arguments, NamedArg, Value, ValueEnum, decode_enum_field};
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
@@ -68,8 +68,6 @@ impl Textify for Rel {
     }
 }
 
-/// Trait for enums that can be converted to a string representation for
-/// textification.
 fn schema_to_values<'a>(schema: &'a NamedStruct) -> Vec<Value<'a>> {
     let mut fields = schema
         .r#struct
@@ -910,17 +908,7 @@ impl<'a> Relation<'a> {
             total_columns / children.len()
         };
 
-        let op_value = match set_rel::SetOp::try_from(rel.op) {
-            Ok(op) => match op.as_enum_str() {
-                Ok(s) => Value::Enum(s),
-                Err(e) => Value::Missing(e),
-            },
-            Err(_) => Value::Missing(PlanError::invalid(
-                "SetRel",
-                Some("op"),
-                format!("Unknown set op: {}", rel.op),
-            )),
-        };
+        let op_value = decode_enum_field::<set_rel::SetOp>(rel.op, "SetRel", "op");
 
         let arguments = Some(Arguments::inline(vec![op_value], vec![]));
         let emit = get_emit(rel.common.as_ref());
