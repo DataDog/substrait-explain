@@ -522,7 +522,7 @@ An IfThen expression is a conditional function or logical operator that evaluate
 # let plan_text = r#"
 === Plan
 Root[status]
-  Fetch[limit=10, offset=0 => ]
+  Fetch[limit=10, offset=0 => $0]
     Project[if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]
 #  "#;
@@ -552,8 +552,8 @@ Where:
 - **`arguments`**: Input expressions, field references, function calls, or other parameters (optional)
 - **`named_arguments`**: Named arguments (optional)
 - **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
-- **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
-- **`reference_list := reference ("," reference)*`**: comma-separated list of field references
+- **`columns`**: Output column names and types, or field references for pass-through; relation-specific syntax determines whether an output clause is present
+- **`reference_list := reference ("," reference)* / "_"`**: comma-separated field references, or `_` for an explicitly empty list
 
 #### Example
 
@@ -568,6 +568,85 @@ RelationName[arguments, named_arguments => columns]
 - Some relations may use '...' instead of column names when they pass through all fields
 
 The exact structure varies by relation type, but all follow this basic pattern.
+
+#### Output clauses
+
+This text format follows the [Substrait relation
+model](https://substrait.io/relations/logical_relations/). Each relation has a
+**direct output** in its **direct output order**. The relation returns that
+output directly (`Direct`), or uses an **emit** (`Emit`) to select and order
+fields from it.
+
+The relation-specific syntax defines its base direct output. Pass-through
+relations use this shared output grammar:
+
+```text
+reference_output := implicit_reference_output / explicit_emit
+implicit_reference_output := "=>" reference_list
+explicit_emit := "|>" reference_list
+```
+
+The output clauses describe the remaining parts of the relation model:
+
+- `+> additions` declares fields appended to the base direct output. Together,
+  the base fields and additions form the relation's complete direct output. Use
+  `_` when the additions list is empty.
+- `|> mapping` declares an `Emit`. Its field references are positions in the
+  complete direct output, and its listed fields form the relation's final
+  output. Use `_` when the mapping is empty.
+- `=> output` declares the relation's final output in compact form. For the
+  pass-through relations using `implicit_reference_output`, field references in
+  this form use the relation's input order. Other relations define their output
+  scope in their relation-specific syntax. When this output is the direct output
+  in its existing order, it represents `Direct`; otherwise it represents
+  `Emit`. Use `_` when the output is empty.
+- With no output clause, the relation returns its direct output as `Direct`.
+
+A pass-through relation such as `Filter`, `Fetch`, or `Sort` has its input
+fields as its complete direct output, so it uses `=>` for compact final output
+or `|>` for an explicit mapping. When a `Read` relation is written explicitly,
+its base direct output is empty and its schema follows `+>`; `|>` may then
+select or reorder that schema. A direct Read schema is written compactly after
+`=>`.
+
+#### Field-reference scopes
+
+Substrait declares, for each relation, an **input order** and a **direct output
+order**. Field references are ordinal over one of those orders, and this text
+format follows the definitions in the [Substrait
+specification](https://substrait.io/relations/logical_relations/).
+
+- The input order is the order of the incoming streams. For a relation with one
+  input it is that input's emitted output; for `Join` and `Cross` it is the left
+  input followed by the right input; for `Set` it is the shared field order of
+  the inputs, which Substrait requires to have identical field types.
+- The direct output order is the order the relation itself produces. `Filter`,
+  `Sort`, and `Fetch` produce their input order; `Project` produces the input
+  fields followed by its expressions in declaration order; `Aggregate` produces
+  the grouping expressions followed by the measures.
+- The input order of `Read` is relative to its direct schema; its "input" is what
+  it is reading from. Its references are over the direct schema, written as the
+  read's `named_column_list`, which Substrait interprets before any projection
+  is applied.
+
+`$N` refers to field N of the relation's input order, which is the scope of a
+relation's expressions: a `Filter` condition, `Project` expressions, `Aggregate`
+grouping expressions and measures, `Sort` fields, and a `Join` condition. Where
+Substrait declares a property over the direct output order instead, this
+document states that scope with the property.
+
+For `Filter`, `Sort`, `Fetch`, `Set`, and `Cross`, which use the shared
+`reference_output` grammar, output clauses use these orders as follows:
+
+- Compact output after `=>` lists the values the relation returns, over the
+  input order. The parser derives the direct output and an `Emit` mapping that
+  produce those values, and reports an error for a value the relation's direct
+  output cannot produce.
+- Explicit output after `|>` lists positions in the direct output order. It is
+  always an `Emit` mapping.
+
+Other relations define their output syntax and reference scope in their own
+sections.
 
 ### Arguments
 
@@ -634,10 +713,11 @@ direct_output := "+>" named_column_list ("|>" reference_list)?
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
-- `named_column_list := (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`.
+- `named_column_list := "_" / (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`. `_` denotes an empty schema.
   - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
   - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
   - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
+  - The parser also accepts a blank `+>` list for compatibility; formatting writes `_`.
 
 #### Example
 
@@ -657,6 +737,7 @@ Root[result2]
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
 ```
+
 Use `+>` when the read's base schema records the direct output domain:
 
 ```rust
@@ -868,12 +949,12 @@ Root[id]
 
 #### Syntax
 
-`"Filter" "[" expression "=>" reference_list "]"`
+`filter_relation := "Filter" "[" expression reference_output? "]"`
 
 #### Components
 
 - `expression` - boolean expression for filtering
-- `reference_list` - field references to pass through
+- `reference_output` - optional compact output or explicit emit mapping over the input fields; when omitted, Filter returns its direct output as `Direct`
 
 #### Example
 
@@ -970,8 +1051,8 @@ Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
 #### Syntax
 
 ```text
-sort_relation := "Sort" "[" sort_fields "=>" reference_list "]"
-sort_fields := sort_field ("," sort_field)*
+sort_relation := "Sort" "[" sort_fields reference_output? "]"
+sort_fields := sort_field ("," sort_field)* / "_"
 sort_field := "(" reference "," sort_direction ")"
 sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&DescNullsLast"
 ```
@@ -980,7 +1061,29 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 - Each sort field is a tuple: `(reference, sort_direction)`
 - Sort directions follow the general `enum` syntax and specify null handling
-- `reference_list` - comma-separated list of field references to pass through
+- `_` explicitly marks an empty sort-field list
+- `reference_output` optionally selects or reorders the input fields; when omitted, Sort returns its direct output as `Direct`
+
+### Fetch Relation
+
+A Fetch relation limits or offsets rows without changing its direct output.
+
+#### Syntax
+
+```text
+fetch_relation := "Fetch" "[" fetch_args reference_output? "]"
+fetch_args := fetch_arg ("," fetch_arg)* / "_"
+fetch_arg := ("limit" / "offset") "=" expression
+```
+
+#### Components
+
+- `limit` - maximum number of rows to return
+- `offset` - number of rows to skip
+- `_` explicitly marks an empty argument list
+- `reference_output` optionally selects or reorders the input fields; when omitted, Fetch returns its direct output as `Direct`
+
+A negative integer literal is rejected for `limit` or `offset`.
 
 ### Join Relation
 
@@ -1034,15 +1137,15 @@ Root[user_orders]
 
 ### Set Relation
 
-#### Syntax 
+#### Syntax
 
-`"Set" "[" set_op "=>" reference_list "]"`
+`set_relation := "Set" "[" set_op reference_output? "]"`
 
 #### Components
 
 - `set_op` - Set operation enum with `&` prefix, using Substrait's protobuf `SetOp`
   variant names directly
-- `reference_list` - Comma-separated list of field references for output columns
+- `reference_output` - optional compact output or explicit emit mapping over the common input schema; when omitted, Set returns that schema as `Direct`
 
 A `Set` relation combines two or more inputs (written as indented children,
 like any other multi-input relation), which must all share the same output
@@ -1071,16 +1174,17 @@ Root[id, name]
 
 #### Syntax
 
-`"Cross" "[" reference_list "]"`
+`cross_relation := "Cross" "[" "_" reference_output? "]"`
 
 #### Components
 
-- `reference_list` - Comma-separated list of field references for output columns
+- `_` - required empty parameter list
+- `reference_output` - optional compact output or explicit emit mapping over the concatenated left and right inputs; when omitted, Cross returns its direct output as `Direct`
 
 A `Cross` relation is the Cartesian product of its two inputs (written as
-indented children). It takes no arguments, so the bracket body is just the
-output columns. The output concatenates the left and right inputs, so field
-references map to the combined schema:
+indented children). Its parameter list is empty, so it is written as `_`.
+The output concatenates the left and right inputs, so field references map to
+the combined schema:
 
 - `$0`, `$1`, ... refer to left input fields
 - `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
@@ -1093,7 +1197,7 @@ references map to the combined schema:
 # let plan_text = r#"
 === Plan
 Root[id, name, order_id, amount]
-  Cross[$0, $1, $2, $3]
+  Cross[_]
     Read[users => id:i64, name:string]
     Read[orders => order_id:i64, amount:i32]
 # "#;

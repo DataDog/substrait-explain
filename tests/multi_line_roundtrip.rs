@@ -111,7 +111,7 @@ Functions:
 
 === Plan
 Root[name]
-  Filter[gt($0, 1):boolean => $0, $1]
+  Filter[gt($0, 1):boolean]
     Read:Virtual[(1, 'alice'), (2, 'bob') => id:i64, name:string]"#;
 
     let multiline = r#"
@@ -123,7 +123,7 @@ Functions:
 
 === Plan
 Root[name]
-  Filter[gt($0, 1):boolean => $0, $1]
+  Filter[gt($0, 1):boolean]
     Read:Virtual[
       - (1, 'alice'),
       - (2, 'bob')

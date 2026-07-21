@@ -149,7 +149,7 @@ fn test_if_then_expression_roundtrip() {
     let plan = r#"
 === Plan
 Root[statusq]
-  Fetch[limit=10, offset=0 => ]
+  Fetch[limit=10, offset=0 => _]
     Project[if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]
 "#;

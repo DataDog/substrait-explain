@@ -14,7 +14,7 @@ use substrait_explain::{ParseError, Parser};
 fn test_simple_plan_roundtrip() {
     let plan = r#"=== Plan
 Root[c, d]
-  Filter[$0 => $0, $1]
+  Filter[$0]
     Project[$1, 42]
       Read[my.table => a:i32, b:string?, c:boolean]"#;
 
@@ -28,6 +28,18 @@ Root[a, b]
   Read[my.table +> a:i32, b:string?]"#;
 
     roundtrip_plan(plan);
+}
+
+#[test]
+fn test_read_explicit_empty_additions_roundtrip() {
+    let canonical = r#"=== Plan
+Root[]
+  Read[my.table +> _]"#;
+    let legacy = r#"=== Plan
+Root[]
+  Read[my.table +> ]"#;
+
+    assert_roundtrip_canonical(canonical, legacy);
 }
 
 #[test]
@@ -110,7 +122,7 @@ Root[name, num, id]
     Read[t1 => name:string?, num:fp64, id:i64]
 
 Root[name, num, id]
-  Filter[$0 => $0, $1, $2]
+  Filter[$0]
     Read[schema.table => name:string?, num:fp64?, id:i64]"#;
 
     roundtrip_plan(plan);
@@ -188,10 +200,20 @@ Root[sum, count]
 }
 
 #[test]
+fn test_sort_empty_parameter_list() {
+    let plan = r#"=== Plan
+Root[]
+  Sort[_]
+    Read[table => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_sort_relation_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
-  Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
+  Sort[($0, &AscNullsFirst), ($1, &DescNullsLast)]
     Read[table => a:i32, b:string]"#;
     roundtrip_plan(plan);
 }
@@ -200,31 +222,31 @@ Root[a, b]
 fn test_fetch_relation_roundtrip() {
     let plan_both = r#"=== Plan
 Root[a, b]
-  Fetch[limit=10, offset=5 => $0, $1]
+  Fetch[limit=10, offset=5]
     Read[table => a:i32, b:string]"#;
 
     let plan_offset_first = r#"=== Plan
 Root[a, b]
-  Fetch[offset=5, limit=10 => $0, $1]
+  Fetch[offset=5, limit=10]
     Read[table => a:i32, b:string]"#;
 
     assert_roundtrip_canonical(plan_both, plan_offset_first);
 
     let plan_limit_only = r#"=== Plan
 Root[a, b]
-  Fetch[limit=10 => $0, $1]
+  Fetch[limit=10]
     Read[table => a:i32, b:string]"#;
     roundtrip_plan(plan_limit_only);
 
     let plan_offset_only = r#"=== Plan
 Root[a, b]
-  Fetch[offset=5 => $0, $1]
+  Fetch[offset=5]
     Read[table => a:i32, b:string]"#;
     roundtrip_plan(plan_offset_only);
 
     let plan_empty = r#"=== Plan
 Root[a, b]
-  Fetch[_ => $0, $1]
+  Fetch[_]
     Read[table => a:i32, b:string]"#;
     roundtrip_plan(plan_empty);
 }
@@ -505,7 +527,7 @@ Root[d, mark]
 fn test_set_relation_union_all_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
-  Set[&UnionAll => $0, $1]
+  Set[&UnionAll]
     Read[table1 => a:i64, b:string]
     Read[table2 => c:i64, d:string]"#;
 
@@ -516,7 +538,7 @@ Root[a, b]
 fn test_set_relation_union_distinct_multi_input_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
-  Set[&UnionDistinct => $0, $1]
+  Set[&UnionDistinct]
     Read[table1 => a:i64, b:string]
     Read[table2 => c:i64, d:string]
     Read[table3 => e:i64, f:string]"#;
@@ -528,7 +550,7 @@ Root[a, b]
 fn test_set_relation_minus_primary_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b]
-  Set[&MinusPrimary => $0, $1]
+  Set[&MinusPrimary]
     Read[table1 => a:i64, b:string]
     Read[table2 => c:i64, d:string]"#;
 
@@ -579,10 +601,21 @@ Root[a, b]
 }
 
 #[test]
+fn test_empty_cross_parameters_roundtrip() {
+    let plan = r#"=== Plan
+Root[]
+  Cross[_]
+    Read[left => left:i32]
+    Read[right => right:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_cross_relation_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b, c, d]
-  Cross[$0, $1, $2, $3]
+  Cross[_]
     Read[table1 => a:i64, b:string]
     Read[table2 => c:i64, d:string]"#;
 
@@ -594,7 +627,7 @@ Root[a, b, c, d]
 fn test_cross_relation_uneven_widths_roundtrip() {
     let plan = r#"=== Plan
 Root[a, b, c]
-  Cross[$0, $1, $2]
+  Cross[_]
     Read[table1 => a:i64]
     Read[table2 => c:i64, d:string]"#;
 
@@ -605,7 +638,7 @@ Root[a, b, c]
 fn test_cross_relation_non_identity_emit_roundtrip() {
     let plan = r#"=== Plan
 Root[a, c]
-  Cross[$0, $2]
+  Cross[_ => $0, $2]
     Read[table1 => a:i64, b:string]
     Read[table2 => c:i64, d:string]"#;
 
@@ -616,7 +649,7 @@ Root[a, c]
 fn test_cross_relation_requires_two_children() {
     let one_child = r#"=== Plan
 Root[a, b]
-  Cross[$0, $1]
+  Cross[_]
     Read[table1 => a:i64, b:string]"#;
 
     let err = Parser::parse(one_child).expect_err("CrossRel with one child should fail");
@@ -921,7 +954,7 @@ Functions:
 
 === Plan
 Root[name]
-  Filter[gt($0, 1):boolean => $0, $1]
+  Filter[gt($0, 1):boolean]
     Read:Virtual[
       - (1, 'alice'),
       - (2, 'bob'),
@@ -1017,7 +1050,7 @@ Functions:
 === Plan
 Root[sum]
   Project[add($0, $1):i64]
-    Sort[($0, &AscNullsFirst) => $0, $1]
+    Sort[($0, &AscNullsFirst)]
       Read[t => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
@@ -1036,7 +1069,7 @@ Functions:
 === Plan
 Root[sum]
   Project[add($0, $1):i64]
-    Fetch[limit=10, offset=0 => $0, $1]
+    Fetch[limit=10, offset=0]
       Read[t => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);

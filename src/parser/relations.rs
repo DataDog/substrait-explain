@@ -4,7 +4,7 @@ use pest::iterators::Pair;
 use prost::Message;
 use substrait::proto::aggregate_rel::Grouping;
 use substrait::proto::expression::literal::LiteralType;
-use substrait::proto::expression::{Literal, RexType, nested};
+use substrait::proto::expression::{RexType, nested};
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::rel::RelType;
@@ -171,7 +171,10 @@ impl ScopedParsePair for NamedColumnList {
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut columns = Vec::new();
-        for col in pair.into_inner() {
+        for col in pair
+            .into_inner()
+            .filter(|pair| pair.as_rule() == Rule::named_column)
+        {
             columns.push(Column::parse_pair(extensions, col)?);
         }
         Ok(Self(columns))
@@ -202,78 +205,184 @@ pub(crate) fn expect_one_child(
     }
 }
 
-/// Parse a reference list Pair and return an EmitKind::Emit.
-/// Parse a reference list into field indices for emit mapping.
-fn parse_output_mapping(pair: Pair<Rule>) -> Vec<i32> {
-    assert_eq!(pair.as_rule(), Rule::reference_list);
-    pair.into_inner()
-        .map(|p| FieldIndex::parse_pair(p).0)
-        .collect()
-}
+/// A list of field indices addressing a relation's direct output, as written
+/// in a `=>` or `|>` output clause.
+#[derive(Debug)]
+struct OutputMapping(Vec<i32>);
 
-/// Build an emit: `Direct` if the mapping is the identity `[0, 1, ..., N-1]`
-/// (where N = `direct_output_count`), otherwise `Emit` with the explicit mapping.
-fn make_emit(output_mapping: Vec<i32>, direct_output_count: usize) -> EmitKind {
-    let is_identity = output_mapping.len() == direct_output_count
-        && output_mapping
-            .iter()
-            .enumerate()
-            .all(|(i, &v)| v == i as i32);
-    if is_identity {
-        EmitKind::Direct(Direct {})
-    } else {
-        EmitKind::Emit(Emit { output_mapping })
+impl ParsePair for OutputMapping {
+    fn rule() -> Rule {
+        Rule::reference_list
+    }
+
+    fn message() -> &'static str {
+        "OutputMapping"
+    }
+
+    fn parse_pair(pair: Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        Self(
+            pair.into_inner()
+                .filter(|pair| pair.as_rule() == Rule::reference)
+                .map(|pair| FieldIndex::parse_pair(pair).0)
+                .collect(),
+        )
     }
 }
 
-/// Parse a reference list into an emit and output field count.
-fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKind, usize) {
-    let output_mapping = parse_output_mapping(reference_list);
-    let output_count = output_mapping.len();
-    let emit = make_emit(output_mapping, direct_output_count);
-    (emit, output_count)
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Field reference ${field} is out of bounds for direct output with {direct_output_count} fields"
+)]
+struct OutputReferenceOutOfBounds {
+    field: i32,
+    direct_output_count: usize,
 }
 
-fn parse_output(
+impl OutputReferenceOutOfBounds {
+    fn into_parse_error(self, message: &'static str, span: pest::Span<'_>) -> MessageParseError {
+        MessageParseError::invalid(message, span, self)
+    }
+}
+
+impl OutputMapping {
+    fn validate(&self, direct_output_count: usize) -> Result<(), OutputReferenceOutOfBounds> {
+        if let Some(&field) = self
+            .0
+            .iter()
+            .find(|&&field| field < 0 || field as usize >= direct_output_count)
+        {
+            return Err(OutputReferenceOutOfBounds {
+                field,
+                direct_output_count,
+            });
+        }
+        Ok(())
+    }
+
+    /// Build a compact emit: `Direct` if the mapping is the identity
+    /// `[0, 1, ..., N-1]` (where N = `direct_output_count`), otherwise `Emit`
+    /// with the explicit mapping.
+    fn into_compact_emit(self, direct_output_count: usize) -> (EmitKind, usize) {
+        let output_count = self.0.len();
+        let is_identity = output_count == direct_output_count
+            && self
+                .0
+                .iter()
+                .enumerate()
+                .all(|(index, &field)| field == index as i32);
+        let emit = if is_identity {
+            EmitKind::Direct(Direct {})
+        } else {
+            EmitKind::Emit(Emit {
+                output_mapping: self.0,
+            })
+        };
+        (emit, output_count)
+    }
+
+    /// Build an explicit emit, which is always `Emit`, even for an identity
+    /// mapping.
+    fn into_explicit_emit(self) -> (EmitKind, usize) {
+        let output_count = self.0.len();
+        (
+            EmitKind::Emit(Emit {
+                output_mapping: self.0,
+            }),
+            output_count,
+        )
+    }
+}
+
+/// Output syntax for a relation with no added direct-output columns - either `=> <reference_list>` or `|> reference_list`
+#[derive(Debug)]
+enum PassthroughOutput {
+    /// No output clause: expose the inherited direct output.
+    Direct,
+    /// Compact `=>` syntax, which describes the final output.
+    Compact(OutputMapping),
+    /// Explicit `|>` syntax, which preserves an Emit even for an identity map.
+    Explicit(OutputMapping),
+}
+
+impl ParsePair for PassthroughOutput {
+    fn rule() -> Rule {
+        Rule::reference_output
+    }
+
+    fn message() -> &'static str {
+        "PassthroughOutput"
+    }
+
+    fn parse_pair(pair: Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let output = unwrap_single_pair(pair);
+        match output.as_rule() {
+            Rule::implicit_reference_output => {
+                Self::Compact(OutputMapping::parse_pair(unwrap_single_pair(output)))
+            }
+            Rule::explicit_emit => {
+                Self::Explicit(OutputMapping::parse_pair(unwrap_single_pair(output)))
+            }
+            other => unreachable!("Unexpected reference output: {other:?}"),
+        }
+    }
+}
+
+impl PassthroughOutput {
+    fn resolve(
+        self,
+        direct_output_count: usize,
+    ) -> Result<(EmitKind, usize), OutputReferenceOutOfBounds> {
+        match self {
+            Self::Direct => Ok((EmitKind::Direct(Direct {}), direct_output_count)),
+            Self::Compact(mapping) => {
+                mapping.validate(direct_output_count)?;
+                Ok(mapping.into_compact_emit(direct_output_count))
+            }
+            Self::Explicit(mapping) => {
+                mapping.validate(direct_output_count)?;
+                Ok(mapping.into_explicit_emit())
+            }
+        }
+    }
+}
+
+fn parse_read_output(
     extensions: &SimpleExtensions,
     output: Pair<Rule>,
 ) -> Result<(Vec<Column>, Option<RelCommon>, usize), MessageParseError> {
-    assert_eq!(output.as_rule(), Rule::output);
+    assert_eq!(output.as_rule(), Rule::read_output);
     let output = unwrap_single_pair(output);
     match output.as_rule() {
-        Rule::implicit_output => {
+        Rule::implicit_read_output => {
             let mut iter = RuleIter::from(output.into_inner());
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
             iter.done();
             let output_count = columns.len();
             Ok((columns, None, output_count))
         }
-        Rule::direct_output => {
+        Rule::direct_read_output => {
             let mut iter = RuleIter::from(output.into_inner());
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
-            let emit_suffix = iter.pop(Rule::emit_suffix);
+            let emit = iter
+                .pop(Rule::read_emit_suffix)
+                .into_inner()
+                .next()
+                .map(|mapping| OutputMapping::parse_pair(mapping).into_explicit_emit());
             iter.done();
 
             let direct_output_count = columns.len();
-            let (emit, output_count) = parse_emit_suffix(emit_suffix)
-                .unwrap_or((EmitKind::Direct(Direct {}), direct_output_count));
+            let (emit, output_count) =
+                emit.unwrap_or((EmitKind::Direct(Direct {}), direct_output_count));
             let common = Some(RelCommon {
                 emit_kind: Some(emit),
                 ..Default::default()
             });
             Ok((columns, common, output_count))
         }
-        other => unreachable!("Unexpected rule in output: {other:?}"),
+        other => unreachable!("Unexpected rule in Read output: {other:?}"),
     }
-}
-
-fn parse_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
-    assert_eq!(suffix.as_rule(), Rule::emit_suffix);
-    let reference_list = suffix.into_inner().next()?;
-    assert_eq!(reference_list.as_rule(), Rule::reference_list);
-    let output_mapping = parse_output_mapping(reference_list);
-    let output_count = output_mapping.len();
-    Some((EmitKind::Emit(Emit { output_mapping }), output_count))
 }
 
 /// Extracts named arguments from pest pairs with duplicate detection and completeness checking.
@@ -368,10 +477,10 @@ impl RelationParsePair for ReadRel {
 
         let mut iter = RuleIter::from(pair.into_inner());
         let table = iter.parse_next::<TableName>().0;
-        let output_pair = iter.pop(Rule::output);
+        let output_pair = iter.pop(Rule::read_output);
         iter.done();
 
-        let (columns, common, output_count) = parse_output(extensions, output_pair)?;
+        let (columns, common, output_count) = parse_read_output(extensions, output_pair)?;
 
         Ok((
             ReadRel {
@@ -597,12 +706,17 @@ impl RelationParsePair for FilterRel {
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-        let references_pair = iter.pop(Rule::reference_list);
+        let output = iter
+            .parse_if_next::<PassthroughOutput>()
+            .unwrap_or(PassthroughOutput::Direct);
         iter.done();
 
-        let (emit, output_count) = parse_emit(references_pair, input_field_count);
+        let (emit, output_count) = output
+            .resolve(input_field_count)
+            .map_err(|error| error.into_parse_error(Self::message(), span))?;
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -667,9 +781,8 @@ impl RelationParsePair for ProjectRel {
             }
         }
 
-        let output_count = output_mapping.len();
         let direct_count = input_field_count + expressions.len();
-        let emit = make_emit(output_mapping, direct_count);
+        let (emit, output_count) = OutputMapping(output_mapping).into_compact_emit(direct_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -729,9 +842,8 @@ impl RelationParsePair for AggregateRel {
         let (measures, output_mapping) =
             parse_aggregate_output(extensions, output_pair, &grouping_expressions)?;
 
-        let output_count = output_mapping.len();
         let direct_count = grouping_expressions.len() + measures.len();
-        let emit = make_emit(output_mapping, direct_count);
+        let (emit, output_count) = OutputMapping(output_mapping).into_compact_emit(direct_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -988,20 +1100,27 @@ impl RelationParsePair for SortRel {
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
         let sort_field_list_pair = iter.pop(Rule::sort_field_list);
-        let references_pair = iter.pop(Rule::reference_list);
+        let output = iter
+            .parse_if_next::<PassthroughOutput>()
+            .unwrap_or(PassthroughOutput::Direct);
         let mut sorts = Vec::new();
         for sort_field_pair in sort_field_list_pair.into_inner() {
-            let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
-            sorts.push(sort_field);
+            if sort_field_pair.as_rule() == Rule::sort_field {
+                let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
+                sorts.push(sort_field);
+            }
         }
-        let (emit, output_count) = parse_emit(references_pair, input_field_count);
+        iter.done();
+        let (emit, output_count) = output
+            .resolve(input_field_count)
+            .map_err(|error| error.into_parse_error(Self::message(), span))?;
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
-        iter.done();
         Ok((
             SortRel {
                 input: Some(input),
@@ -1026,51 +1145,25 @@ impl ScopedParsePair for CountMode {
         pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
         let mut arg_inner = RuleIter::from(pair.into_inner());
-        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
-            int_pair
-        } else {
-            arg_inner.pop(Rule::expression)
-        };
-        match value_pair.as_rule() {
-            Rule::integer => {
-                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
-                    MessageParseError::invalid(
-                        Self::message(),
-                        value_pair.as_span(),
-                        format!("Invalid integer: {e}"),
-                    )
-                })?;
-                if value < 0 {
-                    return Err(MessageParseError::invalid(
-                        Self::message(),
-                        value_pair.as_span(),
-                        format!("Fetch limit must be non-negative, got: {value}"),
-                    ));
-                }
-                Ok(CountMode::CountExpr(i64_literal_expr(value)))
-            }
-            Rule::expression => {
-                let expr = Expression::parse_pair(extensions, value_pair)?;
-                Ok(CountMode::CountExpr(Box::new(expr)))
-            }
-            _ => Err(MessageParseError::invalid(
-                Self::message(),
-                value_pair.as_span(),
-                format!("Unexpected rule for CountMode: {:?}", value_pair.as_rule()),
-            )),
-        }
-    }
-}
+        let expression = arg_inner.parse_next_scoped::<Expression>(extensions)?;
+        arg_inner.done();
 
-fn i64_literal_expr(value: i64) -> Box<Expression> {
-    Box::new(Expression {
-        rex_type: Some(RexType::Literal(Literal {
-            nullable: false,
-            type_variation_reference: 0,
-            literal_type: Some(LiteralType::I64(value)),
-        })),
-    })
+        // TODO: Typecheck Fetch limits as i64 expressions.
+        if let Some(RexType::Literal(literal)) = &expression.rex_type
+            && let Some(LiteralType::I64(value)) = literal.literal_type.as_ref()
+            && *value < 0
+        {
+            return Err(MessageParseError::invalid(
+                Self::message(),
+                span,
+                format!("Fetch limit must be non-negative, got: {value}"),
+            ));
+        }
+
+        Ok(CountMode::CountExpr(Box::new(expression)))
+    }
 }
 
 impl ScopedParsePair for OffsetMode {
@@ -1085,40 +1178,24 @@ impl ScopedParsePair for OffsetMode {
         pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
         let mut arg_inner = RuleIter::from(pair.into_inner());
-        let value_pair = if let Some(int_pair) = arg_inner.try_pop(Rule::integer) {
-            int_pair
-        } else {
-            arg_inner.pop(Rule::expression)
-        };
-        match value_pair.as_rule() {
-            Rule::integer => {
-                let value = value_pair.as_str().parse::<i64>().map_err(|e| {
-                    MessageParseError::invalid(
-                        Self::message(),
-                        value_pair.as_span(),
-                        format!("Invalid integer: {e}"),
-                    )
-                })?;
-                if value < 0 {
-                    return Err(MessageParseError::invalid(
-                        Self::message(),
-                        value_pair.as_span(),
-                        format!("Fetch offset must be non-negative, got: {value}"),
-                    ));
-                }
-                Ok(OffsetMode::OffsetExpr(i64_literal_expr(value)))
-            }
-            Rule::expression => {
-                let expr = Expression::parse_pair(extensions, value_pair)?;
-                Ok(OffsetMode::OffsetExpr(Box::new(expr)))
-            }
-            _ => Err(MessageParseError::invalid(
+        let expression = arg_inner.parse_next_scoped::<Expression>(extensions)?;
+        arg_inner.done();
+
+        // TODO: Typecheck Fetch offsets as i64 expressions.
+        if let Some(RexType::Literal(literal)) = &expression.rex_type
+            && let Some(LiteralType::I64(value)) = literal.literal_type.as_ref()
+            && *value < 0
+        {
+            return Err(MessageParseError::invalid(
                 Self::message(),
-                value_pair.as_span(),
-                format!("Unexpected rule for OffsetMode: {:?}", value_pair.as_rule()),
-            )),
+                span,
+                format!("Fetch offset must be non-negative, got: {value}"),
+            ));
         }
+
+        Ok(OffsetMode::OffsetExpr(Box::new(expression)))
     }
 }
 
@@ -1146,6 +1223,7 @@ impl RelationParsePair for FetchRel {
     ) -> Result<(Self, usize), MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
+        let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
 
         // Extract all pairs before any validation: RuleIter's Drop panics on
@@ -1166,13 +1244,18 @@ impl RelationParsePair for FetchRel {
             }
         };
 
-        let references_pair = iter.pop(Rule::reference_list);
-        let (emit, output_count) = parse_emit(references_pair, input_field_count);
+        let output = iter
+            .parse_if_next::<PassthroughOutput>()
+            .unwrap_or(PassthroughOutput::Direct);
+        iter.done();
+
+        let (emit, output_count) = output
+            .resolve(input_field_count)
+            .map_err(|error| error.into_parse_error(Self::message(), span))?;
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
         };
-        iter.done();
 
         let count_mode = limit_pair
             .map(|pair| CountMode::parse_pair(extensions, pair))
@@ -1278,7 +1361,8 @@ impl RelationParsePair for JoinRel {
         // TODO: For semi/anti joins, the direct output width differs from
         // left+right — `input_field_count` would misclassify the emit as Direct.
         // Revisit when those join types are supported.
-        let (emit, output_count) = parse_emit(references_pair, input_field_count);
+        let (emit, output_count) =
+            OutputMapping::parse_pair(references_pair).into_compact_emit(input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1338,11 +1422,17 @@ impl RelationParsePair for CrossRel {
         let left = Box::new(children_iter.next().unwrap());
         let right = Box::new(children_iter.next().unwrap());
 
+        let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
-        let reference_list_pair = iter.pop(Rule::reference_list);
+        iter.pop(Rule::empty);
+        let output = iter
+            .parse_if_next::<PassthroughOutput>()
+            .unwrap_or(PassthroughOutput::Direct);
         iter.done();
 
-        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let (emit, output_count) = output
+            .resolve(input_field_count)
+            .map_err(|error| error.into_parse_error(Self::message(), span))?;
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1420,12 +1510,17 @@ pub(crate) fn parse_set_relation_pair(
         ));
     }
 
+    let span = pair.as_span();
     let mut iter = RuleIter::from(pair.into_inner());
     let op = iter.parse_next::<set_rel::SetOp>();
-    let reference_list_pair = iter.pop(Rule::reference_list);
+    let output = iter
+        .parse_if_next::<PassthroughOutput>()
+        .unwrap_or(PassthroughOutput::Direct);
     iter.done();
 
-    let (emit, output_count) = parse_emit(reference_list_pair, child_width);
+    let (emit, output_count) = output
+        .resolve(child_width)
+        .map_err(|error| error.into_parse_error("SetRel", span))?;
     let common = RelCommon {
         emit_kind: Some(emit),
         ..Default::default()
@@ -1447,10 +1542,22 @@ pub(crate) fn parse_set_relation_pair(
 #[cfg(test)]
 mod tests {
     use pest::Parser;
+    use substrait::proto::expression::Literal;
 
     use super::*;
     use crate::fixtures::TestContext;
     use crate::parser::{ExpressionParser, Rule};
+
+    #[cfg(test)]
+    fn i64_literal_expr(value: i64) -> Box<Expression> {
+        Box::new(Expression {
+            rex_type: Some(RexType::Literal(Literal {
+                nullable: false,
+                type_variation_reference: 0,
+                literal_type: Some(LiteralType::I64(value)),
+            })),
+        })
+    }
 
     #[test]
     fn test_parse_relation() {
@@ -1622,6 +1729,57 @@ mod tests {
             matches!(emit_kind, EmitKind::Direct(_)),
             "Expected Direct for identity emit, got {emit_kind:?}"
         );
+    }
+
+    #[test]
+    fn test_parse_filter_relation_explicit_identity_emit_not_collapsed() {
+        let extensions = SimpleExtensions::default();
+        let filter = FilterRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::filter_relation, "Filter[$1 |> $0, $1, $2]"),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        let emit_kind = filter.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Emit(emit) if emit.output_mapping == [0, 1, 2]),
+            "Expected an explicit identity mapping to remain Emit, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_passthrough_output_rejects_out_of_bounds_references() {
+        for (input, field) in [("=> $3", 3), ("|> $3", 3), ("=> $-1", -1), ("|> $-1", -1)] {
+            let error = PassthroughOutput::parse_str(input)
+                .unwrap()
+                .resolve(3)
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                OutputReferenceOutOfBounds {
+                    field: actual_field,
+                    direct_output_count: 3,
+                } if actual_field == field
+            ));
+        }
+    }
+
+    #[test]
+    fn test_sort_requires_empty_parameter_marker() {
+        assert!(ExpressionParser::parse(Rule::sort_relation, "Sort[]").is_err());
+    }
+
+    #[test]
+    fn test_cross_rejects_blank_empty_lists() {
+        for input in ["Cross[]", "Cross[_ =>]", "Cross[_ |>]"] {
+            assert!(
+                ExpressionParser::parse(Rule::cross_relation, input).is_err(),
+                "accepted {input}"
+            );
+        }
     }
 
     #[test]

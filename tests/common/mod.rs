@@ -2,7 +2,7 @@
 
 use substrait::proto;
 use substrait::proto::{plan_rel, rel};
-use substrait_explain::{Parser, format, parse};
+use substrait_explain::{OutputOptions, Parser, format, format_with_options, parse};
 
 /// Roundtrip a plan and verify that the output is the same as the input, after
 /// being parsed to a Substrait plan and then back to text.
@@ -60,6 +60,51 @@ pub fn assert_roundtrip_canonical(canonical: &str, equivalent: &str) {
         canonical.trim(),
         "Equivalent did not roundtrip to canonical"
     );
+}
+
+/// Assert that compact and verbose equivalents roundtrip to the expected
+/// syntax under both output styles.
+pub fn assert_roundtrip_verbose(compact: &str, verbose: &str) {
+    for (input, options, expected, description) in [
+        (
+            compact,
+            OutputOptions::default(),
+            compact,
+            "compact input with default options",
+        ),
+        (
+            verbose,
+            OutputOptions::default(),
+            compact,
+            "verbose input with default options",
+        ),
+        (
+            compact,
+            OutputOptions::verbose(),
+            verbose,
+            "compact input with verbose options",
+        ),
+        (
+            verbose,
+            OutputOptions::verbose(),
+            verbose,
+            "verbose input with verbose options",
+        ),
+    ] {
+        let plan = Parser::parse(input).unwrap_or_else(|error| {
+            panic!("Failed to parse {description}: {error}");
+        });
+        let (actual, errors) = format_with_options(&plan, &options);
+        assert!(
+            errors.is_empty(),
+            "Formatting errors for {description}: {errors:?}"
+        );
+        assert_eq!(
+            actual.trim(),
+            expected.trim(),
+            "Unexpected output for {description}"
+        );
+    }
 }
 
 /// Parse a built-in type string (e.g. `"i64"`, `"string?"`) into a
