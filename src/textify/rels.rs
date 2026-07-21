@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::convert::TryFrom;
 use std::fmt;
 
 use prost::Message;
@@ -94,35 +95,76 @@ fn schema_to_values<'a>(schema: &'a NamedStruct) -> Vec<Value<'a>> {
     values
 }
 
+/// How a relation header renders its output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum OutputSyntax {
+    /// Output columns are rendered as final visible output: `=> output_columns`.
+    #[default]
+    Implicit,
+    /// Output columns are rendered as the direct output domain: `+> columns`,
+    /// with `|> order` appended when an explicit emit mapping is present.
+    Explicit,
+}
+
 struct Emitted<'a> {
-    pub values: &'a [Value<'a>],
-    pub emit: Option<&'a EmitKind>,
+    values: &'a [Value<'a>],
+    emit: Option<&'a EmitKind>,
+    output_syntax: Option<OutputSyntax>,
 }
 
 impl<'a> Emitted<'a> {
-    pub fn new(values: &'a [Value<'a>], emit: Option<&'a EmitKind>) -> Self {
-        Self { values, emit }
+    pub fn columns(values: &'a [Value<'a>], emit: Option<&'a EmitKind>) -> Self {
+        Self {
+            values,
+            emit,
+            output_syntax: None,
+        }
     }
 
-    pub fn write_direct<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+    pub fn output_clause(
+        values: &'a [Value<'a>],
+        emit: Option<&'a EmitKind>,
+        output_syntax: OutputSyntax,
+    ) -> Self {
+        Self {
+            values,
+            emit,
+            output_syntax: Some(output_syntax),
+        }
+    }
+
+    fn write_output_clause<S: Scope, W: fmt::Write>(
+        &self,
+        ctx: &S,
+        w: &mut W,
+        output_syntax: OutputSyntax,
+    ) -> fmt::Result {
+        match output_syntax {
+            OutputSyntax::Implicit => {
+                write!(w, "=> ")?;
+                self.write_implicit_columns(ctx, w)
+            }
+            OutputSyntax::Explicit => {
+                write!(w, "+> ")?;
+                self.write_direct_columns(ctx, w)?;
+                self.write_emit_suffix(ctx, w)
+            }
+        }
+    }
+
+    fn write_direct_columns<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         write!(w, "{}", ctx.separated(self.values.iter(), ", "))
     }
-}
 
-impl<'a> Textify for Emitted<'a> {
-    fn name() -> &'static str {
-        "Emitted"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+    fn write_implicit_columns<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         if ctx.options().show_emit {
-            return self.write_direct(ctx, w);
+            return self.write_direct_columns(ctx, w);
         }
 
         let indices = match &self.emit {
             Some(EmitKind::Emit(e)) => &e.output_mapping,
-            Some(EmitKind::Direct(_)) => return self.write_direct(ctx, w),
-            None => return self.write_direct(ctx, w),
+            Some(EmitKind::Direct(_)) => return self.write_direct_columns(ctx, w),
+            None => return self.write_direct_columns(ctx, w),
         };
 
         for (i, &index) in indices.iter().enumerate() {
@@ -145,6 +187,32 @@ impl<'a> Textify for Emitted<'a> {
 
         Ok(())
     }
+
+    fn write_emit_suffix<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let Some(EmitKind::Emit(emit)) = self.emit else {
+            return Ok(());
+        };
+        let mapping = emit
+            .output_mapping
+            .iter()
+            .copied()
+            .map(Value::Reference)
+            .collect::<Vec<_>>();
+        write!(w, " |> {}", ctx.separated(mapping.iter(), ", "))
+    }
+}
+
+impl<'a> Textify for Emitted<'a> {
+    fn name() -> &'static str {
+        "Emitted"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self.output_syntax {
+            Some(output_syntax) => self.write_output_clause(ctx, w, output_syntax),
+            None => self.write_implicit_columns(ctx, w),
+        }
+    }
 }
 
 pub struct Relation<'a> {
@@ -163,6 +231,9 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
+    /// Whether output columns are rendered as visible output or as a direct
+    /// output domain plus optional explicit emit mapping.
+    output_syntax: OutputSyntax,
     /// `+`-prefixed addendum lines to emit between this relation's header and
     /// children.  This owns the canonical ordering for `+ Ext`, `+ Enh`, and
     /// `+ Opt` lines rather than making the generic relation shape grow one
@@ -202,17 +273,17 @@ impl Relation<'_> {
     /// Does not write a trailing newline; callers are responsible for any
     /// newline that follows (either from an addendum or from the next child).
     pub fn write_header<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let cols = Emitted::new(&self.columns, self.emit);
         let indent = ctx.indent();
         let name = &self.name;
-        let cols = ctx.display(&cols);
         match &self.arguments {
             None => {
+                let cols = Emitted::columns(&self.columns, self.emit);
+                let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{cols}]")
             }
             Some(args) if args.layout() == ArgsLayout::Rows => {
                 // One `- row` per line, one indent level deeper, with a trailing
-                // comma on every row but the last, then `- => cols]`.
+                // comma on every row but the last, then `- <output> cols]`.
                 let child = ctx.push_indent();
                 let child_indent = child.indent();
                 writeln!(w, "{indent}{name}[")?;
@@ -222,11 +293,15 @@ impl Relation<'_> {
                     let comma = if i == last { "" } else { "," };
                     writeln!(w, "{child_indent}- {row}{comma}")?;
                 }
-                write!(w, "{child_indent}- => {cols}]")
+                let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
+                let output = ctx.display(&output);
+                write!(w, "{child_indent}- {output}]")
             }
             Some(args) => {
                 let args = ctx.display(args);
-                write!(w, "{indent}{name}[{args} => {cols}]")
+                let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
+                let output = ctx.display(&output);
+                write!(w, "{indent}{name}[{args} {output}]")
             }
         }
     }
@@ -261,11 +336,23 @@ impl<'a> Relation<'a> {
         match &rel.read_type {
             Some(ReadType::NamedTable(table)) => {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
+                // XXX: For `ReadRel`s, we use `=>` if emit is None, `+>` if
+                // `emit` is `Some(Direct)`, and `+> … |>` if emit is
+                // `Some(Remap(…))`. However, we ignore the
+                // `OutputOptions::show_emit` option, and we haven't yet
+                // supported other operators; at some point, we should figure
+                // out our policy here and clean this up.
+                let output_syntax = if emit.is_some() {
+                    OutputSyntax::Explicit
+                } else {
+                    OutputSyntax::Implicit
+                };
                 Relation {
                     name: Cow::Borrowed("Read"),
                     arguments: Some(Arguments::inline(vec![table_name], vec![])),
                     columns,
                     emit,
+                    output_syntax,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -297,6 +384,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(arguments),
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -315,6 +403,7 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::extension_table(
                         ctx,
                         decoded,
@@ -334,6 +423,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -406,6 +496,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -426,6 +517,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -457,6 +549,7 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns: vec![],
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children: vec![],
                 }
@@ -524,6 +617,7 @@ impl<'a> Relation<'a> {
                     arguments: Some(Arguments::inline(positional, named)),
                     columns,
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     // Extension relations use `detail` rather than
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
@@ -542,6 +636,7 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
+                    output_syntax: OutputSyntax::Implicit,
                     addenda: AddendumLines::none(),
                     children,
                 }
@@ -580,7 +675,18 @@ impl<'a> Relation<'a> {
             for group in &rel.groupings {
                 let mut grouping_set: Vec<Value> = vec![];
                 for i in &group.expression_references {
-                    grouping_set.push(Value::Reference(*i as i32));
+                    let value = match rel.grouping_expressions.get(*i as usize) {
+                        Some(expr) => Value::Expression(expr),
+                        None => Value::Missing(PlanError::invalid(
+                            "AggregateRel",
+                            Some("groupings.expression_references"),
+                            format!(
+                                "expression_reference {i} is out of bounds for grouping_expressions of length {}",
+                                rel.grouping_expressions.len()
+                            ),
+                        )),
+                    };
+                    grouping_set.push(value);
                 }
                 grouping_sets.push(grouping_set);
             }
@@ -624,6 +730,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -633,9 +740,10 @@ impl<'a> Relation<'a> {
         let mut grouping_sets: Vec<Vec<Value>> = vec![];
         let mut expression_list: Vec<Value> = Vec::new();
 
-        // groupings might have the same expressions in their set so we use a map to get unique expressions
-        let mut expression_index_map = HashMap::new();
-        let mut i: i32 = 0; // index for the unique expression in the grouping_expressions list
+        // groupings might have the same expressions in their set, so we track
+        // which byte-encoded expressions have already been added to
+        // `expression_list` to keep it deduplicated.
+        let mut seen_expressions = HashSet::new();
 
         for group in &rel.groupings {
             let mut grouping_set: Vec<Value> = vec![];
@@ -644,16 +752,10 @@ impl<'a> Relation<'a> {
                 // TODO: use a better key here than encoding to bytes.
                 // Ideally, substrait-rs would support `PartialEq` and `Hash`,
                 // but as there isn't an easy way to do that now, we'll skip.
-                let key = exp.encode_to_vec();
-                expression_index_map.entry(key.clone()).or_insert_with(|| {
-                    let value = Value::Expression(exp);
-                    expression_list.push(value); // new unique expression found
-                    // mapping the byte encoded expression to its index in the group_expression list
-                    let index = i;
-                    i += 1;
-                    index // is expression returned by this closure and inserted into map
-                });
-                grouping_set.push(Value::Reference(expression_index_map[&key]));
+                if seen_expressions.insert(exp.encode_to_vec()) {
+                    expression_list.push(Value::Expression(exp)); // new unique expression found
+                }
+                grouping_set.push(Value::Expression(exp));
             }
             grouping_sets.push(grouping_set);
         }
@@ -729,6 +831,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -781,6 +884,7 @@ impl<'a> Relation<'a> {
             arguments: Some(Arguments::inline(vec![], named_args)),
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -889,6 +993,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -919,6 +1024,7 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -939,6 +1045,7 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
+            output_syntax: OutputSyntax::Implicit,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1313,6 +1420,83 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
                 "Aggregate[($0, $1), ($0, $1), ($1), ($1, $1), _ => $0, $1, count($2):i64]"
             )
         );
+    }
+
+    #[test]
+    fn test_deprecated_reordered_grouping() {
+        // Protobuf plan that uses the deprecated per-Grouping
+        // `grouping_expressions`, leaving `AggregateRel.grouping_expressions`
+        // empty. The lone unique expression here is $5, but it is the first
+        // (index 0) expression discovered during deduplication - so if the
+        // grouping set were rendered from that dedup index rather than from
+        // the expression itself, it would wrongly print as `$0` instead of
+        // `$5`.
+        let ctx = TestContext::new();
+        let grouping_expr_5 = create_exp(5);
+
+        let grouping_sets = vec![aggregate_rel::Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![grouping_expr_5],
+            expression_references: vec![],
+        }];
+
+        let aggregate_rel = create_aggregate_rel(vec![], grouping_sets, vec![], None);
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[$5 => $5]"));
+    }
+
+    #[test]
+    fn test_reordered_grouping_textifies_expression_not_raw_index() {
+        let ctx = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 11, "count");
+
+        let agg_fn2 = get_aggregate_func(11, 1);
+
+        // grouping_expressions is [$2, $0] (textual order); the single
+        // grouping set references both by index into grouping_expressions:
+        // [0, 1]. Those indexes must resolve back through
+        // grouping_expressions ([$2, $0]), not be printed directly as `$0,
+        // $1`.
+        let grouping_expressions = vec![
+            Expression {
+                rex_type: Some(RexType::Selection(Box::new(
+                    FieldIndex(2).to_field_reference(),
+                ))),
+            },
+            Expression {
+                rex_type: Some(RexType::Selection(Box::new(
+                    FieldIndex(0).to_field_reference(),
+                ))),
+            },
+        ];
+
+        let grouping_sets = vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0, 1],
+        }];
+
+        let measures = vec![aggregate_rel::Measure {
+            measure: Some(agg_fn2),
+            filter: None,
+        }];
+
+        let aggregate_rel =
+            create_aggregate_rel(grouping_expressions, grouping_sets, measures, None);
+
+        let rel = Rel {
+            rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+        };
+        let (result, errors) = ctx.textify(&rel);
+
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert!(result.contains("Aggregate[$2, $0 => $2, $0, count($1):i64]"));
     }
 
     #[test]

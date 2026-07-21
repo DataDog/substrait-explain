@@ -237,6 +237,48 @@ fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKi
     (emit, output_count)
 }
 
+fn parse_output(
+    extensions: &SimpleExtensions,
+    output: Pair<Rule>,
+) -> Result<(Vec<Column>, Option<RelCommon>, usize), MessageParseError> {
+    assert_eq!(output.as_rule(), Rule::output);
+    let output = unwrap_single_pair(output);
+    match output.as_rule() {
+        Rule::implicit_output => {
+            let mut iter = RuleIter::from(output.into_inner());
+            let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+            iter.done();
+            let output_count = columns.len();
+            Ok((columns, None, output_count))
+        }
+        Rule::direct_output => {
+            let mut iter = RuleIter::from(output.into_inner());
+            let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+            let emit_suffix = iter.pop(Rule::emit_suffix);
+            iter.done();
+
+            let direct_output_count = columns.len();
+            let (emit, output_count) = parse_emit_suffix(emit_suffix)
+                .unwrap_or((EmitKind::Direct(Direct {}), direct_output_count));
+            let common = Some(RelCommon {
+                emit_kind: Some(emit),
+                ..Default::default()
+            });
+            Ok((columns, common, output_count))
+        }
+        other => unreachable!("Unexpected rule in output: {other:?}"),
+    }
+}
+
+fn parse_emit_suffix(suffix: Pair<Rule>) -> Option<(EmitKind, usize)> {
+    assert_eq!(suffix.as_rule(), Rule::emit_suffix);
+    let reference_list = suffix.into_inner().next()?;
+    assert_eq!(reference_list.as_rule(), Rule::reference_list);
+    let output_mapping = parse_output_mapping(reference_list);
+    let output_count = output_mapping.len();
+    Some((EmitKind::Emit(Emit { output_mapping }), output_count))
+}
+
 impl RelationParsePair for ReadRel {
     fn rule() -> Rule {
         Rule::read_relation
@@ -271,10 +313,11 @@ impl RelationParsePair for ReadRel {
 
         let mut iter = RuleIter::from(pair.into_inner());
         let table = iter.parse_next::<TableName>().0;
-        let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
+        let output_pair = iter.pop(Rule::output);
         iter.done();
 
-        let output_count = columns.len();
+        let (columns, common, output_count) = parse_output(extensions, output_pair)?;
+
         Ok((
             ReadRel {
                 base_schema: Some(build_named_struct(columns)),
@@ -282,6 +325,7 @@ impl RelationParsePair for ReadRel {
                     names: table,
                     advanced_extension: None,
                 })),
+                common,
                 ..Default::default()
             },
             output_count,
@@ -492,7 +536,6 @@ impl RelationParsePair for FilterRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-        // references (which become the emit)
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
@@ -621,7 +664,7 @@ impl RelationParsePair for AggregateRel {
         let (groupings, grouping_expressions) = build_grouping_fields(&grouping_sets);
 
         let (measures, output_mapping) =
-            parse_aggregate_measures(extensions, output_pair, &grouping_expressions)?;
+            parse_aggregate_output(extensions, output_pair, &grouping_expressions)?;
 
         let output_count = output_mapping.len();
         let direct_count = grouping_expressions.len() + measures.len();
@@ -645,35 +688,72 @@ impl RelationParsePair for AggregateRel {
     }
 }
 
+/// Encodes an expression to bytes for use as a structural-equality map key.
+/// TODO: use a better key here than encoding to bytes. Ideally, substrait-rs
+/// would support `PartialEq` and `Hash`, but as there isn't an easy way to do
+/// that now, we'll skip.
+fn expression_key(expression: &Expression) -> Vec<u8> {
+    expression.encode_to_vec()
+}
+
 /// Parses the output section of an aggregate (everything after `=>`).
 ///
 /// For example, in `Aggregate[($0, $1), _ => sum($2), $0, count($2)]`,
 /// this parses `sum($2), $0, count($2)`.
-fn parse_aggregate_measures(
+fn parse_aggregate_output(
     extensions: &SimpleExtensions,
     output_pair: Pair<'_, Rule>,
     grouping_expressions: &[Expression],
 ) -> Result<(Vec<aggregate_rel::Measure>, Vec<i32>), MessageParseError> {
     assert_eq!(output_pair.as_rule(), Rule::aggregate_output);
+
+    // every output item is either:
+    // - an expression which must already be one of `grouping_expressions`,
+    // - a new function call, which we assume must be an aggregate measure.
+    //
+    // While it would probably be best to check if a function call was an
+    // aggregate function, the substrait-explain text does not distinguish
+    // between aggregate measures and grouping expressions, and the
+    // `SimpleExtensions` do not have that information either (neither here in
+    // the Registry nor in the actual Protobuf `ExtensionFunction` definition),
+    // so we can only check whether it's a previous expression.
+    let grouping_positions: HashMap<Vec<u8>, usize> = grouping_expressions
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| (expression_key(expression), index))
+        .collect();
+
     let mut measures = Vec::new();
     let mut output_mapping = Vec::new();
 
-    for aggregate_output_item in output_pair.into_inner() {
-        let inner_item = unwrap_single_pair(aggregate_output_item);
-        match inner_item.as_rule() {
-            Rule::reference => {
-                let field_index = FieldIndex::parse_pair(inner_item);
-                output_mapping.push(field_index.0);
+    for output_item in output_pair.into_inner() {
+        assert_eq!(output_item.as_rule(), Rule::expression);
+        let span = output_item.as_span();
+        let inner_item = unwrap_single_pair(output_item.clone());
+
+        if inner_item.as_rule() == Rule::function_call {
+            let expression = Expression::parse_pair(extensions, output_item)?;
+            if let Some(&index) = grouping_positions.get(&expression_key(&expression)) {
+                output_mapping.push(index as i32);
+                continue;
             }
-            Rule::aggregate_measure => {
-                let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
-                output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
-                measures.push(measure);
+
+            let measure = aggregate_rel::Measure::parse_pair(extensions, inner_item)?;
+            output_mapping.push(grouping_expressions.len() as i32 + measures.len() as i32);
+            measures.push(measure);
+            continue;
+        }
+
+        let expression = Expression::parse_pair(extensions, output_item)?;
+        match grouping_positions.get(&expression_key(&expression)) {
+            Some(&index) => output_mapping.push(index as i32),
+            None => {
+                return Err(MessageParseError::invalid(
+                    "AggregateRel",
+                    span,
+                    "output expression is not an aggregate measure and does not match any grouping expression",
+                ));
             }
-            _ => panic!(
-                "Unexpected inner output item rule: {:?}",
-                inner_item.as_rule()
-            ),
         }
     }
 
@@ -755,10 +835,7 @@ fn build_grouping_fields(expression_sets: &[Vec<Expression>]) -> (Vec<Grouping>,
             let expression_references = set
                 .iter()
                 .map(|exp| {
-                    // TODO: use a better key here than encoding to bytes.
-                    // Ideally, substrait-rs would support `PartialEq` and `Hash`,
-                    // but as there isn't an easy way to do that now, we'll skip.
-                    let key = exp.encode_to_vec();
+                    let key = expression_key(exp);
                     let next_idx = expressions.len() as u32;
                     *seen.entry(key).or_insert_with(|| {
                         expressions.push(exp.clone());
@@ -838,13 +915,13 @@ impl RelationParsePair for SortRel {
         let input = expect_one_child(Self::message(), &pair, input_children)?;
         let mut iter = RuleIter::from(pair.into_inner());
         let sort_field_list_pair = iter.pop(Rule::sort_field_list);
-        let reference_list_pair = iter.pop(Rule::reference_list);
+        let references_pair = iter.pop(Rule::reference_list);
         let mut sorts = Vec::new();
         for sort_field_pair in sort_field_list_pair.into_inner() {
             let sort_field = SortField::parse_pair(extensions, sort_field_pair)?;
             sorts.push(sort_field);
         }
-        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1014,8 +1091,8 @@ impl RelationParsePair for FetchRel {
             }
         };
 
-        let reference_list_pair = iter.pop(Rule::reference_list);
-        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let references_pair = iter.pop(Rule::reference_list);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1113,13 +1190,13 @@ impl RelationParsePair for JoinRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let join_type = iter.parse_next::<join_rel::JoinType>();
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
-        let reference_list_pair = iter.pop(Rule::reference_list);
+        let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
         // TODO: For semi/anti joins, the direct output width differs from
         // left+right — `input_field_count` would misclassify the emit as Direct.
         // Revisit when those join types are supported.
-        let (emit, output_count) = parse_emit(reference_list_pair, input_field_count);
+        let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1323,6 +1400,82 @@ mod tests {
             .unwrap()
             .types;
         assert_eq!(columns.len(), 2);
+        assert!(read.common.is_none());
+    }
+
+    #[test]
+    fn test_parse_read_relation_explicit_emit() {
+        let extensions = SimpleExtensions::default();
+        let read = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::read_relation,
+                "Read[ab.cd.ef +> a:i32, b:string?, c:i64 |> $2, $0]",
+            ),
+            vec![],
+            0,
+        )
+        .unwrap();
+        let (read, output_count) = read;
+        assert_eq!(output_count, 2);
+        let emit_kind = read.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        match emit_kind {
+            EmitKind::Emit(emit) => assert_eq!(emit.output_mapping, vec![2, 0]),
+            other => panic!("Expected EmitKind::Emit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_read_relation_explicit_identity_emit_not_collapsed() {
+        // An explicit `|>` with an identity mapping must stay `Emit`, not
+        // collapse to `Direct` - that's the whole point of `|>`.
+        let extensions = SimpleExtensions::default();
+        let read = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::read_relation,
+                "Read[ab.cd.ef +> a:i32, b:string? |> $0, $1]",
+            ),
+            vec![],
+            0,
+        )
+        .unwrap()
+        .0;
+        let emit_kind = read.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Emit(_)),
+            "Expected explicit Emit to survive even with an identity mapping, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_read_relation_explicit_direct() {
+        let extensions = SimpleExtensions::default();
+        let (read, output_count) = ReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::read_relation, "Read[ab.cd.ef +> a:i32, b:string?]"),
+            vec![],
+            0,
+        )
+        .unwrap();
+        assert_eq!(output_count, 2);
+        let emit_kind = read.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected +> without |> to produce Direct, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_read_relation_rejects_arrow_with_emit() {
+        let parsed = ExpressionParser::parse(
+            Rule::read_relation,
+            "Read[ab.cd.ef => a:i32, b:string? |> $0, $1]",
+        );
+        assert!(
+            parsed.is_err(),
+            "Read cannot combine legacy => output with explicit |>"
+        );
     }
 
     /// Produces a ReadRel with 3 columns: a:i32, b:string?, c:i64
@@ -1511,6 +1664,144 @@ mod tests {
         assert_eq!(aggregate.groupings.len(), 1);
         // expression_references must be positions [0, 1], not raw field indices [2, 0]
         assert_eq!(aggregate.groupings[0].expression_references, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_reference_uses_grouping_position() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // grouping_expressions ends up as [$2, $0] (grouping's textual order),
+        // so `$0`/`$2` in the output must resolve to their grouping
+        // positions (1 and 0 respectively), not their literal reference
+        // indices. Output order is swapped relative to grouping order so
+        // the resulting mapping isn't an identity (which would collapse to
+        // EmitKind::Direct and give us nothing to assert on).
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[$2, $0 => $0, $2, sum($1):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // direct schema is [$2, $0, sum($1)]; output is [$0, $2, sum($1)] -> [1, 0, 2]
+        assert_eq!(emit, &[1, 0, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_not_in_grouping_expressions_errors() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // $1 is not part of the grouping expressions ($0) and is not an
+        // aggregate measure, so it has no valid slot in the output schema.
+        let result = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::aggregate_relation, "Aggregate[$0 => $1, sum($1):i64]"),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        );
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains(
+            "output expression is not an aggregate measure and does not match any grouping expression"
+        ));
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_output_with_literal_expression() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "sum")
+            .extensions;
+
+        // The first grouping expression is a literal, not a reference or a
+        // function call, so it can only match the output item by structural
+        // equality (encode_to_vec).
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[42, $0 => $0, 42, sum($1):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 2);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // direct schema is [42, $0, sum($1)]; output is [$0, 42, sum($1)] -> [1, 0, 2]
+        assert_eq!(emit, &[1, 0, 2]);
+    }
+
+    #[test]
+    fn test_parse_aggregate_relation_function_call_is_not_a_measure() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_urn(2, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml")
+            .with_function(1, 10, "eq")
+            .with_function(2, 11, "sum")
+            .extensions;
+
+        // `eq($0, $1)` is both the grouping expression and repeated
+        // verbatim in the output, so it must resolve to the grouping
+        // position rather than being parsed as a second, duplicate
+        // aggregate measure.
+        let aggregate = AggregateRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::aggregate_relation,
+                "Aggregate[eq($0, $1):boolean => eq($0, $1):boolean, sum($2):i64]",
+            ),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(aggregate.grouping_expressions.len(), 1);
+        assert_eq!(aggregate.measures.len(), 1);
+        let emit_kind = &aggregate
+            .common
+            .as_ref()
+            .unwrap()
+            .emit_kind
+            .as_ref()
+            .unwrap();
+        assert!(matches!(emit_kind, EmitKind::Direct(_)));
     }
 
     #[test]
