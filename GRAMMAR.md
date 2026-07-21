@@ -507,28 +507,26 @@ A window function computes a value over a "window" of rows related to the curren
 
 #### Syntax
 
-`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" (window_named_arg ("," window_named_arg)*)? ")" ":" type`
+`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" window_named_arguments? ")" ":" type`
 
-```text
-window_named_arg := "partition=" "(" expression ("," expression)* ")"
-                   / "order=" sort_field
-                   / "order=" "(" sort_field ("," sort_field)+ ")"
-                   / "invocation=" enum
-                   / "phase=" enum
-                   / ("rows=" / "range=") "(" window_bound "," window_bound ")"
-window_bound := integer / "_"
-```
+Rather than a bespoke grammar production per named argument, `over(...)` reuses the same
+generic [`named_arguments`](#arguments) production used elsewhere (`name "=" argument`,
+comma-separated). Rust code (not the grammar) decides which names are allowed in `over(...)`
+and what shape each value must have:
 
-`sort_field` is the same production used by the Sort relation (see below): `"(" reference "," sort_direction ")"`.
+- `partition=argument` - optional partitioning expression(s); a single field may be written
+  bare (`partition=$1`) or in a one-element tuple (`partition=($1,)`); multiple fields use a
+  multi-element tuple (`partition=($1, $2)`)
+- `order=argument` - optional sort key(s); a single sort field is a bare 2-tuple of
+  `(reference, direction)` (e.g. `order=($3, &AscNullsLast)`); multiple sort fields are a
+  tuple of such 2-tuples (e.g. `order=(($3, &AscNullsLast), ($4, &DescNullsLast))`)
+- `invocation=&Distinct` / `invocation=&All` - optional aggregation invocation
+- `phase=&InitialToResult` (etc.) - required aggregation phase
+- `rows=(lower, upper)` / `range=(lower, upper)` - optional, mutually exclusive window frame;
+  each bound is an integer (negative = preceding, positive = following, `0` = current row) or
+  `_` for unbounded
 
-- `partition=(expression, ...)` - partitioning expressions
-- `order=sort_field` or `order=(sort_field, sort_field, ...)` - ordering field(s); a single sort field is written bare (e.g. `order=($1, &AscNullsLast)`), two or more are wrapped in a parenthesized list of tuples (e.g. `order=(($1, &AscNullsLast), ($2, &DescNullsLast))`)
-- `invocation=&Distinct` / `invocation=&All` - aggregation invocation
-- `phase=&InitialToResult` (etc.) - aggregation phase
-- `rows=(lower, upper)` / `range=(lower, upper)` - the window frame, each bound is an integer (negative = preceding,
-  positive = following, `0` = current row) or `_` for unbounded
-
-`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed, though this is enforced when parsing rather than by the grammar itself (the named-arg list as a whole is syntactically optional). A `range=` frame requires exactly one `order=` field.
+`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed, though this (along with the mutual exclusion of `rows=`/`range=`, and the requirement that a `range=` frame have exactly one `order=` field) is enforced when parsing rather than by the grammar itself (the named-arg list as a whole is syntactically optional).
 
 #### Examples
 
@@ -544,7 +542,7 @@ Functions:
 
 === Plan
 Root[a, b, s]
-  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):fp64?]
     Read[t => a:i32, b:fp64]
 # "#;
 #
@@ -566,7 +564,7 @@ Functions:
 
 === Plan
 Root[a, r]
-  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=($0)):i64]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=$0):i64]
     Read[t => a:i32]
 # "#;
 #

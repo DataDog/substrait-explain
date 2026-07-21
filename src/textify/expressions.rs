@@ -19,8 +19,8 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
-use crate::textify::rels::{Arguments, NamedArg, Value, ValueEnum, enum_str_value};
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
+use crate::textify::values::{Arguments, NamedArg, Value, ValueEnum, enum_str_value};
 
 // …(…) for function call
 // […] for variant
@@ -541,20 +541,6 @@ impl Textify for IfThen {
     }
 }
 
-fn window_enum_value<'a, T: TryFrom<i32> + ValueEnum>(
-    raw: i32,
-    field_name: &'static str,
-) -> Value<'a> {
-    match T::try_from(raw) {
-        Ok(v) => enum_str_value(v.as_enum_str()),
-        Err(_) => Value::Missing(PlanError::invalid(
-            "WindowFunction",
-            Some(field_name),
-            format!("Unknown {field_name}: {raw}"),
-        )),
-    }
-}
-
 fn window_sort_order<'a>(sorts: &'a [SortField]) -> Value<'a> {
     match sorts {
         [single] => Value::from(single),
@@ -562,23 +548,185 @@ fn window_sort_order<'a>(sorts: &'a [SortField]) -> Value<'a> {
     }
 }
 
+/// A single partition expression is written bare (`partition=$0`) rather
+/// than as a 1-tuple, since a bare parenthesized value (`($0)`) is not a
+/// valid 1-tuple under the grammar - that form requires a trailing comma
+/// (`($0,)`) to disambiguate from a parenthesized expression.
+fn window_partition_value(partitions: &[Expression]) -> Value<'_> {
+    match partitions {
+        [single] => Value::Expression(single),
+        many => Value::Tuple(many.iter().map(Value::Expression).collect()),
+    }
+}
+
+/// The frame keyword (`rows`/`range`) and bounds for a window function, if a
+/// frame is present. `range=` additionally requires exactly one `order=`
+/// field; a proto violating that invariant is still textified best-effort,
+/// with a diagnostic surfaced via `ctx.push_error`.
+fn window_frame_named_arg<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Option<NamedArg<'a>> {
+    let bounds_type = window_function::BoundsType::try_from(f.bounds_type);
+    let has_bounds = f.lower_bound.is_some() || f.upper_bound.is_some();
+    if matches!(bounds_type, Ok(window_function::BoundsType::Unspecified)) && !has_bounds {
+        return None;
+    }
+
+    let keyword = match bounds_type {
+        Ok(window_function::BoundsType::Rows) => "rows",
+        Ok(window_function::BoundsType::Range) => {
+            // The parser rejects range= frames unless there is exactly one
+            // order= field. A proto with a different count is still
+            // textified best-effort (the caller may have built it directly,
+            // bypassing the parser), but we surface a diagnostic since the
+            // output won't re-parse.
+            if f.sorts.len() != 1 {
+                ctx.push_error(
+                    PlanError::invalid(
+                        "WindowFunction",
+                        Some("bounds_type"),
+                        format!(
+                            "range frame requires exactly one order= field, found {}",
+                            f.sorts.len()
+                        ),
+                    )
+                    .into(),
+                );
+            }
+            "range"
+        }
+        Ok(window_function::BoundsType::Unspecified) => {
+            // bounds_type is required whenever a frame is present.
+            ctx.push_error(
+                PlanError::invalid(
+                    "WindowFunction",
+                    Some("bounds_type"),
+                    "bounds_type is Unspecified but lower_bound/upper_bound are set",
+                )
+                .into(),
+            );
+            "rows"
+        }
+        Err(_) => {
+            ctx.push_error(
+                PlanError::invalid(
+                    "WindowFunction",
+                    Some("bounds_type"),
+                    format!("Unknown BoundsType: {}", f.bounds_type),
+                )
+                .into(),
+            );
+            "rows"
+        }
+    };
+    let lower = window_bound_value(f.lower_bound.as_ref(), "lower_bound");
+    let upper = window_bound_value(f.upper_bound.as_ref(), "upper_bound");
+    Some(NamedArg {
+        name: Cow::Borrowed(keyword),
+        value: Value::Tuple(vec![lower, upper]),
+    })
+}
+
+/// Assembles the `over(...)` named arguments: `phase=`, `order=`,
+/// `invocation=`, `partition=`, and `rows=`/`range=`.
+fn window_over_named_args<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Vec<NamedArg<'a>> {
+    let mut named_args = Vec::new();
+
+    // phase= is always written, even when Unspecified: unlike invocation=,
+    // the parser requires a phase= argument to be present in over(...).
+    //
+    // The window textifier owns decoding of its raw enum fields: it decodes
+    // the i32, reports a field-specific error (tagged with the enum's own
+    // message type) on an unknown value, and otherwise hands the decoded
+    // value to the shared owned enum->Value conversion.
+    let phase_value = match AggregationPhase::try_from(f.phase) {
+        Ok(phase) => enum_str_value(phase.as_enum_str()),
+        Err(_) => Value::Missing(PlanError::invalid(
+            "AggregationPhase",
+            Some("phase"),
+            format!("Unknown AggregationPhase: {}", f.phase),
+        )),
+    };
+    named_args.push(NamedArg {
+        name: Cow::Borrowed("phase"),
+        value: phase_value,
+    });
+
+    // order= is omitted when there are no sort fields.
+    if !f.sorts.is_empty() {
+        named_args.push(NamedArg {
+            name: Cow::Borrowed("order"),
+            value: window_sort_order(&f.sorts),
+        });
+    }
+
+    if f.invocation != AggregationInvocation::Unspecified as i32 {
+        let invocation_value = match AggregationInvocation::try_from(f.invocation) {
+            Ok(invocation) => enum_str_value(invocation.as_enum_str()),
+            Err(_) => Value::Missing(PlanError::invalid(
+                "AggregationInvocation",
+                Some("invocation"),
+                format!("Unknown AggregationInvocation: {}", f.invocation),
+            )),
+        };
+        named_args.push(NamedArg {
+            name: Cow::Borrowed("invocation"),
+            value: invocation_value,
+        });
+    }
+
+    if !f.partitions.is_empty() {
+        named_args.push(NamedArg {
+            name: Cow::Borrowed("partition"),
+            value: window_partition_value(&f.partitions),
+        });
+    }
+
+    if let Some(frame) = window_frame_named_arg(f, ctx) {
+        named_args.push(frame);
+    }
+
+    named_args
+}
+
 fn window_bound_value<'a>(
     bound: Option<&window_function::Bound>,
     field_name: &'static str,
 ) -> Value<'a> {
-    match bound.and_then(|b| b.kind.as_ref()) {
-        None | Some(bound::Kind::Unbounded(_)) => Value::EmptyGroup,
+    // `bound` being absent (no frame) and `bound.kind` being absent (a
+    // present-but-empty Bound, which the parser never produces) are distinct
+    // cases: the former is a legitimate unbounded frame, the latter is a
+    // malformed proto. Collapsing both into `EmptyGroup` would silently
+    // paper over the latter, so they're handled separately.
+    let Some(bound) = bound else {
+        return Value::EmptyGroup;
+    };
+    match &bound.kind {
+        None => Value::Missing(PlanError::invalid(
+            "WindowFunction",
+            Some(field_name),
+            "Bound is present but has no kind set",
+        )),
+        Some(bound::Kind::Unbounded(_)) => Value::EmptyGroup,
         Some(bound::Kind::CurrentRow(_)) => Value::Integer(0),
         Some(bound::Kind::Preceding(p)) if p.offset < 0 => Value::Missing(PlanError::invalid(
             "WindowFunction",
             Some(field_name),
             format!("Preceding bound offset {} must not be negative", p.offset),
         )),
+        Some(bound::Kind::Preceding(p)) if p.offset == 0 => Value::Missing(PlanError::invalid(
+            "WindowFunction",
+            Some(field_name),
+            "Preceding bound offset must not be 0; use CurrentRow instead",
+        )),
         Some(bound::Kind::Preceding(p)) => Value::Integer(-p.offset),
         Some(bound::Kind::Following(f)) if f.offset < 0 => Value::Missing(PlanError::invalid(
             "WindowFunction",
             Some(field_name),
             format!("Following bound offset {} must not be negative", f.offset),
+        )),
+        Some(bound::Kind::Following(f)) if f.offset == 0 => Value::Missing(PlanError::invalid(
+            "WindowFunction",
+            Some(field_name),
+            "Following bound offset must not be 0; use CurrentRow instead",
         )),
         Some(bound::Kind::Following(f)) => Value::Integer(f.offset),
     }
@@ -590,6 +738,7 @@ impl Textify for WindowFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        // name/reference + arguments: `sum#10@1($0)`
         textify_function_call_prefix(
             self.function_reference,
             &self.arguments,
@@ -597,99 +746,16 @@ impl Textify for WindowFunction {
             ctx,
             w,
         )?;
-        let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
 
-        let mut named_args: Vec<NamedArg> = Vec::new();
-
-        // phase= is always written, even when Unspecified: unlike invocation=,
-        // the parser requires a phase= argument to be present in over(...).
-        named_args.push(NamedArg {
-            name: Cow::Borrowed("phase"),
-            value: window_enum_value::<AggregationPhase>(self.phase, "phase"),
-        });
-
-        // order= is omitted when there are no sort fields.
-        if !self.sorts.is_empty() {
-            named_args.push(NamedArg {
-                name: Cow::Borrowed("order"),
-                value: window_sort_order(&self.sorts),
-            });
-        }
-
-        if self.invocation != AggregationInvocation::Unspecified as i32 {
-            named_args.push(NamedArg {
-                name: Cow::Borrowed("invocation"),
-                value: window_enum_value::<AggregationInvocation>(self.invocation, "invocation"),
-            });
-        }
-
-        if !self.partitions.is_empty() {
-            named_args.push(NamedArg {
-                name: Cow::Borrowed("partition"),
-                value: Value::Tuple(self.partitions.iter().map(Value::Expression).collect()),
-            });
-        }
-
-        let bounds_type = window_function::BoundsType::try_from(self.bounds_type);
-        let has_bounds = self.lower_bound.is_some() || self.upper_bound.is_some();
-        if !matches!(bounds_type, Ok(window_function::BoundsType::Unspecified)) || has_bounds {
-            let keyword = match bounds_type {
-                Ok(window_function::BoundsType::Rows) => "rows",
-                Ok(window_function::BoundsType::Range) => {
-                    // The parser rejects range= frames unless there is
-                    // exactly one order= field; enforce the same invariant
-                    // here so textified output always re-parses.
-                    if self.sorts.len() != 1 {
-                        ctx.push_error(
-                            PlanError::invalid(
-                                "WindowFunction",
-                                Some("bounds_type"),
-                                format!(
-                                    "range frame requires exactly one order= field, found {}",
-                                    self.sorts.len()
-                                ),
-                            )
-                            .into(),
-                        );
-                    }
-                    "range"
-                }
-                Ok(window_function::BoundsType::Unspecified) => {
-                    // bounds_type is required whenever a frame is present.
-                    ctx.push_error(
-                        PlanError::invalid(
-                            "WindowFunction",
-                            Some("bounds_type"),
-                            "bounds_type is Unspecified but lower_bound/upper_bound are set",
-                        )
-                        .into(),
-                    );
-                    "rows"
-                }
-                Err(_) => {
-                    ctx.push_error(
-                        PlanError::invalid(
-                            "WindowFunction",
-                            Some("bounds_type"),
-                            format!("Unknown BoundsType: {}", self.bounds_type),
-                        )
-                        .into(),
-                    );
-                    "rows"
-                }
-            };
-            let lower = window_bound_value(self.lower_bound.as_ref(), "lower_bound");
-            let upper = window_bound_value(self.upper_bound.as_ref(), "upper_bound");
-            named_args.push(NamedArg {
-                name: Cow::Borrowed(keyword),
-                value: Value::Tuple(vec![lower, upper]),
-            });
-        }
-
+        // over-clause: ` over(phase=..., order=..., ...)`
+        let named_args = window_over_named_args(self, ctx);
         write!(w, " over(")?;
         Arguments::inline(vec![], named_args).textify(ctx, w)?;
-        write!(w, "){output_type}")
+        write!(w, ")")?;
+
+        // output type: `:i64`
+        let output = OutputType(self.output_type.as_ref());
+        write!(w, "{}", ctx.display(&output))
     }
 }
 
@@ -1351,7 +1417,7 @@ mod tests {
         });
         assert_eq!(
             ctx.textify_no_errors(&f),
-            "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):i16"
+            "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):i16"
         );
     }
 
@@ -1458,6 +1524,54 @@ mod tests {
     }
 
     #[test]
+    fn test_window_function_bound_with_no_kind_surfaces_error() {
+        // A Bound message that is present but has no `kind` set is
+        // malformed - the parser never produces one. Collapsing it into the
+        // same `EmptyGroup` rendering as a genuinely absent bound would
+        // silently hide that the input was invalid.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound { kind: None });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::CurrentRow(bound::CurrentRow {})),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(
+            s,
+            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16"
+        );
+        assert!(!errs.is_empty(), "expected a diagnostic about the bound");
+    }
+
+    #[test]
+    fn test_window_function_zero_offset_bound_surfaces_error() {
+        // A `Preceding`/`Following` offset of 0 is semantically equivalent
+        // to `CurrentRow`, but rendering it as a bare `0` would re-parse as
+        // `CurrentRow`, silently changing the bound's kind. Surface a
+        // diagnostic instead of rendering it.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let mut f = base_window_function();
+        f.bounds_type = window_function::BoundsType::Rows as i32;
+        f.lower_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Preceding(bound::Preceding { offset: 0 })),
+        });
+        f.upper_bound = Some(window_function::Bound {
+            kind: Some(bound::Kind::Following(bound::Following { offset: 0 })),
+        });
+        let (s, errs) = ctx.textify(&f);
+        assert_eq!(
+            s,
+            "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16"
+        );
+        assert_eq!(errs.0.len(), 2, "expected a diagnostic for each bound");
+    }
+
+    #[test]
     fn test_window_function_i64_max_preceding_bound_roundtrips() {
         // i64::MAX *does* have a negatable counterpart (-i64::MAX, which is
         // one more than i64::MIN), so this boundary value must still
@@ -1522,8 +1636,8 @@ mod tests {
 
     #[test]
     fn test_window_function_unknown_phase_and_invocation() {
-        // phase 99 and invocation 99 match no know n enum variant, so both
-        // render as the same generic `!{WindowFunction}` error token.
+        // phase 99 and invocation 99 match no known enum variant, so each
+        // renders as an error token tagged with that field's own enum type.
         let ctx = TestContext::new()
             .with_urn(1, "urn:example")
             .with_function(1, 10, "sum");
@@ -1533,7 +1647,7 @@ mod tests {
         let (s, errs) = ctx.textify(&f);
         assert_eq!(
             s,
-            "sum() over(phase=!{WindowFunction}, invocation=!{WindowFunction}):i16"
+            "sum() over(phase=!{AggregationPhase}, invocation=!{AggregationInvocation}):i16"
         );
         assert!(
             !errs.is_empty(),

@@ -1144,7 +1144,7 @@ Functions:
 
 === Plan
 Root[a, b, s]
-  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=($0), rows=(-3, 0)):fp64?]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):fp64?]
     Read[t => a:i32, b:fp64]"#;
 
     roundtrip_plan(plan);
@@ -1160,7 +1160,7 @@ Functions:
 
 === Plan
 Root[a, r]
-  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=($0)):i64]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=$0):i64]
     Read[t => a:i32]"#;
 
     roundtrip_plan(plan);
@@ -1250,7 +1250,7 @@ Functions:
 
 === Plan
 Root[r]
-  Project[row_number() over(partition=($0)):i64]
+  Project[row_number() over(partition=$0):i64]
     Read[t => a:i32]"#;
 
     assert!(Parser::parse(plan).is_err());
