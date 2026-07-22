@@ -373,11 +373,31 @@ fn parse_timestamp_to_microseconds(
     parse_timestamp_to_precision_units(timestamp_str, 6, "timestamp", span)
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SupportedPrecision {
+    Seconds,      // 0
+    Milliseconds, // 3
+    Microseconds, // 6
+    Nanoseconds,  // 9
+}
+
+impl SupportedPrecision {
+    /// The Substrait precision unit exponent (`0`, `3`, `6`, or `9`).
+    fn units(self) -> i32 {
+        match self {
+            SupportedPrecision::Seconds => 0,
+            SupportedPrecision::Milliseconds => 3,
+            SupportedPrecision::Microseconds => 6,
+            SupportedPrecision::Nanoseconds => 9,
+        }
+    }
+}
+
 /// Convert a `chrono::Duration` to the units implied by `precision`.
 /// Errors if `duration` overflows the target unit's i64 range
 fn duration_to_precision_units(
     duration: chrono::Duration,
-    precision: i32,
+    precision: SupportedPrecision,
     literal_kind: &'static str,
     span: pest::Span,
 ) -> Result<i64, MessageParseError> {
@@ -385,18 +405,20 @@ fn duration_to_precision_units(
         MessageParseError::invalid(
             "precision_timestamp_out_of_range",
             span,
-            format!("value is out of range for a {literal_kind} literal at precision {precision}"),
+            format!(
+                "value is out of range for a {literal_kind} literal at precision {}",
+                precision.units()
+            ),
         )
     };
     // TODO: reject fractional components that can't be represented at `precision`.
     // E.g. `.999` at precision 0 currently reaches `num_seconds()` and is silently
     // truncated away rather than raising an error.
     match precision {
-        0 => Ok(duration.num_seconds()),
-        3 => Ok(duration.num_milliseconds()),
-        6 => duration.num_microseconds().ok_or_else(out_of_range),
-        9 => duration.num_nanoseconds().ok_or_else(out_of_range),
-        _ => unreachable!("precision already validated by check_supported_precision"),
+        SupportedPrecision::Seconds => Ok(duration.num_seconds()),
+        SupportedPrecision::Milliseconds => Ok(duration.num_milliseconds()),
+        SupportedPrecision::Microseconds => duration.num_microseconds().ok_or_else(out_of_range),
+        SupportedPrecision::Nanoseconds => duration.num_nanoseconds().ok_or_else(out_of_range),
     }
 }
 
@@ -404,9 +426,13 @@ fn check_supported_precision(
     precision: i32,
     literal_kind: &'static str,
     span: pest::Span,
-) -> Result<(), MessageParseError> {
-    if matches!(precision, 0 | 3 | 6 | 9) {
-        return Ok(());
+) -> Result<SupportedPrecision, MessageParseError> {
+    match precision {
+        0 => return Ok(SupportedPrecision::Seconds),
+        3 => return Ok(SupportedPrecision::Milliseconds),
+        6 => return Ok(SupportedPrecision::Microseconds),
+        9 => return Ok(SupportedPrecision::Nanoseconds),
+        _ => {}
     }
     if precision == 12 {
         return Err(MessageParseError::invalid(
@@ -433,7 +459,7 @@ fn parse_timestamp_to_precision_units(
     literal_kind: &'static str,
     span: pest::Span,
 ) -> Result<i64, MessageParseError> {
-    check_supported_precision(precision, literal_kind, span)?;
+    let precision = check_supported_precision(precision, literal_kind, span)?;
 
     // Try multiple timestamp formats for flexibility
     let formats = [
@@ -471,7 +497,7 @@ fn parse_time_to_precision_units(
     literal_kind: &'static str,
     span: pest::Span,
 ) -> Result<i64, MessageParseError> {
-    check_supported_precision(precision, literal_kind, span)?;
+    let precision = check_supported_precision(precision, literal_kind, span)?;
 
     // Try multiple time formats for flexibility
     let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
