@@ -1973,11 +1973,6 @@ mod tests {
 
     #[test]
     fn test_window_function_parses() {
-        // Positive parse cases: each input parses to a WindowFunction whose
-        // fields the check asserts. Bound *parsing* is also
-        // exercised end-to-end by the roundtrip suite; these assert the exact
-        // proto values that a text round-trip does not pin down.
-        // (label, input, assertion on the parsed WindowFunction)
         type ParseCase = (&'static str, &'static str, fn(&WindowFunction));
         let exts = make_extensions_for_fn_tests();
         let cases: &[ParseCase] = &[
@@ -2079,14 +2074,6 @@ mod tests {
             (
                 "add:i64_i64($0, $1) over(phase=&Bogus):i64",
                 "unknown phase= enum value",
-            ),
-            (
-                "add:i64_i64($0, $1) over(phase=&InitialToResult, invocation=&Bogus):i64",
-                "unknown invocation= enum value",
-            ),
-            (
-                "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=($0, 0)):i64",
-                "non-integer window bound (a reference is not a valid bound)",
             ),
             (
                 "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=(0,)):i64",

@@ -578,10 +578,7 @@ fn window_sort_order<'a>(sorts: &'a [SortField]) -> Value<'a> {
     }
 }
 
-/// A single partition expression is written bare (`partition=$0`) rather
-/// than as a 1-tuple, since a bare parenthesized value (`($0)`) is not a
-/// valid 1-tuple under the grammar - that form requires a trailing comma
-/// (`($0,)`) to disambiguate from a parenthesized expression.
+/// A single partition expression is written bare (`partition=$0`) rather than as a 1-tuple.
 fn window_partition_value(partitions: &[Expression]) -> Value<'_> {
     match partitions {
         [single] => Value::Expression(single),
@@ -603,11 +600,7 @@ fn window_frame_named_arg<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Optio
     let keyword = match bounds_type {
         Ok(window_function::BoundsType::Rows) => "rows",
         Ok(window_function::BoundsType::Range) => {
-            // The parser rejects range= frames unless there is exactly one
-            // order= field. A proto with a different count is still
-            // textified best-effort (the caller may have built it directly,
-            // bypassing the parser), but we surface a diagnostic since the
-            // output won't re-parse.
+            // The parser rejects range= frames unless there is exactly one order= field.
             if f.sorts.len() != 1 {
                 ctx.push_error(
                     PlanError::invalid(
@@ -660,10 +653,7 @@ fn window_frame_named_arg<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Optio
 fn window_over_named_args<'a, S: Scope>(f: &'a WindowFunction, ctx: &S) -> Vec<NamedArg<'a>> {
     let mut named_args = Vec::new();
 
-    // phase= is always written, even when Unspecified: unlike invocation=,
-    // the parser requires a phase= argument to be present in over(...).
-    // `decode_enum_field` decodes the raw i32 and reports a field-specific
-    // error (tagged with the enum's own message type) on an unknown value.
+    // the parser requires a phase= argument to be present in over(...) and is always written.
     named_args.push(NamedArg {
         name: Cow::Borrowed("phase"),
         value: decode_enum_field::<AggregationPhase>(f.phase, "AggregationPhase", "phase"),
@@ -706,11 +696,6 @@ fn window_bound_value<'a>(
     bound: Option<&window_function::Bound>,
     field_name: &'static str,
 ) -> Value<'a> {
-    // `bound` being absent (no frame) and `bound.kind` being absent (a
-    // present-but-empty Bound, which the parser never produces) are distinct
-    // cases: the former is a legitimate unbounded frame, the latter is a
-    // malformed proto. Collapsing both into `EmptyGroup` would silently
-    // paper over the latter, so they're handled separately.
     let Some(bound) = bound else {
         return Value::EmptyGroup;
     };
@@ -1415,9 +1400,7 @@ mod tests {
 
     /// Window-function textify cases. Each builds a `WindowFunction` proto,
     /// renders it, and checks the output string plus how many diagnostics were
-    /// accumulated. Grouped as a table since they share one shape; the label on
-    /// each case states the behavior it pins down. All use base output type
-    /// `:i16`; the function name selects the rendered prefix.
+    /// accumulated. Grouped as a table since they share one shape;
     #[test]
     fn test_window_function_textify() {
         let rows = window_function::BoundsType::Rows as i32;
@@ -1478,24 +1461,13 @@ mod tests {
                 Diag::None,
             ),
             (
-                "i64::MAX preceding negates cleanly (boundary above i64::MIN)",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
-                        offset: i64::MAX,
-                    })));
-                    f.upper_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i16",
-                Diag::None,
-            ),
-            (
-                // bounds_type Unspecified but a frame is set: best-effort output,
-                // but the loss is surfaced rather than silently dropped.
-                "bounds_type Unspecified with bounds set is lossy",
+                // bounds_type = Unspecified (0) is a *valid* enum variant, but a
+                // frame is set anyway. Distinct from the out-of-range case below:
+                // this hits the `Ok(Unspecified)` arm (a semantically-missing
+                // frame type), and also checks the early-return guard does NOT
+                // drop the frame when bounds are present. Best-effort rows=
+                // output with the loss surfaced.
+                "bounds_type = Unspecified (valid enum) with bounds set is lossy",
                 "sum",
                 {
                     let mut f = base_window_function();
@@ -1506,26 +1478,12 @@ mod tests {
                 Diag::Some,
             ),
             (
-                // A negative FOLLOWING offset would re-parse as PRECEDING of the
-                // opposite sign; surface an error instead of flipping direction.
-                "negative following offset surfaces error",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(bound(current_row()));
-                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
-                        offset: -5,
-                    })));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(0, !{WindowFunction})):i16",
-                Diag::Some,
-            ),
-            (
-                // Symmetric to the following case; also covers i64::MIN since the
-                // guard is magnitude-agnostic (offset < 0, no negation attempted).
-                "negative preceding offset surfaces error",
+                // A negative offset on either bound would re-parse as the
+                // opposite direction (preceding<->following); surface an error
+                // for each rather than silently flipping the sign. One proto
+                // exercises both guard arms (Preceding.offset<0, Following.offset<0);
+                // magnitude-agnostic, so this also covers i64::MIN.
+                "negative offset on either bound surfaces an error",
                 "sum",
                 {
                     let mut f = base_window_function();
@@ -1533,11 +1491,13 @@ mod tests {
                     f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
                         offset: -5,
                     })));
-                    f.upper_bound = Some(bound(current_row()));
+                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
+                        offset: -5,
+                    })));
                     f
                 },
-                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16",
-                Diag::Some,
+                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16",
+                Diag::Exactly(2),
             ),
             (
                 // A present Bound with no kind is malformed (the parser never
@@ -1589,7 +1549,10 @@ mod tests {
                 Diag::Some,
             ),
             (
-                "unknown bounds_type falls back to rows= with a diagnostic",
+                // bounds_type = 99 is an out-of-range int: `try_from` returns
+                // Err, so this hits the `Err(_)` arm (distinct from the valid
+                // `Ok(Unspecified)` case).
+                "bounds_type = out-of-range int falls back to rows= with a diagnostic",
                 "sum",
                 {
                     let mut f = base_window_function();

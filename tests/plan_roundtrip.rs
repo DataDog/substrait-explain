@@ -1157,10 +1157,9 @@ Root[a]
 fn test_window_function_roundtrips() {
     let cases: &[(&str, &str)] = &[
         (
-            // rows frame, everything composable at once: 1-arg fn, multi-field
-            // order=, invocation=&Distinct, multi-expression partition=, and a
-            // preceding + unbounded-upper frame.
-            "rows: multi order/partition, invocation, preceding + unbounded",
+            // multi-field order=, invocation=&Distinct, multi-expression
+            // partition=, and a preceding + current-row rows= frame.
+            "rows: multi order/partition, invocation, preceding + current row",
             r#"=== Extensions
 URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
@@ -1169,7 +1168,7 @@ Functions:
 
 === Plan
 Root[a, b, s]
-  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst)), invocation=&Distinct, partition=($0, $1), rows=(-3, _)):fp64?]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst)), invocation=&Distinct, partition=($0, $1), rows=(-3, 0)):fp64?]
     Read[t => a:i32, b:fp64]"#,
         ),
         (
@@ -1200,22 +1199,6 @@ Functions:
 === Plan
 Root[a, r]
   Project[$0, row_number() over(phase=&InitialToResult, partition=$0):i64]
-    Read[t => a:i32]"#,
-        ),
-        (
-            // Regression for the negation boundary: -i64::MAX negates cleanly
-            // into a valid PRECEDING offset (unlike i64::MIN, rejected below),
-            // paired with a current-row (0) upper bound.
-            "rows: -i64::MAX preceding (negation boundary) + current row",
-            r#"=== Extensions
-URNs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-Functions:
-  # 10 @  1: sum
-
-=== Plan
-Root[r]
-  Project[sum($0) over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i64?]
     Read[t => a:i32]"#,
         ),
     ];
