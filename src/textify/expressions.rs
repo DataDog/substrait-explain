@@ -83,8 +83,8 @@ impl PrecisionFormatError {
 /// Returns the diagnostic for truncating a picosecond value to nanoseconds.
 fn picosecond_truncation_warning(variant: &'static str) -> PlanError {
     PlanError::invalid(
-        variant,
-        Some("value"),
+        "LiteralType",
+        Some(variant),
         "precision 12 (picoseconds) truncated to nanoseconds; sub-nanosecond precision lost",
     )
 }

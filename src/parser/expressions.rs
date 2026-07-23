@@ -394,7 +394,9 @@ impl SupportedPrecision {
 }
 
 /// Convert a `chrono::Duration` to the units implied by `precision`.
-/// Errors if `duration` overflows the target unit's i64 range
+/// Errors if `duration` overflows the target unit's i64 range, or if `duration`
+/// carries a fractional component finer than `precision` can represent (e.g.
+/// `.999` seconds can't be represented exactly at precision 0).
 fn duration_to_precision_units(
     duration: chrono::Duration,
     precision: SupportedPrecision,
@@ -403,7 +405,7 @@ fn duration_to_precision_units(
 ) -> Result<i64, MessageParseError> {
     let out_of_range = || {
         MessageParseError::invalid(
-            "precision_timestamp_out_of_range",
+            "precision_literal_out_of_range",
             span,
             format!(
                 "value is out of range for a {literal_kind} literal at precision {}",
@@ -411,13 +413,41 @@ fn duration_to_precision_units(
             ),
         )
     };
-    // TODO: reject fractional components that can't be represented at `precision`.
-    // E.g. `.999` at precision 0 currently reaches `num_seconds()` and is silently
-    // truncated away rather than raising an error.
+    let fractional_truncated = || {
+        MessageParseError::invalid(
+            "precision_literal_fractional_truncated",
+            span,
+            format!(
+                "value has a fractional component finer than precision {} can represent for a {literal_kind} literal",
+                precision.units()
+            ),
+        )
+    };
+
     match precision {
-        SupportedPrecision::Seconds => Ok(duration.num_seconds()),
-        SupportedPrecision::Milliseconds => Ok(duration.num_milliseconds()),
-        SupportedPrecision::Microseconds => duration.num_microseconds().ok_or_else(out_of_range),
+        SupportedPrecision::Seconds => {
+            let value = duration.num_seconds();
+            if chrono::Duration::seconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        SupportedPrecision::Milliseconds => {
+            let value = duration.num_milliseconds();
+            if chrono::Duration::milliseconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        SupportedPrecision::Microseconds => {
+            let value = duration.num_microseconds().ok_or_else(out_of_range)?;
+            if chrono::Duration::microseconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        // Nanoseconds is the finest precision chrono can represent, so there's
+        // no finer fractional component that could be silently dropped here.
         SupportedPrecision::Nanoseconds => duration.num_nanoseconds().ok_or_else(out_of_range),
     }
 }
@@ -436,7 +466,7 @@ fn check_supported_precision(
     }
     if precision == 12 {
         return Err(MessageParseError::invalid(
-            "precision_timestamp_unsupported_precision",
+            "precision_literal_unsupported_precision",
             span,
             format!(
                 "precision 12 (picoseconds) is not supported for {literal_kind} literals; chrono only supports nanosecond (precision 9) resolution"
@@ -444,7 +474,7 @@ fn check_supported_precision(
         ));
     }
     Err(MessageParseError::invalid(
-        "precision_timestamp_invalid_precision",
+        "precision_literal_invalid_precision",
         span,
         format!(
             "Invalid precision {precision} for a {literal_kind} literal; expected one of 0 (seconds), 3 (milliseconds), 6 (microseconds), or 9 (nanoseconds)"
@@ -1176,6 +1206,29 @@ mod tests {
         let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime?<6>");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
         assert!(result.nullable);
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_fractional_truncated() {
+        let extensions = SimpleExtensions::default();
+        // precisiontimestamp<0> declares second resolution, but the value has a
+        // fractional second; this must error rather than silently drop the ".999".
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00.999':precisiontimestamp<0>",
+        );
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("fractional"));
+    }
+
+    #[test]
+    fn test_parse_precision_time_literal_fractional_truncated() {
+        let extensions = SimpleExtensions::default();
+        // precisiontime<3> declares millisecond resolution, but the value has
+        // more fractional digits than that; this must error, not truncate.
+        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<3>");
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("fractional"));
     }
 
     #[test]
