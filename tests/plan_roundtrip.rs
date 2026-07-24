@@ -447,6 +447,23 @@ Root[a, b]
 }
 
 #[test]
+fn test_join_relation_right_anti_roundtrip() {
+    // Test RightAnti join - should output only right columns
+    let plan_right_anti = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+
+=== Plan
+Root[c, d]
+  Join[&RightAnti, eq($0, $2):boolean => $0, $1]
+    Read[left_table => a:i32, b:string]
+    Read[right_table => c:i32, d:string]"#;
+    roundtrip_plan(plan_right_anti);
+}
+
+#[test]
 fn test_join_relation_right_mark_roundtrip() {
     // Test RightMark join - should output right columns plus mark column
     // Left: 2 columns, Right: 3 columns, RightMark outputs 4 total: $0, $1, $2, $3
