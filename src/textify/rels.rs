@@ -192,6 +192,9 @@ impl Textify for Emitted<'_> {
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let Some(EmitKind::Emit(emit)) = self.emit else {
+            if self.direct_output.is_empty() {
+                return write!(w, "_");
+            }
             return write!(w, "{}", ctx.separated(self.direct_output.iter(), ", "));
         };
 

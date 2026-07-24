@@ -367,7 +367,7 @@ extension_relation = { extension_name ~ "[" ~ sp ~ arguments ~ (sp ~ "=>" ~ sp ~
 extension_name = { extension_type ~ ":" ~ name }
 extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 
-arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
+arguments = { empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments }
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
 
@@ -396,7 +396,7 @@ extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extens
 extension_named_argument  = { name ~ sp ~ "=" ~ sp ~ extension_argument }
 
 // Output columns - can mix named columns, references, and expressions
-extension_columns = { (extension_column ~ (sp ~ "," ~ sp ~ extension_column)*)? }
+extension_columns = { empty | (extension_column ~ (sp ~ "," ~ sp ~ extension_column)*) }
 extension_column  = { named_column | reference | expression }
 
 // Relation addenda: metadata/detail lines attached to a relation.
