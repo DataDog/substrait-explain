@@ -493,15 +493,13 @@ impl<'a> Relation<'a> {
         match &rel.read_type {
             Some(ReadType::NamedTable(table)) => {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
-                // Named Reads preserve their existing schema spelling: an
-                // absent common output form uses compact `=> schema`, while a
-                // present Direct or Emit form writes the schema after `+>`.
-                // The Read compact-output slice canonicalizes Direct to the
-                // compact spelling.
-                let output_syntax = if emit.is_some() {
-                    OutputSyntax::Explicit
-                } else {
-                    OutputSyntax::Compact
+                // A compact Read schema determines only the final output, so
+                // it cannot preserve a non-identity emit mapping. Otherwise,
+                // direct schemas use the compact spelling regardless of whether
+                // Direct is explicitly present in the protobuf.
+                let output_syntax = match emit {
+                    Some(EmitKind::Emit(_)) => OutputSyntax::Explicit,
+                    Some(EmitKind::Direct(_)) | None => OutputSyntax::Compact,
                 };
                 Relation {
                     name: Cow::Borrowed("Read"),

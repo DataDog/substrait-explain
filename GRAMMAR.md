@@ -625,9 +625,8 @@ specification](https://substrait.io/relations/logical_relations/).
   fields followed by its expressions in declaration order; `Aggregate` produces
   the grouping expressions followed by the measures.
 - The input order of `Read` is relative to its direct schema; its "input" is what
-  it is reading from. Its references are over the direct schema, written as the
-  read's `named_column_list`, which Substrait interprets before any projection
-  is applied.
+  it is reading from. Its references are over that schema, which Substrait
+  interprets before any projection is applied.
 
 `$N` refers to field N of the relation's input order, which is the scope of a
 relation's expressions: a `Filter` condition, `Project` expressions, `Aggregate`
@@ -700,23 +699,41 @@ Root[c, d]           // root with output columns c and d
 
 ### Read Relation
 
+A named-table Read represents Substrait's [Read
+operator](https://substrait.io/relations/logical_relations/#read-operator). A
+Read has no relational input. Its named-table definition identifies the data to
+read. Its [direct
+schema](https://substrait.io/relations/logical_relations/#read-properties)
+defines the fields read and their types. The fields appear in the Read direct
+output order.
+
 #### Syntax
 
 ```text
-read_relation := "Read" "[" table_name output "]"
-output := implicit_output / direct_output
-implicit_output := "=>" named_column_list
-direct_output := "+>" named_column_list ("|>" reference_list)?
+read_relation := "Read" "[" table_name ("=>" named_column_list / "+>" named_column_list ("|>" reference_list)?) "]"
 ```
 
 #### Components
 
-- `table_name := name ("." name)*` - table name, optionally qualified with schema/database
-- `named_column := name ":" type` - column name with type annotation
-- `named_column_list := "_" / named_column ("," named_column)*` - the list of columns and their types to be read from the table `table_name`. `_` denotes an empty schema.
-  - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
-  - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
-  - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
+- `table_name := name ("." name)*`: the namespaced strings in Substrait's
+  named-table definition. The names together identify the table. The text
+  format separates them with `.`.
+- `named_column_list := named_column ("," named_column)* / "_"`: a
+  comma-separated list containing at least one named column. Use `_` for an
+  empty list.
+- `named_column := name ":" type`: a column name followed by its
+  [type](#types).
+- `"=>" named_column_list`: declares the Read direct schema in direct output
+  order and returns it as the final output using `Direct`.
+- `"+>" named_column_list ("|>" reference_list)?`: declares the Read direct
+  schema in direct output order. Without `|>`, the Read uses `Direct`, and
+  formatting uses `=>` as the canonical form.
+  - With `|>`, the shared [`reference_list`](#general-relation-grammar) is
+    Substrait's [emit output
+    mapping](https://substrait.io/relations/common_fields/#emit). Its references
+    are positions in the Read direct output order, so the mapping can select,
+    omit, or reorder fields. An explicit mapping remains `Emit`, including an
+    identity mapping.
 
 #### Example
 
@@ -725,19 +742,16 @@ direct_output := "+>" named_column_list ("|>" reference_list)?
 #
 # let plan_text = r#"
 === Plan
-Root[result]
-  Project[$0, $1]
-    Read[schema.table => a:i64, b:string?]
-Root[result2]
-  Project[$0, $1]
-    Read[orders => quantity:i32?, price:i64]
+Root[a, b]
+  Read[schema.table => a:i64, b:string?]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();
-# assert_eq!(plan.relations.len(), 2);
+# assert_eq!(plan.relations.len(), 1);
 ```
 
-Use `+>` when the read's base schema records the direct output domain:
+The parser also accepts an explicit `Direct` schema. Formatting rewrites this
+form with `=>`:
 
 ```rust
 # use substrait_explain::Parser;
@@ -752,8 +766,8 @@ Root[a, b]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
-Use `+> ... |>` to specify an Emit / output ordering different from the table's base schema:
-only some fields should flow downstream:
+Use `+> ... |>` to declare the complete direct schema and then apply an
+`Emit` mapping. This example selects 2 fields and reverses their order:
 
 ```rust
 # use substrait_explain::Parser;

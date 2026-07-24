@@ -22,17 +22,25 @@ Root[c, d]
 }
 
 #[test]
-fn test_read_explicit_direct_roundtrip() {
-    let plan = r#"=== Plan
+fn test_read_direct_output_is_canonicalized() {
+    let canonical = r#"=== Plan
+Root[a, b]
+  Read[my.table => a:i32, b:string?]"#;
+    let explicit = r#"=== Plan
 Root[a, b]
   Read[my.table +> a:i32, b:string?]"#;
 
-    roundtrip_plan(plan);
+    assert_roundtrip_canonical(canonical, explicit);
 }
 
 #[test]
-fn test_read_explicit_empty_additions_roundtrip() {
-    roundtrip_plan(
+fn test_empty_read_direct_output_is_canonicalized() {
+    let canonical = r#"=== Plan
+Root[_]
+  Read[my.table => _]"#;
+
+    assert_roundtrip_canonical(
+        canonical,
         r#"=== Plan
 Root[_]
   Read[my.table +> _]"#,

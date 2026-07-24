@@ -5,6 +5,15 @@ mod common;
 use common::assert_roundtrip_verbose;
 
 #[test]
+fn test_direct_read_stays_compact_in_verbose_output() {
+    let read = r#"=== Plan
+Root[a, b]
+  Read[table => a:i32, b:string]"#;
+
+    assert_roundtrip_verbose(read, read);
+}
+
+#[test]
 fn test_filter_empty_output_styles() {
     let compact = r#"=== Plan
 Root[_]

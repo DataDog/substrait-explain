@@ -360,7 +360,11 @@ fn parse_read_output(
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
             iter.done();
             let output_count = columns.len();
-            Ok((columns, None, output_count))
+            let common = Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            });
+            Ok((columns, common, output_count))
         }
         Rule::direct_read_output => {
             let mut iter = RuleIter::from(output.into_inner());
@@ -1595,7 +1599,12 @@ mod tests {
             .unwrap()
             .types;
         assert_eq!(columns.len(), 2);
-        assert!(read.common.is_none());
+        assert!(matches!(
+            read.common
+                .as_ref()
+                .and_then(|common| common.emit_kind.as_ref()),
+            Some(EmitKind::Direct(_)),
+        ));
     }
 
     #[test]
