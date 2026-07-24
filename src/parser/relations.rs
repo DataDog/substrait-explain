@@ -2147,6 +2147,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_join_relation_right_semi() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean => $3, $4]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap()
+        .0;
+
+        // Should be a RightSemi join
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [3, 4] (only right columns for semi join)
+        assert_eq!(emit, &[3, 4]);
+    }
+
+    #[test]
     fn test_parse_join_relation_right_anti() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
