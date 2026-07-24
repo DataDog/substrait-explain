@@ -430,6 +430,42 @@ Root[id, name, amount]
 }
 
 #[test]
+fn test_join_relation_post_join_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+  # 11 @  1: gt
+
+=== Plan
+Root[id, name, amount]
+  Join[&Inner, eq($0, $2):boolean, post_join_filter=gt($3, 100:i32):boolean => $0, $1, $3]
+    Read[users => id:i64, name:string]
+    Read[orders => user_id:i64, amount:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_left_join_relation_post_join_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: eq
+  # 11 @  1: gt
+
+=== Plan
+Root[id, name, amount]
+  Join[&Left, eq($0, $2):boolean, post_join_filter=gt($3, 100:i32):boolean => $0, $1, $3]
+    Read[users => id:i64, name:string]
+    Read[orders => user_id:i64, amount:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_join_relation_semi_types_roundtrip() {
     // Test LeftSemi join - should output only left columns
     let plan_semi = r#"=== Extensions
