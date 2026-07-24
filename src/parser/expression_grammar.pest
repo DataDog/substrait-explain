@@ -300,9 +300,17 @@ virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }
 
 filter_relation = { "Filter" ~ "[" ~ expression ~ (sp ~ reference_output)? ~ "]" }
 
-project_relation      = { "Project" ~ "[" ~ project_argument_list ~ "]" }
-project_argument_list = { (project_argument ~ (sp ~ "," ~ sp ~ project_argument)*)? }
-project_argument      = { reference | expression }
+// Project has no relation parameters, so `_` marks the empty parameter list.
+// Compact output combines input references and added expressions; explicit
+// output declares only the expressions appended to the inherited input fields.
+project_relation         = { "Project" ~ "[" ~ empty ~ (sp ~ project_output)? ~ "]" }
+project_output           = { implicit_project_output | explicit_project_output }
+implicit_project_output  = { "=>" ~ sp ~ project_argument_list }
+explicit_project_output  = { ("+>" ~ sp ~ project_additions ~ (sp ~ explicit_emit)?) | explicit_emit }
+project_argument_list    = { empty | (project_argument ~ (sp ~ "," ~ sp ~ project_argument)*) }
+project_argument         = { reference | expression }
+project_additions        = { project_expression_list }
+project_expression_list  = { empty | expression_list }
 
 // Aggregate relation: groups by specified fields and applies aggregate functions
 // Format: Aggregate[group_by_fields => output_items]

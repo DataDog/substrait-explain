@@ -28,6 +28,34 @@ Root[_]
 }
 
 #[test]
+fn test_project_reordered_output_styles() {
+    let compact = r#"=== Plan
+Root[added, original]
+  Project[_ => 2:i32, $0]
+    Read[table => original:i32]"#;
+    let verbose = r#"=== Plan
+Root[added, original]
+  Project[_ +> 2:i32 |> $1, $0]
+    Read[table => original:i32]"#;
+
+    assert_roundtrip_verbose(compact, verbose);
+}
+
+#[test]
+fn test_project_mapping_without_additions_output_styles() {
+    let compact = r#"=== Plan
+Root[b, a]
+  Project[_ => $1, $0]
+    Read[table => a:i32, b:string]"#;
+    let verbose = r#"=== Plan
+Root[b, a]
+  Project[_ |> $1, $0]
+    Read[table => a:i32, b:string]"#;
+
+    assert_roundtrip_verbose(compact, verbose);
+}
+
+#[test]
 fn test_sort_partial_reordered_output_styles() {
     let compact = r#"=== Plan
 Root[c, a]

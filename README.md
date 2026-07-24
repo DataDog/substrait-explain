@@ -103,7 +103,7 @@ Functions:
 === Plan
 Root[revenue]
   Filter[gt($2, 100) => $0, $1]
-    Project[$0, $1, multiply($0, $1)]
+    Project[_ => $0, $1, multiply($0, $1)]
       Read[orders => quantity:i32?, price:fp64?]
 ```
 
@@ -157,7 +157,7 @@ Functions:
 === Plan
 Root[revenue]
   Filter[gt($2, 100) => $0, $1]
-    Project[$0, $1, multiply($0, $1)]
+    Project[_ => $0, $1, multiply($0, $1)]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 

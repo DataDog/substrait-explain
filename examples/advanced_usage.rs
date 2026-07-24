@@ -42,7 +42,7 @@ Functions:
 === Plan
 Root[revenue]
   Filter[gt($2, 100):boolean => $0, $1]
-    Project[$0, $1, multiply($0, $1):fp64?]
+    Project[_ => $0, $1, multiply($0, $1):fp64?]
       Read[orders => quantity:i32?, price:fp64?]
 "#;
 

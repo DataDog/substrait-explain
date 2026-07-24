@@ -996,11 +996,18 @@ Root[result]
 
 #### Syntax
 
-`"Project" "[" (expression ("," expression)*)? "]"`
+```text
+project_relation := "Project" "[" "_" project_output? "]"
+project_output   := "=>" project_values
+                  / "+>" project_additions ("|>" emit_mapping)?
+```
 
 #### Components
 
-- `expression` - field reference, function call, or literal (see Expressions section)
+- The leading `_` is Project's required empty parameter list.
+- `project_values` is a comma-separated list of input references and expressions. In compact `=>` syntax, it describes Project's final output.
+- `project_additions` is a comma-separated list of expressions appended to Project's inherited input fields. Use `_` when it is empty.
+- `emit_mapping` references the complete direct output: inherited input fields first, followed by `project_additions`.
 
 #### Example
 
@@ -1010,7 +1017,7 @@ Root[result]
 # let plan_text = r#"
 === Plan
 Root[result]
-  Project[$1, 42]                    // project field 1 and literal 42
+  Project[_ => $1, 42]               // project field 1 and literal 42
     Read[data => a:i64, b:string]
 # "#;
 #

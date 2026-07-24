@@ -47,7 +47,7 @@ use textify::plan::PlanWriter;
 /// let plan_text = r#"
 /// === Plan
 /// Root[c, d]
-///   Project[$1, 42]
+///   Project[_ => $1, 42]
 ///     Read[schema.table => a:i64, b:string?]
 /// "#;
 ///
@@ -108,7 +108,7 @@ pub fn parse_with_registry(
 /// let plan: Plan = parse(r#"
 /// === Plan
 /// Root[result]
-///   Project[$0, $1]
+///   Project[_ => $0, $1]
 ///     Read[data => a:i64, b:string]
 /// "#).unwrap();
 ///
@@ -142,7 +142,7 @@ pub fn format(plan: &Plan) -> (String, Vec<FormatError>) {
 /// let plan = parse(r#"
 /// === Plan
 /// Root[result]
-///   Project[$0, 42]
+///   Project[_ => $0, 42]
 ///     Read[data => a:i64]
 /// "#).unwrap();
 ///

@@ -257,7 +257,7 @@ Functions:
   # 10 @  1: add
 
 === Plan
-Project[$0, $1, add($0, $1):i64]
+Project[_ => $0, $1, add($0, $1):i64]
   Read[table1 => col1:i32?, col2:i32?]
 "#
         .trim_start();

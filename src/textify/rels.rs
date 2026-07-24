@@ -266,6 +266,7 @@ enum OutputClause<'a> {
 impl<'a> OutputClause<'a> {
     fn new(
         direct_output: &'a [Value<'a>],
+        additions: &'a [Value<'a>],
         emit: Option<&'a EmitKind>,
         syntax: OutputSyntax,
         presence: OutputClausePresence,
@@ -279,20 +280,26 @@ impl<'a> OutputClause<'a> {
             (OutputSyntax::Compact, OutputClausePresence::Required, _) => {
                 Some(Self::Compact(Emitted::new(direct_output, emit)))
             }
-            (OutputSyntax::Compact, OutputClausePresence::WhenNeeded, Some(_)) => {
-                Some(Self::Compact(Emitted::new(direct_output, emit)))
+            (OutputSyntax::Compact, OutputClausePresence::WhenNeeded, mapping) => {
+                (!additions.is_empty() || mapping.is_some())
+                    .then(|| Self::Compact(Emitted::new(direct_output, emit)))
             }
-            (OutputSyntax::Compact, OutputClausePresence::WhenNeeded, None) => None,
             (OutputSyntax::Explicit, OutputClausePresence::Required, mapping) => {
                 Some(Self::Explicit(ExplicitOutput::Additions {
-                    additions: OutputAdditions(direct_output),
+                    additions: OutputAdditions(additions),
                     mapping,
                 }))
             }
-            (OutputSyntax::Explicit, OutputClausePresence::WhenNeeded, Some(mapping)) => {
-                Some(Self::Explicit(ExplicitOutput::Mapping(mapping)))
+            (OutputSyntax::Explicit, OutputClausePresence::WhenNeeded, mapping) => {
+                match (additions.is_empty(), mapping) {
+                    (false, mapping) => Some(Self::Explicit(ExplicitOutput::Additions {
+                        additions: OutputAdditions(additions),
+                        mapping,
+                    })),
+                    (true, Some(mapping)) => Some(Self::Explicit(ExplicitOutput::Mapping(mapping))),
+                    (true, None) => None,
+                }
             }
-            (OutputSyntax::Explicit, OutputClausePresence::WhenNeeded, None) => None,
         }
     }
 }
@@ -352,9 +359,11 @@ pub struct Relation<'a> {
     /// - `Some(RelationArgs::Rows { .. })` prints one row per line, followed by
     ///   any named arguments, one per line.
     pub arguments: Option<RelationArgs<'a>>,
-    /// The columns emitted by this relation, pre-emit - the 'direct' column
-    /// output.
+    /// The relation's complete direct output, before any emit mapping.
     pub columns: Vec<Value<'a>>,
+    /// The first index of direct-output additions. The preceding fields are
+    /// inherited or otherwise form the relation's base direct output.
+    output_additions_start: usize,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
     /// How an output clause is rendered when one is present.
@@ -434,6 +443,7 @@ impl Relation<'_> {
                 }
                 let output = OutputClause::new(
                     &self.columns,
+                    &self.columns[self.output_additions_start..],
                     self.emit,
                     self.output_syntax,
                     self.output_clause_presence,
@@ -449,6 +459,7 @@ impl Relation<'_> {
                 let args = ctx.display(args);
                 match OutputClause::new(
                     &self.columns,
+                    &self.columns[self.output_additions_start..],
                     self.emit,
                     self.output_syntax,
                     self.output_clause_presence,
@@ -505,6 +516,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Borrowed("Read"),
                     arguments: Some(RelationArgs::inline(vec![table_name], vec![])),
                     columns,
+                    output_additions_start: 0,
                     emit,
                     output_syntax,
                     output_clause_presence: OutputClausePresence::Required,
@@ -549,6 +561,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Borrowed("Read:Virtual"),
                     arguments: Some(arguments),
                     columns,
+                    output_additions_start: 0,
                     emit,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -569,6 +582,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Borrowed("Read:Extension"),
                     arguments: None,
                     columns,
+                    output_additions_start: 0,
                     emit,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -590,6 +604,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Borrowed("Read"),
                     arguments: Some(RelationArgs::inline(vec![Value::Missing(err)], vec![])),
                     columns,
+                    output_additions_start: 0,
                     emit,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -657,13 +672,16 @@ impl<'a> Relation<'a> {
         let positional = vec![condition];
         let arguments = Some(RelationArgs::inline(positional, vec![]));
         let emit = get_emit(rel.common.as_ref());
-        let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
-        let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
+        let (children, input_columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
+        let columns = (0..input_columns)
+            .map(|i| Value::Reference(i as i32))
+            .collect();
 
         Relation {
             name: Cow::Borrowed("Filter"),
             arguments,
             columns,
+            output_additions_start: input_columns,
             emit,
             output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
             output_clause_presence: OutputClausePresence::WhenNeeded,
@@ -684,11 +702,12 @@ impl<'a> Relation<'a> {
 
         Relation {
             name: Cow::Borrowed("Project"),
-            arguments: None,
+            arguments: Some(RelationArgs::inline(vec![], vec![])),
             columns,
+            output_additions_start: input_columns,
             emit: get_emit(rel.common.as_ref()),
-            output_syntax: OutputSyntax::Compact,
-            output_clause_presence: OutputClausePresence::Required,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -719,6 +738,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Owned(format!("{token}")),
                     arguments: None,
                     columns: vec![],
+                    output_additions_start: 0,
                     emit: None,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -788,6 +808,7 @@ impl<'a> Relation<'a> {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
                     arguments: Some(RelationArgs::inline(positional, named)),
                     columns,
+                    output_additions_start: 0,
                     emit: None,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -808,6 +829,7 @@ impl<'a> Relation<'a> {
                         None::<&str>,
                         error.to_string(),
                     ))],
+                    output_additions_start: 0,
                     emit: None,
                     output_syntax: OutputSyntax::Compact,
                     output_clause_presence: OutputClausePresence::Required,
@@ -903,6 +925,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Aggregate"),
             arguments,
             columns: all_outputs,
+            output_additions_start: 0,
             emit,
             output_syntax: OutputSyntax::Compact,
             output_clause_presence: OutputClausePresence::Required,
@@ -1006,6 +1029,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Sort"),
             arguments,
             columns: col_values,
+            output_additions_start: input_columns,
             emit,
             output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
             output_clause_presence: OutputClausePresence::WhenNeeded,
@@ -1060,6 +1084,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Fetch"),
             arguments: Some(RelationArgs::inline(vec![], named_args)),
             columns,
+            output_additions_start: input_columns,
             emit,
             output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
             output_clause_presence: OutputClausePresence::WhenNeeded,
@@ -1174,6 +1199,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Join"),
             arguments,
             columns,
+            output_additions_start: 0,
             emit,
             output_syntax: OutputSyntax::Compact,
             output_clause_presence: OutputClausePresence::Required,
@@ -1206,6 +1232,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Set"),
             arguments,
             columns,
+            output_additions_start: width,
             emit,
             output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
             output_clause_presence: OutputClausePresence::WhenNeeded,
@@ -1228,6 +1255,7 @@ impl<'a> Relation<'a> {
             name: Cow::Borrowed("Cross"),
             arguments: Some(RelationArgs::inline(vec![], vec![])),
             columns,
+            output_additions_start: total_columns,
             emit: get_emit(rel.common.as_ref()),
             output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
             output_clause_presence: OutputClausePresence::WhenNeeded,
