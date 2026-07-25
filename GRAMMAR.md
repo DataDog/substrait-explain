@@ -911,22 +911,30 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 ### Join Relation
 
-**Syntax**: `"Join" "[" join_type "," expression [ "," "post_join_filter" "=" expression ] "=>" reference_list "]"`
+**Syntax**: `"Join" "[" join_type "," expression ("," "post_join_filter" "=" expression)? "=>" reference_list "]"`
 
 **Components**:
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
-- `expression` - Join condition (boolean expression relating left and right inputs)
-- `post_join_filter` - Optional post-join filter expression, applied after join matching
-- `reference_list` - comma-separated list of field references for output columns
+- `expression` - Join condition (boolean expression relating left and right inputs), with field references over input order
+- `post_join_filter` - Optional post-join filter expression, applied after join matching, with field references over direct output order
+- `reference_list` - comma-separated list of field references for output columns, with field references over direct output order
 
 **Field Reference Mapping**:
 
-For joins, field references in the join condition, post-join filter, and output
-list map to the combined schema of left and right inputs:
+For join conditions, field references map to the combined schema of left and
+right inputs:
 
 - `$0`, `$1`, ... refer to left input fields
 - `$n`, `$n+1`, ... refer to right input fields (where n = number of left fields)
+
+For `post_join_filter` and `reference_list`, field references map to the join's
+direct output order:
+
+- inner, left, right, and outer joins output left fields followed by right fields
+- left semi, left anti, and left single joins output left fields only
+- right semi, right anti, and right single joins output right fields only, renumbered from `$0`
+- left mark and right mark joins output the retained side's fields followed by the mark column
 
 **Example**:
 

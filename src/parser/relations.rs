@@ -2101,7 +2101,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::join_relation,
-                "Join[&Inner, eq($0, $3):boolean, post_join_filter=gt($4, 100:i32):boolean => $0, $1, $4]",
+                "Join[&RightSemi, eq($0, $3):boolean, post_join_filter=gt($1, 100:i32):boolean => $0, $1]",
             ),
             vec![left_rel, right_rel],
             6,
@@ -2109,7 +2109,7 @@ mod tests {
         .unwrap()
         .0;
 
-        assert_eq!(join.r#type, join_rel::JoinType::Inner as i32);
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
         assert!(join.expression.is_some());
         assert!(join.post_join_filter.is_some());
 
@@ -2118,7 +2118,7 @@ mod tests {
             EmitKind::Emit(emit) => &emit.output_mapping,
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
-        assert_eq!(emit, &[0, 1, 4]);
+        assert_eq!(emit, &[0, 1]);
     }
 
     #[test]
@@ -2203,7 +2203,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::join_relation,
-                "Join[&RightSemi, eq($0, $3):boolean => $3, $4]",
+                "Join[&RightSemi, eq($0, $3):boolean => $0, $1]",
             ),
             vec![left_rel, right_rel],
             6,
@@ -2219,8 +2219,8 @@ mod tests {
             EmitKind::Emit(emit) => &emit.output_mapping,
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
-        // Output mapping should be [3, 4] (only right columns for semi join)
-        assert_eq!(emit, &[3, 4]);
+        // Output mapping should be [0, 1] over right-semi direct output columns.
+        assert_eq!(emit, &[0, 1]);
     }
 
     #[test]
