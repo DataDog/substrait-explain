@@ -1261,9 +1261,10 @@ impl RelationParsePair for JoinRel {
         iter.done();
 
         // TODO: For semi/anti/single/mark joins, the direct output width differs
-        // from left+right. Using `input_field_count` here misclassifies identity
-        // emits and accepts mappings such as `RightSemi => $3, $4`, even though
-        // emit references are relative to the join's direct output domain.
+        // from left+right. The text `=>` list is written in join input-reference
+        // space, but `RelCommon.emit.output_mapping` is over the direct output
+        // domain. Using `input_field_count` here misclassifies identity emits
+        // and fails to translate right-side-only joins into 0-based emit mappings.
         // Revisit when `parse_pair_with_context` can see per-child field counts.
         let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
@@ -2159,15 +2160,15 @@ mod tests {
             .with_function(1, 10, "eq")
             .extensions;
 
-        for (join_type_name, join_type) in [
-            ("LeftSemi", join_rel::JoinType::LeftSemi),
-            ("RightSemi", join_rel::JoinType::RightSemi),
-            ("LeftAnti", join_rel::JoinType::LeftAnti),
-            ("RightAnti", join_rel::JoinType::RightAnti),
+        for (join_type_name, join_type, output_refs) in [
+            ("LeftSemi", join_rel::JoinType::LeftSemi, "$0, $1, $2"),
+            ("RightSemi", join_rel::JoinType::RightSemi, "$3, $4, $5"),
+            ("LeftAnti", join_rel::JoinType::LeftAnti, "$0, $1, $2"),
+            ("RightAnti", join_rel::JoinType::RightAnti, "$3, $4, $5"),
         ] {
             let left_rel = example_read_relation().into_rel(None);
             let right_rel = example_read_relation().into_rel(None);
-            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => $0, $1, $2]");
+            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => {output_refs}]");
 
             let join = JoinRel::parse_pair_with_context(
                 &extensions,
@@ -2183,23 +2184,28 @@ mod tests {
             let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
             assert!(
                 matches!(emit_kind, EmitKind::Direct(_)),
-                "Expected {join_type_name} identity emit over direct output fields $0..$2 to be Direct, got {emit_kind:?}"
+                "Expected {join_type_name} identity emit over {output_refs} to be normalized to Direct, got {emit_kind:?}"
             );
         }
     }
 
     #[test]
-    #[ignore = "Join emit parsing currently accepts references outside the join-type-specific direct output domain"]
-    fn test_parse_join_relation_semi_anti_rejects_input_scope_emit() {
+    #[ignore = "Join emit parsing currently accepts references from the side omitted by semi/anti direct output"]
+    fn test_parse_join_relation_semi_anti_rejects_omitted_side_emit() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
             .with_function(1, 10, "eq")
             .extensions;
 
-        for join_type_name in ["LeftSemi", "RightSemi", "LeftAnti", "RightAnti"] {
+        for (join_type_name, omitted_refs) in [
+            ("LeftSemi", "$3, $4"),
+            ("RightSemi", "$0, $1"),
+            ("LeftAnti", "$3, $4"),
+            ("RightAnti", "$0, $1"),
+        ] {
             let left_rel = example_read_relation().into_rel(None);
             let right_rel = example_read_relation().into_rel(None);
-            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => $3, $4]");
+            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => {omitted_refs}]");
 
             let result = JoinRel::parse_pair_with_context(
                 &extensions,
@@ -2210,7 +2216,7 @@ mod tests {
 
             assert!(
                 result.is_err(),
-                "{join_type_name} emit references are relative to the join direct output, so $3 and $4 are out of bounds for a 3-column semi/anti output"
+                "{join_type_name} output should not be able to emit omitted-side refs {omitted_refs}"
             );
         }
     }
