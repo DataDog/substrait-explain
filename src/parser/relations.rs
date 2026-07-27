@@ -1260,6 +1260,11 @@ impl RelationParsePair for JoinRel {
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
+        // TODO: For semi/anti/single/mark joins, the direct output width differs
+        // from left+right. Using `input_field_count` here misclassifies identity
+        // emits and accepts mappings such as `RightSemi => $3, $4`, even though
+        // emit references are relative to the join's direct output domain.
+        // Revisit when `parse_pair_with_context` can see per-child field counts.
         let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
@@ -2147,7 +2152,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_join_relation_right_semi() {
+    #[ignore = "Join emit parsing currently uses left+right input_field_count instead of the join-type-specific direct output width"]
+    fn test_parse_join_relation_right_semi_identity_emit_is_direct() {
         let extensions = TestContext::new()
             .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
             .with_function(1, 10, "eq")
@@ -2160,7 +2166,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::join_relation,
-                "Join[&RightSemi, eq($0, $3):boolean => $3, $4]",
+                "Join[&RightSemi, eq($0, $3):boolean => $0, $1, $2]",
             ),
             vec![left_rel, right_rel],
             6,
@@ -2172,12 +2178,37 @@ mod tests {
         assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
 
         let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-        let emit = match emit_kind {
-            EmitKind::Emit(emit) => &emit.output_mapping,
-            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
-        };
-        // Output mapping should be [3, 4] (only right columns for semi join)
-        assert_eq!(emit, &[3, 4]);
+        assert!(
+            matches!(emit_kind, EmitKind::Direct(_)),
+            "Expected RightSemi identity emit over direct output fields $0..$2 to be Direct, got {emit_kind:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "Join emit parsing currently accepts references outside the join-type-specific direct output domain"]
+    fn test_parse_join_relation_right_semi_rejects_input_scope_emit() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let result = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean => $3, $4]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        );
+
+        assert!(
+            result.is_err(),
+            "RightSemi emit references are relative to the join direct output, so $3 and $4 are out of bounds for a 3-column right-side output"
+        );
     }
 
     #[test]
