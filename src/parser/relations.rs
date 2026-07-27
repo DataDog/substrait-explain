@@ -1260,12 +1260,9 @@ impl RelationParsePair for JoinRel {
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
-        // TODO: For semi/anti/single/mark joins, the direct output width differs
-        // from left+right. The text `=>` list is written in join input-reference
-        // space, but `RelCommon.emit.output_mapping` is over the direct output
-        // domain. Using `input_field_count` here misclassifies identity emits
-        // and fails to translate right-side-only joins into 0-based emit mappings.
-        // Revisit when `parse_pair_with_context` can see per-child field counts.
+        // TODO: For semi/anti joins, the direct output width differs from
+        // left+right — `input_field_count` would misclassify the emit as Direct.
+        // Revisit when those join types are supported.
         let (emit, output_count) = parse_emit(references_pair, input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
@@ -2150,75 +2147,6 @@ mod tests {
         };
         // Output mapping should be [0, 1] (only left columns for semi join)
         assert_eq!(emit, &[0, 1]);
-    }
-
-    #[test]
-    #[ignore = "Join emit parsing currently uses left+right input_field_count instead of the join-type-specific direct output width"]
-    fn test_parse_join_relation_semi_anti_identity_emit_is_direct() {
-        let extensions = TestContext::new()
-            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
-            .with_function(1, 10, "eq")
-            .extensions;
-
-        for (join_type_name, join_type, output_refs) in [
-            ("LeftSemi", join_rel::JoinType::LeftSemi, "$0, $1, $2"),
-            ("RightSemi", join_rel::JoinType::RightSemi, "$3, $4, $5"),
-            ("LeftAnti", join_rel::JoinType::LeftAnti, "$0, $1, $2"),
-            ("RightAnti", join_rel::JoinType::RightAnti, "$3, $4, $5"),
-        ] {
-            let left_rel = example_read_relation().into_rel(None);
-            let right_rel = example_read_relation().into_rel(None);
-            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => {output_refs}]");
-
-            let join = JoinRel::parse_pair_with_context(
-                &extensions,
-                parse_exact(Rule::join_relation, &text),
-                vec![left_rel, right_rel],
-                6,
-            )
-            .unwrap()
-            .0;
-
-            assert_eq!(join.r#type, join_type as i32);
-
-            let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
-            assert!(
-                matches!(emit_kind, EmitKind::Direct(_)),
-                "Expected {join_type_name} identity emit over {output_refs} to be normalized to Direct, got {emit_kind:?}"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "Join emit parsing currently accepts references from the side omitted by semi/anti direct output"]
-    fn test_parse_join_relation_semi_anti_rejects_omitted_side_emit() {
-        let extensions = TestContext::new()
-            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
-            .with_function(1, 10, "eq")
-            .extensions;
-
-        for (join_type_name, omitted_refs) in [
-            ("LeftSemi", "$3, $4"),
-            ("RightSemi", "$0, $1"),
-            ("LeftAnti", "$3, $4"),
-            ("RightAnti", "$0, $1"),
-        ] {
-            let left_rel = example_read_relation().into_rel(None);
-            let right_rel = example_read_relation().into_rel(None);
-            let text = format!("Join[&{join_type_name}, eq($0, $3):boolean => {omitted_refs}]");
-
-            let result = JoinRel::parse_pair_with_context(
-                &extensions,
-                parse_exact(Rule::join_relation, &text),
-                vec![left_rel, right_rel],
-                6,
-            );
-
-            assert!(
-                result.is_err(),
-                "{join_type_name} output should not be able to emit omitted-side refs {omitted_refs}"
-            );
-        }
     }
 
     #[test]

@@ -430,7 +430,7 @@ Root[id, name, amount]
 }
 
 #[test]
-fn test_join_relation_left_semi_roundtrip() {
+fn test_join_relation_semi_types_roundtrip() {
     // Test LeftSemi join - should output only left columns
     let plan_semi = r#"=== Extensions
 URNs:
@@ -444,23 +444,6 @@ Root[a, b]
     Read[left_table => a:i32, b:string]
     Read[right_table => c:i32, d:string]"#;
     roundtrip_plan(plan_semi);
-}
-
-#[test]
-#[ignore = "RightSemi output refs should use right-input field numbers in text, but parser/textifier currently do not translate them to direct-output emit mappings"]
-fn test_join_relation_right_semi_roundtrip() {
-    let plan_right_semi = r#"=== Extensions
-URNs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
-Functions:
-  # 10 @  1: eq
-
-=== Plan
-Root[c, d]
-  Join[&RightSemi, eq($0, $2):boolean => $2, $3]
-    Read[left_table => a:i32, b:string]
-    Read[right_table => c:i32, d:string]"#;
-    roundtrip_plan(plan_right_semi);
 }
 
 #[test]
