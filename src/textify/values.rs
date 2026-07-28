@@ -92,53 +92,19 @@ impl<'a> Textify for Value<'a> {
     }
 }
 
-/// How an argument list renders inside a relation's `[...]` or an
-/// expression's `(...)`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ArgsLayout {
-    /// `arg, arg, arg` on a single line.
-    #[default]
-    Inline,
-    /// One `- arg` per line, used for `Read:Virtual` rows. See
-    /// [`super::rels::Relation::write_header`] for the exact layout.
-    Rows,
-}
-
-#[derive(Debug, Clone)]
+/// A comma-separated argument list: positional arguments first, then named
+/// arguments. Renders as `arg, arg, name=arg`, or `_` when empty.
+#[derive(Debug, Clone, Default)]
 pub struct Arguments<'a> {
     /// Positional arguments (e.g., a filter condition, group-bys, etc.)
     pub positional: Vec<Value<'a>>,
     /// Named arguments (e.g., limit=10, offset=5)
     pub named: Vec<NamedArg<'a>>,
-    /// How this argument list is laid out. Defaults to [`ArgsLayout::Inline`];
-    /// only `Read:Virtual` opts into [`ArgsLayout::Rows`].
-    layout: ArgsLayout,
 }
 
 impl<'a> Arguments<'a> {
-    /// An inline argument list (`arg, arg, arg`), the default for every
-    /// relation.
-    pub fn inline(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
-        Arguments {
-            positional,
-            named,
-            layout: ArgsLayout::Inline,
-        }
-    }
-
-    /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
-    /// with many rows. Currently not enabled for named arguments.
-    /// TODO: enable for named arguments as well.
-    pub fn rows(positional: Vec<Value<'a>>) -> Self {
-        Arguments {
-            positional,
-            named: vec![],
-            layout: ArgsLayout::Rows,
-        }
-    }
-
-    pub fn layout(&self) -> ArgsLayout {
-        self.layout
+    pub fn new(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        Arguments { positional, named }
     }
 }
 
@@ -208,10 +174,11 @@ pub(crate) fn enum_str_value<'a>(result: Result<Cow<'static, str>, PlanError>) -
 /// rendering: convert to the enum type and then to its `&Variant` string, or
 /// produce a field-specific diagnostic when the raw value matches no variant.
 ///
-/// Shared by the callers that render an enum field straight from its `i32`
-/// (window `phase=`/`invocation=`, `SetRel`'s `op`), so the
-/// decode-or-diagnose shape lives in one place. `message` is the proto message
-/// tag used for the failure token, `field` the offending field name.
+/// Keeps the decode-or-diagnose shape in one place for callers that render an
+/// enum field straight from its `i32` (currently `SetRel`'s `op`). `message` is
+/// the proto message tag used for the failure token, `field` the offending
+/// field name; both are named in the diagnostic so it identifies which field
+/// carried the unknown value.
 pub(crate) fn decode_enum_field<'a, T>(
     raw: i32,
     message: &'static str,
@@ -225,7 +192,7 @@ where
         Err(_) => Value::Missing(PlanError::invalid(
             message,
             Some(field),
-            format!("Unknown {message}: {raw}"),
+            format!("Unknown {message}.{field}: {raw}"),
         )),
     }
 }
@@ -354,5 +321,108 @@ impl<'a> Textify for NamedArg<'a> {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         write!(w, "{}=", self.name)?;
         self.value.textify(ctx, w)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::TestContext;
+
+    #[test]
+    fn test_arguments_textify_positional_only() {
+        let ctx = TestContext::new();
+        let args = Arguments::new(vec![Value::Integer(42), Value::Integer(7)], vec![]);
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "42, 7");
+    }
+
+    #[test]
+    fn test_arguments_textify_named_only() {
+        let ctx = TestContext::new();
+        let args = Arguments::new(
+            vec![],
+            vec![
+                NamedArg {
+                    name: Cow::Borrowed("limit"),
+                    value: Value::Integer(10),
+                },
+                NamedArg {
+                    name: Cow::Borrowed("offset"),
+                    value: Value::Integer(5),
+                },
+            ],
+        );
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "limit=10, offset=5");
+    }
+
+    #[test]
+    fn test_arguments_textify_both() {
+        let ctx = TestContext::new();
+        let args = Arguments::new(
+            vec![Value::Integer(1)],
+            vec![NamedArg {
+                name: "foo".into(),
+                value: Value::Integer(2),
+            }],
+        );
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "1, foo=2");
+    }
+
+    #[test]
+    fn test_arguments_textify_empty() {
+        let ctx = TestContext::new();
+        let args = Arguments::new(vec![], vec![]);
+        let (result, errors) = ctx.textify(&args);
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+        assert_eq!(result, "_");
+    }
+
+    #[test]
+    fn test_named_arg_textify_error_token() {
+        let ctx = TestContext::new();
+        let named_arg = NamedArg {
+            name: "foo".into(),
+            value: Value::Missing(PlanError::invalid(
+                "my_enum",
+                Some(Cow::Borrowed("my_enum")),
+                Cow::Borrowed("my_enum"),
+            )),
+        };
+        let (result, errors) = ctx.textify(&named_arg);
+        // Should show !{my_enum} in the output
+        assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
+        // Should also accumulate an error
+        assert!(!errors.is_empty(), "Expected error for error token");
+    }
+
+    #[test]
+    fn test_decode_enum_field_known_variant() {
+        let value =
+            decode_enum_field::<set_rel::SetOp>(set_rel::SetOp::UnionAll as i32, "SetRel", "op");
+        match value {
+            Value::Enum(s) => assert_eq!(s, "UnionAll"),
+            other => panic!("Expected Value::Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_enum_field_unknown_variant_names_field() {
+        let value = decode_enum_field::<set_rel::SetOp>(99, "SetRel", "op");
+        match value {
+            Value::Missing(err) => {
+                assert_eq!(err.message, "SetRel");
+                assert_eq!(err.lookup.as_deref(), Some("op"));
+                // The description names the offending field, not just the
+                // message, so the diagnostic is actionable on its own.
+                assert_eq!(err.description, "Unknown SetRel.op: 99");
+            }
+            other => panic!("Expected Value::Missing, got {other:?}"),
+        }
     }
 }

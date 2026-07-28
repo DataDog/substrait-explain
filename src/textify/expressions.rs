@@ -402,27 +402,60 @@ impl Textify for FieldReference {
     }
 }
 
-/// Write the `name(args, options)` prefix shared by `ScalarFunction`,
-/// `AggregateFunction`, and `WindowFunction` textification.
-fn textify_function_call_prefix<S: Scope, W: fmt::Write>(
-    function_reference: u32,
-    arguments: &[FunctionArgument],
-    options: &[FunctionOption],
-    ctx: &S,
-    w: &mut W,
-) -> fmt::Result {
-    let name_and_anchor = NamedAnchor::lookup(ctx, ExtensionKind::Function, function_reference);
-    let name_and_anchor = ctx.display(&name_and_anchor);
+/// The fields shared by every Substrait function call - `ScalarFunction`,
+/// `AggregateFunction`, and `WindowFunction` - that render as
+/// `name#anchor(args, options)`.
+///
+/// The remaining fields of each function message (the output type, and the
+/// aggregate/window-specific parts) are textified alongside this by the
+/// respective `Textify` implementations.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionInvocation<'a> {
+    pub function_reference: u32,
+    pub arguments: &'a [FunctionArgument],
+    pub options: &'a [FunctionOption],
+}
 
-    let between = if arguments.is_empty() || options.is_empty() {
-        ""
-    } else {
-        ", "
-    };
-    let args = ctx.separated(arguments, ", ");
-    let options = ctx.separated(options, ", ");
+impl<'a> From<&'a ScalarFunction> for FunctionInvocation<'a> {
+    fn from(f: &'a ScalarFunction) -> Self {
+        FunctionInvocation {
+            function_reference: f.function_reference,
+            arguments: &f.arguments,
+            options: &f.options,
+        }
+    }
+}
 
-    write!(w, "{name_and_anchor}({args}{between}{options})")
+impl<'a> From<&'a AggregateFunction> for FunctionInvocation<'a> {
+    fn from(f: &'a AggregateFunction) -> Self {
+        FunctionInvocation {
+            function_reference: f.function_reference,
+            arguments: &f.arguments,
+            options: &f.options,
+        }
+    }
+}
+
+impl Textify for FunctionInvocation<'_> {
+    fn name() -> &'static str {
+        "FunctionInvocation"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let name_and_anchor =
+            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
+        let name_and_anchor = ctx.display(&name_and_anchor);
+
+        let args = ctx.separated(self.arguments, ", ");
+        let options = ctx.separated(self.options, ", ");
+        let between = if self.arguments.is_empty() || self.options.is_empty() {
+            ""
+        } else {
+            ", "
+        };
+
+        write!(w, "{name_and_anchor}({args}{between}{options})")
+    }
 }
 
 impl Textify for ScalarFunction {
@@ -431,16 +464,13 @@ impl Textify for ScalarFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        textify_function_call_prefix(
-            self.function_reference,
-            &self.arguments,
-            &self.options,
-            ctx,
-            w,
-        )?;
+        let invocation = FunctionInvocation::from(self);
+        let output_type = OutputType(self.output_type.as_ref());
 
-        let output = OutputType(self.output_type.as_ref());
-        write!(w, "{}", ctx.display(&output))
+        let invocation = ctx.display(&invocation);
+        let output_type = ctx.display(&output_type);
+
+        write!(w, "{invocation}{output_type}")
     }
 }
 
@@ -658,16 +688,13 @@ impl Textify for AggregateFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        textify_function_call_prefix(
-            self.function_reference,
-            &self.arguments,
-            &self.options,
-            ctx,
-            w,
-        )?;
+        let invocation = FunctionInvocation::from(self);
+        let output_type = OutputType(self.output_type.as_ref());
 
-        let output = OutputType(self.output_type.as_ref());
-        write!(w, "{}", ctx.display(&output))
+        let invocation = ctx.display(&invocation);
+        let output_type = ctx.display(&output_type);
+
+        write!(w, "{invocation}{output_type}")
     }
 }
 
