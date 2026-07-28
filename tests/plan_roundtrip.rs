@@ -15,7 +15,7 @@ fn test_simple_plan_roundtrip() {
     let plan = r#"=== Plan
 Root[c, d]
   Filter[$0]
-    Project[$1, 42]
+    Project[_ => $1, 42]
       Read[my.table => a:i32, b:string?, c:boolean]"#;
 
     roundtrip_plan(plan);
@@ -77,7 +77,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1):i32?]
+  Project[_ => $0, $1, add($0, $1):i32?]
     Read[table1 => col1:i32?, col2:i32?]"#;
 
     roundtrip_plan(plan);
@@ -96,7 +96,7 @@ Functions:
 
 === Plan
 Root[name, parent, sum, count]
-  Project[$0, $3, $1, $2]
+  Project[_ => $0, $3, $1, $2]
     Read[schema.table => name:string?, parent:string?, sum:fp64?, count:fp64?]"#;
 
     roundtrip_plan(plan);
@@ -112,7 +112,7 @@ Functions:
 
 === Plan
 Root[name, num]
-  Project[$1, coalesce($1, $2):fp64?]
+  Project[_ => $1, coalesce($1, $2):fp64?]
     Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
 
     let verbose_plan = r#"=== Extensions
@@ -123,7 +123,7 @@ Functions:
 
 === Plan
 Root[name, num]
-  Project[$1, coalesce#10($1, $2):fp64?]
+  Project[_ => $1, coalesce#10($1, $2):fp64?]
     Read[schema.table => name:string?, num:fp64?, other_num:fp64?, id:i64]"#;
 
     assert_roundtrip_canonical(simple_plan, verbose_plan);
@@ -133,7 +133,7 @@ Root[name, num]
 fn test_multiple_relations_roundtrip() {
     let plan = r#"=== Plan
 Root[name, num, id]
-  Project[$0, $1, $2]
+  Project[_]
     Read[t1 => name:string?, num:fp64, id:i64]
 
 Root[name, num, id]
@@ -147,7 +147,7 @@ Root[name, num, id]
 fn test_plan_with_fetch_and_sort_roundtrip() {
     let plan = r#"=== Plan
 Root[name, num, id]
-  Project[$0, $1, $2]
+  Project[_]
     Read[schema.table => name:string?, num:fp64?, id:i64]"#;
 
     roundtrip_plan(plan);
@@ -157,7 +157,7 @@ Root[name, num, id]
 fn test_plan_with_extension_leaf_roundtrip() {
     let plan = r#"=== Plan
 Root[name, some_value]
-  Project[$0, $1]
+  Project[_]
     Read[schema.table => name:string?, some_value:fp64?]"#;
 
     roundtrip_plan(plan);
@@ -276,7 +276,7 @@ Functions:
 
 === Plan
 Root[n]
-  Project[count():i64]
+  Project[_ => count():i64]
     Read[events => n:i64]"#;
     roundtrip_plan(plan);
 }
@@ -293,7 +293,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1):i64]
+  Project[_ => $0, $1, add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
@@ -311,7 +311,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[add($0, $1)]
+  Project[_ => add($0, $1)]
     Read[t => a:i64, b:i64]"#;
 
     assert!(Parser::parse(plan).is_err());
@@ -331,7 +331,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add#1($0, $1):i64, add:($0, $1):i64]
+  Project[_ => $0, $1, add#1($0, $1):i64, add:($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
@@ -352,7 +352,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add#1($0, $1):i64, add:#2($0, $1):i64, add:#3($0, $1):i64]
+  Project[_ => $0, $1, add#1($0, $1):i64, add:#2($0, $1):i64, add:#3($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
     roundtrip_plan(plan);
 }
@@ -370,7 +370,7 @@ Types:
 
 === Plan
 Root[result]
-  Project[$0]
+  Project[_]
     Read[data => doc:json]"#;
 
     // Plan authored with u! prefix on the type reference round-trips to the canonical form.
@@ -382,7 +382,7 @@ Types:
 
 === Plan
 Root[result]
-  Project[$0]
+  Project[_ => $0]
     Read[data => doc:u!json]"#;
 
     assert_roundtrip_canonical(canonical, with_prefix);
@@ -400,7 +400,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[json_extract_path($0, $1):string]
+  Project[_ => json_extract_path($0, $1):string]
     Read[data => doc:string, path:string]"#;
 
     // Explicit compound name in the call site resolves to the same canonical output.
@@ -412,7 +412,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[json_extract_path:u!json_str($0, $1):string]
+  Project[_ => json_extract_path:u!json_str($0, $1):string]
     Read[data => doc:string, path:string]"#;
 
     roundtrip_plan(canonical);
@@ -431,7 +431,7 @@ Types:
 
 === Plan
 Root[result]
-  Project[($0)::json]
+  Project[_ => ($0)::json]
     Read[data => doc:string]"#;
 
     let with_prefix = r#"=== Extensions
@@ -442,7 +442,7 @@ Types:
 
 === Plan
 Root[result]
-  Project[($0)::u!json]
+  Project[_ => ($0)::u!json]
     Read[data => doc:string]"#;
 
     roundtrip_plan(canonical);
@@ -761,7 +761,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, equal:any_any($0, $1):boolean, equal:str_str($0, $1):boolean]
+  Project[_ => $0, equal:any_any($0, $1):boolean, equal:str_str($0, $1):boolean]
     Read[t => a:i64, b:i64, c:string]"#;
 
     // Verbose output always shows signatures and anchors for all functions,
@@ -775,7 +775,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, equal:any_any#1($0, $1):boolean, equal:str_str#2($0, $1):boolean]
+  Project[_ => $0, equal:any_any#1($0, $1):boolean, equal:str_str#2($0, $1):boolean]
     Read[t => a:i64, b:i64, c:string]"#;
 
     roundtrip_plan(simple);
@@ -797,7 +797,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, add($0, $1):i64]
+  Project[_ => $0, add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
     // Explicit compound name in input resolves to the same canonical output
@@ -809,7 +809,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, add:i64_i64($0, $1):i64]
+  Project[_ => $0, add:i64_i64($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
     // Verbose output always shows the full compound name and anchor
@@ -821,7 +821,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, add:i64_i64#1($0, $1):i64]
+  Project[_ => $0, add:i64_i64#1($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
     assert_roundtrip_canonical(compact, compound);
@@ -843,7 +843,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, equal:any_any($0, $1):boolean, equal:str_str($0, $2):boolean, like($0, $2):boolean]
+  Project[_ => $0, equal:any_any($0, $1):boolean, equal:str_str($0, $2):boolean, like($0, $2):boolean]
     Read[t => id:i64, score:i64, name:string]"#;
 
     roundtrip_plan(simple);
@@ -863,7 +863,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, equal:any_any#1($0, $1):boolean, equal:any_any#2($0, $1):boolean]
+  Project[_ => $0, equal:any_any#1($0, $1):boolean, equal:any_any#2($0, $1):boolean]
     Read[t => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
@@ -1025,7 +1025,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
@@ -1045,7 +1045,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Filter[gt($2, 0):boolean => $0, $1]
       Read[t => a:i64, b:i64, c:i64]"#;
 
@@ -1064,7 +1064,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Sort[($0, &AscNullsFirst)]
       Read[t => a:i64, b:i64]"#;
 
@@ -1083,7 +1083,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Fetch[limit=10, offset=0]
       Read[t => a:i64, b:i64]"#;
 
@@ -1104,7 +1104,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($1, $3):i64]
+  Project[_ => add($1, $3):i64]
     Join[&Inner, eq($0, $2):boolean => $0, $1, $2, $3]
       Read[users => id:i64, age:i64]
       Read[orders => user_id:i64, amount:i64]"#;
@@ -1126,7 +1126,7 @@ Functions:
 
 === Plan
 Root[total]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Aggregate[$0 => $0, sum($1):i64]
       Read[t => category:i64, amount:i64]"#;
 
@@ -1144,7 +1144,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Read:Virtual[(1, 2), (3, 4) => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
@@ -1183,7 +1183,7 @@ Functions:
 
 === Plan
 Root[sum]
-  Project[add($0, $1):i64]
+  Project[_ => add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
     roundtrip_plan(plan);
