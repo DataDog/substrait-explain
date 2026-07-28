@@ -898,6 +898,12 @@ fn parse_aggregate_output(
         .map(|(index, expression)| (expression_key(expression), index))
         .collect();
 
+    let output_pair = unwrap_single_pair(output_pair);
+    if output_pair.as_rule() == Rule::empty {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    assert_eq!(output_pair.as_rule(), Rule::expression_list);
+
     let mut measures = Vec::new();
     let mut output_mapping = Vec::new();
 
@@ -2464,6 +2470,20 @@ mod tests {
             9,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_and_aggregate_empty_lists_require_underscore() {
+        for (rule, input) in [
+            (Rule::read_relation, "Read[my.table +> ]"),
+            (Rule::virtual_read_relation, "Read:Virtual[() => ]"),
+            (Rule::aggregate_relation, "Aggregate[_ => ]"),
+        ] {
+            assert!(
+                ExpressionParser::parse(rule, input).is_err(),
+                "accepted {input}"
+            );
+        }
     }
 
     fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {

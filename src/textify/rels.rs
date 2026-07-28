@@ -948,12 +948,13 @@ impl Textify for RelRoot {
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
         let names = self.names.iter().map(|n| Name(n)).collect::<Vec<_>>();
 
-        write!(
-            w,
-            "{}Root[{}]",
-            ctx.indent(),
-            ctx.separated(names.iter(), ", ")
-        )?;
+        write!(w, "{}Root[", ctx.indent())?;
+        if names.is_empty() {
+            write!(w, "_")?;
+        } else {
+            write!(w, "{}", ctx.separated(names.iter(), ", "))?;
+        }
+        write!(w, "]")?;
         let child_scope = ctx.push_indent();
         for child in self.input.iter() {
             writeln!(w)?;

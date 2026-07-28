@@ -223,7 +223,7 @@ explicit_emit             = { "|>" ~ sp ~ reference_list }
 table_name = { (name ~ ("." ~ name)*) }
 
 named_column      = { name ~ ":" ~ type }
-named_column_list = { empty | (named_column ~ ("," ~ sp ~ named_column)*)? }
+named_column_list = { empty | (named_column ~ ("," ~ sp ~ named_column)*) }
 
 // -- Read output clauses --
 // `=>` declares the final visible schema in compact Read syntax. `+>` declares
@@ -260,7 +260,7 @@ top_level_relation = {
 }
 
 root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
-root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
+root_name_list = { empty | (name ~ (sp ~ "," ~ sp ~ name)*) }
 
 read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ read_output ~ "]" }
 
@@ -319,7 +319,7 @@ grouping_set       = { ("(" ~ sp ~ expression_list ~ sp ~ ")") | empty }
 expression_list    = { expression ~ sp ~ ("," ~ sp ~ expression)* }
 
 // TODO: Add support for filter invocation, etc.
-aggregate_output      = { (expression ~ (sp ~ "," ~ sp ~ expression)*)? }
+aggregate_output = { empty | expression_list }
 
 // Empty grouping symbol
 empty = { "_" }

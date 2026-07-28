@@ -7,11 +7,11 @@ use common::assert_roundtrip_verbose;
 #[test]
 fn test_filter_empty_output_styles() {
     let compact = r#"=== Plan
-Root[]
+Root[_]
   Filter[$2 => _]
     Read[table => a:i32, b:string, c:boolean]"#;
     let verbose = r#"=== Plan
-Root[]
+Root[_]
   Filter[$2 |> _]
     Read[table => a:i32, b:string, c:boolean]"#;
 

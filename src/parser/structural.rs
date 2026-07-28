@@ -732,10 +732,8 @@ impl<'a> RelationParser<'a> {
 
         let names: Vec<String> = column_names_pair
             .into_inner()
-            .map(|name_pair| {
-                assert_eq!(name_pair.as_rule(), Rule::name);
-                Name::parse_pair(name_pair).0
-            })
+            .filter(|pair| pair.as_rule() == Rule::name)
+            .map(|name_pair| Name::parse_pair(name_pair).0)
             .collect();
 
         let mut children = node.children;
@@ -1454,7 +1452,7 @@ Root[result]
     fn test_parse_root_relation_no_names() {
         // Test a plan with a Root relation with no names
         let plan = r#"=== Plan
-Root[]
+Root[_]
   Project[$0, $1]
     Read[my.table => a:i32, b:string?]
 "#;
@@ -1473,6 +1471,11 @@ Root[]
 
         // Check that the root has no names
         assert_eq!(rel_root.names, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_root_requires_empty_list_marker() {
+        assert!(Parser::parse("=== Plan\nRoot[]\n  Read[t => a:i32]").is_err());
     }
 
     #[test]

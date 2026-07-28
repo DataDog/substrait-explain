@@ -680,7 +680,7 @@ form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: 
 
 #### Syntax
 
-`"Root" "[" (name ("," name)*)? "]"`
+`"Root" "[" (name ("," name)* / "_") "]"`
 
 #### Example
 
@@ -713,11 +713,10 @@ direct_output := "+>" named_column_list ("|>" reference_list)?
 
 - `table_name := name ("." name)*` - table name, optionally qualified with schema/database
 - `named_column := name ":" type` - column name with type annotation
-- `named_column_list := "_" / (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`. `_` denotes an empty schema.
+- `named_column_list := "_" / named_column ("," named_column)*` - the list of columns and their types to be read from the table `table_name`. `_` denotes an empty schema.
   - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
   - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
   - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
-  - The parser also accepts a blank `+>` list for compatibility; formatting writes `_`.
 
 #### Example
 
@@ -886,10 +885,10 @@ An `ExtensionTable` read uses `ReadRel` with `ReadType::ExtensionTable`. The rel
 
 ```text
 extension_table_read_relation := "Read:Extension" "[" named_column_list "]"
-extension_table_detail        := "+" "Ext" ":" name "[" (empty / extension_args)? "]"
+extension_table_detail        := "+" "Ext" ":" name "[" (empty / extension_args) "]"
 ```
 
-The `+ Ext:` line is indented one level deeper than the `Read:Extension` line. It is required, and addendum lines must appear before any child relations. Canonical formatting writes `+ Ext:` first, followed by `+ Enh:` and `+ Opt:` lines when present.
+The `+ Ext:` line is indented one level deeper than the `Read:Extension` line. It is required, and addendum lines must appear before any child relations. Its argument list is also required: use `_` when it is empty. Canonical formatting writes `+ Ext:` first, followed by `+ Enh:` and `+ Opt:` lines when present.
 
 #### Components
 
@@ -1015,8 +1014,8 @@ Root[result]
 
 - `grouping_sets := grouping_set_list / expression_list` - can be a list of grouping sets (each parenthesized), or a single unparenthesized list for the common, single-set case
 - `grouping_set_list := grouping_set ("," grouping_set)*`
-- `grouping_set := "(" expression_list ")" / "_"` - a grouping set can be (1) a list of expressions, or (2) `_`, the standard we use for empty lists
-- `aggregate_output := expression ("," expression)*` - comma-separated list of output items
+- `grouping_set := "(" expression_list ")" / "_"` - a grouping set is a list of expressions, or `_` for the empty grouping set
+- `aggregate_output := expression ("," expression)* / "_"` - comma-separated list of output items, or `_` for an explicitly empty output
 - Each output item is either an aggregate function call (which becomes a new measure), or an expression that must match one of the `grouping_sets` expressions by value - since an Aggregate relation's output schema is always exactly `grouping_expressions + measures`. See [Aggregate Measures section](#aggregate-measures)
 
 #### Example
@@ -1221,14 +1220,14 @@ There are three extension relation types, based on their input cardinality:
 #### Syntax
 
 ```text
-extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>" extension_columns)? "]"
+extension_relation := extension_type ":" name "[" (empty / extension_args) ("=>" extension_columns)? "]"
 extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
 extension_args := (positional_args ("," named_args)?) / named_args
 positional_args := extension_arg ("," extension_arg)*
 extension_arg := enum / reference / literal / expression / tuple
 named_args := named_arg ("," named_arg)*
 named_arg := name "=" extension_arg
-extension_columns := (extension_column ("," extension_column)*)?
+extension_columns := extension_column ("," extension_column)* / "_"
 extension_column := named_column / reference / expression
 ```
 
@@ -1238,9 +1237,9 @@ Note: the parser also accepts the `=>` section being omitted entirely (e.g. `Ext
 
 - **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
 - **`name`** - The extension name (registered with `ExtensionRegistry`)
-- **`empty`** (`_`) - Explicitly marks an extension with no arguments
-- **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
-- **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
+- **`empty`** (`_`) - Required when an extension has no arguments
+- **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs)
+- **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions; use `_` for an explicitly empty list
 
 Untyped scalar extension arguments such as `2`, `2.4`, `true`, and `'path'`
 are treated as extension scalar values and render without expression type
@@ -1262,13 +1261,13 @@ Root[result]
 Extension with positional arguments and no output columns:
 
 ```text
-ExtensionSingle:VectorNormalize[$0, $1, method='l2' => ]
+ExtensionSingle:VectorNormalize[$0, $1, method='l2' => _]
 ```
 
 Extension with no arguments:
 
 ```text
-ExtensionLeaf:EmptySource[_ => ]
+ExtensionLeaf:EmptySource[_ => _]
 ```
 
 #### Custom Extension Types
@@ -1289,7 +1288,7 @@ Each relation can carry:
 ### Syntax
 
 ```text
-addendum      := "+" addendum_type ":" name "[" (empty | extension_args)? "]"
+addendum      := "+" addendum_type ":" name "[" (empty / extension_args) "]"
 addendum_type := "Enh" | "Opt" | "Ext"
 ```
 
