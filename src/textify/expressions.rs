@@ -546,6 +546,16 @@ impl<'a> From<&'a AggregateFunction> for FunctionInvocation<'a> {
     }
 }
 
+impl<'a> From<&'a WindowFunction> for FunctionInvocation<'a> {
+    fn from(f: &'a WindowFunction) -> Self {
+        FunctionInvocation {
+            function_reference: f.function_reference,
+            arguments: &f.arguments,
+            options: &f.options,
+        }
+    }
+}
+
 impl Textify for FunctionInvocation<'_> {
     fn name() -> &'static str {
         "FunctionInvocation"
@@ -842,24 +852,18 @@ impl Textify for WindowFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // name/reference + arguments: `sum#10@1($0)`
-        textify_function_call_prefix(
-            self.function_reference,
-            &self.arguments,
-            &self.options,
-            ctx,
-            w,
-        )?;
+        // `sum#10@1($0)`, shared with scalar and aggregate calls.
+        let invocation = FunctionInvocation::from(self);
+        // `phase=..., order=...`. Never empty - `window_over_named_args` always
+        // emits `phase=` - so this can't render as the empty-argument `_`.
+        let over = Arguments::new(vec![], window_over_named_args(self, ctx));
+        let output_type = OutputType(self.output_type.as_ref());
 
-        // over-clause: ` over(phase=..., order=..., ...)`
-        let named_args = window_over_named_args(self, ctx);
-        write!(w, " over(")?;
-        Arguments::inline(vec![], named_args).textify(ctx, w)?;
-        write!(w, ")")?;
+        let invocation = ctx.display(&invocation);
+        let over = ctx.display(&over);
+        let output_type = ctx.display(&output_type);
 
-        // output type: `:i64`
-        let output = OutputType(self.output_type.as_ref());
-        write!(w, "{}", ctx.display(&output))
+        write!(w, "{invocation} over({over}){output_type}")
     }
 }
 
