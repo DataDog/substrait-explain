@@ -1151,3 +1151,235 @@ Root[a]
 
     assert!(Parser::parse(plan).is_err());
 }
+
+#[test]
+fn test_window_function_all_named_args_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[a, b, s]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):fp64?]
+    Read[t => a:i32, b:fp64]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_window_function_unbounded_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, r]
+  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=$0):i64]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// Minimal, isolated regression test for the bare (non-tuple) rendering of a
+/// single `order=` sort field.
+#[test]
+fn test_window_function_single_order_field_bare_form() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[r]
+  Project[row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast)):i64]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// `_` for an unbounded lower bound round-trips as `_`, alongside a bounded
+/// (current row) upper bound.
+#[test]
+fn test_window_function_unbounded_lower_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(_, 0)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `range=` frame with more than one `order=` field is rejected at parse
+/// time: Substrait only allows `RANGE` bounds with a single ordering column.
+#[test]
+fn test_window_function_range_frame_requires_single_order_field() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(order=(($0,&AscNullsLast),($1,&AscNullsLast)), range=(_, 0), phase=&InitialToResult):i64?]
+    Read[t => a:i64, b:i64]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}
+
+/// A `range=` frame (with exactly one `order=` field), a positive bound
+/// offset (`FOLLOWING`), and a non-default `invocation=&All` all round-trip.
+#[test]
+fn test_window_function_range_following_and_invocation_all_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, order=($0, &AscNullsLast), invocation=&All, range=(_, 5)):fp64?]
+    Read[t => a:fp64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// `phase=` is a required named argument in `over(...)`; a window function
+/// call missing it fails to parse at the full-plan level.
+#[test]
+fn test_window_function_missing_phase_fails_at_plan_level() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[r]
+  Project[row_number() over(partition=$0):i64]
+    Read[t => a:i32]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}
+
+/// A `rows=` lower bound of `i64::MIN` can't be negated into a valid
+/// `Preceding.offset` (`i64`); this must fail to parse with an error rather
+/// than panicking or overflowing.
+#[test]
+fn test_window_function_min_i64_bound_fails_to_parse() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[r]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-9223372036854775808, 0)):i64?]
+    Read[t => a:i32]"#;
+
+    assert!(Parser::parse(plan).is_err());
+}
+
+/// A `rows=` lower bound of `-i64::MAX` (one more than `i64::MIN`) *can* be
+/// negated into a valid `Preceding.offset`, so it must parse and round-trip
+/// successfully, unlike `i64::MIN` above.
+#[test]
+fn test_window_function_max_i64_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[r]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-9223372036854775807, 0)):i64?]
+    Read[t => a:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A multi-field `order=` (a tuple of sort-field tuples) round-trips,
+/// exercising the `is_list_of_fields` parse branch end-to-end rather than only
+/// via rejection/textify-only tests.
+#[test]
+fn test_window_function_multi_order_field_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, b, r]
+  Project[$0, $1, row_number() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i64]
+    Read[t => a:i32, b:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// `partition=(...)` with more than one expression round-trips, preserving
+/// both order and count.
+#[test]
+fn test_window_function_multi_expression_partition_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, b, r]
+  Project[$0, $1, row_number() over(phase=&InitialToResult, partition=($0, $1)):i64]
+    Read[t => a:i32, b:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `rows=` frame that is unbounded on both sides round-trips.
+#[test]
+fn test_window_function_fully_unbounded_bounds_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(_, _)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}
+
+/// A `rows=` frame with a bounded (`PRECEDING`) lower bound and an unbounded
+/// upper bound round-trips, mirroring the lower-unbounded case above.
+#[test]
+fn test_window_function_unbounded_upper_bound_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, rows=(-3, _)):i64?]
+    Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+}

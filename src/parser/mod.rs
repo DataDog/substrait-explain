@@ -9,8 +9,8 @@ pub(crate) mod types;
 
 pub use common::MessageParseError;
 pub(crate) use common::{
-    ErrorKind, ExpressionParser, ParsePair, Rule, RuleIter, ScopedParsePair, iter_pairs,
-    unescape_string, unwrap_single_pair,
+    ErrorKind, ExpressionParser, ParsePair, ParsedNamedArgs, Rule, RuleIter, ScopedParsePair,
+    iter_pairs, sort_direction_from_str, unescape_string, unwrap_single_pair,
 };
 pub use errors::{ParseContext, ParseError, ParseResult};
 pub use extensions::{ExpectedExtensionLine, ExtensionParseError};

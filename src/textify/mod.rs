@@ -7,6 +7,7 @@ pub(crate) mod foundation;
 pub(crate) mod plan;
 pub(crate) mod rels;
 pub(crate) mod types;
+pub(crate) mod values;
 
 #[cfg(test)]
 pub(crate) use foundation::ErrorQueue;
