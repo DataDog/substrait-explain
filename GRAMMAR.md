@@ -322,9 +322,22 @@ precision_timestamp_type    := "precisiontimestamp" nullability? "<" integer ">"
 precision_timestamp_tz_type := "precisiontimestamptz" nullability? "<" integer ">"
 ```
 
-The precision parameter supports the following unit convention: `0` means seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12` picoseconds. We restrict to this set for literals while the *type* syntax accepts the full Substrait range, `0` through `12`. This is contrary to the Substrait specs where any precision in the range of 0 to 12 is fully supported. 
+The precision parameter follows the Substrait unit convention: `0` means
+seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12`
+picoseconds. Two different subsets apply:
 
-*Literals* only support the subset `0`, `3`, `6`, and `9` because chrono (the underlying date/time library) has no sub-nanosecond resolution, so precision-12 literals cannot be parsed. Textifying a precision-12 value from a protobuf plan is still supported: the *value* is truncated to nanosecond resolution and a truncation warning is emitted, but the declared *type* is preserved as `<12>` (truncating the value does not silently rewrite its type). As a result, such textified output does not round-trip, since precision-12 literals cannot be parsed back.
+- *Types* accept the full Substrait range, any precision from `0` through `12`.
+- *Literals* accept only `0`, `3`, `6`, and `9`.
+
+The literal restriction is a limitation of this implementation, not of
+Substrait, which supports every precision from 0 to 12.
+
+Literals stop at `9` because chrono (the underlying date/time library) has no
+sub-nanosecond resolution, so precision-12 literals cannot be parsed.
+Textifying a precision-12 value from a protobuf plan is still supported: the
+*value* is truncated to nanosecond resolution and a truncation diagnostic is
+emitted, but the declared *type* is preserved as `<12>` (truncating the value
+does not silently rewrite its type).
 
 #### Examples
 
