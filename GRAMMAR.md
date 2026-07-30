@@ -241,9 +241,9 @@ A literal can be an integer, float, boolean, string, or null. Literals may inclu
   - A type annotation is required for `null`
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
+  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
 
 ## Types
 
@@ -309,6 +309,46 @@ Root[result]
 ### Compound Types
 
 Compound types follow the same syntax as standard Substrait parameterized types.
+
+#### Precision Time And Timestamp Types
+
+Precision time and timestamp types put the nullability marker before the precision parameter.
+
+#### Syntax
+
+```text
+precision_time_type         := "precisiontime" nullability? "<" integer ">"
+precision_timestamp_type    := "precisiontimestamp" nullability? "<" integer ">"
+precision_timestamp_tz_type := "precisiontimestamptz" nullability? "<" integer ">"
+```
+
+The precision parameter follows the Substrait unit convention: `0` means
+seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12`
+picoseconds. Two different subsets apply:
+
+- *Types* accept the full Substrait range, any precision from `0` through `12`.
+- *Literals* accept only `0`, `3`, `6`, and `9`.
+
+The literal restriction is a limitation of this implementation, not of
+Substrait, which supports every precision from 0 to 12.
+
+Literals stop at `9` because chrono (the underlying date/time library) has no
+sub-nanosecond resolution, so precision-12 literals cannot be parsed.
+Textifying a precision-12 value from a protobuf plan is still supported: the
+*value* is truncated to nanosecond resolution and a truncation diagnostic is
+emitted, but the declared *type* is preserved as `<12>` (truncating the value
+does not silently rewrite its type).
+
+#### Examples
+
+```text
+precisiontime<6>
+precisiontime?<6>
+precisiontimestamp<9>
+precisiontimestamp?<9>
+precisiontimestamptz<3>
+precisiontimestamptz?<3>
+```
 
 #### Examples
 

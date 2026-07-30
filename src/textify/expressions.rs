@@ -1,6 +1,6 @@
 use std::fmt::{self};
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, NaiveTime};
 use expr::RexType;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::literal::LiteralType;
@@ -57,6 +57,56 @@ fn unimplemented_literal<S: Scope, W: fmt::Write>(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrecisionFormatError {
+    /// `precision` isn't one of the precisions literals support (0, 3, 6, 9, 12).
+    UnsupportedPrecision,
+    /// `value` can't be represented at `precision`: it overflows the
+    /// representable range (timestamps) or falls outside a single day (times).
+    OutOfRange,
+}
+
+impl PrecisionFormatError {
+    fn into_plan_error(self, variant: &'static str, precision: i32) -> PlanError {
+        let message = match self {
+            PrecisionFormatError::UnsupportedPrecision => {
+                format!("unsupported precision {precision} for {variant}")
+            }
+            PrecisionFormatError::OutOfRange => {
+                format!("value is out of range for {variant} at precision {precision}")
+            }
+        };
+        PlanError::invalid("LiteralType", Some(variant), message)
+    }
+}
+
+/// Returns the diagnostic for truncating a picosecond value to nanoseconds.
+fn picosecond_truncation_warning(variant: &'static str) -> PlanError {
+    PlanError::invalid(
+        "LiteralType",
+        Some(variant),
+        "precision 12 (picoseconds) truncated to nanoseconds; sub-nanosecond precision lost",
+    )
+}
+
+fn write_precision_literal<S: Scope, W: fmt::Write>(
+    variant: &'static str,
+    precision: i32,
+    formatted: Result<String, PrecisionFormatError>,
+    ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    match formatted {
+        Ok(s) => {
+            if precision == 12 {
+                ctx.push_error(picosecond_truncation_warning(variant).into());
+            }
+            write!(w, "'{}'", escaped(&s))
+        }
+        Err(e) => write!(w, "{}", ctx.failure(e.into_plan_error(variant, precision))),
+    }
+}
+
 /// Write an enum value. Enums are written as `&<identifier>`, if the string is
 /// a valid identifier; otherwise, they are written as `&'<escaped_string>'`.
 pub fn textify_enum<S: Scope, W: fmt::Write>(s: &str, _ctx: &S, w: &mut W) -> fmt::Result {
@@ -70,45 +120,72 @@ fn days_to_date_string(days: i32) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
-/// Convert microseconds since midnight to time string
-fn microseconds_to_time_string(microseconds: i64) -> String {
-    let total_seconds = microseconds / 1_000_000;
-    let remaining_microseconds = microseconds % 1_000_000;
-
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-
-    if remaining_microseconds == 0 {
-        format!("{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        // Convert microseconds to fractional seconds
-        let fractional = remaining_microseconds as f64 / 1_000_000.0;
-        format!("{hours:02}:{minutes:02}:{seconds:02}{fractional:.6}")
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string()
+/// Convert a value in `precision` units, to a `chrono::Duration`.
+/// Precision 12 (picoseconds) is truncated to nanoseconds: chrono can't represent sub-nanosecond resolution.
+fn duration_from_precision_units(
+    value: i64,
+    precision: i32,
+) -> Result<chrono::Duration, PrecisionFormatError> {
+    match precision {
+        0 => chrono::Duration::try_seconds(value).ok_or(PrecisionFormatError::OutOfRange),
+        3 => chrono::Duration::try_milliseconds(value).ok_or(PrecisionFormatError::OutOfRange),
+        6 => Ok(chrono::Duration::microseconds(value)),
+        9 => Ok(chrono::Duration::nanoseconds(value)),
+        12 => Ok(chrono::Duration::nanoseconds(value / 1000)),
+        _ => Err(PrecisionFormatError::UnsupportedPrecision),
     }
 }
 
-/// Convert microseconds since Unix epoch to timestamp string
-fn microseconds_to_timestamp_string(microseconds: i64) -> String {
-    let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
-    let duration = chrono::Duration::microseconds(microseconds);
-    let datetime = epoch + duration;
-
-    // Format with fractional seconds, then clean up trailing zeros
-    let formatted = datetime.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
-
-    // If there are fractional seconds, trim trailing zeros and dot if needed
-    if formatted.contains('.') {
-        formatted
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string()
-    } else {
-        formatted
+/// The chrono fractional-seconds format specifier for a precision, or `""` for
+/// precision 0 (whole seconds, no fractional part). A fixed-width specifier is
+/// used so the rendered fractional digits match the declared precision exactly.
+/// Precision 12 renders at nanosecond width, matching the truncation in [`duration_from_precision_units`].
+fn fractional_spec(precision: i32) -> &'static str {
+    match precision {
+        3 => "%.3f",
+        6 => "%.6f",
+        9 | 12 => "%.9f",
+        _ => "", // precision 0 (or unsupported, already reported as an error)
     }
+}
+
+/// Convert a value in precision units since the Unix epoch, to a timestamp string.
+/// Errors if `value` is out of chrono's representable date range.
+fn precision_timestamp_to_string(
+    value: i64,
+    precision: i32,
+) -> Result<String, PrecisionFormatError> {
+    let duration = duration_from_precision_units(value, precision)?;
+    let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
+    let datetime = epoch
+        .checked_add_signed(duration)
+        .ok_or(PrecisionFormatError::OutOfRange)?;
+
+    let format = format!("%Y-%m-%dT%H:%M:%S{}", fractional_spec(precision));
+    Ok(datetime.format(&format).to_string())
+}
+
+/// Convert a value in precision units since midnight, to a time-of-day string.
+/// Errors if `value` falls outside a single day: `NaiveTime + Duration` wraps
+/// modulo 24 hours, which would otherwise silently misrepresent the value.
+///
+/// The sign check is on `value` itself, not the `chrono::Duration` derived from
+/// it: at precision 12, `duration_from_precision_units` truncates towards zero,
+/// so a small negative `value` (e.g. `-1`) would otherwise round to a
+/// zero/non-negative duration and be wrongly accepted.
+fn precision_time_to_string(value: i64, precision: i32) -> Result<String, PrecisionFormatError> {
+    if value < 0 {
+        return Err(PrecisionFormatError::OutOfRange);
+    }
+    let duration = duration_from_precision_units(value, precision)?;
+    if duration >= chrono::Duration::days(1) {
+        return Err(PrecisionFormatError::OutOfRange);
+    }
+    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    let time = midnight + duration;
+
+    let format = format!("%H:%M:%S{}", fractional_spec(precision));
+    Ok(time.format(&format).to_string())
 }
 
 /// Write just the value portion of a literal, with no type suffix or
@@ -132,21 +209,21 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
             write!(w, "'{}'", escaped(&days_to_date_string(*days)))
         }
         #[allow(deprecated)]
-        LiteralType::Time(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_time_string(*microseconds))
-            )
-        }
+        LiteralType::Time(microseconds) => write_precision_literal(
+            "Time",
+            6,
+            precision_time_to_string(*microseconds, 6),
+            ctx,
+            w,
+        ),
         #[allow(deprecated)]
-        LiteralType::Timestamp(microseconds) => {
-            write!(
-                w,
-                "'{}'",
-                escaped(&microseconds_to_timestamp_string(*microseconds))
-            )
-        }
+        LiteralType::Timestamp(microseconds) => write_precision_literal(
+            "Timestamp",
+            6,
+            precision_timestamp_to_string(*microseconds, 6),
+            ctx,
+            w,
+        ),
         LiteralType::IntervalYearToMonth(_) => unimplemented_literal("IntervalYearToMonth", ctx, w),
         LiteralType::IntervalDayToSecond(_) => unimplemented_literal("IntervalDayToSecond", ctx, w),
         LiteralType::IntervalCompound(_) => unimplemented_literal("IntervalCompound", ctx, w),
@@ -154,11 +231,27 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::VarChar(_) => unimplemented_literal("VarChar", ctx, w),
         LiteralType::FixedBinary(_) => unimplemented_literal("FixedBinary", ctx, w),
         LiteralType::Decimal(_) => unimplemented_literal("Decimal", ctx, w),
-        LiteralType::PrecisionTime(_) => unimplemented_literal("PrecisionTime", ctx, w),
-        LiteralType::PrecisionTimestamp(_) => unimplemented_literal("PrecisionTimestamp", ctx, w),
-        LiteralType::PrecisionTimestampTz(_) => {
-            unimplemented_literal("PrecisionTimestampTz", ctx, w)
-        }
+        LiteralType::PrecisionTime(p) => write_precision_literal(
+            "PrecisionTime",
+            p.precision,
+            precision_time_to_string(p.value, p.precision),
+            ctx,
+            w,
+        ),
+        LiteralType::PrecisionTimestamp(p) => write_precision_literal(
+            "PrecisionTimestamp",
+            p.precision,
+            precision_timestamp_to_string(p.value, p.precision),
+            ctx,
+            w,
+        ),
+        LiteralType::PrecisionTimestampTz(p) => write_precision_literal(
+            "PrecisionTimestampTz",
+            p.precision,
+            precision_timestamp_to_string(p.value, p.precision),
+            ctx,
+            w,
+        ),
         LiteralType::Struct(_) => unimplemented_literal("Struct", ctx, w),
         LiteralType::Map(_) => unimplemented_literal("Map", ctx, w),
         #[allow(deprecated)]
@@ -173,27 +266,43 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
 }
 
 /// The type suffix for a literal (e.g., `"i32"`, `"fp64"`, `"date"`).
-///
 /// Returns `None` for unimplemented types whose [`write_literal_value`] already
 /// emitted an error token.
-fn literal_type_suffix(lit: &LiteralType) -> Option<&'static str> {
-    match lit {
-        LiteralType::Boolean(_) => Some("boolean"),
-        LiteralType::I8(_) => Some("i8"),
-        LiteralType::I16(_) => Some("i16"),
-        LiteralType::I32(_) => Some("i32"),
-        LiteralType::I64(_) => Some("i64"),
-        LiteralType::Fp32(_) => Some("fp32"),
-        LiteralType::Fp64(_) => Some("fp64"),
-        LiteralType::String(_) => Some("string"),
-        LiteralType::Binary(_) => Some("binary"),
-        LiteralType::Date(_) => Some("date"),
+fn write_literal_type_suffix<W: fmt::Write>(
+    lit: &LiteralType,
+    nullable: bool,
+    w: &mut W,
+) -> fmt::Result {
+    // (type name, precision parameter for parameterized types).
+    let (name, precision): (&'static str, Option<i32>) = match lit {
+        LiteralType::Boolean(_) => ("boolean", None),
+        LiteralType::I8(_) => ("i8", None),
+        LiteralType::I16(_) => ("i16", None),
+        LiteralType::I32(_) => ("i32", None),
+        LiteralType::I64(_) => ("i64", None),
+        LiteralType::Fp32(_) => ("fp32", None),
+        LiteralType::Fp64(_) => ("fp64", None),
+        LiteralType::String(_) => ("string", None),
+        LiteralType::Binary(_) => ("binary", None),
+        LiteralType::Date(_) => ("date", None),
         #[allow(deprecated)]
-        LiteralType::Time(_) => Some("time"),
+        LiteralType::Time(_) => ("time", None),
         #[allow(deprecated)]
-        LiteralType::Timestamp(_) => Some("timestamp"),
-        _ => None,
+        LiteralType::Timestamp(_) => ("timestamp", None),
+        LiteralType::PrecisionTimestamp(p) => ("precisiontimestamp", Some(p.precision)),
+        LiteralType::PrecisionTimestampTz(p) => ("precisiontimestamptz", Some(p.precision)),
+        LiteralType::PrecisionTime(p) => ("precisiontime", Some(p.precision)),
+        _ => return Ok(()),
+    };
+
+    write!(w, ":{name}")?;
+    if nullable {
+        write!(w, "?")?;
     }
+    if let Some(p) = precision {
+        write!(w, "<{p}>")?;
+    }
+    Ok(())
 }
 
 /// Whether this type is the default interpretation for its value syntax.
@@ -247,12 +356,7 @@ impl Textify for expr::Literal {
             return Ok(());
         }
         if show_suffix {
-            if let Some(suffix) = literal_type_suffix(lit) {
-                write!(w, ":{suffix}")?;
-            }
-            if self.nullable {
-                write!(w, "?")?;
-            }
+            write_literal_type_suffix(lit, self.nullable, w)?;
         }
         Ok(())
     }
@@ -752,6 +856,201 @@ mod tests {
             ctx.textify_no_errors(&nullable_literal(expr::literal::LiteralType::Fp64(3.19))),
             "3.19:fp64?"
         );
+    }
+
+    #[test]
+    fn test_precision_timestamp_to_string() {
+        assert_eq!(
+            precision_timestamp_to_string(10, 0),
+            Ok("1970-01-01T00:00:10".to_string())
+        );
+        assert_eq!(
+            precision_timestamp_to_string(123_456_789, 9),
+            Ok("1970-01-01T00:00:00.123456789".to_string())
+        );
+        // Precision 12 (picoseconds) is truncated to nanoseconds (best-effort):
+        // the trailing 500 picoseconds below don't survive.
+        assert_eq!(
+            precision_timestamp_to_string(123_456_789_500, 12),
+            Ok("1970-01-01T00:00:00.123456789".to_string())
+        );
+        assert_eq!(
+            precision_timestamp_to_string(0, 13),
+            Err(PrecisionFormatError::UnsupportedPrecision)
+        );
+    }
+
+    #[test]
+    fn test_precision_time_to_string() {
+        assert_eq!(precision_time_to_string(0, 0), Ok("00:00:00".to_string()));
+        assert_eq!(
+            // 01:01:01 = 3661 seconds, in microseconds. The fractional part is
+            // rendered at the declared precision width (6 digits).
+            precision_time_to_string(3_661_000_000, 6),
+            Ok("01:01:01.000000".to_string())
+        );
+        assert_eq!(
+            // 01:01:01 = 3661 seconds, in picoseconds, plus 500 ps that get
+            // truncated away. Precision 12 renders at nanosecond width (9 digits).
+            precision_time_to_string(3_661_000_000_000_500, 12),
+            Ok("01:01:01.000000000".to_string())
+        );
+        assert_eq!(
+            precision_time_to_string(0, 13),
+            Err(PrecisionFormatError::UnsupportedPrecision)
+        );
+        // A negative value at precision 12 truncates towards zero when converted
+        // to a `chrono::Duration` (-1 / 1000 == 0), so the sign must be checked
+        // on the raw value, not the derived duration.
+        assert_eq!(
+            precision_time_to_string(-1, 12),
+            Err(PrecisionFormatError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn test_nullable_precision_timestamp_literal_textify() {
+        let ctx = TestContext::new();
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(
+                expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                    precision: 6,
+                    value: 1000,
+                })
+            )),
+            "'1970-01-01T00:00:00.001000':precisiontimestamp?<6>"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(
+                expr::literal::LiteralType::PrecisionTimestampTz(
+                    expr::literal::PrecisionTimestamp {
+                        precision: 3,
+                        value: 5,
+                    }
+                )
+            )),
+            "'1970-01-01T00:00:00.005':precisiontimestamptz?<3>"
+        );
+        assert_eq!(
+            ctx.textify_no_errors(&nullable_literal(
+                expr::literal::LiteralType::PrecisionTime(expr::literal::PrecisionTime {
+                    precision: 0,
+                    value: 61,
+                })
+            )),
+            "'00:01:01':precisiontime?<0>"
+        );
+    }
+
+    #[test]
+    fn test_precision_time_literal_precision_12_best_effort() {
+        let ctx = TestContext::new();
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTime(expr::literal::PrecisionTime {
+                precision: 12,
+                value: 3_661_000_000_000_500,
+            }),
+        ));
+        // Value truncated to nanosecond resolution (9 fractional digits), but
+        // the declared type `<12>` is preserved.
+        assert_eq!(s, "'01:01:01.000000000':precisiontime<12>");
+        assert_eq!(errs.0.len(), 1);
+        assert!(errs.0[0].to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn test_precision_timestamp_literal_supported_precision_no_warning() {
+        let ctx = TestContext::new();
+        // Precisions chrono can represent exactly shouldn't trigger the
+        // precision-12 truncation warning.
+        let (_, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                precision: 9,
+                value: 123_456_789,
+            }),
+        ));
+        assert_eq!(errs.0.len(), 0);
+    }
+
+    #[test]
+    fn test_precision_timestamp_literal_unrecognized_precision_invalid() {
+        let ctx = TestContext::new();
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                precision: 13,
+                value: 0,
+            }),
+        ));
+        // The value fails to render (unrecognized precision), but the suffix
+        // is still written with the precision as-is.
+        assert_eq!(s, "!{LiteralType}:precisiontimestamp<13>");
+        assert_eq!(errs.0.len(), 1);
+        assert!(errs.0[0].to_string().contains("PrecisionTimestamp"));
+    }
+
+    #[test]
+    fn test_precision_timestamp_literal_out_of_range_does_not_panic() {
+        let ctx = TestContext::new();
+        // 9e12 seconds since epoch is a valid i64 and a valid `chrono::Duration`,
+        // but it's outside NaiveDateTime's representable range: adding it to the
+        // epoch with `+` would panic. Textification should report a failure
+        // token instead.
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                precision: 0,
+                value: 9_000_000_000_000,
+            }),
+        ));
+        assert_eq!(s, "!{LiteralType}:precisiontimestamp<0>");
+        assert_eq!(errs.0.len(), 1);
+    }
+
+    #[test]
+    fn test_precision_time_literal_beyond_one_day_invalid() {
+        let ctx = TestContext::new();
+        // 86,460 seconds since midnight is more than a day; `NaiveTime + Duration`
+        // wraps modulo 24 hours rather than erroring, which would otherwise
+        // silently misrepresent the value as 00:01:00.
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTime(expr::literal::PrecisionTime {
+                precision: 0,
+                value: 86_460,
+            }),
+        ));
+        assert_eq!(s, "!{LiteralType}:precisiontime<0>");
+        assert_eq!(errs.0.len(), 1);
+    }
+
+    #[test]
+    fn test_precision_time_literal_unrecognized_precision_invalid() {
+        let ctx = TestContext::new();
+        let (s, errs) = ctx.textify(&non_nullable_literal(
+            expr::literal::LiteralType::PrecisionTime(expr::literal::PrecisionTime {
+                precision: 13,
+                value: 0,
+            }),
+        ));
+        assert_eq!(s, "!{LiteralType}:precisiontime<13>");
+        assert_eq!(errs.0.len(), 1);
+        assert!(errs.0[0].to_string().contains("PrecisionTime"));
+    }
+
+    #[test]
+    fn test_nullable_precision_timestamp_literal_precision_12_best_effort() {
+        let ctx = TestContext::new();
+        // Picoseconds aren't representable, the textify best-effort approach is to
+        // truncate to nanoseconds. The lost precision is reported via the error accumulator.
+        let (s, errs) = ctx.textify(&nullable_literal(
+            expr::literal::LiteralType::PrecisionTimestamp(expr::literal::PrecisionTimestamp {
+                precision: 12,
+                value: 123_456_789_500,
+            }),
+        ));
+        // Value truncated to nanosecond resolution, but the declared type
+        // `<12>` is preserved rather than rewritten to `<9>`.
+        assert_eq!(s, "'1970-01-01T00:00:00.123456789':precisiontimestamp?<12>");
+        assert_eq!(errs.0.len(), 1);
+        assert!(errs.0[0].to_string().contains("truncated"));
     }
 
     #[test]
