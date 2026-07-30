@@ -2,8 +2,10 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
+use substrait::proto::expression::literal::interval_day_to_second::PrecisionMode;
 use substrait::proto::expression::literal::{
-    interval_day_to_second::PrecisionMode, IntervalDayToSecond, LiteralType, PrecisionTime as LitPrecisionTime, PrecisionTimestamp as LitPrecisionTimestamp,
+    IntervalDayToSecond, LiteralType, PrecisionTime as LitPrecisionTime,
+    PrecisionTimestamp as LitPrecisionTimestamp,
 };
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
@@ -20,7 +22,7 @@ use super::{
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{CompoundName, ExtensionKind};
-use crate::precision::Precision;
+use crate::precision::SupportedPrecision;
 
 /// A field index (e.g., parsed from "$0" -> 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,15 +242,24 @@ fn to_string_literal(
         Kind::IntervalDay(i) => {
             // Sub-second precision comes from the type ascription, as it does for
             // every other parameterized type: `'5d 100ns':interval_day<9>`. The
-            // grammar requires the parameter, so `precision` is always set here
-            // for text input; a caller-constructed type might not have it.
-            let precision = i.precision.and_then(Precision::new).ok_or_else(|| {
-                MessageParseError::invalid(
-                    "interval_day_literal_type",
-                    value.as_span(),
-                    "interval_day literals require an explicit sub-second precision between 0 and 12, e.g. 'interval_day<6>'",
-                )
-            })?;
+            // grammar requires the parameter, so it is always present for text
+            // input; a caller-constructed type might not have it.
+            //
+            // Unlike the chrono-backed literals, picoseconds are representable
+            // here: `subseconds` is a plain integer count.
+            let precision = i
+                .precision
+                .and_then(SupportedPrecision::from_units)
+                .ok_or_else(|| {
+                    MessageParseError::invalid(
+                        "interval_day_literal_type",
+                        value.as_span(),
+                        format!(
+                            "Invalid precision {} for an interval_day literal; expected one of 0 (seconds), 3 (milliseconds), 6 (microseconds), 9 (nanoseconds), or 12 (picoseconds)",
+                            i.precision.map_or("<unset>".to_string(), |p| p.to_string())
+                        ),
+                    )
+                })?;
             let interval = parse_interval_day_duration(&string_value, precision, value.as_span())?;
             Ok(Literal {
                 literal_type: Some(LiteralType::IntervalDayToSecond(interval)),
@@ -393,26 +404,6 @@ fn parse_timestamp_to_microseconds(
     parse_timestamp_to_precision_units(timestamp_str, 6, "timestamp", span)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SupportedPrecision {
-    Seconds,      // 0
-    Milliseconds, // 3
-    Microseconds, // 6
-    Nanoseconds,  // 9
-}
-
-impl SupportedPrecision {
-    /// The Substrait precision unit exponent (`0`, `3`, `6`, or `9`).
-    fn units(self) -> i32 {
-        match self {
-            SupportedPrecision::Seconds => 0,
-            SupportedPrecision::Milliseconds => 3,
-            SupportedPrecision::Microseconds => 6,
-            SupportedPrecision::Nanoseconds => 9,
-        }
-    }
-}
-
 /// Convert a `chrono::Duration` to the units implied by `precision`.
 /// Errors if `duration` overflows the target unit's i64 range, or if `duration`
 /// carries a fractional component finer than `precision` can represent (e.g.
@@ -469,6 +460,15 @@ fn duration_to_precision_units(
         // Nanoseconds is the finest precision chrono can represent, so there's
         // no finer fractional component that could be silently dropped here.
         SupportedPrecision::Nanoseconds => duration.num_nanoseconds().ok_or_else(out_of_range),
+        // `check_supported_precision` rejects picoseconds before we get here,
+        // since chrono has no sub-nanosecond resolution to convert into.
+        SupportedPrecision::Picoseconds => Err(MessageParseError::invalid(
+            "precision_literal_unsupported_precision",
+            span,
+            format!(
+                "precision 12 (picoseconds) is not supported for {literal_kind} literals; chrono only supports nanosecond (precision 9) resolution"
+            ),
+        )),
     }
 }
 
@@ -477,29 +477,25 @@ fn check_supported_precision(
     literal_kind: &'static str,
     span: pest::Span,
 ) -> Result<SupportedPrecision, MessageParseError> {
-    match precision {
-        0 => return Ok(SupportedPrecision::Seconds),
-        3 => return Ok(SupportedPrecision::Milliseconds),
-        6 => return Ok(SupportedPrecision::Microseconds),
-        9 => return Ok(SupportedPrecision::Nanoseconds),
-        _ => {}
-    }
-    if precision == 12 {
-        return Err(MessageParseError::invalid(
+    match SupportedPrecision::from_units(precision) {
+        // chrono has no sub-nanosecond resolution, so the literals that go
+        // through it can't represent picoseconds.
+        Some(SupportedPrecision::Picoseconds) => Err(MessageParseError::invalid(
             "precision_literal_unsupported_precision",
             span,
             format!(
                 "precision 12 (picoseconds) is not supported for {literal_kind} literals; chrono only supports nanosecond (precision 9) resolution"
             ),
-        ));
+        )),
+        Some(precision) => Ok(precision),
+        None => Err(MessageParseError::invalid(
+            "precision_literal_invalid_precision",
+            span,
+            format!(
+                "Invalid precision {precision} for a {literal_kind} literal; expected one of 0 (seconds), 3 (milliseconds), 6 (microseconds), or 9 (nanoseconds)"
+            ),
+        )),
     }
-    Err(MessageParseError::invalid(
-        "precision_literal_invalid_precision",
-        span,
-        format!(
-            "Invalid precision {precision} for a {literal_kind} literal; expected one of 0 (seconds), 3 (milliseconds), 6 (microseconds), or 9 (nanoseconds)"
-        ),
-    ))
 }
 
 /// Parse a timestamp string using chrono to a value in the given precision's units since the Unix epoch.
@@ -599,7 +595,7 @@ fn parse_duration_number<T: std::str::FromStr>(
 /// agrees with `precision`.
 fn parse_interval_day_duration(
     duration_str: &str,
-    precision: Precision,
+    precision: SupportedPrecision,
     span: pest::Span,
 ) -> Result<IntervalDayToSecond, MessageParseError> {
     let parsed =
@@ -621,7 +617,7 @@ fn parse_interval_day_duration(
         days: 0,
         seconds: 0,
         subseconds: 0,
-        precision_mode: Some(PrecisionMode::Precision(precision.value())),
+        precision_mode: Some(PrecisionMode::Precision(precision.units())),
     };
 
     for term in pair.into_inner() {
@@ -641,7 +637,7 @@ fn parse_interval_day_duration(
                 iter.done();
 
                 let unit = unit.as_str();
-                let unit_precision = Precision::from_subsecond_unit(unit)
+                let unit_precision = SupportedPrecision::from_subsecond_unit(unit)
                     .expect("the grammar restricts sub-second units to ms/us/ns/ps");
                 // Precision has a single source - the type - so a unit that
                 // disagrees with it is ambiguous rather than redundant.
@@ -1404,9 +1400,6 @@ mod tests {
             ("'-500000000ns':interval_day<9>", 0, 0, -500_000_000, 9),
             // Nullability is written before the precision parameter.
             ("'5d':interval_day?<6>", 5, 0, 0, 6),
-            // A precision with no duration unit is fine as long as there is no
-            // sub-second term to write.
-            ("'5d 3s':interval_day<4>", 5, 3, 0, 4),
             // This crate converts rather than validates, so values outside the
             // Substrait ranges parse as long as the proto fields can hold them.
             ("'3650001d':interval_day<0>", 3_650_001, 0, 0, 0),
@@ -1436,8 +1429,9 @@ mod tests {
             "'5d\t3s':interval_day<0>",
             // The sub-second unit has to agree with the type's precision.
             "'100ns':interval_day<6>",
-            "'100ns':interval_day<4>",
-            // Out-of-range precision is rejected by the type, not the string.
+            // Precisions with no duration unit, so no value can be written at
+            // them; 13 and -1 are also outside the type's own 0..=12 range.
+            "'5d 3s':interval_day<4>",
             "'5d':interval_day<13>",
             "'5d':interval_day<-1>",
             // Values the proto fields cannot hold.

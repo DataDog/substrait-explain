@@ -6,7 +6,6 @@ use super::{ParsePair, Rule, ScopedParsePair, iter_pairs, unwrap_single_pair};
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{ExtensionKind, MissingReference};
 use crate::parser::MessageParseError;
-use crate::precision::Precision;
 
 /// Given a name (plain or compound) and an optional anchor, resolve and
 /// validate the extension anchor.
@@ -198,14 +197,18 @@ fn parse_compound_type(
     }
 }
 
-/// Parse a sub-second precision parameter into a validated [`Precision`].
+/// Parse a sub-second precision type parameter.
+///
+/// Substrait allows any precision from 0 to 12 on a type, so this stays a plain
+/// integer. Narrowing to a precision that a *value* can actually be written at
+/// is [`crate::precision::SupportedPrecision`]'s job, and only literals need it.
 fn parse_precision(
     precision_pair: Pair<Rule>,
     context: &'static str,
-) -> Result<Precision, MessageParseError> {
+) -> Result<i32, MessageParseError> {
     let precision_span = precision_pair.as_span();
-    let value = precision_pair.as_str().parse::<i32>().ok();
-    value.and_then(Precision::new).ok_or_else(|| {
+    let precision = precision_pair.as_str().parse::<i32>().ok();
+    precision.filter(|p| (0..=12).contains(p)).ok_or_else(|| {
         MessageParseError::invalid(
             context,
             precision_span,
@@ -222,7 +225,7 @@ fn parse_precision_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> {
     let mut iter = iter_pairs(pair.into_inner());
     let nullability = iter.parse_next::<Nullability>();
     let precision_pair = iter.pop(Rule::integer);
-    let precision = parse_precision(precision_pair, "precision time type")?.value();
+    let precision = parse_precision(precision_pair, "precision time type")?;
     iter.done();
     let kind = match rule {
         Rule::precision_timestamp_type => {
@@ -254,7 +257,7 @@ fn parse_interval_day_type(pair: Pair<Rule>) -> Result<Type, MessageParseError> 
     let mut iter = iter_pairs(pair.into_inner());
     let nullability = iter.parse_next::<Nullability>();
     let precision_pair = iter.pop(Rule::integer);
-    let precision = parse_precision(precision_pair, "interval day type")?.value();
+    let precision = parse_precision(precision_pair, "interval day type")?;
     iter.done();
     Ok(Type {
         kind: Some(Kind::IntervalDay(proto::r#type::IntervalDay {

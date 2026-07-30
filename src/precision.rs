@@ -1,65 +1,78 @@
-//! Sub-second precision, shared by the Substrait types that carry one.
+//! Sub-second precision for literal values, shared by the parser and textifier.
 
 use std::fmt;
 
-/// The number of decimal digits used to express fractions of a second.
+/// A sub-second precision that names a unit: the decimal exponent Substrait
+/// stores, and the duration suffix that writes it.
 ///
-/// Substrait restricts precision to `0..=12` — seconds through picoseconds —
-/// for every type that carries one (`Type.IntervalDay.precision`,
-/// `Type.PrecisionTimestamp.precision`, `Type.PrecisionTime.precision`).
-/// Constructing a `Precision` checks that range once, so code holding one does
-/// not need to re-validate it.
+/// Substrait allows any precision from 0 to 12 on a *type*, but a literal
+/// *value* has to be written down, and only these five have a unit to write it
+/// in. Constructing a `SupportedPrecision` checks that once, so code holding one
+/// can convert without re-checking.
+///
+/// Not every literal supports every variant: `chrono`-backed literals
+/// (timestamp, time) top out at nanoseconds, so they reject `Picoseconds`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Precision(i32);
+pub(crate) enum SupportedPrecision {
+    Seconds,      // 0
+    Milliseconds, // 3
+    Microseconds, // 6
+    Nanoseconds,  // 9
+    Picoseconds,  // 12
+}
 
-impl Precision {
-    /// The inclusive range Substrait allows for a precision value.
-    const RANGE: std::ops::RangeInclusive<i32> = 0..=12;
-
-    /// Microsecond precision, which Substrait uses as the meaning of interval
-    /// values recorded before `precision` existed.
-    pub const MICROSECONDS: Precision = Precision(6);
-
-    /// Returns `None` if `value` is outside Substrait's `0..=12` range.
-    pub fn new(value: i32) -> Option<Self> {
-        Self::RANGE.contains(&value).then_some(Precision(value))
+impl SupportedPrecision {
+    /// The Substrait precision unit exponent (`0`, `3`, `6`, `9`, or `12`).
+    pub fn units(self) -> i32 {
+        match self {
+            SupportedPrecision::Seconds => 0,
+            SupportedPrecision::Milliseconds => 3,
+            SupportedPrecision::Microseconds => 6,
+            SupportedPrecision::Nanoseconds => 9,
+            SupportedPrecision::Picoseconds => 12,
+        }
     }
 
-    /// The precision as the integer Substrait stores.
-    pub fn value(self) -> i32 {
-        self.0
-    }
-
-    /// The duration-string unit that expresses sub-seconds at this precision.
-    ///
-    /// Only the precisions that name a unit can carry a non-zero sub-second
-    /// term in an `interval_day` literal; e.g. at precision 4 there is no way
-    /// to write "1/10,000 of a second" as a duration term.
-    pub fn subsecond_unit(self) -> Option<&'static str> {
-        match self.0 {
-            3 => Some("ms"),
-            6 => Some("us"),
-            9 => Some("ns"),
-            12 => Some("ps"),
+    /// Returns `None` for a precision with no unit to write it in.
+    pub fn from_units(units: i32) -> Option<Self> {
+        match units {
+            0 => Some(SupportedPrecision::Seconds),
+            3 => Some(SupportedPrecision::Milliseconds),
+            6 => Some(SupportedPrecision::Microseconds),
+            9 => Some(SupportedPrecision::Nanoseconds),
+            12 => Some(SupportedPrecision::Picoseconds),
             _ => None,
         }
     }
 
-    /// The precision implied by a duration-string sub-second unit.
+    /// The duration-string suffix for sub-seconds at this precision.
+    ///
+    /// `Seconds` has none: at precision 0 there is no sub-second component.
+    pub fn subsecond_unit(self) -> Option<&'static str> {
+        match self {
+            SupportedPrecision::Seconds => None,
+            SupportedPrecision::Milliseconds => Some("ms"),
+            SupportedPrecision::Microseconds => Some("us"),
+            SupportedPrecision::Nanoseconds => Some("ns"),
+            SupportedPrecision::Picoseconds => Some("ps"),
+        }
+    }
+
+    /// The precision implied by a duration-string sub-second suffix.
     pub fn from_subsecond_unit(unit: &str) -> Option<Self> {
         match unit {
-            "ms" => Some(Precision(3)),
-            "us" => Some(Precision(6)),
-            "ns" => Some(Precision(9)),
-            "ps" => Some(Precision(12)),
+            "ms" => Some(SupportedPrecision::Milliseconds),
+            "us" => Some(SupportedPrecision::Microseconds),
+            "ns" => Some(SupportedPrecision::Nanoseconds),
+            "ps" => Some(SupportedPrecision::Picoseconds),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for Precision {
+impl fmt::Display for SupportedPrecision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.units())
     }
 }
 
@@ -68,22 +81,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_precision_range() {
-        assert_eq!(Precision::new(0).map(Precision::value), Some(0));
-        assert_eq!(Precision::new(12).map(Precision::value), Some(12));
-        assert_eq!(Precision::new(-1), None);
-        assert_eq!(Precision::new(13), None);
+    fn test_units_roundtrip() {
+        for units in [0, 3, 6, 9, 12] {
+            let precision = SupportedPrecision::from_units(units).unwrap();
+            assert_eq!(precision.units(), units);
+        }
+        // In range for a type, but with no unit to write a value in.
+        assert_eq!(SupportedPrecision::from_units(4), None);
+        assert_eq!(SupportedPrecision::from_units(13), None);
+        assert_eq!(SupportedPrecision::from_units(-1), None);
     }
 
     #[test]
     fn test_subsecond_unit_roundtrip() {
         for unit in ["ms", "us", "ns", "ps"] {
-            let precision = Precision::from_subsecond_unit(unit).unwrap();
+            let precision = SupportedPrecision::from_subsecond_unit(unit).unwrap();
             assert_eq!(precision.subsecond_unit(), Some(unit));
         }
-        // Precisions that don't land on a unit boundary have no unit.
-        assert_eq!(Precision::new(0).unwrap().subsecond_unit(), None);
-        assert_eq!(Precision::new(4).unwrap().subsecond_unit(), None);
-        assert_eq!(Precision::from_subsecond_unit("s"), None);
+        // Precision 0 has no sub-second component, and "s" is not one.
+        assert_eq!(SupportedPrecision::Seconds.subsecond_unit(), None);
+        assert_eq!(SupportedPrecision::from_subsecond_unit("s"), None);
     }
 }

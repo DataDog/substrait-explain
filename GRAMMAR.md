@@ -267,10 +267,16 @@ own optional sign, matching the separate Substrait fields for days, seconds, and
 sub-seconds.
 
 Sub-second precision comes from the type ascription, not the string, so an
-`interval_day` literal always names its precision: `interval_day<precision>`,
-with `precision` an integer from 0 to 12. A sub-second term's unit must agree
-with that precision - `ms` is precision 3, `us` is 6, `ns` is 9, and `ps` is 12 -
-so there is only one place a value's precision can come from.
+`interval_day` literal always names its precision: `interval_day<precision>`.
+A literal's precision must be one of 0 (seconds), 3 (milliseconds), 6
+(microseconds), 9 (nanoseconds), or 12 (picoseconds) - the precisions that have
+a unit to write a value in. Unlike `precisiontimestamp` and `precisiontime`
+literals, `interval_day` accepts 12: sub-seconds are stored as a plain integer
+count rather than going through `chrono`.
+
+A sub-second term's unit must agree with the ascribed precision - `ms` is
+precision 3, `us` is 6, `ns` is 9, and `ps` is 12 - so there is only one place a
+value's precision can come from.
 
 Examples:
 
@@ -393,10 +399,11 @@ precisiontimestamptz<3>
 precisiontimestamptz?<3>
 ```
 
-`interval_day` takes an integer sub-second precision from 0 to 12 (0 = seconds,
-3 = milliseconds, 6 = microseconds, 9 = nanoseconds, 12 = picoseconds), e.g.
+`interval_day` takes an integer sub-second precision from 0 to 12, e.g.
 `interval_day<9>`, `interval_day?<0>`. The parameter is required, as it is for
-every other parameterized type.
+every other parameterized type. Writing an `interval_day` *literal* additionally
+requires a precision that has a unit to write values in; see
+[`interval_day` Typed Literals](#interval_day-typed-literals).
 
 #### Examples
 

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fmt::{self};
 
 use chrono::{DateTime, NaiveDate, NaiveTime};
@@ -16,7 +15,7 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
-use crate::precision::Precision;
+use crate::precision::SupportedPrecision;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
@@ -154,7 +153,7 @@ fn fractional_spec(precision: i32) -> &'static str {
 
 /// Convert a value in precision units since the Unix epoch, to a timestamp string.
 /// Errors if `value` is out of chrono's representable date range.
-fn precision_epoch_timestamp_to_string(
+fn precision_timestamp_to_string(
     value: i64,
     precision: i32,
 ) -> Result<String, PrecisionFormatError> {
@@ -176,7 +175,7 @@ fn precision_epoch_timestamp_to_string(
 /// it: at precision 12, `duration_from_precision_units` truncates towards zero,
 /// so a small negative `value` (e.g. `-1`) would otherwise round to a
 /// zero/non-negative duration and be wrongly accepted.
-fn interval_day_to_string(value: i64, precision: i32) -> Result<String, PrecisionFormatError> {
+fn precision_time_to_string(value: i64, precision: i32) -> Result<String, PrecisionFormatError> {
     if value < 0 {
         return Err(PrecisionFormatError::OutOfRange);
     }
@@ -191,44 +190,31 @@ fn interval_day_to_string(value: i64, precision: i32) -> Result<String, Precisio
     Ok(time.format(&format).to_string())
 }
 
-/// The sub-second precision and sub-second count of an `IntervalDayToSecond`.
+/// The precision and sub-second count of an `IntervalDayToSecond`, as stored.
 ///
 /// The deprecated `microseconds` precision mode is normalized to precision 6,
 /// since that field is microseconds by definition. An unset `precision_mode`
 /// also means microseconds: that is Substrait's documented meaning for interval
 /// values recorded before `precision_mode` existed, and it matches the default
 /// the type textifier uses for `Type.IntervalDay` with no precision.
-///
-/// Returns `None` when the stored precision is outside Substrait's `0..=12`
-/// range, which has no valid text form.
-fn interval_day_precision_and_subseconds(
+fn interval_day_precision_units(
     interval: &substrait::proto::expression::literal::IntervalDayToSecond,
-) -> Option<(Precision, i64)> {
+) -> (i32, i64) {
     #[allow(deprecated)]
-    let (precision, subseconds) = match interval.precision_mode {
-        Some(PrecisionMode::Precision(p)) => (Precision::new(p), interval.subseconds),
-        Some(PrecisionMode::Microseconds(us)) => (Some(Precision::MICROSECONDS), us as i64),
-        None => (Some(Precision::MICROSECONDS), interval.subseconds),
-    };
-    precision.map(|p| (p, subseconds))
+    match interval.precision_mode {
+        Some(PrecisionMode::Precision(p)) => (p, interval.subseconds),
+        Some(PrecisionMode::Microseconds(us)) => (6, us as i64),
+        None => (6, interval.subseconds),
+    }
 }
 
-/// Write an `IntervalDayToSecond` as a duration string, e.g. `'5d'`,
-/// `'4d 5s'`, `'5d 3s 100ns'`.
-///
-/// Only non-zero components are written; the sub-second precision travels in the
-/// literal's `interval_day<precision>` type suffix, so it survives a round trip
-/// without needing a zero sub-second term. An all-zero interval is written
-/// `'0s'`.
-///
-/// Values outside the Substrait ranges still have an unambiguous text form, so
-/// they are written as-is with an error pushed to the error accumulator.
 fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
     interval: &substrait::proto::expression::literal::IntervalDayToSecond,
     ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
-    let Some((precision, subseconds)) = interval_day_precision_and_subseconds(interval) else {
+    let (units, subseconds) = interval_day_precision_units(interval);
+    let Some(precision) = SupportedPrecision::from_units(units) else {
         return write!(
             w,
             "{}",
@@ -236,8 +222,7 @@ fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
                 "LiteralType",
                 Some("IntervalDayToSecond.precision"),
                 format!(
-                    "IntervalDayToSecond precision {:?} is outside the Substrait range of 0 to 12",
-                    interval.precision_mode
+                    "IntervalDayToSecond precision {units} has no duration unit to write it in; expected one of 0, 3, 6, 9, or 12"
                 ),
             ))
         );
@@ -272,8 +257,8 @@ fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
         parts.push(format!("{}s", interval.seconds));
     }
     if subseconds != 0 {
-        // A precision that doesn't land on a unit boundary (e.g. 4) has no way
-        // to spell a sub-second term, so there is no text form to fall back to.
+        // Precision 0 has no sub-second component at all, so there is no term to
+        // write a non-zero `subseconds` as.
         let Some(unit) = precision.subsecond_unit() else {
             return write!(
                 w,
@@ -282,7 +267,7 @@ fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
                     "LiteralType",
                     Some("IntervalDayToSecond.subseconds"),
                     format!(
-                        "IntervalDayToSecond subseconds ({subseconds}) cannot be written at precision {precision}; only precisions 3, 6, 9, and 12 have a duration unit"
+                        "IntervalDayToSecond subseconds ({subseconds}) must be 0 at precision 0; there is no sub-second unit to write it in"
                     ),
                 ))
             );
@@ -291,7 +276,7 @@ fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
         // `subseconds` is the fraction of a second below `precision`, so whole
         // seconds belong in the `seconds` field. Still writable, so report and
         // keep going.
-        let subsecond_bound = 10_i64.pow(precision.value() as u32);
+        let subsecond_bound = 10_i64.pow(precision.units() as u32);
         if subseconds <= -subsecond_bound || subseconds >= subsecond_bound {
             ctx.push_error(
                 PlanError::invalid(
@@ -341,7 +326,7 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::Time(microseconds) => write_precision_literal(
             "Time",
             6,
-            precision_epoch_timestamp_to_string(*microseconds, 6),
+            precision_time_to_string(*microseconds, 6),
             ctx,
             w,
         ),
@@ -349,7 +334,7 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::Timestamp(microseconds) => write_precision_literal(
             "Timestamp",
             6,
-            precision_epoch_timestamp_to_string(*microseconds, 6),
+            precision_timestamp_to_string(*microseconds, 6),
             ctx,
             w,
         ),
@@ -365,21 +350,21 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
         LiteralType::PrecisionTime(p) => write_precision_literal(
             "PrecisionTime",
             p.precision,
-            precision_epoch_timestamp_to_string(p.value, p.precision),
+            precision_time_to_string(p.value, p.precision),
             ctx,
             w,
         ),
         LiteralType::PrecisionTimestamp(p) => write_precision_literal(
             "PrecisionTimestamp",
             p.precision,
-            precision_epoch_timestamp_to_string(p.value, p.precision),
+            precision_timestamp_to_string(p.value, p.precision),
             ctx,
             w,
         ),
         LiteralType::PrecisionTimestampTz(p) => write_precision_literal(
             "PrecisionTimestampTz",
             p.precision,
-            precision_epoch_timestamp_to_string(p.value, p.precision),
+            precision_timestamp_to_string(p.value, p.precision),
             ctx,
             w,
         ),
@@ -427,6 +412,12 @@ fn write_literal_type_suffix<W: fmt::Write>(
         LiteralType::PrecisionTimestamp(p) => ("precisiontimestamp", Some(p.precision)),
         LiteralType::PrecisionTimestampTz(p) => ("precisiontimestamptz", Some(p.precision)),
         LiteralType::PrecisionTime(p) => ("precisiontime", Some(p.precision)),
+        // interval_day carries the value's sub-second precision, so the duration
+        // string doesn't have to encode it.
+        LiteralType::IntervalDayToSecond(interval) => (
+            "interval_day",
+            Some(interval_day_precision_units(interval).0),
+        ),
         _ => return Ok(()),
     };
 
@@ -989,9 +980,6 @@ mod tests {
             // An all-zero interval still needs a term to be a valid duration.
             (interval_day_literal(0, 0, 0, 0), "'0s':interval_day<0>"),
             (interval_day_literal(0, 0, 0, 9), "'0s':interval_day<9>"),
-            // A precision with no duration unit round-trips as long as there is
-            // no sub-second value to write.
-            (interval_day_literal(5, 0, 0, 4), "'5d':interval_day<4>"),
         ] {
             assert_eq!(ctx.textify_no_errors(&literal), expected);
         }
@@ -1047,14 +1035,15 @@ mod tests {
     #[test]
     fn test_interval_day_literal_textify_invalid_precision_is_error() {
         let ctx = TestContext::new();
-        // A precision outside 0..=12 has no valid text form at all, so there is
-        // nothing to write but an error token.
-        for precision in [-1, 13] {
+        // A precision with no duration unit has no way to write a sub-second
+        // value. Only the value becomes an error token; the suffix still reports
+        // the precision that was actually stored.
+        for precision in [4, 13, -1] {
             let literal = interval_day_literal(0, 0, 2, precision);
 
             let (text, errors) = ctx.textify(&literal);
 
-            assert_eq!(text, "!{LiteralType}");
+            assert_eq!(text, format!("!{{LiteralType}}:interval_day<{precision}>"));
             match errors.first() {
                 FormatError::Format(e) => {
                     assert_eq!(e.error_type, FormatErrorType::InvalidValue);
@@ -1066,16 +1055,15 @@ mod tests {
     }
 
     #[test]
-    fn test_interval_day_literal_textify_subseconds_without_unit_is_error() {
+    fn test_interval_day_literal_textify_subseconds_at_precision_zero_is_error() {
         let ctx = TestContext::new();
-        // Precision 4 is in range but has no duration unit, so a non-zero
-        // sub-second value has no text form. Only the value is replaced with an
-        // error token; the type suffix is still accurate.
-        let literal = interval_day_literal(0, 0, 2, 4);
+        // Precision 0 has no sub-second component, so a non-zero `subseconds`
+        // is invalid Substrait with no term to write it in.
+        let literal = interval_day_literal(0, 0, 2, 0);
 
         let (text, errors) = ctx.textify(&literal);
 
-        assert_eq!(text, "!{LiteralType}:interval_day<4>");
+        assert_eq!(text, "!{LiteralType}:interval_day<0>");
         match errors.first() {
             FormatError::Format(e) => {
                 assert_eq!(e.error_type, FormatErrorType::InvalidValue);
@@ -1176,49 +1164,49 @@ mod tests {
     #[test]
     fn test_precision_timestamp_to_string() {
         assert_eq!(
-            precision_epoch_timestamp_to_string(10, 0),
+            precision_timestamp_to_string(10, 0),
             Ok("1970-01-01T00:00:10".to_string())
         );
         assert_eq!(
-            precision_epoch_timestamp_to_string(123_456_789, 9),
+            precision_timestamp_to_string(123_456_789, 9),
             Ok("1970-01-01T00:00:00.123456789".to_string())
         );
         // Precision 12 (picoseconds) is truncated to nanoseconds (best-effort):
         // the trailing 500 picoseconds below don't survive.
         assert_eq!(
-            precision_epoch_timestamp_to_string(123_456_789_500, 12),
+            precision_timestamp_to_string(123_456_789_500, 12),
             Ok("1970-01-01T00:00:00.123456789".to_string())
         );
         assert_eq!(
-            precision_epoch_timestamp_to_string(0, 13),
+            precision_timestamp_to_string(0, 13),
             Err(PrecisionFormatError::UnsupportedPrecision)
         );
     }
 
     #[test]
     fn test_precision_time_to_string() {
-        assert_eq!(precision_epoch_timestamp_to_string(0, 0), Ok("00:00:00".to_string()));
+        assert_eq!(precision_time_to_string(0, 0), Ok("00:00:00".to_string()));
         assert_eq!(
             // 01:01:01 = 3661 seconds, in microseconds. The fractional part is
             // rendered at the declared precision width (6 digits).
-            precision_epoch_timestamp_to_string(3_661_000_000, 6),
+            precision_time_to_string(3_661_000_000, 6),
             Ok("01:01:01.000000".to_string())
         );
         assert_eq!(
             // 01:01:01 = 3661 seconds, in picoseconds, plus 500 ps that get
             // truncated away. Precision 12 renders at nanosecond width (9 digits).
-            precision_epoch_timestamp_to_string(3_661_000_000_000_500, 12),
+            precision_time_to_string(3_661_000_000_000_500, 12),
             Ok("01:01:01.000000000".to_string())
         );
         assert_eq!(
-            precision_epoch_timestamp_to_string(0, 13),
+            precision_time_to_string(0, 13),
             Err(PrecisionFormatError::UnsupportedPrecision)
         );
         // A negative value at precision 12 truncates towards zero when converted
         // to a `chrono::Duration` (-1 / 1000 == 0), so the sign must be checked
         // on the raw value, not the derived duration.
         assert_eq!(
-            precision_epoch_timestamp_to_string(-1, 12),
+            precision_time_to_string(-1, 12),
             Err(PrecisionFormatError::OutOfRange)
         );
     }
