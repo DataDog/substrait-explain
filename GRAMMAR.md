@@ -656,7 +656,7 @@ The `Read:Virtual` relation uses the same `ReadRel` protobuf message with `ReadT
 
 #### Syntax
 
-`"Read:Virtual" "[" virtual_read_rows [ "," "filter" "=" expression ] "=>" named_column_list "]"`
+`"Read:Virtual" "[" virtual_read_rows ("," "filter" "=" expression)? "=>" named_column_list "]"`
 
 Where `virtual_read_rows := virtual_row ("," virtual_row)* / "_"`, and
 `virtual_row := "(" (expression ("," expression)*)? ")"` — a parenthesized
