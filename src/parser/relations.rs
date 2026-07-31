@@ -1265,6 +1265,13 @@ impl RelationParsePair for JoinRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let join_type = iter.parse_next::<join_rel::JoinType>();
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
+        let post_join_filter = iter
+            .try_pop(Rule::join_post_join_filter)
+            .map(|pair| {
+                let expression_pair = unwrap_single_pair(pair);
+                Expression::parse_pair(extensions, expression_pair).map(Box::new)
+            })
+            .transpose()?;
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
@@ -1283,7 +1290,7 @@ impl RelationParsePair for JoinRel {
                 left: Some(left),
                 right: Some(right),
                 expression: Some(Box::new(condition)),
-                post_join_filter: None, // not yet represented in the grammar
+                post_join_filter,
                 r#type: join_type as i32,
                 advanced_extension: None,
             },
@@ -2108,6 +2115,7 @@ mod tests {
 
         // Should have a join condition
         assert!(join.expression.is_some());
+        assert!(join.post_join_filter.is_none());
 
         let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
         let emit = match emit_kind {
@@ -2116,6 +2124,41 @@ mod tests {
         };
         // Output mapping should be [0, 1, 3, 4] (selected columns)
         assert_eq!(emit, &[0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_post_join_filter() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .with_function(1, 11, "gt")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean, post_filter=gt($1, 100:i32):boolean => $0, $1]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
+        assert!(join.expression.is_some());
+        assert!(join.post_join_filter.is_some());
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        assert_eq!(emit, &[0, 1]);
     }
 
     #[test]
@@ -2183,6 +2226,40 @@ mod tests {
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
         // Output mapping should be [0, 1] (only left columns for semi join)
+        assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_right_semi() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean => $0, $1]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap()
+        .0;
+
+        // Should be a RightSemi join
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1] over right-semi direct output columns.
         assert_eq!(emit, &[0, 1]);
     }
 

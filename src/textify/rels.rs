@@ -1155,11 +1155,15 @@ impl<'a> Relation<'a> {
             PlanError::unimplemented("JoinRel", Some("expression"), "Join condition is None")
         });
 
-        // TODO: Add support for post_join_filter when grammar is extended
-        // Currently post_join_filter is not supported in the text format
-        // grammar
         let positional = vec![join_type_value, condition];
-        let arguments = Some(Arguments::inline(positional, vec![]));
+        let mut named = vec![];
+        if let Some(post_join_filter) = rel.post_join_filter.as_ref() {
+            named.push(NamedArg {
+                name: Cow::Borrowed("post_filter"),
+                value: Value::Expression(post_join_filter.as_ref()),
+            });
+        }
+        let arguments = Some(Arguments::inline(positional, named));
 
         let emit = get_emit(rel.common.as_ref());
         let columns = join_output_columns(join_type, left_columns, right_columns);
