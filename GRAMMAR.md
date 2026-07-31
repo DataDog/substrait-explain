@@ -241,9 +241,9 @@ A literal can be an integer, float, boolean, string, or null. Literals may inclu
   - A type annotation is required for `null`
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`
+  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
 
 ## Types
 
@@ -309,6 +309,46 @@ Root[result]
 ### Compound Types
 
 Compound types follow the same syntax as standard Substrait parameterized types.
+
+#### Precision Time And Timestamp Types
+
+Precision time and timestamp types put the nullability marker before the precision parameter.
+
+#### Syntax
+
+```text
+precision_time_type         := "precisiontime" nullability? "<" integer ">"
+precision_timestamp_type    := "precisiontimestamp" nullability? "<" integer ">"
+precision_timestamp_tz_type := "precisiontimestamptz" nullability? "<" integer ">"
+```
+
+The precision parameter follows the Substrait unit convention: `0` means
+seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12`
+picoseconds. Two different subsets apply:
+
+- *Types* accept the full Substrait range, any precision from `0` through `12`.
+- *Literals* accept only `0`, `3`, `6`, and `9`.
+
+The literal restriction is a limitation of this implementation, not of
+Substrait, which supports every precision from 0 to 12.
+
+Literals stop at `9` because chrono (the underlying date/time library) has no
+sub-nanosecond resolution, so precision-12 literals cannot be parsed.
+Textifying a precision-12 value from a protobuf plan is still supported: the
+*value* is truncated to nanosecond resolution and a truncation diagnostic is
+emitted, but the declared *type* is preserved as `<12>` (truncating the value
+does not silently rewrite its type).
+
+#### Examples
+
+```text
+precisiontime<6>
+precisiontime?<6>
+precisiontimestamp<9>
+precisiontimestamp?<9>
+precisiontimestamptz<3>
+precisiontimestamptz?<3>
+```
 
 #### Examples
 
@@ -656,14 +696,19 @@ The `Read:Virtual` relation uses the same `ReadRel` protobuf message with `ReadT
 
 #### Syntax
 
-`"Read:Virtual" "[" (virtual_row ("," virtual_row)*)? "=>" named_column_list "]"`
+`"Read:Virtual" "[" virtual_read_rows ("," "filter" "=" expression)? "=>" named_column_list "]"`
 
-Where `virtual_row := "(" (expression ("," expression)*)? ")"` — a parenthesized tuple of expressions forming one row. Rows may be empty (`()`) for zero-column tables. For an empty virtual table, write `_` in place of the entire row list, e.g. `Read:Virtual[_ => id:i64]` for zero rows.
+Where `virtual_read_rows := virtual_row ("," virtual_row)* / "_"`, and
+`virtual_row := "(" (expression ("," expression)*)? ")"` — a parenthesized
+tuple of expressions forming one row. Rows may be empty (`()`) for zero-column
+tables. For an empty virtual table, write `_` in place of the entire row list,
+e.g. `Read:Virtual[_ => id:i64]` for zero rows.
 
 #### Components
 
 - `virtual_row` - parenthesized tuple of expressions, one per row; `()` for zero-column rows
 - `expression` - any expression (literal, field reference, function call)
+- `filter` - optional `ReadRel.filter` expression, with field references over the virtual table output schema
 - `named_column_list` - output column names with type annotations
 
 #### Examples
@@ -698,22 +743,50 @@ Root[id, name]
 # assert_eq!(plan.relations.len(), 1);
 ```
 
-#### Multi-line form
-
-For readability, a `Read:Virtual` with many rows may be written across several
-lines. Each continuation line is indented one level deeper than the relation and
-prefixed with a `- ` marker. Continuations are allowed after the opening `[`,
-after each row separator (`,`), and before `=>`:
+Inline form with a `ReadRel.filter`:
 
 ```rust
 # use substrait_explain::Parser;
 #
 # let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  ## 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), filter=gt($0, 1:i64):boolean => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
+#### Multi-line form
+
+For readability, a `Read:Virtual` with many rows may be written across several
+lines. Each continuation line is indented one level deeper than the relation and
+prefixed with a `- ` marker. Continuations are allowed after the opening `[`,
+after each row or filter separator (`,`), and before `=>`:
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  ## 10 @  1: gt
+
 === Plan
 Root[id, name]
   Read:Virtual[
     - (1, 'alice'),
-    - (2, 'bob')
+    - (2, 'bob'),
+    - filter=gt($0, 1:i64):boolean
     - => id:i64, name:string]
 # "#;
 #

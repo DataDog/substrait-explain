@@ -329,12 +329,20 @@ impl<'a> Arguments<'a> {
     }
 
     /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
-    /// with many rows. Currently not enabled for named arguments.
-    /// TODO: enable for named arguments as well.
+    /// with many rows.
     pub fn rows(positional: Vec<Value<'a>>) -> Self {
         Arguments {
             positional,
             named: vec![],
+            layout: ArgsLayout::Rows,
+        }
+    }
+
+    /// A row-per-line argument list with named arguments following the rows.
+    pub fn rows_with_named(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        Arguments {
+            positional,
+            named,
             layout: ArgsLayout::Rows,
         }
     }
@@ -424,16 +432,27 @@ impl Relation<'_> {
                 write!(w, "{indent}{name}[{cols}]")
             }
             Some(args) if args.layout == ArgsLayout::Rows => {
-                // One `- row` per line, one indent level deeper, with a trailing
-                // comma on every row but the last, then `- <output> cols]`.
+                // One `- row` per line, one indent level deeper, with a
+                // trailing comma when another row or named argument follows,
+                // then `- <output> cols]`.
                 let child = ctx.push_indent();
                 let child_indent = child.indent();
                 writeln!(w, "{indent}{name}[")?;
                 let last = args.positional.len().saturating_sub(1);
                 for (i, row) in args.positional.iter().enumerate() {
                     let row = ctx.display(row);
-                    let comma = if i == last { "" } else { "," };
+                    let comma = if i == last && args.named.is_empty() {
+                        ""
+                    } else {
+                        ","
+                    };
                     writeln!(w, "{child_indent}- {row}{comma}")?;
+                }
+                let last = args.named.len().saturating_sub(1);
+                for (i, named_arg) in args.named.iter().enumerate() {
+                    let named_arg = ctx.display(named_arg);
+                    let comma = if i == last { "" } else { "," };
+                    writeln!(w, "{child_indent}- {named_arg}{comma}")?;
                 }
                 let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
                 let output = ctx.display(&output);
@@ -503,22 +522,37 @@ impl<'a> Relation<'a> {
                 }
             }
             Some(ReadType::VirtualTable(vt)) => {
-                let positional: Vec<Value> = vt
+                let row_count = vt.expressions.len();
+                let mut positional: Vec<Value> = vt
                     .expressions
                     .iter()
                     .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
                     .collect();
+                let mut named = vec![];
+                if let Some(filter) = rel.filter.as_ref() {
+                    named.push(NamedArg {
+                        name: Cow::Borrowed("filter"),
+                        value: Value::Expression(filter.as_ref()),
+                    });
+                }
+                if positional.is_empty() && !named.is_empty() {
+                    positional.push(Value::EmptyGroup);
+                }
 
                 // Emit many rows across multiple lines for readability, based on
                 // a configurable threshold (default = 3). An empty table has no
                 // rows to spread out and is written `_`, so it stays inline
                 // regardless of the threshold — the row layout has no `_` form.
-                let multiline = !positional.is_empty()
-                    && positional.len() >= ctx.options().virtual_table_multiline_threshold;
+                let multiline =
+                    row_count > 0 && row_count >= ctx.options().virtual_table_multiline_threshold;
                 let arguments = if multiline {
-                    Arguments::rows(positional)
+                    if named.is_empty() {
+                        Arguments::rows(positional)
+                    } else {
+                        Arguments::rows_with_named(positional, named)
+                    }
                 } else {
-                    Arguments::inline(positional, vec![])
+                    Arguments::inline(positional, named)
                 };
 
                 Relation {

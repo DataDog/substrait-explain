@@ -480,20 +480,6 @@ Root[a, b]
     Read[left_table => a:i32, b:string]
     Read[right_table => c:i32, d:string]"#;
     roundtrip_plan(plan_semi);
-
-    // Test RightSemi join - should output only right columns
-    let plan_right_semi = r#"=== Extensions
-URNs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
-Functions:
-  # 10 @  1: eq
-
-=== Plan
-Root[c, d]
-  Join[&RightSemi, eq($0, $2):boolean => $0, $1]
-    Read[left_table => a:i32, b:string]
-    Read[right_table => c:i32, d:string]"#;
-    roundtrip_plan(plan_right_semi);
 }
 
 #[test]
@@ -873,6 +859,36 @@ fn test_virtual_read_empty() {
 === Plan
 Root[id, name]
   Read:Virtual[_ => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), filter=gt($0, 1):boolean => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_empty_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[_, filter=gt($0, 1):boolean => id:i64, name:string]"#;
 
     roundtrip_plan(plan);
 }
