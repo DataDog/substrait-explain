@@ -440,7 +440,7 @@ Functions:
 
 === Plan
 Root[id, name, amount]
-  Join[&Inner, eq($0, $2):boolean, post_join_filter=gt($3, 100:i32):boolean => $0, $1, $3]
+  Join[&Inner, eq($0, $2):boolean, post_filter=gt($3, 100:i32):boolean => $0, $1, $3]
     Read[users => id:i64, name:string]
     Read[orders => user_id:i64, amount:i32]"#;
 
@@ -458,7 +458,7 @@ Functions:
 
 === Plan
 Root[user_id, amount]
-  Join[&RightSemi, eq($0, $2):boolean, post_join_filter=gt($1, 100:i32):boolean => $0, $1]
+  Join[&RightSemi, eq($0, $2):boolean, post_filter=gt($1, 100:i32):boolean => $0, $1]
     Read[users => id:i64, name:string]
     Read[orders => user_id:i64, amount:i32]"#;
 

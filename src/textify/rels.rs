@@ -1159,7 +1159,7 @@ impl<'a> Relation<'a> {
         let mut named = vec![];
         if let Some(post_join_filter) = rel.post_join_filter.as_ref() {
             named.push(NamedArg {
-                name: Cow::Borrowed("post_join_filter"),
+                name: Cow::Borrowed("post_filter"),
                 value: Value::Expression(post_join_filter.as_ref()),
             });
         }

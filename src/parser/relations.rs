@@ -2141,7 +2141,7 @@ mod tests {
             &extensions,
             parse_exact(
                 Rule::join_relation,
-                "Join[&RightSemi, eq($0, $3):boolean, post_join_filter=gt($1, 100:i32):boolean => $0, $1]",
+                "Join[&RightSemi, eq($0, $3):boolean, post_filter=gt($1, 100:i32):boolean => $0, $1]",
             ),
             vec![left_rel, right_rel],
             6,
