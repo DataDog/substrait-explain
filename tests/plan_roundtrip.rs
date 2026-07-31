@@ -828,6 +828,36 @@ Root[id, name]
 }
 
 #[test]
+fn test_virtual_read_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), filter=gt($0, 1):boolean => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
+fn test_virtual_read_empty_filter_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[_, filter=gt($0, 1):boolean => id:i64, name:string]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_virtual_read_single_column() {
     // Three rows reaches the multi-line threshold, so the canonical output
     // spreads the rows across lines.
