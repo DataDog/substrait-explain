@@ -12,12 +12,15 @@ use super::{
     ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
     unescape_string, unwrap_single_pair,
 };
+use crate::extensions::any::Any;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
     TupleValue,
 };
+use crate::parser::expressions::{FieldIndex, Name};
 use crate::parser::structural::IndentedLine;
+use crate::textify::expressions::Reference;
 
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
@@ -261,10 +264,6 @@ impl SimpleExtensionDeclaration {
 
 // Extension relation parsing implementations
 // These were moved from extensions/registry.rs to maintain clean architecture
-
-use crate::extensions::any::Any;
-use crate::parser::expressions::{FieldIndex, Name};
-use crate::textify::expressions::Reference;
 
 impl ScopedParsePair for ExtensionValue {
     fn rule() -> Rule {

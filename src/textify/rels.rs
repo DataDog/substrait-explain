@@ -1119,7 +1119,8 @@ mod tests {
     use substrait::proto::rel_common::{Direct, Emit};
     use substrait::proto::r#type::{self as ptype, Boolean, I64, Kind, Nullability, Struct};
     use substrait::proto::{
-        AggregateFunction, Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
+        AggregateFunction, Expression, FunctionArgument, NamedStruct, ReadRel, ReferenceRel, Type,
+        aggregate_rel,
     };
 
     use super::*;
@@ -1854,8 +1855,6 @@ Cross[$0, $3]
 
     #[test]
     fn test_unsupported_rel_type_produces_failure_token() {
-        use substrait::proto::ReferenceRel;
-
         let ctx = TestContext::new();
 
         // ReferenceRel is a valid Substrait relation type that the textifier

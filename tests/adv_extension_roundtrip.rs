@@ -5,9 +5,11 @@
 
 mod common;
 
+use adv_ext_with_columns_fixture::EnhancementWithColumns;
 use common::parse_type;
 use substrait::proto::plan_rel;
 use substrait::proto::rel::RelType;
+use substrait::proto::rel_common::EmitKind;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::extensions::registry::ExtensionError;
@@ -574,10 +576,6 @@ mod extension_child_fixture {
 /// With the fix it must be `[0, 1, 2]`.
 #[test]
 fn test_project_over_extension_leaf_emit_mapping() {
-    use substrait::proto::plan_rel;
-    use substrait::proto::rel::RelType;
-    use substrait::proto::rel_common::EmitKind;
-
     let mut registry = ExtensionRegistry::new();
     registry
         .register_relation::<extension_child_fixture::TwoColumnScan>()
@@ -892,8 +890,6 @@ mod adv_ext_with_columns_fixture {
 /// `+ Enh:Name[args => col:type]`, which the addendum grammar cannot parse.
 #[test]
 fn test_adv_ext_output_columns_produces_failure_token() {
-    use adv_ext_with_columns_fixture::EnhancementWithColumns;
-
     let mut registry = ExtensionRegistry::new();
     registry
         .register_enhancement::<EnhancementWithColumns>()
