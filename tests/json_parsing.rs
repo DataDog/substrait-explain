@@ -13,8 +13,16 @@ use substrait_explain::extensions::{
 use substrait_explain::json::{build_descriptor_pool, parse_json};
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
-// ParquetScanConfig struct + impl prost::Name — generated from parquet_scan.proto by build.rs.
-include!(concat!(env!("OUT_DIR"), "/example.rs"));
+mod example_protos {
+    #![allow(
+        clippy::absolute_paths,
+        reason = "prost-build generates fully qualified paths"
+    )]
+
+    include!(concat!(env!("OUT_DIR"), "/example.rs"));
+}
+
+use example_protos::ParquetScanConfig;
 
 // Compiled FileDescriptorSet for ParquetScanConfig, written to OUT_DIR by build.rs.
 // Passed to build_descriptor_pool so prost-reflect can resolve the type URL when
