@@ -1,4 +1,4 @@
-use std::fmt::{self};
+use std::fmt;
 
 use chrono::{DateTime, NaiveDate, NaiveTime};
 use expr::RexType;
@@ -506,9 +506,43 @@ impl Textify for FieldReference {
     }
 }
 
-impl Textify for ScalarFunction {
+/// The fields shared by every Substrait function call - `ScalarFunction`,
+/// `AggregateFunction`, and `WindowFunction` - that render as
+/// `name#anchor(args, options)`.
+///
+/// The remaining fields of each function message (the output type, and the
+/// aggregate/window-specific parts) are textified alongside this by the
+/// respective `Textify` implementations.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionInvocation<'a> {
+    pub function_reference: u32,
+    pub arguments: &'a [FunctionArgument],
+    pub options: &'a [FunctionOption],
+}
+
+impl<'a> From<&'a ScalarFunction> for FunctionInvocation<'a> {
+    fn from(f: &'a ScalarFunction) -> Self {
+        FunctionInvocation {
+            function_reference: f.function_reference,
+            arguments: &f.arguments,
+            options: &f.options,
+        }
+    }
+}
+
+impl<'a> From<&'a AggregateFunction> for FunctionInvocation<'a> {
+    fn from(f: &'a AggregateFunction) -> Self {
+        FunctionInvocation {
+            function_reference: f.function_reference,
+            arguments: &f.arguments,
+            options: &f.options,
+        }
+    }
+}
+
+impl Textify for FunctionInvocation<'_> {
     fn name() -> &'static str {
-        "ScalarFunction"
+        "FunctionInvocation"
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
@@ -516,22 +550,31 @@ impl Textify for ScalarFunction {
             NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
         let name_and_anchor = ctx.display(&name_and_anchor);
 
-        let args = ctx.separated(&self.arguments, ", ");
-        let options = ctx.separated(&self.options, ", ");
+        let args = ctx.separated(self.arguments, ", ");
+        let options = ctx.separated(self.options, ", ");
         let between = if self.arguments.is_empty() || self.options.is_empty() {
             ""
         } else {
             ", "
         };
 
-        let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
+        write!(w, "{name_and_anchor}({args}{between}{options})")
+    }
+}
 
-        write!(
-            w,
-            "{name_and_anchor}({args}{between}{options}){output_type}"
-        )?;
-        Ok(())
+impl Textify for ScalarFunction {
+    fn name() -> &'static str {
+        "ScalarFunction"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        let invocation = FunctionInvocation::from(self);
+        let output_type = OutputType(self.output_type.as_ref());
+
+        let invocation = ctx.display(&invocation);
+        let output_type = ctx.display(&output_type);
+
+        write!(w, "{invocation}{output_type}")
     }
 }
 
@@ -636,7 +679,7 @@ impl Textify for RexType {
             RexType::Literal(literal) => literal.textify(ctx, w),
             RexType::Selection(f) => f.textify(ctx, w),
             RexType::ScalarFunction(s) => s.textify(ctx, w),
-            RexType::WindowFunction(_w) => write!(
+            RexType::WindowFunction(_f) => write!(
                 w,
                 "{}",
                 ctx.failure(PlanError::unimplemented(
@@ -749,26 +792,13 @@ impl Textify for AggregateFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        // Similar to ScalarFunction textification
-        let name_and_anchor =
-            NamedAnchor::lookup(ctx, ExtensionKind::Function, self.function_reference);
-        let name_and_anchor = ctx.display(&name_and_anchor);
+        let invocation = FunctionInvocation::from(self);
+        let output_type = OutputType(self.output_type.as_ref());
 
-        let args = ctx.separated(&self.arguments, ", ");
-        let options = ctx.separated(&self.options, ", ");
-        let between = if self.arguments.is_empty() || self.options.is_empty() {
-            ""
-        } else {
-            ", "
-        };
+        let invocation = ctx.display(&invocation);
+        let output_type = ctx.display(&output_type);
 
-        let output = OutputType(self.output_type.as_ref());
-        let output_type = ctx.display(&output);
-
-        write!(
-            w,
-            "{name_and_anchor}({args}{between}{options}){output_type}"
-        )
+        write!(w, "{invocation}{output_type}")
     }
 }
 

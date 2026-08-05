@@ -2,28 +2,26 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::fmt;
-use std::fmt::Debug;
 
-use prost::{Message, UnknownEnumValue};
+use prost::Message;
 use substrait::proto::fetch_rel::CountMode;
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
 use substrait::proto::rel_common::EmitKind;
-use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregateRel, CrossRel, Expression, ExtensionLeafRel, ExtensionMultiRel,
-    ExtensionSingleRel, FetchRel, FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel,
-    Rel, RelCommon, RelRoot, SetRel, SortField, SortRel, Type, join_rel, set_rel,
+    AggregateRel, CrossRel, ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel, FetchRel,
+    FilterRel, JoinRel, NamedStruct, PlanRel, ProjectRel, ReadRel, Rel, RelCommon, RelRoot, SetRel,
+    SortRel, join_rel, set_rel,
 };
 
 use super::addenda::AddendumLines;
-use super::expressions::Reference;
 use super::types::Name;
+use super::values::{Arguments, NamedArg, Value, ValueEnum, decode_enum_field};
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::{ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionValue};
+use crate::extensions::{ExtensionArgs, ExtensionError};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -68,84 +66,6 @@ impl Textify for Rel {
         // delegates to `Relation` which carries `advanced_extension`, so the full
         // header → enhancement → children sequence is handled uniformly there.
         Relation::from_rel(self, ctx).textify(ctx, w)
-    }
-}
-
-/// Trait for enums that can be converted to a string representation for
-/// textification.
-///
-/// Returns Ok(str) for valid enum values, or Err([PlanError]) for invalid or
-/// unknown values.
-pub trait ValueEnum {
-    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct NamedArg<'a> {
-    pub name: Cow<'a, str>,
-    pub value: Value<'a>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Value<'a> {
-    TableName(Vec<Name<'a>>),
-    Field(Option<Name<'a>>, Option<&'a Type>),
-    Tuple(Vec<Value<'a>>),
-    Reference(i32),
-    Expression(&'a Expression),
-    AggregateFunction(&'a AggregateFunction),
-    /// Represents a missing, invalid, or unspecified value.
-    Missing(PlanError),
-    /// Represents a valid enum value as a string for textification.
-    Enum(Cow<'a, str>),
-    EmptyGroup,
-    Integer(i64),
-    /// A decoded extension argument value.
-    ExtensionArgument(ExtensionValue),
-    /// A decoded extension output column.
-    ExtColumn(ExtensionColumn),
-}
-
-impl<'a> Value<'a> {
-    pub fn expect(maybe_value: Option<Self>, f: impl FnOnce() -> PlanError) -> Self {
-        match maybe_value {
-            Some(s) => s,
-            None => Value::Missing(f()),
-        }
-    }
-}
-
-impl<'a> From<Result<Vec<Name<'a>>, PlanError>> for Value<'a> {
-    fn from(token: Result<Vec<Name<'a>>, PlanError>) -> Self {
-        match token {
-            Ok(value) => Value::TableName(value),
-            Err(err) => Value::Missing(err),
-        }
-    }
-}
-
-impl<'a> Textify for Value<'a> {
-    fn name() -> &'static str {
-        "Value"
-    }
-
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        match self {
-            Value::TableName(names) => write!(w, "{}", ctx.separated(names, ".")),
-            Value::Field(name, typ) => {
-                write!(w, "{}:{}", ctx.expect(name.as_ref()), ctx.expect(*typ))
-            }
-            Value::Tuple(values) => write!(w, "({})", ctx.separated(values, ", ")),
-            Value::Reference(i) => write!(w, "{}", Reference(*i)),
-            Value::Expression(e) => write!(w, "{}", ctx.display(*e)),
-            Value::AggregateFunction(agg_fn) => agg_fn.textify(ctx, w),
-            Value::Missing(err) => write!(w, "{}", ctx.failure(err.clone())),
-            Value::Enum(res) => write!(w, "&{res}"),
-            Value::Integer(i) => write!(w, "{i}"),
-            Value::EmptyGroup => write!(w, "_"),
-            Value::ExtensionArgument(ev) => ev.textify(ctx, w),
-            Value::ExtColumn(ec) => ec.textify(ctx, w),
-        }
     }
 }
 
@@ -295,73 +215,31 @@ impl<'a> Textify for Emitted<'a> {
     }
 }
 
-/// How an argument list renders inside a relation's `[...]`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ArgsLayout {
-    /// `arg, arg, arg` on a single line.
-    #[default]
-    Inline,
-    /// One `- arg` per line, used for `Read:Virtual` rows. See
-    /// [`Relation::write_header`] for the exact layout.
-    Rows,
-}
-
+/// The argument section of a relation header.
 #[derive(Debug, Clone)]
-pub struct Arguments<'a> {
-    /// Positional arguments (e.g., a filter condition, group-bys, etc.)
-    pub positional: Vec<Value<'a>>,
-    /// Named arguments (e.g., limit=10, offset=5)
-    pub named: Vec<NamedArg<'a>>,
-    /// How this argument list is laid out. Defaults to [`ArgsLayout::Inline`];
-    /// only `Read:Virtual` opts into [`ArgsLayout::Rows`].
-    layout: ArgsLayout,
+pub enum RelationArgs<'a> {
+    /// `arg, arg, name=arg` inline inside the header's `[...]`.
+    Inline(Arguments<'a>),
+    /// One `- row` per line, used by `Read:Virtual` once it has enough rows to
+    /// be worth spreading out. Any named arguments follow the rows, one per
+    /// line, in the same `- name=value` form.
+    Rows {
+        rows: Vec<Value<'a>>,
+        named: Vec<NamedArg<'a>>,
+    },
 }
 
-impl<'a> Arguments<'a> {
-    /// An inline argument list (`arg, arg, arg`), the default for every
-    /// relation.
+impl<'a> RelationArgs<'a> {
+    /// An inline argument list, the layout used by every relation but a
+    /// multi-row `Read:Virtual`.
     pub fn inline(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
-        Arguments {
-            positional,
-            named,
-            layout: ArgsLayout::Inline,
-        }
+        RelationArgs::Inline(Arguments::new(positional, named))
     }
 
     /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
-    /// with many rows.
-    pub fn rows(positional: Vec<Value<'a>>) -> Self {
-        Arguments {
-            positional,
-            named: vec![],
-            layout: ArgsLayout::Rows,
-        }
-    }
-
-    /// A row-per-line argument list with named arguments following the rows.
-    pub fn rows_with_named(positional: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
-        Arguments {
-            positional,
-            named,
-            layout: ArgsLayout::Rows,
-        }
-    }
-}
-
-impl<'a> Textify for Arguments<'a> {
-    fn name() -> &'static str {
-        "Arguments"
-    }
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        if self.positional.is_empty() && self.named.is_empty() {
-            return write!(w, "_");
-        }
-
-        write!(w, "{}", ctx.separated(self.positional.iter(), ", "))?;
-        if !self.positional.is_empty() && !self.named.is_empty() {
-            write!(w, ", ")?;
-        }
-        write!(w, "{}", ctx.separated(self.named.iter(), ", "))
+    /// with many rows. Named arguments, if any, follow the rows.
+    pub fn rows(rows: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        RelationArgs::Rows { rows, named }
     }
 }
 
@@ -371,11 +249,14 @@ pub struct Relation<'a> {
     ///
     /// - `None` means this relation does not take arguments, and the argument
     ///   section is omitted entirely.
-    /// - `Some(args)` with both vectors empty means the relation takes
-    ///   arguments, but none are provided; this will print as `_ => ...`.
-    /// - `Some(args)` with non-empty vectors will print as usual, with
-    ///   positional arguments first, then named arguments, separated by commas.
-    pub arguments: Option<Arguments<'a>>,
+    /// - `Some(RelationArgs::Inline(args))` with both vectors empty means the
+    ///   relation takes arguments, but none are provided; this will print as
+    ///   `_ => ...`.
+    /// - `Some(RelationArgs::Inline(args))` with non-empty vectors will print
+    ///   with positional arguments first, then named arguments, separated by commas.
+    /// - `Some(RelationArgs::Rows { .. })` prints one row per line, followed by
+    ///   any named arguments, one per line.
+    pub arguments: Option<RelationArgs<'a>>,
     /// The columns emitted by this relation, pre-emit - the 'direct' column
     /// output.
     pub columns: Vec<Value<'a>>,
@@ -410,7 +291,7 @@ impl Textify for Relation<'_> {
 impl Relation<'_> {
     /// Write the header for this relation, e.g. `Filter[$0 => $0]`.
     ///
-    /// Usually a single line, but an argument list with [`ArgsLayout::Rows`]
+    /// Usually a single line, but an argument list of [`RelationArgs::Rows`]
     /// (used by `Read:Virtual` with many rows) spans several lines:
     ///
     /// ```text
@@ -431,25 +312,25 @@ impl Relation<'_> {
                 let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{cols}]")
             }
-            Some(args) if args.layout == ArgsLayout::Rows => {
+            Some(RelationArgs::Rows { rows, named }) => {
                 // One `- row` per line, one indent level deeper, with a
                 // trailing comma when another row or named argument follows,
                 // then `- <output> cols]`.
                 let child = ctx.push_indent();
                 let child_indent = child.indent();
                 writeln!(w, "{indent}{name}[")?;
-                let last = args.positional.len().saturating_sub(1);
-                for (i, row) in args.positional.iter().enumerate() {
+                let last = rows.len().saturating_sub(1);
+                for (i, row) in rows.iter().enumerate() {
                     let row = ctx.display(row);
-                    let comma = if i == last && args.named.is_empty() {
+                    let comma = if i == last && named.is_empty() {
                         ""
                     } else {
                         ","
                     };
                     writeln!(w, "{child_indent}- {row}{comma}")?;
                 }
-                let last = args.named.len().saturating_sub(1);
-                for (i, named_arg) in args.named.iter().enumerate() {
+                let last = named.len().saturating_sub(1);
+                for (i, named_arg) in named.iter().enumerate() {
                     let named_arg = ctx.display(named_arg);
                     let comma = if i == last { "" } else { "," };
                     writeln!(w, "{child_indent}- {named_arg}{comma}")?;
@@ -458,7 +339,7 @@ impl Relation<'_> {
                 let output = ctx.display(&output);
                 write!(w, "{child_indent}- {output}]")
             }
-            Some(args) => {
+            Some(RelationArgs::Inline(args)) => {
                 let args = ctx.display(args);
                 let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
                 let output = ctx.display(&output);
@@ -510,7 +391,7 @@ impl<'a> Relation<'a> {
                 };
                 Relation {
                     name: Cow::Borrowed("Read"),
-                    arguments: Some(Arguments::inline(vec![table_name], vec![])),
+                    arguments: Some(RelationArgs::inline(vec![table_name], vec![])),
                     columns,
                     emit,
                     output_syntax,
@@ -546,13 +427,9 @@ impl<'a> Relation<'a> {
                 let multiline =
                     row_count > 0 && row_count >= ctx.options().virtual_table_multiline_threshold;
                 let arguments = if multiline {
-                    if named.is_empty() {
-                        Arguments::rows(positional)
-                    } else {
-                        Arguments::rows_with_named(positional, named)
-                    }
+                    RelationArgs::rows(positional, named)
                 } else {
-                    Arguments::inline(positional, named)
+                    RelationArgs::inline(positional, named)
                 };
 
                 Relation {
@@ -596,7 +473,7 @@ impl<'a> Relation<'a> {
                 );
                 Relation {
                     name: Cow::Borrowed("Read"),
-                    arguments: Some(Arguments::inline(vec![Value::Missing(err)], vec![])),
+                    arguments: Some(RelationArgs::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
                     output_syntax: OutputSyntax::Implicit,
@@ -662,7 +539,7 @@ impl<'a> Relation<'a> {
             PlanError::unimplemented("FilterRel", Some("condition"), "Condition is None")
         });
         let positional = vec![condition];
-        let arguments = Some(Arguments::inline(positional, vec![]));
+        let arguments = Some(RelationArgs::inline(positional, vec![]));
         let emit = get_emit(rel.common.as_ref());
         let (children, columns) = Relation::convert_children(vec![rel.input.as_deref()], ctx);
         let columns = (0..columns).map(|i| Value::Reference(i as i32)).collect();
@@ -790,7 +667,7 @@ impl<'a> Relation<'a> {
                 }
                 Relation {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
-                    arguments: Some(Arguments::inline(positional, named)),
+                    arguments: Some(RelationArgs::inline(positional, named)),
                     columns,
                     emit: None,
                     output_syntax: OutputSyntax::Implicit,
@@ -886,7 +763,7 @@ impl<'a> Relation<'a> {
         }
 
         // adding the grouping_sets as a list of Arguments to Aggregate Rel
-        let arguments = Some(Arguments::inline(positional, vec![]));
+        let arguments = Some(RelationArgs::inline(positional, vec![]));
 
         // The columns are the direct outputs of this relation (before emit)
         let mut all_outputs: Vec<Value> = expression_list;
@@ -995,7 +872,7 @@ impl<'a> Relation<'a> {
         for sort_field in &rel.sorts {
             positional.push(Value::from(sort_field));
         }
-        let arguments = Some(Arguments::inline(positional, vec![]));
+        let arguments = Some(RelationArgs::inline(positional, vec![]));
         // The columns are the direct outputs of this relation (before emit)
         let mut col_values = vec![];
         for i in 0..input_columns {
@@ -1057,7 +934,7 @@ impl<'a> Relation<'a> {
             .collect();
         Relation {
             name: Cow::Borrowed("Fetch"),
-            arguments: Some(Arguments::inline(vec![], named_args)),
+            arguments: Some(RelationArgs::inline(vec![], named_args)),
             columns,
             emit,
             output_syntax: OutputSyntax::Implicit,
@@ -1163,7 +1040,7 @@ impl<'a> Relation<'a> {
                 value: Value::Expression(post_join_filter.as_ref()),
             });
         }
-        let arguments = Some(Arguments::inline(positional, named));
+        let arguments = Some(RelationArgs::inline(positional, named));
 
         let emit = get_emit(rel.common.as_ref());
         let columns = join_output_columns(join_type, left_columns, right_columns);
@@ -1193,19 +1070,9 @@ impl<'a> Relation<'a> {
             total_columns / children.len()
         };
 
-        let op_value = match set_rel::SetOp::try_from(rel.op) {
-            Ok(op) => match op.as_enum_str() {
-                Ok(s) => Value::Enum(s),
-                Err(e) => Value::Missing(e),
-            },
-            Err(_) => Value::Missing(PlanError::invalid(
-                "SetRel",
-                Some("op"),
-                format!("Unknown set op: {}", rel.op),
-            )),
-        };
+        let op_value = decode_enum_field::<set_rel::SetOp>(rel.op, "SetRel", "op");
 
-        let arguments = Some(Arguments::inline(vec![op_value], vec![]));
+        let arguments = Some(RelationArgs::inline(vec![op_value], vec![]));
         let emit = get_emit(rel.common.as_ref());
         let columns = (0..width).map(|i| Value::Reference(i as i32)).collect();
 
@@ -1242,147 +1109,6 @@ impl<'a> Relation<'a> {
     }
 }
 
-impl<'a> From<&'a SortField> for Value<'a> {
-    fn from(sf: &'a SortField) -> Self {
-        let field = match &sf.expr {
-            Some(expr) => match &expr.rex_type {
-                Some(substrait::proto::expression::RexType::Selection(fref)) => {
-                    if let Some(substrait::proto::expression::field_reference::ReferenceType::DirectReference(seg)) = &fref.reference_type {
-                        if let Some(substrait::proto::expression::reference_segment::ReferenceType::StructField(sf)) = &seg.reference_type {
-                            Value::Reference(sf.field)
-                        } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a struct field")) }
-                    } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a direct reference")) }
-                }
-                _ => Value::Missing(PlanError::unimplemented(
-                    "SortField",
-                    Some("expr"),
-                    "Not a selection",
-                )),
-            },
-            None => Value::Missing(PlanError::unimplemented(
-                "SortField",
-                Some("expr"),
-                "Missing expr",
-            )),
-        };
-        let direction = match &sf.sort_kind {
-            Some(kind) => Value::from(kind),
-            None => Value::Missing(PlanError::invalid(
-                "SortKind",
-                Some(Cow::Borrowed("sort_kind")),
-                "Missing sort_kind",
-            )),
-        };
-        Value::Tuple(vec![field, direction])
-    }
-}
-
-impl<'a, T: ValueEnum + ?Sized> From<&'a T> for Value<'a> {
-    fn from(enum_val: &'a T) -> Self {
-        match enum_val.as_enum_str() {
-            Ok(s) => Value::Enum(s),
-            Err(e) => Value::Missing(e),
-        }
-    }
-}
-
-impl ValueEnum for SortKind {
-    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
-        let d = match self {
-            &SortKind::Direction(d) => SortDirection::try_from(d),
-            SortKind::ComparisonFunctionReference(f) => {
-                return Err(PlanError::invalid(
-                    "SortKind",
-                    Some(Cow::Owned(format!("function reference{f}"))),
-                    "SortKind::ComparisonFunctionReference unimplemented",
-                ));
-            }
-        };
-        let s = match d {
-            Err(UnknownEnumValue(d)) => {
-                return Err(PlanError::invalid(
-                    "SortKind",
-                    Some(Cow::Owned(format!("unknown variant: {d:?}"))),
-                    "Unknown SortDirection",
-                ));
-            }
-            Ok(SortDirection::AscNullsFirst) => "AscNullsFirst",
-            Ok(SortDirection::AscNullsLast) => "AscNullsLast",
-            Ok(SortDirection::DescNullsFirst) => "DescNullsFirst",
-            Ok(SortDirection::DescNullsLast) => "DescNullsLast",
-            Ok(SortDirection::Clustered) => "Clustered",
-            Ok(SortDirection::Unspecified) => {
-                return Err(PlanError::invalid(
-                    "SortKind",
-                    Option::<Cow<str>>::None,
-                    "Unspecified SortDirection",
-                ));
-            }
-        };
-        Ok(Cow::Borrowed(s))
-    }
-}
-
-impl ValueEnum for join_rel::JoinType {
-    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
-        let s = match self {
-            join_rel::JoinType::Unspecified => {
-                return Err(PlanError::invalid(
-                    "JoinType",
-                    Option::<Cow<str>>::None,
-                    "Unspecified JoinType",
-                ));
-            }
-            join_rel::JoinType::Inner => "Inner",
-            join_rel::JoinType::Outer => "Outer",
-            join_rel::JoinType::Left => "Left",
-            join_rel::JoinType::Right => "Right",
-            join_rel::JoinType::LeftSemi => "LeftSemi",
-            join_rel::JoinType::RightSemi => "RightSemi",
-            join_rel::JoinType::LeftAnti => "LeftAnti",
-            join_rel::JoinType::RightAnti => "RightAnti",
-            join_rel::JoinType::LeftSingle => "LeftSingle",
-            join_rel::JoinType::RightSingle => "RightSingle",
-            join_rel::JoinType::LeftMark => "LeftMark",
-            join_rel::JoinType::RightMark => "RightMark",
-        };
-        Ok(Cow::Borrowed(s))
-    }
-}
-
-impl ValueEnum for set_rel::SetOp {
-    fn as_enum_str(&self) -> Result<Cow<'static, str>, PlanError> {
-        let s = match self {
-            set_rel::SetOp::Unspecified => {
-                return Err(PlanError::invalid(
-                    "SetOp",
-                    Option::<Cow<str>>::None,
-                    "Unspecified SetOp",
-                ));
-            }
-            set_rel::SetOp::MinusPrimary => "MinusPrimary",
-            set_rel::SetOp::MinusPrimaryAll => "MinusPrimaryAll",
-            set_rel::SetOp::MinusMultiset => "MinusMultiset",
-            set_rel::SetOp::IntersectionPrimary => "IntersectionPrimary",
-            set_rel::SetOp::IntersectionMultiset => "IntersectionMultiset",
-            set_rel::SetOp::IntersectionMultisetAll => "IntersectionMultisetAll",
-            set_rel::SetOp::UnionDistinct => "UnionDistinct",
-            set_rel::SetOp::UnionAll => "UnionAll",
-        };
-        Ok(Cow::Borrowed(s))
-    }
-}
-
-impl<'a> Textify for NamedArg<'a> {
-    fn name() -> &'static str {
-        "NamedArg"
-    }
-    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}=", self.name)?;
-        self.value.textify(ctx, w)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use substrait::proto::aggregate_rel::Grouping;
@@ -1393,12 +1119,13 @@ mod tests {
     use substrait::proto::rel_common::{Direct, Emit};
     use substrait::proto::r#type::{self as ptype, Boolean, I64, Kind, Nullability, Struct};
     use substrait::proto::{
-        Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
+        AggregateFunction, Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
     };
 
     use super::*;
     use crate::fixtures::TestContext;
     use crate::parser::expressions::FieldIndex;
+    use crate::textify::expressions::Reference;
 
     #[test]
     fn test_read_rel() {
@@ -1830,36 +1557,6 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
     }
 
     #[test]
-    fn test_arguments_textify_positional_only() {
-        let ctx = TestContext::new();
-        let args = Arguments::inline(vec![Value::Integer(42), Value::Integer(7)], vec![]);
-        let (result, errors) = ctx.textify(&args);
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert_eq!(result, "42, 7");
-    }
-
-    #[test]
-    fn test_arguments_textify_named_only() {
-        let ctx = TestContext::new();
-        let args = Arguments::inline(
-            vec![],
-            vec![
-                NamedArg {
-                    name: Cow::Borrowed("limit"),
-                    value: Value::Integer(10),
-                },
-                NamedArg {
-                    name: Cow::Borrowed("offset"),
-                    value: Value::Integer(5),
-                },
-            ],
-        );
-        let (result, errors) = ctx.textify(&args);
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert_eq!(result, "limit=10, offset=5");
-    }
-
-    #[test]
     fn test_join_relation_unknown_type() {
         let ctx = TestContext::new();
 
@@ -2002,48 +1699,6 @@ Cross[$0, $3]
   Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
             .trim_start();
         assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_arguments_textify_both() {
-        let ctx = TestContext::new();
-        let args = Arguments::inline(
-            vec![Value::Integer(1)],
-            vec![NamedArg {
-                name: "foo".into(),
-                value: Value::Integer(2),
-            }],
-        );
-        let (result, errors) = ctx.textify(&args);
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert_eq!(result, "1, foo=2");
-    }
-
-    #[test]
-    fn test_arguments_textify_empty() {
-        let ctx = TestContext::new();
-        let args = Arguments::inline(vec![], vec![]);
-        let (result, errors) = ctx.textify(&args);
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-        assert_eq!(result, "_");
-    }
-
-    #[test]
-    fn test_named_arg_textify_error_token() {
-        let ctx = TestContext::new();
-        let named_arg = NamedArg {
-            name: "foo".into(),
-            value: Value::Missing(PlanError::invalid(
-                "my_enum",
-                Some(Cow::Borrowed("my_enum")),
-                Cow::Borrowed("my_enum"),
-            )),
-        };
-        let (result, errors) = ctx.textify(&named_arg);
-        // Should show !{my_enum} in the output
-        assert!(result.contains("foo=!{my_enum}"), "Output: {result}");
-        // Should also accumulate an error
-        assert!(!errors.is_empty(), "Expected error for error token");
     }
 
     #[test]
