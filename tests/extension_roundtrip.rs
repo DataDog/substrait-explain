@@ -362,11 +362,11 @@ fn test_extension_empty_args_roundtrip() {
     let mut registry = ExtensionRegistry::new();
     registry.register_relation::<EmptySource>().unwrap();
 
-    // No args, no output columns — textifies as [_]
+    // No args and an explicitly empty output list.
     let plan_text = r#"
 === Plan
 Root[result]
-  ExtensionLeaf:EmptySource[_ => ]
+  ExtensionLeaf:EmptySource[_ => _]
 "#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());

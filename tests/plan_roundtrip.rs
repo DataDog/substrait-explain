@@ -22,24 +22,39 @@ Root[c, d]
 }
 
 #[test]
-fn test_read_explicit_direct_roundtrip() {
-    let plan = r#"=== Plan
+fn test_read_direct_output_is_canonicalized() {
+    let canonical = r#"=== Plan
+Root[a, b]
+  Read[my.table => a:i32, b:string?]"#;
+    let explicit = r#"=== Plan
 Root[a, b]
   Read[my.table +> a:i32, b:string?]"#;
 
-    roundtrip_plan(plan);
+    assert_roundtrip_canonical(canonical, explicit);
 }
 
 #[test]
-fn test_read_explicit_empty_additions_roundtrip() {
+fn test_empty_read_direct_output_is_canonicalized() {
     let canonical = r#"=== Plan
-Root[]
-  Read[my.table +> _]"#;
-    let legacy = r#"=== Plan
-Root[]
-  Read[my.table +> ]"#;
+Root[_]
+  Read[my.table => _]"#;
 
-    assert_roundtrip_canonical(canonical, legacy);
+    assert_roundtrip_canonical(
+        canonical,
+        r#"=== Plan
+Root[_]
+  Read[my.table +> _]"#,
+    );
+}
+
+#[test]
+fn test_empty_aggregate_output_roundtrip() {
+    roundtrip_plan(
+        r#"=== Plan
+Root[_]
+  Aggregate[_ => _]
+    Read[my.table => value:i32]"#,
+    );
 }
 
 #[test]
@@ -202,7 +217,7 @@ Root[sum, count]
 #[test]
 fn test_sort_empty_parameter_list() {
     let plan = r#"=== Plan
-Root[]
+Root[_]
   Sort[_]
     Read[table => a:i32]"#;
 
@@ -603,7 +618,7 @@ Root[a, b]
 #[test]
 fn test_empty_cross_parameters_roundtrip() {
     let plan = r#"=== Plan
-Root[]
+Root[_]
   Cross[_]
     Read[left => left:i32]
     Read[right => right:string]"#;
@@ -969,8 +984,8 @@ fn test_virtual_read_no_columns() {
     // Degenerate table with zero columns and empty rows.
     let plan = r#"
 === Plan
-Root[]
-  Read:Virtual[(), () => ]"#;
+Root[_]
+  Read:Virtual[(), () => _]"#;
 
     roundtrip_plan(plan);
 }

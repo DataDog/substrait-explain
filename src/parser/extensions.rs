@@ -923,6 +923,28 @@ Functions:
     }
 
     #[test]
+    fn test_empty_addendum_uses_underscore() {
+        let extensions = SimpleExtensions::default();
+        for (kind, addendum) in [
+            (AddendumKind::Enhancement, "+ Enh:Foo[_]"),
+            (AddendumKind::Optimization, "+ Opt:Foo[_]"),
+            (AddendumKind::ExtensionTable, "+ Ext:Foo[_]"),
+        ] {
+            let invocation = AddendumInvocation::parse(&extensions, addendum).unwrap();
+            assert_eq!(invocation.kind, kind);
+            assert!(invocation.args.positional.is_empty());
+            assert!(invocation.args.named.is_empty());
+        }
+
+        for addendum in ["+ Enh:Foo[]", "+ Opt:Foo[]", "+ Ext:Foo[]"] {
+            assert!(
+                AddendumInvocation::parse(&extensions, addendum).is_err(),
+                "accepted {addendum}"
+            );
+        }
+    }
+
+    #[test]
     fn extension_relation_kind_parses_text_prefixes() {
         assert_eq!(
             ExtensionRelationKind::from_str("ExtensionLeaf").unwrap(),

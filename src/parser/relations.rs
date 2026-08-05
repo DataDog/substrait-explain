@@ -360,7 +360,11 @@ fn parse_read_output(
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
             iter.done();
             let output_count = columns.len();
-            Ok((columns, None, output_count))
+            let common = Some(RelCommon {
+                emit_kind: Some(EmitKind::Direct(Direct {})),
+                ..Default::default()
+            });
+            Ok((columns, common, output_count))
         }
         Rule::direct_read_output => {
             let mut iter = RuleIter::from(output.into_inner());
@@ -897,6 +901,12 @@ fn parse_aggregate_output(
         .enumerate()
         .map(|(index, expression)| (expression_key(expression), index))
         .collect();
+
+    let output_pair = unwrap_single_pair(output_pair);
+    if output_pair.as_rule() == Rule::empty {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    assert_eq!(output_pair.as_rule(), Rule::expression_list);
 
     let mut measures = Vec::new();
     let mut output_mapping = Vec::new();
@@ -1589,7 +1599,12 @@ mod tests {
             .unwrap()
             .types;
         assert_eq!(columns.len(), 2);
-        assert!(read.common.is_none());
+        assert!(matches!(
+            read.common
+                .as_ref()
+                .and_then(|common| common.emit_kind.as_ref()),
+            Some(EmitKind::Direct(_)),
+        ));
     }
 
     #[test]
@@ -2464,6 +2479,20 @@ mod tests {
             9,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_and_aggregate_empty_lists_require_underscore() {
+        for (rule, input) in [
+            (Rule::read_relation, "Read[my.table +> ]"),
+            (Rule::virtual_read_relation, "Read:Virtual[() => ]"),
+            (Rule::aggregate_relation, "Aggregate[_ => ]"),
+        ] {
+            assert!(
+                ExpressionParser::parse(rule, input).is_err(),
+                "accepted {input}"
+            );
+        }
     }
 
     fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
