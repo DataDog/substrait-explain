@@ -36,7 +36,15 @@ pub struct OutputOptions {
     ///
     /// If `Required`, the anchor is shown for all simple extensions.
     pub show_simple_extension_anchors: Visibility,
-    /// Instead of showing the emitted columns inline, show the emits directly.
+    /// Preserve relation direct output and explicit emit mappings.
+    ///
+    /// When false, supported relations use compact `=>` output describing the
+    /// final visible fields. When true, they use `+>` for direct additions and
+    /// `|>` for an explicit `RelCommon::Emit` mapping. This preserves an
+    /// explicit identity mapping that compact output may normalize to Direct.
+    ///
+    /// Relation kinds that do not support explicit output continue to use
+    /// their compact spelling.
     pub show_emit: bool,
 
     /// Show the types for columns in a read
@@ -83,8 +91,7 @@ impl OutputOptions {
             show_simple_extensions: true,
             show_simple_extension_anchors: Visibility::Always,
             literal_types: Visibility::Always,
-            // Emits are not required for a complete plan - just not a precise one.
-            show_emit: false,
+            show_emit: true,
             read_types: true,
             nullability: true,
             indent: "  ".to_string(),

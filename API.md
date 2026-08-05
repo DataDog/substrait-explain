@@ -277,10 +277,11 @@ let default = OutputOptions::default();
 // Verbose - show all details
 let verbose = OutputOptions::verbose();
 
-// Custom - show literal types and use 4-space indentation
+// Custom - show literal types, 4-space indentation, and explicit emits
 let custom = OutputOptions {
     literal_types: Visibility::Always,
     indent: "    ".to_string(),
+    show_emit: true,
     ..OutputOptions::default()
 };
 ```

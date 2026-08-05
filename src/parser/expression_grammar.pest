@@ -65,11 +65,11 @@ parameter = { type | integer | name }
 
 // An arbitrary parameter list for use with type expressions or function calls.
 // Example: <T, V>
-// 
+//
 // Note that if a type can have no parameters, there should be no parameter list.
 // A type that can take parameters but has an empty parameter list should be
 // written with the empty parameter list.
-// 
+//
 // As examples: 'i64' and 'struct<>' are valid, but 'i64<>' and 'struct' are not.
 parameters = { "<" ~ (parameter ~ ("," ~ sp ~ parameter)*)? ~ ">" }
 
@@ -105,7 +105,7 @@ simple_type_name = {
 simple_type = { simple_type_name ~ nullability }
 
 // -- Compound Types --
-// 
+//
 // Note that the names here are case-insensitive. In the docs, they are shown as
 // upper-case, but I prefer them lowercase...
 
@@ -207,32 +207,32 @@ simple_extension_name = @{ "u!"? ~ identifier ~ (":" ~ argument_signature?)? }
 simple_extension = { anchor ~ sp ~ urn_anchor ~ sp ~ ":" ~ sp ~ simple_extension_name }
 
 // == Relations ==
-// These rules are for parsing relations - well, for parsing one relation on one line.
-// A relation is in the form:
-// NAME[parameters => columns]
-// 
-// Parameters are optional, and are a comma-separated list of expressions.
-// Columns are required, and are a comma-separated list of named columns.
-// 
-// Example:
-// 
-// name "[" (arguments "=>")? columns "]"
-// where:
-// - arguments are a comma-separated list of table names or expressions
 
+// -- Common relation components --
+// Relations define their own parameters and direct-output shapes below.
+reference_list = { empty | (reference ~ (sp ~ "," ~ sp ~ reference)*) }
+
+// Pass-through relations use references for both compact final output and
+// explicit emit mappings. An omitted clause means Direct, `=>` describes
+// compact final output, and `|>` preserves Emit.
+reference_output          = { implicit_reference_output | explicit_emit }
+implicit_reference_output = { "=>" ~ sp ~ reference_list }
+explicit_emit             = { "|>" ~ sp ~ reference_list }
+
+// -- Read relation components --
 table_name = { (name ~ ("." ~ name)*) }
 
 named_column      = { name ~ ":" ~ type }
-named_column_list = { (named_column ~ ("," ~ sp ~ named_column)*)? }
+named_column_list = { empty | (named_column ~ ("," ~ sp ~ named_column)*)? }
 
-// -- Output clauses --
-// `=>` declares the final visible output columns without preserving a RelCommon.emit distinction.
-// `+>` declares the direct output domain. Without `|>`, it is an explicit
-// `|>` the trailing reference list is preserved as an explicit Emit over that direct output domain.
-output          = { implicit_output | direct_output }
-implicit_output = { "=>" ~ sp ~ named_column_list }
-direct_output   = { "+>" ~ sp ~ named_column_list ~ emit_suffix }
-emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
+// -- Read output clauses --
+// `=>` declares the final visible schema in compact Read syntax. `+>` declares
+// the complete direct schema; an optional `|>` preserves an explicit Emit over
+// that schema.
+read_output          = { implicit_read_output | direct_read_output }
+implicit_read_output = { "=>" ~ sp ~ named_column_list }
+direct_read_output   = { "+>" ~ sp ~ named_column_list ~ read_emit_suffix }
+read_emit_suffix     = { (sp ~ "|>" ~ sp ~ reference_list)? }
 
 planNode = {
     // Specialized read relations must precede read_relation: all start with
@@ -262,7 +262,7 @@ top_level_relation = {
 root_relation  = { "Root" ~ "[" ~ root_name_list ~ "]" }
 root_name_list = { (name ~ (sp ~ "," ~ sp ~ name)*)? }
 
-read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ output ~ "]" }
+read_relation = { "Read" ~ "[" ~ table_name ~ sp ~ read_output ~ "]" }
 
 // ExtensionTable read: Read:Extension[columns], with detail in a required + Ext addendum.
 extension_read_relation = { "Read:Extension" ~ "[" ~ named_column_list ~ "]" }
@@ -298,8 +298,7 @@ virtual_read_filter   = { "filter" ~ sp ~ "=" ~ sp ~ expression }
 virtual_row_list      = { virtual_row ~ (relation_comma ~ virtual_row)* }
 virtual_row           = { "(" ~ sp ~ expression_list? ~ sp ~ ")" }
 
-filter_relation = { "Filter" ~ "[" ~ expression ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
-reference_list  = { (reference ~ (sp ~ "," ~ sp ~ reference)*)? }
+filter_relation = { "Filter" ~ "[" ~ expression ~ (sp ~ reference_output)? ~ "]" }
 
 project_relation      = { "Project" ~ "[" ~ project_argument_list ~ "]" }
 project_argument_list = { (project_argument ~ (sp ~ "," ~ sp ~ project_argument)*)? }
@@ -326,18 +325,18 @@ aggregate_output      = { (expression ~ (sp ~ "," ~ sp ~ expression)*)? }
 empty = { "_" }
 
 // SortRel: Sort[($0, &AscNullsFirst), ($2, &DescNullsLast) => ...]
-sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
-sort_field_list = { (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*)? }
+sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ (sp ~ reference_output)? ~ "]" }
+sort_field_list = { empty | (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*) }
 sort_field      = { "(" ~ sp ~ reference ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
 sort_direction  = { "&AscNullsFirst" | "&AscNullsLast" | "&DescNullsFirst" | "&DescNullsLast" }
 
 // FetchRel: Fetch[limit=..., offset=... => ...] (named arguments only, any order, or _ for empty)
 fetch_arg_name       =  { "limit" | "offset" }
-fetch_value          =  { integer | expression }
+fetch_value          =  { expression }
 fetch_named_arg      =  { fetch_arg_name ~ sp ~ "=" ~ sp ~ fetch_value }
 fetch_named_arg_list =  { fetch_named_arg ~ (sp ~ "," ~ sp ~ fetch_named_arg)* }
 fetch_args           = _{ fetch_named_arg_list | empty }
-fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+fetch_relation       =  { "Fetch" ~ "[" ~ fetch_args ~ (sp ~ reference_output)? ~ "]" }
 
 // JoinRel: Join[&Inner, eq($0, $2), post_filter=gt($3, 0) => $0, $1, $2, $3]
 // Note: Longer prefixes must come before shorter ones (e.g., "&LeftSemi" before "&Left")
@@ -350,10 +349,10 @@ join_relation         = { "Join" ~ "[" ~ join_type ~ sp ~ "," ~ sp ~ expression 
 // Note: Longer prefixes must come before shorter ones (e.g., "&IntersectionMultisetAll"
 // before "&IntersectionMultiset") so that the parser doesn't stop at the shorter match.
 set_op        = { "&IntersectionMultisetAll" | "&IntersectionMultiset" | "&IntersectionPrimary" | "&MinusPrimaryAll" | "&MinusPrimary" | "&MinusMultiset" | "&UnionAll" | "&UnionDistinct" }
-set_relation  = { "Set" ~ "[" ~ set_op ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
+set_relation  = { "Set" ~ "[" ~ set_op ~ (sp ~ reference_output)? ~ "]" }
 
-// CrossRel: Cross[$0, $1, $2, $3]  (Cartesian product of left and right; no args)
-cross_relation = { "Cross" ~ "[" ~ reference_list ~ "]" }
+// CrossRel has no parameters, so its required parameter list is `_`.
+cross_relation = { "Cross" ~ "[" ~ empty ~ (sp ~ reference_output)? ~ "]" }
 
 // Extension relations for custom operators not covered by standard Substrait
 // Format: ExtensionType:ExtensionName[arguments, named_arguments => columns]

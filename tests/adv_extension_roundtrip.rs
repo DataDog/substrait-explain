@@ -104,7 +104,7 @@ fn test_enhancement_with_child_relation() {
     // so the annotation visually attaches to Filter and not to Read.
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     + Enh:PartitionHint[&BROADCAST]
     Read[my.table => col:i64]"#;
 
@@ -379,7 +379,7 @@ fn test_enhancement_on_filter_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     + Enh:PartitionHint[&HASH, count=4]
     Read[my.table => col:i64]"#;
 
@@ -398,7 +398,7 @@ fn test_enhancement_on_sort_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Sort[($0, &AscNullsFirst) => $0]
+  Sort[($0, &AscNullsFirst)]
     + Enh:PartitionHint[&RANGE]
     Read[my.table => col:i64]"#;
 
@@ -650,7 +650,7 @@ fn test_enhancement_on_fetch_roundtrip() {
     let registry = make_registry();
     let plan_text = r#"=== Plan
 Root[col]
-  Fetch[limit=5 => $0]
+  Fetch[limit=5]
     + Enh:PartitionHint[&HASH]
     Read[my.table => col:i64]"#;
     let parser = Parser::new().with_extension_registry(registry.clone());
@@ -713,7 +713,7 @@ fn test_optimization_on_nested_read_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     Read[my.table => col:i64]
       + Opt:PlanHint[hint='index']"#;
 
@@ -738,7 +738,7 @@ fn test_multiple_optimizations_on_nested_read_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     Read[my.table => col:i64]
       + Opt:PlanHint[hint='use_index']
       + Opt:PlanHint[hint='parallel']"#;
@@ -760,7 +760,7 @@ fn test_enhancement_and_optimization_on_nested_relation_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     Read[my.table => col:i64]
       + Enh:PartitionHint[&HASH]
       + Opt:PlanHint[hint='index']"#;
@@ -779,7 +779,7 @@ fn test_enhancement_on_nested_read_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Filter[$0 => $0]
+  Filter[$0]
     Read[my.table => col:i64]
       + Enh:PartitionHint[&HASH]"#;
 
@@ -798,8 +798,8 @@ fn test_enhancement_on_nested_filter_roundtrip() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Sort[($0, &AscNullsFirst) => $0]
-    Filter[$0 => $0]
+  Sort[($0, &AscNullsFirst)]
+    Filter[$0]
       + Enh:PartitionHint[&RANGE]
       Read[my.table => col:i64]"#;
 
@@ -817,8 +817,8 @@ fn test_enhancement_depth_three_nesting_roundtrip() {
     let registry = make_registry();
     let plan_text = r#"=== Plan
 Root[result]
-  Sort[($0, &AscNullsFirst) => $0]
-    Filter[$0 => $0]
+  Sort[($0, &AscNullsFirst)]
+    Filter[$0]
       Read[my.table => col:i64]
         + Enh:PartitionHint[&RANGE]"#;
 

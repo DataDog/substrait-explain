@@ -95,122 +95,214 @@ fn schema_to_values<'a>(schema: &'a NamedStruct) -> Vec<Value<'a>> {
     values
 }
 
-/// How a relation header renders its output.
+/// How a relation header renders an output clause.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum OutputSyntax {
-    /// Output columns are rendered as final visible output: `=> output_columns`.
+    /// Final visible output: `=> output`.
     #[default]
-    Implicit,
-    /// Output columns are rendered as the direct output domain: `+> columns`,
-    /// with `|> order` appended when an explicit emit mapping is present.
+    Compact,
+    /// Explicit direct output: `+> output`, optionally followed by `|> mapping`.
+    /// Relations without direct-output additions use `|> mapping` directly.
     Explicit,
 }
 
+impl OutputSyntax {
+    fn from_show_emit(show_emit: bool) -> Self {
+        if show_emit {
+            Self::Explicit
+        } else {
+            Self::Compact
+        }
+    }
+}
+
+/// Whether a relation grammar requires an output clause when its output is Direct.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum OutputClausePresence {
+    /// The relation's header states its output domain even when it returns that
+    /// domain directly. This is used when the header declares a schema,
+    /// generated fields, or another relation-specific direct output.
+    #[default]
+    Required,
+    /// The relation derives its direct output entirely from its input, so
+    /// `Direct` needs no output clause. An explicit `Emit` writes an output
+    /// clause using the selected [`OutputSyntax`].
+    WhenNeeded,
+}
+
+/// Fields appended to a relation's base direct output by `+>`.
+struct OutputAdditions<'a>(&'a [Value<'a>]);
+
+impl Textify for OutputAdditions<'_> {
+    fn name() -> &'static str {
+        "OutputAdditions"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if self.0.is_empty() {
+            return write!(w, "_");
+        }
+        write!(w, "{}", ctx.separated(self.0.iter(), ", "))
+    }
+}
+
+/// A mapping over positions in a relation's complete direct output.
+#[derive(Clone, Copy)]
+struct OutputMapping<'a>(&'a [i32]);
+
+impl Textify for OutputMapping<'_> {
+    fn name() -> &'static str {
+        "OutputMapping"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if self.0.is_empty() {
+            return write!(w, "_");
+        }
+
+        for (position, &index) in self.0.iter().enumerate() {
+            if position > 0 {
+                write!(w, ", ")?;
+            }
+            write!(w, "{}", ctx.display(&Value::Reference(index)))?;
+        }
+        Ok(())
+    }
+}
+
+/// The final output produced from a relation's complete direct output.
 struct Emitted<'a> {
-    values: &'a [Value<'a>],
+    direct_output: &'a [Value<'a>],
     emit: Option<&'a EmitKind>,
-    output_syntax: Option<OutputSyntax>,
 }
 
 impl<'a> Emitted<'a> {
-    pub fn columns(values: &'a [Value<'a>], emit: Option<&'a EmitKind>) -> Self {
+    fn new(direct_output: &'a [Value<'a>], emit: Option<&'a EmitKind>) -> Self {
         Self {
-            values,
+            direct_output,
             emit,
-            output_syntax: None,
         }
-    }
-
-    pub fn output_clause(
-        values: &'a [Value<'a>],
-        emit: Option<&'a EmitKind>,
-        output_syntax: OutputSyntax,
-    ) -> Self {
-        Self {
-            values,
-            emit,
-            output_syntax: Some(output_syntax),
-        }
-    }
-
-    fn write_output_clause<S: Scope, W: fmt::Write>(
-        &self,
-        ctx: &S,
-        w: &mut W,
-        output_syntax: OutputSyntax,
-    ) -> fmt::Result {
-        match output_syntax {
-            OutputSyntax::Implicit => {
-                write!(w, "=> ")?;
-                self.write_implicit_columns(ctx, w)
-            }
-            OutputSyntax::Explicit => {
-                write!(w, "+> ")?;
-                self.write_direct_columns(ctx, w)?;
-                self.write_emit_suffix(ctx, w)
-            }
-        }
-    }
-
-    fn write_direct_columns<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        write!(w, "{}", ctx.separated(self.values.iter(), ", "))
-    }
-
-    fn write_implicit_columns<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        if ctx.options().show_emit {
-            return self.write_direct_columns(ctx, w);
-        }
-
-        let indices = match &self.emit {
-            Some(EmitKind::Emit(e)) => &e.output_mapping,
-            Some(EmitKind::Direct(_)) => return self.write_direct_columns(ctx, w),
-            None => return self.write_direct_columns(ctx, w),
-        };
-
-        for (i, &index) in indices.iter().enumerate() {
-            if i > 0 {
-                write!(w, ", ")?;
-            }
-
-            match self.values.get(index as usize) {
-                Some(value) => write!(w, "{}", ctx.display(value))?,
-                None => write!(w, "{}", ctx.failure(PlanError::invalid(
-                    "Emitted",
-                    Some("output_mapping"),
-                    format!(
-                        "Output mapping index {} is out of bounds for values collection of size {}",
-                        index, self.values.len()
-                    )
-                )))?,
-            }
-        }
-
-        Ok(())
-    }
-
-    fn write_emit_suffix<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        let Some(EmitKind::Emit(emit)) = self.emit else {
-            return Ok(());
-        };
-        let mapping = emit
-            .output_mapping
-            .iter()
-            .copied()
-            .map(Value::Reference)
-            .collect::<Vec<_>>();
-        write!(w, " |> {}", ctx.separated(mapping.iter(), ", "))
     }
 }
 
-impl<'a> Textify for Emitted<'a> {
+impl Textify for Emitted<'_> {
     fn name() -> &'static str {
         "Emitted"
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
-        match self.output_syntax {
-            Some(output_syntax) => self.write_output_clause(ctx, w, output_syntax),
-            None => self.write_implicit_columns(ctx, w),
+        let Some(EmitKind::Emit(emit)) = self.emit else {
+            return write!(w, "{}", ctx.separated(self.direct_output.iter(), ", "));
+        };
+
+        if emit.output_mapping.is_empty() {
+            return write!(w, "_");
+        }
+
+        for (position, &index) in emit.output_mapping.iter().enumerate() {
+            if position > 0 {
+                write!(w, ", ")?;
+            }
+            match self.direct_output.get(index as usize) {
+                Some(value) => write!(w, "{}", ctx.display(value))?,
+                None => write!(w, "{}", ctx.failure(PlanError::invalid(
+                    "Emitted",
+                    Some("output_mapping"),
+                    format!(
+                        "Output mapping index {index} is out of bounds for direct output of size {}",
+                        self.direct_output.len()
+                    )
+                )))?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Explicit output syntax: additions with an optional mapping, or a mapping
+/// over an implicit direct output.
+enum ExplicitOutput<'a> {
+    Additions {
+        additions: OutputAdditions<'a>,
+        mapping: Option<OutputMapping<'a>>,
+    },
+    Mapping(OutputMapping<'a>),
+}
+
+impl Textify for ExplicitOutput<'_> {
+    fn name() -> &'static str {
+        "ExplicitOutput"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self {
+            Self::Additions {
+                additions,
+                mapping: Some(mapping),
+            } => write!(
+                w,
+                "+> {} |> {}",
+                ctx.display(additions),
+                ctx.display(mapping)
+            ),
+            Self::Additions {
+                additions,
+                mapping: None,
+            } => write!(w, "+> {}", ctx.display(additions)),
+            Self::Mapping(mapping) => write!(w, "|> {}", ctx.display(mapping)),
+        }
+    }
+}
+
+/// A complete output clause, when a relation needs one.
+enum OutputClause<'a> {
+    Compact(Emitted<'a>),
+    Explicit(ExplicitOutput<'a>),
+}
+
+impl<'a> OutputClause<'a> {
+    fn new(
+        direct_output: &'a [Value<'a>],
+        emit: Option<&'a EmitKind>,
+        syntax: OutputSyntax,
+        presence: OutputClausePresence,
+    ) -> Option<Self> {
+        let mapping = match emit {
+            Some(EmitKind::Emit(emit)) => Some(OutputMapping(&emit.output_mapping)),
+            Some(EmitKind::Direct(_)) | None => None,
+        };
+
+        match (syntax, presence, mapping) {
+            (OutputSyntax::Compact, OutputClausePresence::Required, _) => {
+                Some(Self::Compact(Emitted::new(direct_output, emit)))
+            }
+            (OutputSyntax::Compact, OutputClausePresence::WhenNeeded, Some(_)) => {
+                Some(Self::Compact(Emitted::new(direct_output, emit)))
+            }
+            (OutputSyntax::Compact, OutputClausePresence::WhenNeeded, None) => None,
+            (OutputSyntax::Explicit, OutputClausePresence::Required, mapping) => {
+                Some(Self::Explicit(ExplicitOutput::Additions {
+                    additions: OutputAdditions(direct_output),
+                    mapping,
+                }))
+            }
+            (OutputSyntax::Explicit, OutputClausePresence::WhenNeeded, Some(mapping)) => {
+                Some(Self::Explicit(ExplicitOutput::Mapping(mapping)))
+            }
+            (OutputSyntax::Explicit, OutputClausePresence::WhenNeeded, None) => None,
+        }
+    }
+}
+
+impl Textify for OutputClause<'_> {
+    fn name() -> &'static str {
+        "OutputClause"
+    }
+
+    fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        match self {
+            Self::Compact(emitted) => write!(w, "=> {}", ctx.display(emitted)),
+            Self::Explicit(output) => write!(w, "{}", ctx.display(output)),
         }
     }
 }
@@ -262,9 +354,11 @@ pub struct Relation<'a> {
     pub columns: Vec<Value<'a>>,
     /// The emit kind, if any. If none, use the columns directly.
     pub emit: Option<&'a EmitKind>,
-    /// Whether output columns are rendered as visible output or as a direct
-    /// output domain plus optional explicit emit mapping.
+    /// How an output clause is rendered when one is present.
     output_syntax: OutputSyntax,
+    /// Whether the current relation grammar requires an output clause even
+    /// without an explicit emit mapping.
+    output_clause_presence: OutputClausePresence,
     /// `+`-prefixed addendum lines to emit between this relation's header and
     /// children.  This owns the canonical ordering for `+ Ext`, `+ Enh`, and
     /// `+ Opt` lines rather than making the generic relation shape grow one
@@ -308,7 +402,7 @@ impl Relation<'_> {
         let name = &self.name;
         match &self.arguments {
             None => {
-                let cols = Emitted::columns(&self.columns, self.emit);
+                let cols = Emitted::new(&self.columns, self.emit);
                 let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{cols}]")
             }
@@ -335,15 +429,33 @@ impl Relation<'_> {
                     let comma = if i == last { "" } else { "," };
                     writeln!(w, "{child_indent}- {named_arg}{comma}")?;
                 }
-                let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
+                let output = OutputClause::new(
+                    &self.columns,
+                    self.emit,
+                    self.output_syntax,
+                    self.output_clause_presence,
+                )
+                .unwrap_or(OutputClause::Compact(Emitted::new(
+                    &self.columns,
+                    self.emit,
+                )));
                 let output = ctx.display(&output);
                 write!(w, "{child_indent}- {output}]")
             }
             Some(RelationArgs::Inline(args)) => {
                 let args = ctx.display(args);
-                let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
-                let output = ctx.display(&output);
-                write!(w, "{indent}{name}[{args} {output}]")
+                match OutputClause::new(
+                    &self.columns,
+                    self.emit,
+                    self.output_syntax,
+                    self.output_clause_presence,
+                ) {
+                    Some(output_clause) => {
+                        let output = ctx.display(&output_clause);
+                        write!(w, "{indent}{name}[{args} {output}]")
+                    }
+                    None => write!(w, "{indent}{name}[{args}]"),
+                }
             }
         }
     }
@@ -378,16 +490,15 @@ impl<'a> Relation<'a> {
         match &rel.read_type {
             Some(ReadType::NamedTable(table)) => {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
-                // XXX: For `ReadRel`s, we use `=>` if emit is None, `+>` if
-                // `emit` is `Some(Direct)`, and `+> … |>` if emit is
-                // `Some(Remap(…))`. However, we ignore the
-                // `OutputOptions::show_emit` option, and we haven't yet
-                // supported other operators; at some point, we should figure
-                // out our policy here and clean this up.
+                // Named Reads preserve their existing schema spelling: an
+                // absent common output form uses compact `=> schema`, while a
+                // present Direct or Emit form writes the schema after `+>`.
+                // The Read compact-output slice canonicalizes Direct to the
+                // compact spelling.
                 let output_syntax = if emit.is_some() {
                     OutputSyntax::Explicit
                 } else {
-                    OutputSyntax::Implicit
+                    OutputSyntax::Compact
                 };
                 Relation {
                     name: Cow::Borrowed("Read"),
@@ -395,6 +506,7 @@ impl<'a> Relation<'a> {
                     columns,
                     emit,
                     output_syntax,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -437,7 +549,8 @@ impl<'a> Relation<'a> {
                     arguments: Some(arguments),
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -456,7 +569,8 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::extension_table(
                         ctx,
                         decoded,
@@ -476,7 +590,8 @@ impl<'a> Relation<'a> {
                     arguments: Some(RelationArgs::inline(vec![Value::Missing(err)], vec![])),
                     columns,
                     emit,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::from_advanced_extension(
                         ctx,
                         rel.advanced_extension.as_ref(),
@@ -549,7 +664,8 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -570,7 +686,8 @@ impl<'a> Relation<'a> {
             arguments: None,
             columns,
             emit: get_emit(rel.common.as_ref()),
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::Compact,
+            output_clause_presence: OutputClausePresence::Required,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -602,7 +719,8 @@ impl<'a> Relation<'a> {
                     arguments: None,
                     columns: vec![],
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::none(),
                     children: vec![],
                 }
@@ -670,7 +788,8 @@ impl<'a> Relation<'a> {
                     arguments: Some(RelationArgs::inline(positional, named)),
                     columns,
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     // Extension relations use `detail` rather than
                     // `advanced_extension`; the field does not exist on these
                     // proto types.
@@ -689,7 +808,8 @@ impl<'a> Relation<'a> {
                         error.to_string(),
                     ))],
                     emit: None,
-                    output_syntax: OutputSyntax::Implicit,
+                    output_syntax: OutputSyntax::Compact,
+                    output_clause_presence: OutputClausePresence::Required,
                     addenda: AddendumLines::none(),
                     children,
                 }
@@ -783,7 +903,8 @@ impl<'a> Relation<'a> {
             arguments,
             columns: all_outputs,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::Compact,
+            output_clause_presence: OutputClausePresence::Required,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -884,7 +1005,8 @@ impl<'a> Relation<'a> {
             arguments,
             columns: col_values,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -937,7 +1059,8 @@ impl<'a> Relation<'a> {
             arguments: Some(RelationArgs::inline(vec![], named_args)),
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1050,7 +1173,8 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::Compact,
+            output_clause_presence: OutputClausePresence::Required,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1081,7 +1205,8 @@ impl<'a> Relation<'a> {
             arguments,
             columns,
             emit,
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1099,10 +1224,11 @@ impl<'a> Relation<'a> {
 
         Relation {
             name: Cow::Borrowed("Cross"),
-            arguments: None,
+            arguments: Some(RelationArgs::inline(vec![], vec![])),
             columns,
             emit: get_emit(rel.common.as_ref()),
-            output_syntax: OutputSyntax::Implicit,
+            output_syntax: OutputSyntax::from_show_emit(ctx.options().show_emit),
+            output_clause_presence: OutputClausePresence::WhenNeeded,
             addenda: AddendumLines::from_advanced_extension(ctx, rel.advanced_extension.as_ref()),
             children,
         }
@@ -1262,7 +1388,7 @@ mod tests {
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
-Filter[gt($0, 10:i32):boolean => $0, $1]
+Filter[gt($0, 10:i32):boolean]
   Read[test_table => col1:i32?, col2:i32?]"#
             .trim_start();
         assert_eq!(result, expected);
@@ -1664,7 +1790,7 @@ Filter[gt($0, 10:i32):boolean => $0, $1]
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
-Cross[$0, $1, $2, $3, $4, $5]
+Cross[_]
   Read[left_tbl => category:string?, amount:fp64?, value:i32?]
   Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
             .trim_start();
@@ -1694,7 +1820,7 @@ Cross[$0, $1, $2, $3, $4, $5]
         let (result, errors) = ctx.textify(&rel);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
         let expected = r#"
-Cross[$0, $3]
+Cross[_ => $0, $3]
   Read[left_tbl => category:string?, amount:fp64?, value:i32?]
   Read[right_tbl => category:string?, amount:fp64?, value:i32?]"#
             .trim_start();
