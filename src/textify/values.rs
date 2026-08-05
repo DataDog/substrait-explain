@@ -7,6 +7,9 @@ use std::fmt;
 
 use prost::UnknownEnumValue;
 use substrait::proto::aggregate_function::AggregationInvocation;
+use substrait::proto::expression::RexType;
+use substrait::proto::expression::field_reference::ReferenceType as FieldReferenceType;
+use substrait::proto::expression::reference_segment::ReferenceType as SegmentReferenceType;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
     AggregateFunction, AggregationPhase, Expression, SortField, join_rel, set_rel,
@@ -129,12 +132,24 @@ impl<'a> From<&'a SortField> for Value<'a> {
     fn from(sf: &'a SortField) -> Self {
         let field = match &sf.expr {
             Some(expr) => match &expr.rex_type {
-                Some(substrait::proto::expression::RexType::Selection(fref)) => {
-                    if let Some(substrait::proto::expression::field_reference::ReferenceType::DirectReference(seg)) = &fref.reference_type {
-                        if let Some(substrait::proto::expression::reference_segment::ReferenceType::StructField(sf)) = &seg.reference_type {
+                Some(RexType::Selection(fref)) => {
+                    if let Some(FieldReferenceType::DirectReference(seg)) = &fref.reference_type {
+                        if let Some(SegmentReferenceType::StructField(sf)) = &seg.reference_type {
                             Value::Reference(sf.field)
-                        } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a struct field")) }
-                    } else { Value::Missing(PlanError::unimplemented("SortField", Some("expr"), "Not a direct reference")) }
+                        } else {
+                            Value::Missing(PlanError::unimplemented(
+                                "SortField",
+                                Some("expr"),
+                                "Not a struct field",
+                            ))
+                        }
+                    } else {
+                        Value::Missing(PlanError::unimplemented(
+                            "SortField",
+                            Some("expr"),
+                            "Not a direct reference",
+                        ))
+                    }
                 }
                 _ => Value::Missing(PlanError::unimplemented(
                     "SortField",
