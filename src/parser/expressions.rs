@@ -1,4 +1,5 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
+use pest::Parser as PestParser;
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
@@ -563,54 +564,94 @@ fn parse_time_to_precision_units(
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IntervalDayError {
+    /// A term's number overflows the protobuf field that holds it: `days` and
+    /// `seconds` are `i32`, `subseconds` is `i64`.
+    TermOverflow {
+        unit: &'static str,
+        number: String,
+        bits: usize,
+    },
+    /// A sub-second unit that disagrees with the ascribed precision.
+    UnitPrecisionMismatch {
+        unit: &'static str,
+        unit_precision: SupportedPrecision,
+        precision: SupportedPrecision,
+    },
+}
+
+impl std::fmt::Display for IntervalDayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntervalDayError::TermOverflow { unit, number, bits } => write!(
+                f,
+                "the '{unit}' term {number} does not fit in a {bits}-bit integer"
+            ),
+            IntervalDayError::UnitPrecisionMismatch {
+                unit,
+                unit_precision,
+                precision,
+            } => write!(
+                f,
+                "the sub-second unit '{unit}' means precision {unit_precision}, but the type is interval_day<{precision}>"
+            ),
+        }
+    }
+}
+
 /// Parse the integer part of a duration term, e.g. the `-5` of `-5d`.
 ///
 /// The grammar guarantees an optionally-signed run of digits, so the only way
 /// this can fail is a value too large for the protobuf field it is stored in.
 fn parse_duration_number<T: std::str::FromStr>(
     number: &str,
-    unit: &str,
-    duration_str: &str,
-    span: pest::Span,
-) -> Result<T, MessageParseError> {
-    number.parse().map_err(|_| {
-        MessageParseError::invalid(
-            "interval_day_duration",
-            span,
-            format!(
-                "Invalid duration '{duration_str}': the '{unit}' term {number} does not fit in a {}-bit integer",
-                std::mem::size_of::<T>() * 8
-            ),
-        )
+    unit: &'static str,
+) -> Result<T, IntervalDayError> {
+    number.parse().map_err(|_| IntervalDayError::TermOverflow {
+        unit,
+        number: number.to_string(),
+        bits: std::mem::size_of::<T>() * 8,
     })
 }
 
 /// Parse the contents of an `interval_day` literal string - e.g. "5d",
 /// "4d 5s", "5d 3s 100ns", "-5d -3s" - into an `IntervalDayToSecond` with the
 /// sub-second precision taken from the literal's type ascription.
-///
-/// The shape of the string is enforced by [`Rule::interval_day_duration`],
-/// which fixes term order and allows each unit at most once, so this only has
-/// to convert the matched terms and check that a sub-second unit, if present,
-/// agrees with `precision`.
 fn parse_interval_day_duration(
     duration_str: &str,
     precision: SupportedPrecision,
     span: pest::Span,
 ) -> Result<IntervalDayToSecond, MessageParseError> {
-    let parsed =
-        <ExpressionParser as pest::Parser<Rule>>::parse(Rule::interval_day_duration, duration_str);
-    let mut pairs = parsed.map_err(|e| {
+    let mut pairs = ExpressionParser::parse(Rule::interval_day_duration, duration_str).map_err(
+        |e| {
+            MessageParseError::invalid(
+                "interval_day_duration",
+                span,
+                format!(
+                    "Invalid duration '{duration_str}': {}. Expected one to three terms, separated by single spaces, in the order days ('d'), seconds ('s'), sub-seconds ('ms', 'us', 'ns', or 'ps'); e.g. '5d', '4d 5s', '5d 3s 100ns'",
+                    e.variant.message()
+                ),
+            )
+        },
+    )?;
+    let pair = pairs.next().expect("interval_day_duration matched");
+
+    interval_day_from_pair(pair, precision).map_err(|e| {
         MessageParseError::invalid(
             "interval_day_duration",
             span,
-            format!(
-                "Invalid duration '{duration_str}': {}. Expected one to three terms, separated by single spaces, in the order days ('d'), seconds ('s'), sub-seconds ('ms', 'us', 'ns', or 'ps'); e.g. '5d', '4d 5s', '5d 3s 100ns'",
-                e.variant.message()
-            ),
+            format!("Invalid duration '{duration_str}': {e}"),
         )
-    })?;
-    let pair = pairs.next().expect("interval_day_duration matched");
+    })
+}
+
+/// Convert a matched [`Rule::interval_day_duration`] into an
+/// `IntervalDayToSecond` at `precision`.
+fn interval_day_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+    precision: SupportedPrecision,
+) -> Result<IntervalDayToSecond, IntervalDayError> {
     assert_eq!(pair.as_rule(), Rule::interval_day_duration);
 
     let mut interval = IntervalDayToSecond {
@@ -624,11 +665,11 @@ fn parse_interval_day_duration(
         match term.as_rule() {
             Rule::duration_days => {
                 let number = unwrap_single_pair(term);
-                interval.days = parse_duration_number(number.as_str(), "d", duration_str, span)?;
+                interval.days = parse_duration_number(number.as_str(), "d")?;
             }
             Rule::duration_seconds => {
                 let number = unwrap_single_pair(term);
-                interval.seconds = parse_duration_number(number.as_str(), "s", duration_str, span)?;
+                interval.seconds = parse_duration_number(number.as_str(), "s")?;
             }
             Rule::duration_subseconds => {
                 let mut iter = RuleIter::from(term.into_inner());
@@ -636,22 +677,21 @@ fn parse_interval_day_duration(
                 let unit = iter.pop(Rule::subsecond_unit);
                 iter.done();
 
-                let unit = unit.as_str();
-                let unit_precision = SupportedPrecision::from_subsecond_unit(unit)
+                let unit_precision = SupportedPrecision::from_subsecond_unit(unit.as_str())
                     .expect("the grammar restricts sub-second units to ms/us/ns/ps");
+                let unit = unit_precision
+                    .subsecond_unit()
+                    .expect("a sub-second precision has a sub-second unit");
                 // Precision has a single source - the type - so a unit that
                 // disagrees with it is ambiguous rather than redundant.
                 if unit_precision != precision {
-                    return Err(MessageParseError::invalid(
-                        "interval_day_duration",
-                        span,
-                        format!(
-                            "Invalid duration '{duration_str}': the sub-second unit '{unit}' means precision {unit_precision}, but the type is interval_day<{precision}>"
-                        ),
-                    ));
+                    return Err(IntervalDayError::UnitPrecisionMismatch {
+                        unit,
+                        unit_precision,
+                        precision,
+                    });
                 }
-                interval.subseconds =
-                    parse_duration_number(number.as_str(), unit, duration_str, span)?;
+                interval.subseconds = parse_duration_number(number.as_str(), unit)?;
             }
             // `interval_day_duration` is anchored with `EOI` so that trailing
             // input is a parse error rather than silently ignored.
