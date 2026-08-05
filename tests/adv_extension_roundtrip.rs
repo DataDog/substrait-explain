@@ -567,7 +567,7 @@ mod extension_child_fixture {
     }
 }
 
-/// `Project[$0, $1, 42]` over an `ExtensionLeaf:TwoColumnScan` with 2 output columns.
+/// `Project[_ => $0, $1, 42]` over an `ExtensionLeaf:TwoColumnScan` with 2 output columns.
 ///
 /// Without the `get_input_field_count` fix, the literal `42` would be given emit
 /// index 0 (wrapping around) instead of 2, producing `[0, 1, 0]` in the proto.
@@ -585,7 +585,7 @@ fn test_project_over_extension_leaf_emit_mapping() {
 
     let plan_text = r#"=== Plan
 Root[result]
-  Project[$0, $1, 42]
+  Project[_ => $0, $1, 42]
     ExtensionLeaf:TwoColumnScan[_ => col0:i64, col1:i32]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
@@ -634,7 +634,7 @@ fn test_enhancement_on_project_roundtrip() {
     let registry = make_registry();
     let plan_text = r#"=== Plan
 Root[col]
-  Project[$0]
+  Project[_]
     + Enh:PartitionHint[&HASH]
     Read[my.table => col:i64]"#;
     let parser = Parser::new().with_extension_registry(registry.clone());

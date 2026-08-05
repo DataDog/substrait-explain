@@ -10,7 +10,7 @@ fn test_float_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[3.14, -2.5, 1]
+  Project[_ => 3.14, -2.5, 1]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -21,7 +21,7 @@ fn test_boolean_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[true, false]
+  Project[_ => true, false]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -32,7 +32,7 @@ fn test_mixed_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[42, 3.14, true, 'hello']
+  Project[_ => 42, 3.14, true, 'hello']
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -43,7 +43,7 @@ fn test_negative_literals_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[-42, -3.14, false]
+  Project[_ => -42, -3.14, false]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -54,7 +54,7 @@ fn test_date_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project['2023-12-25':date]
+  Project[_ => '2023-12-25':date]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -65,7 +65,7 @@ fn test_time_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project['14:30:45.000000':time]
+  Project[_ => '14:30:45.000000':time]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -76,7 +76,7 @@ fn test_timestamp_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project['2023-01-01T12:00:00.000000':timestamp]
+  Project[_ => '2023-01-01T12:00:00.000000':timestamp]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -87,7 +87,7 @@ fn test_nullable_integer_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[78:i32?, 42:i64?]
+  Project[_ => 78:i32?, 42:i64?]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -98,7 +98,7 @@ fn test_nullable_boolean_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[true:boolean?, false:boolean?]
+  Project[_ => true:boolean?, false:boolean?]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -109,7 +109,7 @@ fn test_nullable_float_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[3.14:fp64?, 2.5:fp32?]
+  Project[_ => 3.14:fp64?, 2.5:fp32?]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -120,7 +120,7 @@ fn test_null_literal_roundtrip() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[null:i64?, null:string?, null:date?]
+  Project[_ => null:i64?, null:string?, null:date?]
     Read[data => a:i64]
 "#;
     roundtrip_plan(plan);
@@ -131,7 +131,7 @@ fn test_bare_null_literal_requires_type() {
     let plan = r#"
 === Plan
 Root[result]
-  Project[null]
+  Project[_ => null]
     Read[data => a:i64]
 "#;
 
@@ -150,7 +150,7 @@ fn test_if_then_expression_roundtrip() {
 === Plan
 Root[statusq]
   Fetch[limit=10, offset=0 => _]
-    Project[if_then(true -> $0, false -> $1, _ -> $2)]
+    Project[_ => if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]
 "#;
     roundtrip_plan(plan);

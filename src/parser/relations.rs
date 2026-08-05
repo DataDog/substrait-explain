@@ -738,6 +738,46 @@ impl RelationParsePair for FilterRel {
     }
 }
 
+fn parse_project_argument_list(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+    input_field_count: usize,
+) -> Result<(Vec<Expression>, OutputMapping), MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::project_argument_list);
+
+    let mut expressions = Vec::new();
+    let mut mapping = Vec::new();
+    for argument in pair.into_inner() {
+        let argument = unwrap_single_pair(argument);
+        match argument.as_rule() {
+            Rule::empty => {}
+            Rule::reference => mapping.push(FieldIndex::parse_pair(argument).0),
+            Rule::expression => {
+                expressions.push(Expression::parse_pair(extensions, argument)?);
+                mapping.push(input_field_count as i32 + expressions.len() as i32 - 1);
+            }
+            other => unreachable!("Unexpected project argument rule: {other:?}"),
+        }
+    }
+    Ok((expressions, OutputMapping(mapping)))
+}
+
+fn parse_project_expression_list(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Vec<Expression>, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::project_expression_list);
+    let list = unwrap_single_pair(pair);
+    if list.as_rule() == Rule::empty {
+        return Ok(Vec::new());
+    }
+    assert_eq!(list.as_rule(), Rule::expression_list);
+    list.into_inner()
+        .filter(|pair| pair.as_rule() == Rule::expression)
+        .map(|pair| Expression::parse_pair(extensions, pair))
+        .collect()
+}
+
 impl RelationParsePair for ProjectRel {
     fn rule() -> Rule {
         Rule::project_relation
@@ -763,30 +803,54 @@ impl RelationParsePair for ProjectRel {
         assert_eq!(pair.as_rule(), Self::rule());
         let input = expect_one_child(Self::message(), &pair, input_children)?;
 
-        let arguments_pair = unwrap_single_pair(pair);
+        let mut iter = RuleIter::from(pair.into_inner());
+        iter.pop(Rule::empty);
+        let output = iter.try_pop(Rule::project_output);
+        iter.done();
 
-        let mut expressions = Vec::new();
-        let mut output_mapping = Vec::new();
+        let (expressions, emit, output_count) = match output {
+            None => (Vec::new(), EmitKind::Direct(Direct {}), input_field_count),
+            Some(output) => {
+                let output = unwrap_single_pair(output);
+                match output.as_rule() {
+                    Rule::implicit_project_output => {
+                        let arguments = unwrap_single_pair(output);
+                        let (expressions, mapping) =
+                            parse_project_argument_list(extensions, arguments, input_field_count)?;
+                        let (emit, output_count) =
+                            mapping.into_compact_emit(input_field_count + expressions.len());
+                        (expressions, emit, output_count)
+                    }
+                    Rule::explicit_project_output => {
+                        let mut output_iter = RuleIter::from(output.into_inner());
+                        let expressions = output_iter
+                            .try_pop(Rule::project_additions)
+                            .map(|additions| {
+                                parse_project_expression_list(
+                                    extensions,
+                                    unwrap_single_pair(additions),
+                                )
+                            })
+                            .transpose()?
+                            .unwrap_or_default();
+                        let mapping = output_iter
+                            .try_pop(Rule::explicit_emit)
+                            .map(|emit| OutputMapping::parse_pair(unwrap_single_pair(emit)));
+                        output_iter.done();
 
-        for arg in arguments_pair.into_inner() {
-            let inner_arg = unwrap_single_pair(arg);
-            match inner_arg.as_rule() {
-                Rule::reference => {
-                    let field_index = FieldIndex::parse_pair(inner_arg);
-                    output_mapping.push(field_index.0);
+                        let direct_count = input_field_count + expressions.len();
+                        match mapping {
+                            Some(mapping) => {
+                                let (emit, output_count) = mapping.into_explicit_emit();
+                                (expressions, emit, output_count)
+                            }
+                            None => (expressions, EmitKind::Direct(Direct {}), direct_count),
+                        }
+                    }
+                    other => unreachable!("Unexpected project output rule: {other:?}"),
                 }
-                Rule::expression => {
-                    let expr = Expression::parse_pair(extensions, inner_arg)?;
-                    expressions.push(expr);
-                    // Index into the combined schema: [input fields][computed expressions].
-                    output_mapping.push(input_field_count as i32 + (expressions.len() as i32 - 1));
-                }
-                _ => panic!("Unexpected inner argument rule: {:?}", inner_arg.as_rule()),
             }
-        }
-
-        let direct_count = input_field_count + expressions.len();
-        let (emit, output_count) = OutputMapping(output_mapping).into_compact_emit(direct_count);
+        };
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1365,14 +1429,13 @@ impl RelationParsePair for JoinRel {
                 Expression::parse_pair(extensions, expression_pair).map(Box::new)
             })
             .transpose()?;
-        let references_pair = iter.pop(Rule::reference_list);
+        let references = iter.parse_next::<OutputMapping>();
         iter.done();
 
         // TODO: For semi/anti joins, the direct output width differs from
         // left+right — `input_field_count` would misclassify the emit as Direct.
         // Revisit when those join types are supported.
-        let (emit, output_count) =
-            OutputMapping::parse_pair(references_pair).into_compact_emit(input_field_count);
+        let (emit, output_count) = references.into_compact_emit(input_field_count);
         let common = RelCommon {
             emit_kind: Some(emit),
             ..Default::default()
@@ -1802,7 +1865,7 @@ mod tests {
         let extensions = SimpleExtensions::default();
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::project_relation, "Project[$0, $1, 42]"),
+            parse_exact(Rule::project_relation, "Project[_ => $0, $1, 42]"),
             vec![example_read_relation().into_rel(None)],
             3,
         )
@@ -1822,11 +1885,57 @@ mod tests {
     }
 
     #[test]
+    fn test_project_relation_requires_empty_parameter_list() {
+        for valid in [
+            "Project[_]",
+            "Project[_ => _]",
+            "Project[_ +> _]",
+            "Project[_ +> 42]",
+            "Project[_ +> 42 |> $0]",
+            "Project[_ |> $0]",
+        ] {
+            assert!(
+                ExpressionParser::parse(Rule::project_relation, valid).is_ok(),
+                "expected Project form to parse: {valid}"
+            );
+        }
+
+        for invalid in ["Project[]", "Project[$0]", "Project[42]", "Project[=> $0]"] {
+            assert!(
+                ExpressionParser::parse(Rule::project_relation, invalid).is_err(),
+                "expected Project form to fail: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_project_relation_explicit_identity_emit() {
+        let extensions = SimpleExtensions::default();
+        let (project, output_count) = ProjectRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(Rule::project_relation, "Project[_ +> 42 |> $0, $1, $2, $3]"),
+            vec![example_read_relation().into_rel(None)],
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(project.expressions.len(), 1);
+        assert_eq!(output_count, 4);
+        assert!(matches!(
+            project
+                .common
+                .as_ref()
+                .and_then(|common| common.emit_kind.as_ref()),
+            Some(EmitKind::Emit(emit)) if emit.output_mapping == [0, 1, 2, 3],
+        ));
+    }
+
+    #[test]
     fn test_parse_project_relation_complex() {
         let extensions = SimpleExtensions::default();
         let project = ProjectRel::parse_pair_with_context(
             &extensions,
-            parse_exact(Rule::project_relation, "Project[42, $0, 100, $2, $1]"),
+            parse_exact(Rule::project_relation, "Project[_ => 42, $0, 100, $2, $1]"),
             vec![example_read_relation().into_rel(None)],
             5, // Assume 5 input fields
         )

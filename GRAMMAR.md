@@ -81,7 +81,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, add($0, $1):i64]
+  Project[_ => $0, $1, add($0, $1):i64]
     Read[orders => quantity:i32?, price:i64]
 # "#;
 #
@@ -178,7 +178,7 @@ Functions:
 
 === Plan
 Root[result]                   // Level 0 (no indentation)
-  Project[$0, $1]              // Level 1 (2 spaces)
+  Project[_ => $0, $1]              // Level 1 (2 spaces)
     Filter[gt($0, 10):boolean => $0]   // Level 2 (4 spaces)
       Read[data => a:i64]      // Level 3 (6 spaces)
 # "#;
@@ -298,7 +298,7 @@ From [official Substrait grammar](https://raw.githubusercontent.com/substrait-io
 let plan_text = r#"
 === Plan
 Root[result]
-  Project[$0, $1, $2, $3]
+  Project[_ => $0, $1, $2, $3]
     Read[data => int_field:i64, string_field:string?, created_at:timestamp?, user_id:uuid]
 "#;
 #
@@ -360,7 +360,7 @@ use substrait_explain::Parser;
 let plan_text = r#"
 === Plan
 Root[result]
-  Project[$0, $1, $2]
+  Project[_ => $0, $1, $2]
     Read[data => list_field:list<i64>, map_field:map<string, i64>, struct_field:struct<i64, string?>]
 "#;
 
@@ -400,7 +400,7 @@ Functions:
 
 === Plan
 Root[result]
-  Project[$0, $1, $2]
+  Project[_ => $0, $1, $2]
     Read[data => point_field:point#8@1?<i8>, custom_field:custom_type#9, prefixed_field:u!custom_type]
 # "#;
 #
@@ -437,7 +437,7 @@ Currently, only references to fields in the Relations' input are supported.
 # let plan_text = r#"
 === Plan
 Root[result]
-  Project[$0, $1, $42]
+  Project[_ => $0, $1, $42]
     Read[data => field0:i64, field1:string, field42:boolean]
 # "#;
 #
@@ -523,7 +523,7 @@ An IfThen expression is a conditional function or logical operator that evaluate
 === Plan
 Root[status]
   Fetch[limit=10, offset=0 => $0]
-    Project[if_then(true -> $0, false -> $1, _ -> $2)]
+    Project[_ => if_then(true -> $0, false -> $1, _ -> $2)]
       Read[events.logs => status:string?]
 #  "#;
 #
@@ -689,7 +689,7 @@ form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: 
 # let plan_text = r#"
 === Plan
 Root[c, d]           // root with output columns c and d
-  Project[$0, $1]
+  Project[_ => $0, $1]
     Read[data => a:i64, b:string]
 # "#;
 #
@@ -984,7 +984,7 @@ Functions:
 === Plan
 Root[result]
   Filter[gt($2, 100):boolean => $0, $1, $2]
-    Project[$0, $1, $2]
+    Project[_ => $0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 # "#;
 #
@@ -996,11 +996,18 @@ Root[result]
 
 #### Syntax
 
-`"Project" "[" (expression ("," expression)*)? "]"`
+```text
+project_relation := "Project" "[" "_" project_output? "]"
+project_output   := "=>" project_values
+                  / "+>" project_additions ("|>" emit_mapping)?
+```
 
 #### Components
 
-- `expression` - field reference, function call, or literal (see Expressions section)
+- The leading `_` is Project's required empty parameter list.
+- `project_values` is a comma-separated list of input references and expressions. In compact `=>` syntax, it describes Project's final output.
+- `project_additions` is a comma-separated list of expressions appended to Project's inherited input fields. Use `_` when it is empty.
+- `emit_mapping` references the complete direct output: inherited input fields first, followed by `project_additions`.
 
 #### Example
 
@@ -1010,7 +1017,7 @@ Root[result]
 # let plan_text = r#"
 === Plan
 Root[result]
-  Project[$1, 42]                    // project field 1 and literal 42
+  Project[_ => $1, 42]               // project field 1 and literal 42
     Read[data => a:i64, b:string]
 # "#;
 #
@@ -1440,7 +1447,7 @@ Functions:
 Root[customer_revenue]
   Aggregate[$0, $1 => $0, $1, sum($3):i64]
     Filter[gt($3, 100):boolean => $0, $1, $2, $3]
-      Project[$0, $1, $2, multiply($4, $5):i64]
+      Project[_ => $0, $1, $2, multiply($4, $5):i64]
         Join[&Inner, eq($0, $3):boolean => $0, $1, $2, $3, $4, $5]
           Read[users => id:i64, name:string, region:string]
           Read[orders => user_id:i64, quantity:i32, price:i64]

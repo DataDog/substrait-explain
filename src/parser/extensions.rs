@@ -737,7 +737,7 @@ Types:
   # 11 @  1: u!point
 === Plan
 Root[result]
-  Project[$0]
+  Project[_ => $0]
     Read[data => p:point#11]";
         let plan = Parser::parse(plan_text).unwrap();
         let (text, errors) = format(&plan);

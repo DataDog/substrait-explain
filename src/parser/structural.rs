@@ -793,7 +793,7 @@ impl<'a> RelationParser<'a> {
 /// let plan_text = r#"
 /// === Plan
 /// Root[c, d]
-///   Project[$1, 42]
+///   Project[_ => $1, 42]
 ///     Read[schema.table => a:i64, b:string?]
 /// "#;
 ///
@@ -844,7 +844,7 @@ impl<'a> RelationParser<'a> {
 ///
 /// The parser supports all standard Substrait relations:
 /// - `Read[table => columns]` - Read from a table
-/// - `Project[expressions]` - Project columns/expressions
+/// - `Project[_ => expressions]` - Project columns/expressions
 /// - `Filter[condition => columns]` - Filter rows
 /// - `Root[columns]` - Root relation with output columns
 /// - And more...
@@ -867,7 +867,7 @@ impl<'a> RelationParser<'a> {
 ///   ## 10 @  1: my_custom_function
 /// === Plan
 /// Root[result]
-///   Project[my_custom_function($0, $1):i32]
+///   Project[_ => my_custom_function($0, $1):i32]
 ///     Read[table => col1:i32, col2:i32]
 /// "#;
 ///
@@ -1350,7 +1350,7 @@ Type Variations:
     fn test_parse_relation_tree() {
         // Example plan with a Project, a Filter, and a Read, nested by indentation
         let plan = r#"=== Plan
-Project[$0, $1, 42, 84]
+Project[_ => $0, $1, 42, 84]
   Filter[$2 => $0, $1]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;
@@ -1403,7 +1403,7 @@ Project[$0, $1, 42, 84]
         // Test a plan with a Root relation
         let plan = r#"=== Plan
 Root[result]
-  Project[$0, $1]
+  Project[_ => $0, $1]
     Read[my.table => a:i32, b:string?]
 "#;
         let mut parser = Parser::default();
@@ -1453,7 +1453,7 @@ Root[result]
         // Test a plan with a Root relation with no names
         let plan = r#"=== Plan
 Root[_]
-  Project[$0, $1]
+  Project[_ => $0, $1]
     Read[my.table => a:i32, b:string?]
 "#;
         let mut parser = Parser::default();
@@ -1495,7 +1495,7 @@ Type Variations:
   # 30 @  2: VarX
 
 === Plan
-Project[$0, $1, 42, 84]
+Project[_ => $0, $1, 42, 84]
   Filter[$2 => $0, $1]
     Read[my.table => a:i32, b:string?, c:boolean]
 "#;

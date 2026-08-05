@@ -36,7 +36,7 @@ Functions:
   ## 10 @  1: add
 
 === Plan
-Project[$0, $1, add($0, $1):i32?]
+Project[_ => $0, $1, add($0, $1):i32?]
   Read[table1 => col1:i32?, col2:i32?]
 "#;
 
@@ -59,7 +59,7 @@ use substrait_explain::{parse, format_with_options, OutputOptions, Visibility};
 
 let plan = parse(r#"
 === Plan
-Project[$0, 42, 54:i16]
+Project[_ => $0, 42, 54:i16]
   Read[data => name:string?, num:i64]
 "#).unwrap();
 
@@ -244,7 +244,7 @@ Functions:
 === Plan
 Root[result]
   Aggregate[$0 => $0, sum($1):i32?, count($1):i64]
-    Project[$0, add($1, $2):i32?]
+    Project[_ => $0, add($1, $2):i32?]
       Read[table1 => category:string, col1:i32?, col2:i32?]
 ```
 

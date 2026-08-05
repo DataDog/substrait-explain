@@ -484,7 +484,7 @@ mod tests {
 
     const BASIC_PLAN: &str = r#"=== Plan
 Root[result]
-  Project[$0, $1]
+  Project[_ => $0, $1]
     Read[data => a:i64, b:string]
 "#;
 
@@ -497,7 +497,7 @@ Functions:
 === Plan
 Root[result]
   Filter[gt($2, 100):boolean => $0, $1, $2]
-    Project[$0, $1, $2]
+    Project[_ => $0, $1, $2]
       Read[data => a:i64, b:string, c:i32]
 "#;
 
@@ -523,7 +523,7 @@ Root[result]
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
-        assert!(output_content.contains("Project[$0, $1]"));
+        assert!(output_content.contains("Project[_]"));
         assert!(output_content.contains("Read[data => a:i64, b:string]"));
     }
 
@@ -644,7 +644,7 @@ Root[result]
         let output_content = String::from_utf8(output).unwrap();
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
-        assert!(output_content.contains("Project[$0, $1]"));
+        assert!(output_content.contains("Project[_]"));
         assert!(output_content.contains("Read[data => a:i64, b:string]"));
     }
 
