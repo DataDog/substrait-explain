@@ -221,8 +221,12 @@ pub enum RelationArgs<'a> {
     /// `arg, arg, name=arg` inline inside the header's `[...]`.
     Inline(Arguments<'a>),
     /// One `- row` per line, used by `Read:Virtual` once it has enough rows to
-    /// be worth spreading out. Named arguments have no row form yet.
-    Rows(Vec<Value<'a>>),
+    /// be worth spreading out. Any named arguments follow the rows, one per
+    /// line, in the same `- name=value` form.
+    Rows {
+        rows: Vec<Value<'a>>,
+        named: Vec<NamedArg<'a>>,
+    },
 }
 
 impl<'a> RelationArgs<'a> {
@@ -232,9 +236,10 @@ impl<'a> RelationArgs<'a> {
         RelationArgs::Inline(Arguments::new(positional, named))
     }
 
-    /// A row-per-line argument list.
-    pub fn rows(positional: Vec<Value<'a>>) -> Self {
-        RelationArgs::Rows(positional)
+    /// A row-per-line argument list (`- arg` per line) used for `Read:Virtual`
+    /// with many rows. Named arguments, if any, follow the rows.
+    pub fn rows(rows: Vec<Value<'a>>, named: Vec<NamedArg<'a>>) -> Self {
+        RelationArgs::Rows { rows, named }
     }
 }
 
@@ -249,7 +254,8 @@ pub struct Relation<'a> {
     ///   `_ => ...`.
     /// - `Some(RelationArgs::Inline(args))` with non-empty vectors will print
     ///   with positional arguments first, then named arguments, separated by commas.
-    /// - `Some(RelationArgs::Rows(rows))` prints one row per line.
+    /// - `Some(RelationArgs::Rows { .. })` prints one row per line, followed by
+    ///   any named arguments, one per line.
     pub arguments: Option<RelationArgs<'a>>,
     /// The columns emitted by this relation, pre-emit - the 'direct' column
     /// output.
@@ -306,17 +312,28 @@ impl Relation<'_> {
                 let cols = ctx.display(&cols);
                 write!(w, "{indent}{name}[{cols}]")
             }
-            Some(RelationArgs::Rows(rows)) => {
-                // One `- row` per line, one indent level deeper, with a trailing
-                // comma on every row but the last, then `- <output> cols]`.
+            Some(RelationArgs::Rows { rows, named }) => {
+                // One `- row` per line, one indent level deeper, with a
+                // trailing comma when another row or named argument follows,
+                // then `- <output> cols]`.
                 let child = ctx.push_indent();
                 let child_indent = child.indent();
                 writeln!(w, "{indent}{name}[")?;
                 let last = rows.len().saturating_sub(1);
                 for (i, row) in rows.iter().enumerate() {
                     let row = ctx.display(row);
-                    let comma = if i == last { "" } else { "," };
+                    let comma = if i == last && named.is_empty() {
+                        ""
+                    } else {
+                        ","
+                    };
                     writeln!(w, "{child_indent}- {row}{comma}")?;
+                }
+                let last = named.len().saturating_sub(1);
+                for (i, named_arg) in named.iter().enumerate() {
+                    let named_arg = ctx.display(named_arg);
+                    let comma = if i == last { "" } else { "," };
+                    writeln!(w, "{child_indent}- {named_arg}{comma}")?;
                 }
                 let output = Emitted::output_clause(&self.columns, self.emit, self.output_syntax);
                 let output = ctx.display(&output);
@@ -386,22 +403,33 @@ impl<'a> Relation<'a> {
                 }
             }
             Some(ReadType::VirtualTable(vt)) => {
-                let positional: Vec<Value> = vt
+                let row_count = vt.expressions.len();
+                let mut positional: Vec<Value> = vt
                     .expressions
                     .iter()
                     .map(|row| Value::Tuple(row.fields.iter().map(Value::Expression).collect()))
                     .collect();
+                let mut named = vec![];
+                if let Some(filter) = rel.filter.as_ref() {
+                    named.push(NamedArg {
+                        name: Cow::Borrowed("filter"),
+                        value: Value::Expression(filter.as_ref()),
+                    });
+                }
+                if positional.is_empty() && !named.is_empty() {
+                    positional.push(Value::EmptyGroup);
+                }
 
                 // Emit many rows across multiple lines for readability, based on
                 // a configurable threshold (default = 3). An empty table has no
                 // rows to spread out and is written `_`, so it stays inline
                 // regardless of the threshold — the row layout has no `_` form.
-                let multiline = !positional.is_empty()
-                    && positional.len() >= ctx.options().virtual_table_multiline_threshold;
+                let multiline =
+                    row_count > 0 && row_count >= ctx.options().virtual_table_multiline_threshold;
                 let arguments = if multiline {
-                    RelationArgs::rows(positional)
+                    RelationArgs::rows(positional, named)
                 } else {
-                    RelationArgs::inline(positional, vec![])
+                    RelationArgs::inline(positional, named)
                 };
 
                 Relation {
@@ -1004,11 +1032,15 @@ impl<'a> Relation<'a> {
             PlanError::unimplemented("JoinRel", Some("expression"), "Join condition is None")
         });
 
-        // TODO: Add support for post_join_filter when grammar is extended
-        // Currently post_join_filter is not supported in the text format
-        // grammar
         let positional = vec![join_type_value, condition];
-        let arguments = Some(RelationArgs::inline(positional, vec![]));
+        let mut named = vec![];
+        if let Some(post_join_filter) = rel.post_join_filter.as_ref() {
+            named.push(NamedArg {
+                name: Cow::Borrowed("post_filter"),
+                value: Value::Expression(post_join_filter.as_ref()),
+            });
+        }
+        let arguments = Some(RelationArgs::inline(positional, named));
 
         let emit = get_emit(rel.common.as_ref());
         let columns = join_output_columns(join_type, left_columns, right_columns);

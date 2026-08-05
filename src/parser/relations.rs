@@ -370,11 +370,18 @@ impl RelationParsePair for VirtualReadRel {
         }
 
         let mut iter = RuleIter::from(pair.into_inner());
-        let args_pair = iter.pop(Rule::virtual_read_args);
+        let rows_pair = iter.pop(Rule::virtual_read_rows);
+        let filter = iter
+            .try_pop(Rule::virtual_read_filter)
+            .map(|pair| {
+                let expression_pair = unwrap_single_pair(pair);
+                Expression::parse_pair(extensions, expression_pair).map(Box::new)
+            })
+            .transpose()?;
         let columns_pair = iter.pop(Rule::named_column_list);
         iter.done();
 
-        let rows = parse_virtual_read_args(extensions, args_pair)?;
+        let rows = parse_virtual_read_rows(extensions, rows_pair)?;
         let columns = NamedColumnList::parse_pair(extensions, columns_pair)?.0;
 
         // TODO: Validate that each row has the same number of expressions as
@@ -389,6 +396,7 @@ impl RelationParsePair for VirtualReadRel {
                     expressions: rows,
                     ..Default::default()
                 })),
+                filter,
                 ..Default::default()
             }),
             output_count,
@@ -473,12 +481,12 @@ pub(crate) fn build_named_struct(columns: Vec<Column>) -> NamedStruct {
     }
 }
 
-/// `Read:Virtual` positional args: either `empty` or a list of row tuples.
-fn parse_virtual_read_args(
+/// `Read:Virtual` rows: either `empty` or a list of row tuples.
+fn parse_virtual_read_rows(
     extensions: &SimpleExtensions,
     pair: Pair<Rule>,
 ) -> Result<Vec<nested::Struct>, MessageParseError> {
-    assert_eq!(pair.as_rule(), Rule::virtual_read_args);
+    assert_eq!(pair.as_rule(), Rule::virtual_read_rows);
     let inner = unwrap_single_pair(pair);
     match inner.as_rule() {
         Rule::empty => Ok(vec![]),
@@ -487,7 +495,7 @@ fn parse_virtual_read_args(
             .map(|row| parse_virtual_row(extensions, row))
             .collect(),
         _ => unreachable!(
-            "Unexpected rule in virtual_read_args: {:?}",
+            "Unexpected rule in virtual_read_rows: {:?}",
             inner.as_rule()
         ),
     }
@@ -1190,6 +1198,13 @@ impl RelationParsePair for JoinRel {
         let mut iter = RuleIter::from(pair.into_inner());
         let join_type = iter.parse_next::<join_rel::JoinType>();
         let condition = iter.parse_next_scoped::<Expression>(extensions)?;
+        let post_join_filter = iter
+            .try_pop(Rule::join_post_join_filter)
+            .map(|pair| {
+                let expression_pair = unwrap_single_pair(pair);
+                Expression::parse_pair(extensions, expression_pair).map(Box::new)
+            })
+            .transpose()?;
         let references_pair = iter.pop(Rule::reference_list);
         iter.done();
 
@@ -1208,7 +1223,7 @@ impl RelationParsePair for JoinRel {
                 left: Some(left),
                 right: Some(right),
                 expression: Some(Box::new(condition)),
-                post_join_filter: None, // not yet represented in the grammar
+                post_join_filter,
                 r#type: join_type as i32,
                 advanced_extension: None,
             },
@@ -1464,6 +1479,35 @@ mod tests {
             matches!(emit_kind, EmitKind::Direct(_)),
             "Expected +> without |> to produce Direct, got {emit_kind:?}"
         );
+    }
+
+    #[test]
+    fn test_parse_virtual_read_relation_filter() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "gt")
+            .extensions;
+
+        let read = VirtualReadRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::virtual_read_relation,
+                "Read:Virtual[(1, 'alice'), filter=gt($0, 0:i64):boolean => id:i64, name:string]",
+            ),
+            vec![],
+            0,
+        )
+        .unwrap()
+        .0
+        .0;
+
+        match read.read_type {
+            Some(read_rel::ReadType::VirtualTable(table)) => {
+                assert_eq!(table.expressions.len(), 1);
+            }
+            other => panic!("Expected VirtualTable, got {other:?}"),
+        }
+        assert!(read.filter.is_some());
     }
 
     #[test]
@@ -2004,6 +2048,7 @@ mod tests {
 
         // Should have a join condition
         assert!(join.expression.is_some());
+        assert!(join.post_join_filter.is_none());
 
         let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
         let emit = match emit_kind {
@@ -2012,6 +2057,41 @@ mod tests {
         };
         // Output mapping should be [0, 1, 3, 4] (selected columns)
         assert_eq!(emit, &[0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_post_join_filter() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .with_function(1, 11, "gt")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean, post_filter=gt($1, 100:i32):boolean => $0, $1]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
+        assert!(join.expression.is_some());
+        assert!(join.post_join_filter.is_some());
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        assert_eq!(emit, &[0, 1]);
     }
 
     #[test]
@@ -2079,6 +2159,40 @@ mod tests {
             _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
         };
         // Output mapping should be [0, 1] (only left columns for semi join)
+        assert_eq!(emit, &[0, 1]);
+    }
+
+    #[test]
+    fn test_parse_join_relation_right_semi() {
+        let extensions = TestContext::new()
+            .with_urn(1, "https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml")
+            .with_function(1, 10, "eq")
+            .extensions;
+
+        let left_rel = example_read_relation().into_rel(None);
+        let right_rel = example_read_relation().into_rel(None);
+
+        let join = JoinRel::parse_pair_with_context(
+            &extensions,
+            parse_exact(
+                Rule::join_relation,
+                "Join[&RightSemi, eq($0, $3):boolean => $0, $1]",
+            ),
+            vec![left_rel, right_rel],
+            6,
+        )
+        .unwrap()
+        .0;
+
+        // Should be a RightSemi join
+        assert_eq!(join.r#type, join_rel::JoinType::RightSemi as i32);
+
+        let emit_kind = &join.common.as_ref().unwrap().emit_kind.as_ref().unwrap();
+        let emit = match emit_kind {
+            EmitKind::Emit(emit) => &emit.output_mapping,
+            _ => panic!("Expected EmitKind::Emit, got {emit_kind:?}"),
+        };
+        // Output mapping should be [0, 1] over right-semi direct output columns.
         assert_eq!(emit, &[0, 1]);
     }
 

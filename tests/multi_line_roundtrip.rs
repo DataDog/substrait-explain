@@ -52,6 +52,36 @@ Root[id, name]
 }
 
 #[test]
+fn test_virtual_read_multiline_filter() {
+    let multiline = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[
+    - (1, 'alice'),
+    - (2, 'bob'),
+    - (3, 'carol'),
+    - filter=gt($0, 1):boolean
+    - => id:i64, name:string]"#;
+
+    let inline = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml
+Functions:
+  # 10 @  1: gt
+
+=== Plan
+Root[id, name]
+  Read:Virtual[(1, 'alice'), (2, 'bob'), (3, 'carol'), filter=gt($0, 1:i64):boolean => id:i64, name:string]"#;
+
+    assert_roundtrip_canonical(multiline.trim(), inline.trim());
+}
+
+#[test]
 fn test_virtual_read_multiline_typed_null() {
     let inline = r#"
 === Plan
