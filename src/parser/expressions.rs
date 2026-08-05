@@ -79,17 +79,17 @@ impl ParsePair for FieldReference {
     }
 }
 
+const UNSIGNED_INT_KIND: Kind = Kind::I64(I64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
 fn to_int_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::integer);
     let parsed_value: i64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::I64(I64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume i64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_INT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         // If no type is provided, we assume i64, Nullability::Required.
@@ -129,17 +129,17 @@ fn to_int_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, Messa
     })
 }
 
+const UNSIGNED_FLOAT_KIND: Kind = Kind::Fp64(Fp64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
 fn to_float_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::float);
     let parsed_value: f64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::Fp64(Fp64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume fp64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_FLOAT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         Kind::Fp32(f) => (
