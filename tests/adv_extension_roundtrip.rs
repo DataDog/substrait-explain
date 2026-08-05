@@ -578,7 +578,7 @@ fn test_project_over_extension_leaf_emit_mapping() {
     use substrait::proto::rel::RelType;
     use substrait::proto::rel_common::EmitKind;
 
-    let mut registry = substrait_explain::extensions::ExtensionRegistry::new();
+    let mut registry = ExtensionRegistry::new();
     registry
         .register_relation::<extension_child_fixture::TwoColumnScan>()
         .expect("register_relation");

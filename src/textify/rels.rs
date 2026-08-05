@@ -4,7 +4,7 @@ use std::convert::TryFrom;
 use std::fmt;
 
 use prost::Message;
-use substrait::proto::fetch_rel::CountMode;
+use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
@@ -911,14 +911,14 @@ impl<'a> Relation<'a> {
         }
         if let Some(offset) = &rel.offset_mode {
             match offset {
-                substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr) => {
+                OffsetMode::OffsetExpr(expr) => {
                     named_args.push(NamedArg {
                         name: Cow::Borrowed("offset"),
                         value: Value::Expression(expr),
                     });
                 }
                 #[allow(deprecated)]
-                substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
+                OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
                         name: Cow::Borrowed("offset"),
                         value: Value::Integer(*val),
@@ -1126,6 +1126,7 @@ mod tests {
     use crate::fixtures::TestContext;
     use crate::parser::expressions::FieldIndex;
     use crate::textify::expressions::Reference;
+    use crate::textify::foundation::FormatErrorType;
 
     #[test]
     fn test_read_rel() {
@@ -1879,10 +1880,7 @@ Cross[$0, $3]
         match &errors.0[0] {
             FormatError::Format(plan_err) => {
                 assert_eq!(plan_err.message, "Rel");
-                assert_eq!(
-                    plan_err.error_type,
-                    crate::textify::foundation::FormatErrorType::Unimplemented
-                );
+                assert_eq!(plan_err.error_type, FormatErrorType::Unimplemented);
                 assert!(
                     plan_err
                         .lookup
