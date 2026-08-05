@@ -2,7 +2,9 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
-use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::literal::{
+    LiteralType, PrecisionTime as LitPrecisionTime, PrecisionTimestamp as LitPrecisionTimestamp,
+};
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
     reference_segment,
@@ -255,6 +257,57 @@ fn to_string_literal(
                 type_variation_reference: ts.type_variation_reference,
             })
         }
+        Kind::PrecisionTimestamp(pt) => {
+            let precision = pt.precision;
+            let timestamp_value = parse_timestamp_to_precision_units(
+                &string_value,
+                precision,
+                "precisiontimestamp",
+                value.as_span(),
+            )?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTimestamp(LitPrecisionTimestamp {
+                    precision,
+                    value: timestamp_value,
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
+        }
+        Kind::PrecisionTimestampTz(pt) => {
+            let precision = pt.precision;
+            let timestamp_value = parse_timestamp_to_precision_units(
+                &string_value,
+                precision,
+                "precisiontimestamptz",
+                value.as_span(),
+            )?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTimestampTz(LitPrecisionTimestamp {
+                    precision,
+                    value: timestamp_value,
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
+        }
+        Kind::PrecisionTime(pt) => {
+            let precision = pt.precision;
+            let time_value = parse_time_to_precision_units(
+                &string_value,
+                precision,
+                "precisiontime",
+                value.as_span(),
+            )?;
+            Ok(Literal {
+                literal_type: Some(LiteralType::PrecisionTime(LitPrecisionTime {
+                    precision,
+                    value: time_value,
+                })),
+                nullable: pt.nullability != Nullability::Required as i32,
+                type_variation_reference: pt.type_variation_reference,
+            })
+        }
         _ => {
             // For other types, treat as string
             Ok(Literal {
@@ -307,32 +360,137 @@ fn parse_date_to_days(date_str: &str, span: pest::Span) -> Result<i32, MessagePa
     ))
 }
 
-/// Parse a time string using chrono to microseconds since midnight
+/// Parse a time string to microseconds(precision 6) since midnight.
 fn parse_time_to_microseconds(time_str: &str, span: pest::Span) -> Result<i64, MessageParseError> {
-    // Try multiple time formats for flexibility
-    let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
-
-    for format in &formats {
-        if let Ok(time) = NaiveTime::parse_from_str(time_str, format) {
-            // Convert to microseconds since midnight
-            let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-            let duration = time.signed_duration_since(midnight);
-            return Ok(duration.num_microseconds().unwrap_or(0));
-        }
-    }
-
-    Err(MessageParseError::invalid(
-        "time_parse_format",
-        span,
-        format!("Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"),
-    ))
+    parse_time_to_precision_units(time_str, 6, "time", span)
 }
 
-/// Parse a timestamp string using chrono to microseconds since Unix epoch
+/// Parse a timestamp string to microseconds since Unix epoch.
 fn parse_timestamp_to_microseconds(
     timestamp_str: &str,
     span: pest::Span,
 ) -> Result<i64, MessageParseError> {
+    parse_timestamp_to_precision_units(timestamp_str, 6, "timestamp", span)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SupportedPrecision {
+    Seconds,      // 0
+    Milliseconds, // 3
+    Microseconds, // 6
+    Nanoseconds,  // 9
+}
+
+impl SupportedPrecision {
+    /// The Substrait precision unit exponent (`0`, `3`, `6`, or `9`).
+    fn units(self) -> i32 {
+        match self {
+            SupportedPrecision::Seconds => 0,
+            SupportedPrecision::Milliseconds => 3,
+            SupportedPrecision::Microseconds => 6,
+            SupportedPrecision::Nanoseconds => 9,
+        }
+    }
+}
+
+/// Convert a `chrono::Duration` to the units implied by `precision`.
+/// Errors if `duration` overflows the target unit's i64 range, or if `duration`
+/// carries a fractional component finer than `precision` can represent (e.g.
+/// `.999` seconds can't be represented exactly at precision 0).
+fn duration_to_precision_units(
+    duration: chrono::Duration,
+    precision: SupportedPrecision,
+    literal_kind: &'static str,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let out_of_range = || {
+        MessageParseError::invalid(
+            "precision_literal_out_of_range",
+            span,
+            format!(
+                "value is out of range for a {literal_kind} literal at precision {}",
+                precision.units()
+            ),
+        )
+    };
+    let fractional_truncated = || {
+        MessageParseError::invalid(
+            "precision_literal_fractional_truncated",
+            span,
+            format!(
+                "value has a fractional component finer than precision {} can represent for a {literal_kind} literal",
+                precision.units()
+            ),
+        )
+    };
+
+    match precision {
+        SupportedPrecision::Seconds => {
+            let value = duration.num_seconds();
+            if chrono::Duration::seconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        SupportedPrecision::Milliseconds => {
+            let value = duration.num_milliseconds();
+            if chrono::Duration::milliseconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        SupportedPrecision::Microseconds => {
+            let value = duration.num_microseconds().ok_or_else(out_of_range)?;
+            if chrono::Duration::microseconds(value) != duration {
+                return Err(fractional_truncated());
+            }
+            Ok(value)
+        }
+        // Nanoseconds is the finest precision chrono can represent, so there's
+        // no finer fractional component that could be silently dropped here.
+        SupportedPrecision::Nanoseconds => duration.num_nanoseconds().ok_or_else(out_of_range),
+    }
+}
+
+fn check_supported_precision(
+    precision: i32,
+    literal_kind: &'static str,
+    span: pest::Span,
+) -> Result<SupportedPrecision, MessageParseError> {
+    match precision {
+        0 => return Ok(SupportedPrecision::Seconds),
+        3 => return Ok(SupportedPrecision::Milliseconds),
+        6 => return Ok(SupportedPrecision::Microseconds),
+        9 => return Ok(SupportedPrecision::Nanoseconds),
+        _ => {}
+    }
+    if precision == 12 {
+        return Err(MessageParseError::invalid(
+            "precision_literal_unsupported_precision",
+            span,
+            format!(
+                "precision 12 (picoseconds) is not supported for {literal_kind} literals; chrono only supports nanosecond (precision 9) resolution"
+            ),
+        ));
+    }
+    Err(MessageParseError::invalid(
+        "precision_literal_invalid_precision",
+        span,
+        format!(
+            "Invalid precision {precision} for a {literal_kind} literal; expected one of 0 (seconds), 3 (milliseconds), 6 (microseconds), or 9 (nanoseconds)"
+        ),
+    ))
+}
+
+/// Parse a timestamp string using chrono to a value in the given precision's units since the Unix epoch.
+fn parse_timestamp_to_precision_units(
+    timestamp_str: &str,
+    precision: i32,
+    literal_kind: &'static str,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let precision = check_supported_precision(precision, literal_kind, span)?;
+
     // Try multiple timestamp formats for flexibility
     let formats = [
         "%Y-%m-%dT%H:%M:%S%.f", // ISO 8601 with T and fractional seconds
@@ -347,10 +505,9 @@ fn parse_timestamp_to_microseconds(
 
     for format in &formats {
         if let Ok(datetime) = NaiveDateTime::parse_from_str(timestamp_str, format) {
-            // Calculate microseconds since Unix epoch (1970-01-01 00:00:00)
             let epoch = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
             let duration = datetime.signed_duration_since(epoch);
-            return Ok(duration.num_microseconds().unwrap_or(0));
+            return duration_to_precision_units(duration, precision, literal_kind, span);
         }
     }
 
@@ -360,6 +517,33 @@ fn parse_timestamp_to_microseconds(
         format!(
             "Invalid timestamp format: '{timestamp_str}'. Expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS"
         ),
+    ))
+}
+
+/// Parse a time-of-day string using chrono to a value in the given precision's units since midnight.
+fn parse_time_to_precision_units(
+    time_str: &str,
+    precision: i32,
+    literal_kind: &'static str,
+    span: pest::Span,
+) -> Result<i64, MessageParseError> {
+    let precision = check_supported_precision(precision, literal_kind, span)?;
+
+    // Try multiple time formats for flexibility
+    let formats = ["%H:%M:%S%.f", "%H:%M:%S"];
+
+    for format in &formats {
+        if let Ok(time) = NaiveTime::parse_from_str(time_str, format) {
+            let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+            let duration = time.signed_duration_since(midnight);
+            return duration_to_precision_units(duration, precision, literal_kind, span);
+        }
+    }
+
+    Err(MessageParseError::invalid(
+        "time_parse_format",
+        span,
+        format!("Invalid time format: '{time_str}'. Expected HH:MM:SS or HH:MM:SS.fff"),
     ))
 }
 
@@ -913,6 +1097,144 @@ mod tests {
                 result.literal_type
             ),
         }
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00.123456789':precisiontimestamp<9>",
+        );
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::PrecisionTimestamp(p)) => {
+                assert_eq!(p.precision, 9);
+                assert!(p.value > 0, "Expected positive value since epoch");
+                // p.value is total nanoseconds since epoch; mod 1e9 isolates just
+                // the sub-second fraction, i.e. the ".123456789" part of the input.
+                assert_eq!(p.value % 1_000_000_000, 123_456_789);
+            }
+            _ => panic!(
+                "Expected PrecisionTimestamp literal type, got: {:?}",
+                result.literal_type
+            ),
+        }
+        assert!(!result.nullable);
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_tz_literal_nullable() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00.123':precisiontimestamptz?<3>",
+        );
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::PrecisionTimestampTz(p)) => {
+                assert_eq!(p.precision, 3);
+                assert_eq!(p.value % 1000, 123);
+            }
+            _ => panic!(
+                "Expected PrecisionTimestampTz literal type, got: {:?}",
+                result.literal_type
+            ),
+        }
+        assert!(result.nullable);
+    }
+
+    #[test]
+    fn test_parse_precision_time_literal() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<6>");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+
+        match result.literal_type {
+            Some(LiteralType::PrecisionTime(p)) => {
+                assert_eq!(p.precision, 6);
+                let expected = (14 * 3600 + 30 * 60 + 45) * 1_000_000 + 123_456;
+                assert_eq!(p.value, expected);
+            }
+            _ => panic!(
+                "Expected PrecisionTime literal type, got: {:?}",
+                result.literal_type
+            ),
+        }
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_precision_12_unsupported() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00':precisiontimestamp<12>",
+        );
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("picoseconds"));
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_invalid_precision() {
+        let extensions = SimpleExtensions::default();
+        // 5 isn't a recognized precision for precisiontimestamp, so this should error.
+        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':precisiontimestamp<5>");
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("Invalid precision 5"));
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_nullable() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00.123456789':precisiontimestamp?<9>",
+        );
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+        assert!(result.nullable);
+    }
+
+    #[test]
+    fn test_parse_precision_time_literal_nullable() {
+        let extensions = SimpleExtensions::default();
+        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime?<6>");
+        let result = Literal::parse_pair(&extensions, pair).unwrap();
+        assert!(result.nullable);
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_fractional_truncated() {
+        let extensions = SimpleExtensions::default();
+        // precisiontimestamp<0> declares second resolution, but the value has a
+        // fractional second; this must error rather than silently drop the ".999".
+        let pair = parse_exact(
+            Rule::literal,
+            "'2023-01-01T12:00:00.999':precisiontimestamp<0>",
+        );
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("fractional"));
+    }
+
+    #[test]
+    fn test_parse_precision_time_literal_fractional_truncated() {
+        let extensions = SimpleExtensions::default();
+        // precisiontime<3> declares millisecond resolution, but the value has
+        // more fractional digits than that; this must error, not truncate.
+        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<3>");
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("fractional"));
+    }
+
+    #[test]
+    fn test_parse_precision_timestamp_literal_nanosecond_overflow() {
+        let extensions = SimpleExtensions::default();
+        // 2300 is past chrono's ~292-year-around-1970 nanosecond range,
+        // so this must error rather than silently parsing to some truncated or zeroed value.
+        let pair = parse_exact(Rule::literal, "'2300-01-01T00:00:00':precisiontimestamp<9>");
+        let err = Literal::parse_pair(&extensions, pair).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
     }
 
     /// Helper function to create a literal boolean expression
