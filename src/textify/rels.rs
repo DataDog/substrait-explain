@@ -21,7 +21,7 @@ use super::values::{Arguments, NamedArg, Value, ValueEnum, decode_enum_field};
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::{ExtensionArgs, ExtensionError};
+use crate::extensions::{ExtensionContext, ExtensionError, ExtensionInput};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -611,45 +611,61 @@ impl<'a> Relation<'a> {
     }
 
     fn from_extension_leaf<S: Scope>(rel: &'a ExtensionLeafRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
-        Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
+        Relation::from_extension(
+            "ExtensionLeaf",
+            rel.detail.as_ref().map(AnyRef::from),
+            vec![],
+            ctx,
+        )
     }
 
     fn from_extension_single<S: Scope>(rel: &'a ExtensionSingleRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
-        Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
+        Relation::from_extension(
+            "ExtensionSingle",
+            rel.detail.as_ref().map(AnyRef::from),
+            vec![rel.input.as_deref()],
+            ctx,
+        )
     }
 
     fn from_extension_multi<S: Scope>(rel: &'a ExtensionMultiRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
         let mut child_refs: Vec<Option<&'a Rel>> = vec![];
         for input in &rel.inputs {
             child_refs.push(Some(input));
         }
-        Relation::from_extension("ExtensionMulti", decoded, child_refs, ctx)
+        Relation::from_extension(
+            "ExtensionMulti",
+            rel.detail.as_ref().map(AnyRef::from),
+            child_refs,
+            ctx,
+        )
     }
 
     fn from_extension<S: Scope>(
         ext_type: &'static str,
-        decoded: Result<(String, ExtensionArgs), ExtensionError>,
+        detail: Option<AnyRef<'a>>,
         child_refs: Vec<Option<&'a Rel>>,
         ctx: &S,
     ) -> Self {
+        let (children, _) = Relation::convert_children(child_refs, ctx);
+        let inputs = children
+            .iter()
+            .filter_map(|child| {
+                child
+                    .as_ref()
+                    .map(|child| ExtensionInput::new(child.emitted()))
+            })
+            .collect::<Vec<_>>();
+        let context = ExtensionContext::new(&inputs);
+        let decoded = match detail {
+            Some(detail) => ctx
+                .extension_registry()
+                .decode_with_context(detail, &context),
+            None => Err(ExtensionError::MissingDetail),
+        };
+
         match decoded {
             Ok((name, args)) => {
-                let (children, _) = Relation::convert_children(child_refs, ctx);
                 let mut positional = vec![];
                 for value in args.positional {
                     positional.push(Value::ExtensionArgument(value));
@@ -661,10 +677,11 @@ impl<'a> Relation<'a> {
                         value: Value::ExtensionArgument(value),
                     });
                 }
-                let mut columns = vec![];
-                for col in args.output_columns {
-                    columns.push(Value::ExtColumn(col));
-                }
+                let columns = args
+                    .output_columns
+                    .into_iter()
+                    .map(Value::ExtColumn)
+                    .collect();
                 Relation {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
                     arguments: Some(RelationArgs::inline(positional, named)),
@@ -678,22 +695,19 @@ impl<'a> Relation<'a> {
                     children,
                 }
             }
-            Err(error) => {
-                let (children, _) = Relation::convert_children(child_refs, ctx);
-                Relation {
-                    name: Cow::Borrowed(ext_type),
-                    arguments: None,
-                    columns: vec![Value::Missing(PlanError::invalid(
-                        "extension",
-                        None::<&str>,
-                        error.to_string(),
-                    ))],
-                    emit: None,
-                    output_syntax: OutputSyntax::Implicit,
-                    addenda: AddendumLines::none(),
-                    children,
-                }
-            }
+            Err(error) => Relation {
+                name: Cow::Borrowed(ext_type),
+                arguments: None,
+                columns: vec![Value::Missing(PlanError::invalid(
+                    "extension",
+                    None::<&str>,
+                    error.to_string(),
+                ))],
+                emit: None,
+                output_syntax: OutputSyntax::Implicit,
+                addenda: AddendumLines::none(),
+                children,
+            },
         }
     }
 

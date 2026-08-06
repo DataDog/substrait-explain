@@ -10,7 +10,7 @@ use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
+    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
 use substrait_explain::{Parser, format_with_registry};
@@ -405,9 +405,7 @@ Root[result]
 // ExtensionSingle and ExtensionMulti fixtures
 // ---------------------------------------------------------------------------
 
-/// A minimal ExtensionSingle: no arguments, passes through its single input
-/// column unchanged.  The `_ => $0` syntax uses the empty-args placeholder
-/// and a reference-style output column.
+/// A minimal ExtensionSingle that derives its output from its input fields.
 #[derive(Clone, PartialEq, Message)]
 pub struct PassThroughWrapper {}
 
@@ -434,8 +432,20 @@ impl Explainable for PassThroughWrapper {
     }
 
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = ExtensionArgs::default();
-        args.output_columns.push(ExtensionColumn::field(0));
+        Ok(ExtensionArgs::default())
+    }
+
+    fn to_args_with_context(
+        &self,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = self.to_args()?;
+        let input = context.inputs().first().ok_or_else(|| {
+            ExtensionError::InvalidArgument("PassThrough expects one input".to_owned())
+        })?;
+        args.output_columns.extend(
+            (0..input.emitted_column_count()).map(|index| ExtensionColumn::field(index as i32)),
+        );
         Ok(args)
     }
 }
@@ -485,9 +495,28 @@ fn test_extension_single_over_read_roundtrip() {
     registry.register_relation::<PassThroughWrapper>().unwrap();
 
     let plan_text = r#"=== Plan
-Root[col]
-  ExtensionSingle:PassThrough[_ => $0]
-    Read[my.table => col:i64]"#;
+Root[a, b, c, d]
+  ExtensionSingle:PassThrough[_ => $0, $1, $2, $3]
+    Read[my.table => a:i64, b:i64, c:i64, d:i64]"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser.parse_plan(plan_text).expect("parse failed");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(errors.is_empty(), "unexpected format errors: {errors:?}");
+    assert_eq!(formatted.trim(), plan_text.trim());
+}
+
+#[test]
+fn test_extension_single_input_output_uses_emitted_child_width() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<PassThroughWrapper>().unwrap();
+
+    let plan_text = r#"=== Plan
+Root[a, d]
+  ExtensionSingle:PassThrough[_ => $0, $1]
+    Project[$0, $3]
+      Read[my.table => a:i64, b:i64, c:i64, d:i64]"#;
 
     let parser = Parser::new().with_extension_registry(registry.clone());
     let plan = parser.parse_plan(plan_text).expect("parse failed");

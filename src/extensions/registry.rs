@@ -104,6 +104,46 @@ pub enum ExtensionType {
     Optimization,
 }
 
+/// Information about one input to an extension relation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionInput {
+    emitted_column_count: usize,
+}
+
+impl ExtensionInput {
+    pub(crate) fn new(emitted_column_count: usize) -> Self {
+        Self {
+            emitted_column_count,
+        }
+    }
+
+    /// Number of columns emitted by this input after applying its output mapping.
+    pub fn emitted_column_count(&self) -> usize {
+        self.emitted_column_count
+    }
+}
+
+/// Context available while converting an extension payload to text arguments.
+///
+/// Relation extensions receive one entry per available input, in relation
+/// order. Other extension namespaces, and context-free registry decoding,
+/// receive an empty input slice.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExtensionContext<'a> {
+    inputs: &'a [ExtensionInput],
+}
+
+impl<'a> ExtensionContext<'a> {
+    pub(crate) fn new(inputs: &'a [ExtensionInput]) -> Self {
+        Self { inputs }
+    }
+
+    /// Inputs to the extension relation, in relation order.
+    pub fn inputs(&self) -> &'a [ExtensionInput] {
+        self.inputs
+    }
+}
+
 /// Errors during extension registration (setup phase)
 #[derive(Debug, Error, Clone)]
 pub enum RegistrationError {
@@ -285,6 +325,20 @@ pub trait Explainable: Sized {
 
     /// Convert this type to extension arguments
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
+
+    /// Convert this type to extension arguments with information about its inputs.
+    ///
+    /// The default delegates to [`Explainable::to_args()`], preserving the
+    /// behavior of existing implementations. Relation extensions receive
+    /// their inputs in relation order; other extension namespaces receive an
+    /// empty input slice.
+    fn to_args_with_context(
+        &self,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError> {
+        let _ = context;
+        self.to_args()
+    }
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -303,7 +357,11 @@ pub trait Explainable: Sized {
 trait ExtensionConverter: Send + Sync {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError>;
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError>;
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Type adapter that implements ExtensionConverter for any type T that implements
@@ -329,9 +387,13 @@ impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for Exten
         T::from_args(args)?.to_any()
     }
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError> {
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
-        T::from_any(owned_any.as_ref())?.to_args()
+        T::from_any(owned_any.as_ref())?.to_args_with_context(context)
     }
 }
 
@@ -536,6 +598,15 @@ impl ExtensionRegistry {
         self.decode_with_type(ExtensionType::Relation, detail)
     }
 
+    /// Decode relation extension detail using information about its inputs.
+    pub(crate) fn decode_with_context(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type_and_context(ExtensionType::Relation, detail, context)
+    }
+
     /// Decode ExtensionTable detail to extension name and ExtensionArgs
     ///
     /// This is the primary method for textification of ExtensionTable reads -
@@ -582,6 +653,15 @@ impl ExtensionRegistry {
         ext_type: ExtensionType,
         detail: AnyRef<'_>,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type_and_context(ext_type, detail, &ExtensionContext::default())
+    }
+
+    fn decode_with_type_and_context(
+        &self,
+        ext_type: ExtensionType,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
         // Find extension name by type URL in the specified namespace
         let type_url_key = (ext_type, detail.type_url.to_string());
         let extension_name =
@@ -600,7 +680,7 @@ impl ExtensionRegistry {
                 name: extension_name.clone(),
             })?;
 
-        let args = handler.textify_detail(detail)?;
+        let args = handler.textify_detail(detail, context)?;
 
         Ok((extension_name.clone(), args))
     }
@@ -709,6 +789,17 @@ mod tests {
             args.insert("batch_size", self.batch_size);
             Ok(args)
         }
+
+        fn to_args_with_context(
+            &self,
+            context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
+            let mut args = self.to_args()?;
+            if !context.inputs().is_empty() {
+                args.insert("input_count", context.inputs().len() as i64);
+            }
+            Ok(args)
+        }
     }
 
     #[test]
@@ -747,6 +838,28 @@ mod tests {
             <&str>::try_from(result.1.named.get("path").unwrap()).unwrap(),
             "test.parquet"
         );
+        assert!(!result.1.named.contains_key("input_count"));
+    }
+
+    #[test]
+    fn test_extension_registry_decode_with_context() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+        let any = registry.parse_extension("TestExtension", &args).unwrap();
+        let inputs = [ExtensionInput::new(4)];
+        let context = ExtensionContext::new(&inputs);
+
+        let (_, decoded_args) = registry
+            .decode_with_context(any.as_ref(), &context)
+            .unwrap();
+        assert_eq!(
+            i64::try_from(decoded_args.named.get("input_count").unwrap()).unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -778,6 +891,7 @@ mod tests {
             <&str>::try_from(decoded_args.named.get("path").unwrap()).unwrap(),
             "test.parquet"
         );
+        assert!(!decoded_args.named.contains_key("input_count"));
     }
 
     #[test]

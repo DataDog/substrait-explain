@@ -139,6 +139,9 @@ syntax around those arguments:
 - `name()` - The extension name used in text (e.g., `"ParquetScan"`)
 - `from_args(args)` - Parse text arguments into your type
 - `to_args(&self)` - Convert your type to text arguments
+- `to_args_with_context(context)` - Optionally use information about relation
+  inputs when constructing extension arguments. Its default implementation
+  delegates to `to_args()`.
 
 The extension API works across three representations:
 
@@ -157,6 +160,12 @@ represented as expression values.
 `ExtensionProtoConvert` converts between extension arguments and Substrait
 protobuf values in either direction, such as output columns and relation
 `NamedStruct`s.
+
+Relation extensions receive an `ExtensionContext` containing one
+`ExtensionInput` per available child, in relation order. Each input exposes its
+emitted column count, including any output mapping applied by that child. Other
+extension namespaces receive an empty input slice. Existing implementations do
+not need to implement this method because its default calls `to_args()`.
 
 Use `ArgsExtractor` for convenient argument parsing:
 
