@@ -241,9 +241,55 @@ A literal can be an integer, float, boolean, string, or null. Literals may inclu
   - A type annotation is required for `null`
 - **`typed_literal`**` := string ":" type`
   - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
+  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`, `'5d 3s':interval_day<0>`
 
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
+All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, `interval_day`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
+
+#### `interval_day` Typed Literals
+
+`interval_day` string literals represent Substrait `IntervalDayToSecond` values.
+The string holds up to three duration terms:
+
+```text
+interval_day_literal := (duration_days (" " duration_seconds)? (" " duration_subseconds)?)
+                      / (duration_seconds (" " duration_subseconds)?)
+                      / duration_subseconds
+duration_days        := "-"? digit+ "d"
+duration_seconds     := "-"? digit+ "s"
+duration_subseconds  := "-"? digit+ subsecond_unit
+subsecond_unit       := "ms" / "us" / "ns" / "ps"
+```
+
+Each term is optional, but at least one is required, and terms appear in
+descending order: days, then seconds, then sub-seconds. Terms are separated by
+exactly one space, with no leading or trailing whitespace. Each term carries its
+own optional sign, matching the separate Substrait fields for days, seconds, and
+sub-seconds.
+
+Sub-second precision comes from the type ascription, not the string, so an
+`interval_day` literal always names its precision: `interval_day<precision>`.
+A literal's precision must be one of 0 (seconds), 3 (milliseconds), 6
+(microseconds), 9 (nanoseconds), or 12 (picoseconds) - the precisions that have
+a unit to write a value in. Unlike `precisiontimestamp` and `precisiontime`
+literals, `interval_day` accepts 12: sub-seconds are stored as a plain integer
+count rather than going through `chrono`.
+
+A sub-second term's unit must agree with the ascribed precision - `ms` is
+precision 3, `us` is 6, `ns` is 9, and `ps` is 12 - so there is only one place a
+value's precision can come from.
+
+Examples:
+
+- `'5d':interval_day<0>`
+- `'4d 5s':interval_day<6>`
+- `'123456789ns':interval_day<9>`
+- `'5d 3s 100ms':interval_day<3>`
+- `'-5d 3s':interval_day<0>`
+- `'5d':interval_day?<6>` (nullable)
+
+Only non-zero components are written on output, since precision travels in the
+type suffix: an interval of 5 days at nanosecond precision is `'5d':interval_day<9>`,
+not `'5d 0ns':interval_day<9>`. An all-zero interval is written `'0s'`.
 
 ## Types
 
@@ -283,6 +329,9 @@ From [official Substrait grammar](https://raw.githubusercontent.com/substrait-io
 - `string`, `binary`
 - `timestamp`, `timestamp_tz`, `date`, `time`
 - `interval_year`, `uuid`
+
+`interval_day` is not in this list: it is parameterized by sub-second precision,
+so it is written as a compound type (see below).
 
 #### Nullability
 
@@ -349,6 +398,12 @@ precisiontimestamp?<9>
 precisiontimestamptz<3>
 precisiontimestamptz?<3>
 ```
+
+`interval_day` takes an integer sub-second precision from 0 to 12, e.g.
+`interval_day<9>`, `interval_day?<0>`. The parameter is required, as it is for
+every other parameterized type. Writing an `interval_day` *literal* additionally
+requires a precision that has a unit to write values in; see
+[`interval_day` Typed Literals](#interval_day-typed-literals).
 
 #### Examples
 

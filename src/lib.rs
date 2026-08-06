@@ -7,6 +7,7 @@ pub use extensions::{AnyConvertible, Explainable, ExtensionRegistry};
 pub mod extensions;
 pub mod grammar;
 mod parser;
+mod precision;
 mod textify;
 
 #[cfg(test)]
