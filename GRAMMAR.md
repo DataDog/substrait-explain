@@ -1145,11 +1145,13 @@ Note: the parser also accepts the `=>` section being omitted entirely (e.g. `Ext
 - **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
 - **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
-Untyped scalar extension arguments such as `2`, `2.4`, `true`, and `'path'`
-are treated as extension scalar values and render without expression type
-suffixes, even in verbose output. They can still be consumed by extension
-handlers as expressions, in which case they widen to default non-nullable
-Substrait literal expressions. Typed literals such as `2:i16` or
+Untyped scalar extension arguments such as `2`, `2.4`, `true`, `'path'`, and
+`null` are treated as extension scalar values and render without expression
+type suffixes, even in verbose output. Bare `null` is distinct from an absent
+argument. The typed extractor treats it as a present value that must be
+handled explicitly. Other untyped scalar values can still be consumed by
+extension handlers as expressions, in which case they widen to default
+non-nullable Substrait literal expressions. Typed literals such as `2:i16` or
 `'2024-01-01':date`, field references, function calls, and casts are expression
 values.
 

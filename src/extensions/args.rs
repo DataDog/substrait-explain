@@ -371,6 +371,8 @@ pub enum ExtensionValue {
     Integer(i64),
     Float(f64),
     Boolean(bool),
+    /// An untyped null literal.
+    Null,
 
     /// Substrait expression value, including typed literals and field references.
     ///
@@ -394,6 +396,7 @@ pub enum ExtensionValueKind {
     Integer,
     Float,
     Boolean,
+    Null,
     Reference,
     Enum,
     Tuple,
@@ -407,6 +410,7 @@ impl fmt::Display for ExtensionValueKind {
             ExtensionValueKind::Integer => write!(f, "integer"),
             ExtensionValueKind::Float => write!(f, "float"),
             ExtensionValueKind::Boolean => write!(f, "boolean"),
+            ExtensionValueKind::Null => write!(f, "null"),
             ExtensionValueKind::Reference => write!(f, "reference"),
             ExtensionValueKind::Enum => write!(f, "enum"),
             ExtensionValueKind::Tuple => write!(f, "tuple"),
@@ -423,6 +427,7 @@ impl ExtensionValue {
             ExtensionValue::Integer(_) => ExtensionValueKind::Integer,
             ExtensionValue::Float(_) => ExtensionValueKind::Float,
             ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
+            ExtensionValue::Null => ExtensionValueKind::Null,
             ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
             ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
             ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
@@ -672,16 +677,16 @@ mod tests {
     #[test]
     fn get_named_contextualizes_conversion_errors() {
         let mut args = ExtensionArgs::default();
-        args.insert("count", "eight");
+        args.insert("count", ExtensionValue::Null);
         let mut extractor = args.extractor();
 
         let error = extractor
             .get_named::<i64>("count")
-            .expect_err("string should not convert to i64");
+            .expect_err("null should not convert to i64");
 
         assert_eq!(
             error.to_string(),
-            "Invalid named argument 'count': Invalid argument: expected integer, got string"
+            "Invalid named argument 'count': Invalid argument: expected integer, got null"
         );
         assert!(extractor.check_exhausted().is_ok());
     }

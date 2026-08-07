@@ -39,6 +39,7 @@ impl Textify for ExtensionValue {
             ExtensionValue::Integer(i) => write!(w, "{i}"),
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
+            ExtensionValue::Null => write!(w, "null"),
             ExtensionValue::Expr(expr) => expr.textify(ctx, w),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Tuple(tv) => tv.textify(ctx, w),

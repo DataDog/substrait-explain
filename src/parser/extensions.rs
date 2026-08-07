@@ -295,7 +295,7 @@ impl ScopedParsePair for ExtensionValue {
                 ExtensionValue::from(Reference(field_index.0))
             }
             Rule::untyped_literal => {
-                // Literal can contain integer, float, boolean, or string_literal
+                // Literal can contain integer, float, boolean, string_literal, or null.
                 let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
@@ -306,6 +306,7 @@ impl ScopedParsePair for ExtensionValue {
                         ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
                     }
                     Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
+                    Rule::null => ExtensionValue::Null,
                     _ => panic!(
                         "Unexpected extension scalar literal type: {:?}",
                         value_pair.as_rule()
@@ -1004,12 +1005,19 @@ Functions:
     }
 
     #[test]
+    fn test_untyped_null_extension_literal_roundtrips() {
+        let value = parse_extension_value("null");
+        assert!(matches!(value, ExtensionValue::Null));
+        assert_eq!(TestContext::new().textify_no_errors(&value), "null");
+    }
+
+    #[test]
     fn test_typed_extension_literal_parses_as_expression() {
-        let value = parse_extension_value("42:i16");
+        let value = parse_extension_value("null:i64?");
         assert!(i64::try_from(&value).is_err());
 
         let expr = Expr::try_from(&value).unwrap();
-        assert_eq!(ctx_text(&expr), "42:i16");
+        assert_eq!(ctx_text(&expr), "null:i64?");
     }
 
     fn ctx_text(value: &Expr) -> String {
