@@ -218,32 +218,20 @@ Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNull
 
 - `&AscNullsFirst`, `&AscNullsLast`, `&DescNullsFirst`, `&DescNullsLast` - sort directions
 
-### `literal`
+### Scalar values
 
-A literal can be an integer, float, boolean, string, or null. Literals may include a type annotation:
-
-`literal := (float / integer / boolean / string / "null") (":" type)?`
+These are basic terminals used in [expressions](#expression-literals)
+and [arguments](#arguments).
 
 - **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
-  - Default to `i64` type; other integer types may be assigned
 - **`float`**` := "-"? digit+ "." digit+`
   - Examples: `3.14`, `-2.5`, `1.0`
-  - Default to `fp64` type; other float types may be assigned
 - **`boolean`**` := "true" / "false"`
   - Examples: `true`, `false`
-  - May only be boolean type
 - **`string`**` := "'" ("\\" . / !"'" .)* "'"`
   - Examples: `'hello'`, `'table name'`, `'C:\path\to\file'`, `'line1\nline2'`, `'quote\'s here'`
-  - Default to `string` type; other types may also be assigned
 - **`null`**` := "null"`
-  - Examples: `null:i64?`, `null:string?`, `null:date?`
-  - A type annotation is required for `null`
-- **`typed_literal`**` := string ":" type`
-  - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
-
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
 
 ## Types
 
@@ -326,8 +314,8 @@ The precision parameter follows the Substrait unit convention: `0` means
 seconds, `3` milliseconds, `6` microseconds, `9` nanoseconds, and `12`
 picoseconds. Two different subsets apply:
 
-- *Types* accept the full Substrait range, any precision from `0` through `12`.
-- *Literals* accept only `0`, `3`, `6`, and `9`.
+- _Types_ accept the full Substrait range, any precision from `0` through `12`.
+- _Literals_ accept only `0`, `3`, `6`, and `9`.
 
 The literal restriction is a limitation of this implementation, not of
 Substrait, which supports every precision from 0 to 12.
@@ -335,8 +323,8 @@ Substrait, which supports every precision from 0 to 12.
 Literals stop at `9` because chrono (the underlying date/time library) has no
 sub-nanosecond resolution, so precision-12 literals cannot be parsed.
 Textifying a precision-12 value from a protobuf plan is still supported: the
-*value* is truncated to nanosecond resolution and a truncation diagnostic is
-emitted, but the declared *type* is preserved as `<12>` (truncating the value
+_value_ is truncated to nanosecond resolution and a truncation diagnostic is
+emitted, but the declared _type_ is preserved as `<12>` (truncating the value
 does not silently rewrite its type).
 
 #### Examples
@@ -412,7 +400,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / literal / if_then`
+`expression := function_call / reference / expression_literal / if_then`
 
 ### Examples
 
@@ -420,6 +408,45 @@ Root[result]
 add($3, 10):i64              // Simple function call with required output type
 add#10@2($3, 10):i64         // Function call with anchors and output type
 ```
+
+### Expression Literals
+
+An `expression_literal` represents a Substrait `Literal` expression and
+therefore always has a type. The text format may infer the conventional type
+for a non-null scalar when its type ascription is omitted:
+
+```text
+expression_literal := (float / integer / boolean / string) (":" type)?
+                    / "null" ":" type
+```
+
+- An unannotated `integer` has type `i64`; an annotation can select another
+  integer type, as in `5:i16`.
+- An unannotated `float` has type `fp64`; an annotation can select another
+  floating-point type.
+- A `boolean` may only have boolean type.
+- An unannotated `string` has type `string`. String values may be annotated as
+  other supported literal types, such as `'2023-01-01':date`.
+- A `null` literal requires an explicit type, such as `null:i64?`,
+  `null:string?`, or `null:date?`.
+
+#### Examples
+
+```text
+null:i64?
+null:string?
+null:date?
+'2023-01-01':date
+'2023-12-25T14:30:45.123':timestamp
+'2023-01-01T12:00:00.123456789':precisiontimestamp<9>
+'14:30:45.123456':precisiontime<6>
+```
+
+The supported non-primitive literal types are `date`, `time`, `timestamp`,
+`precisiontime`, `precisiontimestamp`, and `precisiontimestamptz`. Other
+Substrait literal types, including `interval_year`, `decimal`, and `uuid`, are
+not yet implemented. The deprecated `timestamp_tz` literal is also not
+implemented; use `precisiontimestamptz<6>` instead.
 
 ### Field References
 
@@ -542,17 +569,19 @@ All relations follow this general pattern:
 #### Syntax
 
 ```text
-relation := name "[" (arguments ("," named_arguments)? ("=>" columns)?)? "]"
+relation := name "[" (relation_arguments ("=>" columns)?)? "]"
+relation_arguments := (arguments ("," named_arguments)?) / named_arguments
 columns := name ("," name)* / reference_list
 ```
 
 Where:
 
-- **`name`**: The type of operation (Read, Filter, Project, Root, etc.)
-- **`arguments`**: Input expressions, field references, function calls, or other parameters (optional)
-- **`named_arguments`**: Named arguments (optional)
-- **`=>`**: Separator between arguments and output columns (optional, only present when both arguments and columns are specified)
-- **`columns`**: Output column names and types, or field references for pass-through (all relations specify outputs, but format varies)
+- **`name`**: The type of operation (`Read`, `Filter`, `Project`, etc.)
+- **`relation_arguments`**: Positional arguments, named arguments, or both (optional)
+- **`arguments`**: Positional expressions, field references, enums, tuples, or parameter literals
+- **`named_arguments`**: Named arguments, following any positional arguments
+- **`=>`**: Separator before an optional output clause
+- **`columns`**: Output column names and types, or field references for pass-through
 - **`reference_list := reference ("," reference)*`**: comma-separated list of field references
 
 #### Example
@@ -564,10 +593,8 @@ RelationName[arguments, named_arguments => columns]
 #### Special cases
 
 - **Root relation**: Only specifies output column names, no arguments or `=>` separator
-- **Project relation**: Only specifies expressions, no `=>` separator or output columns
-- Some relations may use '...' instead of column names when they pass through all fields
 
-The exact structure varies by relation type, but all follow this basic pattern.
+The arguments allowed and format of output columns varies by relation type.
 
 #### Emit
 
@@ -578,23 +605,26 @@ consumer can rely on — it would have to infer `Direct`.
 
 ### Arguments
 
-Arguments in relations can be literals, expressions, enums, or tuples thereof.
+Arguments in relations can be parameter literals, expressions, enums, or tuples thereof.
 
 #### Syntax
 
 ```text
-argument := enum / reference / literal / expression / tuple
+arguments := argument ("," argument)*
+named_arguments := name "=" argument ("," name "=" argument)*
+argument := enum / reference / parameter_literal / expression / tuple
+parameter_literal := float / integer / boolean / string / null
 tuple := "(" ")"                                        // 0-tuple
        / "(" argument "," ")"                           // 1-tuple (trailing comma required)
        / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
-arguments := argument ("," argument)*
-named_arguments := name "=" argument ("," name "=" argument)*
 ```
 
-Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
-expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to
-form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and
-`(x, y,)` are equivalent.
+A `parameter_literal` supplies a scalar value directly to a relation parameter
+and never has a type ascription. An `expression_literal` is part of an
+expression and therefore has a Substrait type. The relation-specific grammar
+determines which interpretation applies.
+
+Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and `(x, y,)` are equivalent.
 
 #### Examples
 
@@ -991,16 +1021,20 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 
 ### Join Relation
 
-**Syntax**: `"Join" "[" join_type "," expression ("," "post_filter" "=" expression)? "=>" reference_list "]"`
+#### Syntax
 
-**Components**:
+```text
+"Join" "[" join_type "," expression ("," "post_filter" "=" expression)? "=>" reference_list "]"
+```
+
+#### Components
 
 - `join_type` - Join type enum with `&` prefix (e.g., `&Inner`, `&Left`, `&Right`, `&Outer`)
 - `expression` - Join condition (boolean expression relating left and right inputs), with field references over input order
 - `post_filter` - Optional post-join filter expression, applied after join matching, with field references over direct output order
 - `reference_list` - comma-separated list of field references for output columns, with field references over direct output order
 
-**Field Reference Mapping**:
+#### Field Reference Mapping
 
 For join conditions, field references map to the combined schema of left and
 right inputs:
@@ -1016,7 +1050,7 @@ direct output order:
 - right semi, right anti, and right single joins output right fields only, renumbered from `$0`
 - left mark and right mark joins output the retained side's fields followed by the mark column
 
-**Example**:
+#### Example
 
 ```rust
 # use substrait_explain::Parser;
@@ -1041,7 +1075,7 @@ Root[user_orders]
 
 ### Set Relation
 
-#### Syntax 
+#### Syntax
 
 `"Set" "[" set_op "=>" reference_list "]"`
 
@@ -1128,7 +1162,7 @@ extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>
 extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
 extension_args := (positional_args ("," named_args)?) / named_args
 positional_args := extension_arg ("," extension_arg)*
-extension_arg := enum / reference / literal / expression / tuple
+extension_arg := enum / reference / parameter_literal / expression / tuple
 named_args := named_arg ("," named_arg)*
 named_arg := name "=" extension_arg
 extension_columns := (extension_column ("," extension_column)*)?
@@ -1142,18 +1176,18 @@ Note: the parser also accepts the `=>` section being omitted entirely (e.g. `Ext
 - **`extension_type`** - One of `ExtensionLeaf`, `ExtensionSingle`, or `ExtensionMulti`
 - **`name`** - The extension name (registered with `ExtensionRegistry`)
 - **`empty`** (`_`) - Explicitly marks an extension with no arguments
-- **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
+- **`extension_args`** - Positional arguments (enums, references, parameter literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
 - **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
-Untyped scalar extension arguments such as `2`, `2.4`, `true`, `'path'`, and
-`null` are treated as extension scalar values and render without expression
-type suffixes, even in verbose output. Bare `null` is distinct from an absent
-argument. The typed extractor treats it as a present value that must be
-handled explicitly. Other untyped scalar values can still be consumed by
-extension handlers as expressions, in which case they widen to default
-non-nullable Substrait literal expressions. Typed literals such as `2:i16` or
-`'2024-01-01':date`, field references, function calls, and casts are expression
-values.
+A `parameter_literal` is a direct scalar parameter. Values such as
+`2`, `2.4`, `true`, `'path'`, and `null` therefore render without type
+ascriptions, even in verbose output.
+
+A registered extension may interpret a non-null parameter literal as an
+expression, in which case it has the default non-nullable type described under
+[Expression Literals](#expression-literals). An explicitly ascribed literal such
+as `2:i16`, `'2024-01-01':date`, or `null:i64?` is an expression. Field
+references, function calls, and casts are also expression values.
 
 #### Examples
 
@@ -1208,16 +1242,8 @@ Addendum lines are **indented one level deeper** than the relation they annotate
 
 ### Argument Syntax
 
-Extension arguments follow the same rules as extension-relation arguments. Enum values are written with a `&` prefix:
-
-```text
-enum_value := "&" identifier
-```
-
-#### Examples
-
-- `&HASH`, `&RANGE`, `&BROADCAST` — `PartitionStrategy` variants for `PartitionHint`
-- `&AscNullsFirst` — sort direction enum in a relation argument
+Enhancement and Optimization arguments follow the same rules as extension-relation arguments,
+including `parameter_literal` for scalar parameters without type ascriptions.
 
 ### Example: Enhancement on a Read Relation
 

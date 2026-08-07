@@ -294,8 +294,8 @@ impl ScopedParsePair for ExtensionValue {
                 let field_index = FieldIndex::parse_pair(inner);
                 ExtensionValue::from(Reference(field_index.0))
             }
-            Rule::untyped_literal => {
-                // Literal can contain integer, float, boolean, string_literal, or null.
+            Rule::parameter_literal => {
+                // Parameter literals can contain integer, float, boolean, string, or null.
                 let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
@@ -308,7 +308,7 @@ impl ScopedParsePair for ExtensionValue {
                     Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
                     Rule::null => ExtensionValue::Null,
                     _ => panic!(
-                        "Unexpected extension scalar literal type: {:?}",
+                        "Unexpected extension parameter literal type: {:?}",
                         value_pair.as_rule()
                     ),
                 }
@@ -491,8 +491,8 @@ impl ScopedParsePair for ExtensionInvocation {
         // Parse optional arguments
         let ext_arguments = iter.next().unwrap();
         match ext_arguments.as_rule() {
-            Rule::arguments => {
-                arguments_rule_parsing(extensions, ext_arguments, &mut args)?;
+            Rule::extension_args => {
+                extension_args_rule_parsing(extensions, ext_arguments, &mut args)?;
             }
             r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
         }
@@ -559,13 +559,13 @@ impl ScopedParsePair for AddendumInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Remaining token: arguments — grammar guarantees it is always present.
+        // Remaining token: extension_args — grammar guarantees it is always present.
         let mut args = ExtensionArgs::default();
 
         let arguments_pair = iter.next().unwrap();
         match arguments_pair.as_rule() {
-            Rule::arguments => {
-                arguments_rule_parsing(extensions, arguments_pair, &mut args)?;
+            Rule::extension_args => {
+                extension_args_rule_parsing(extensions, arguments_pair, &mut args)?;
             }
             r => unreachable!("Unexpected rule in AddendumInvocation args: {r:?}"),
         }
@@ -574,7 +574,7 @@ impl ScopedParsePair for AddendumInvocation {
     }
 }
 
-fn arguments_rule_parsing(
+fn extension_args_rule_parsing(
     extensions: &SimpleExtensions,
     inner_pair: Pair<'_, Rule>,
     args: &mut ExtensionArgs,
@@ -994,7 +994,7 @@ Functions:
     }
 
     #[test]
-    fn test_extension_scalar_literals_stay_scalar_in_verbose_output() {
+    fn test_extension_parameter_literals_stay_scalar_in_verbose_output() {
         let ctx = TestContext::new().with_options(OutputOptions::verbose());
 
         let scalar = ExtensionValue::from(42_i64);

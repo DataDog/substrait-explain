@@ -54,8 +54,8 @@ function_signature = @{ identifier ~ (":" ~ argument_signature?)? }
 // Expression Components
 // Field reference
 reference = { "$" ~ integer }
-// Literal
-literal = { (float | integer | boolean | string_literal | null) ~ (":" ~ sp ~ type)? }
+// A Substrait literal expression. Its type may be inferred or explicitly ascribed.
+expression_literal = { (float | integer | boolean | string_literal | null) ~ (":" ~ sp ~ type)? }
 
 // -- Components for types and functions
 anchor     = { "#" ~ sp ~ integer }
@@ -185,8 +185,8 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifier can be a function call, we put that first.
-// cast_expression must come before literal/function_call since it starts with "("
-expression = { if_then | cast_expression | function_call | reference | literal }
+// cast_expression must come before expression_literal/function_call since it starts with "("
+expression = { if_then | cast_expression | function_call | reference | expression_literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
@@ -366,22 +366,21 @@ cross_relation = { "Cross" ~ "[" ~ reference_list ~ "]" }
 // - ExtensionLeaf:ParquetScan[path='data/*.parquet', schema='auto' => col1:i32, col2:string]
 // - ExtensionSingle:VectorNormalize[method='l2', dimensions=128 => $0, $1]
 // - ExtensionMulti:FuzzyJoin[algorithm='lsh', threshold=0.8 => $0, $1, $2, $3]
-extension_relation = { extension_name ~ "[" ~ sp ~ arguments ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
+extension_relation = { extension_name ~ "[" ~ sp ~ extension_args ~ (sp ~ "=>" ~ sp ~ extension_columns)? ~ "]" }
 
 // Extension name format: ExtensionType:CustomExtensionName
 extension_name = { extension_type ~ ":" ~ name }
 extension_type = { "ExtensionLeaf" | "ExtensionSingle" | "ExtensionMulti" }
 
-arguments = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
+extension_args = { (empty | (extension_arguments ~ (sp ~ "," ~ sp ~ extension_named_arguments)?) | extension_named_arguments)? }
 // Positional arguments (expressions, literals, references, enums, tuples)
 extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument)* }
 
-// Untyped scalar extension literals render independently of expression literal
-// verbosity. Typed literals (for example, 2:i16 or '2024-01-01':date) fall
-// through to expression parsing so their Substrait type information is
-// preserved. Bare null is an untyped extension value; typed null falls
-// through to expression parsing for the same reason as other typed literals.
-untyped_literal = { (float | integer | boolean | string_literal | null) ~ !(":") }
+// Parameter literals are direct scalar values without type ascriptions.
+// Ascribed literals (for example, 2:i16 or '2024-01-01':date) fall through to
+// expression parsing so their Substrait type information is preserved. Bare
+// null is a parameter value; ascribed null falls through to expression parsing.
+parameter_literal = { (float | integer | boolean | string_literal | null) ~ !(":") }
 
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.
@@ -395,7 +394,7 @@ tuple = {
               ~ (sp ~ "," ~ sp ~ extension_argument)+
               ~ (sp ~ ",")? ~ sp ~ ")"
         }
-extension_argument  = { enum_value | untyped_literal | reference | expression | tuple }
+extension_argument  = { enum_value | parameter_literal | reference | expression | tuple }
 
 // Named arguments (name=value pairs)
 extension_named_arguments = { extension_named_argument ~ (sp ~ "," ~ sp ~ extension_named_argument)* }
@@ -411,5 +410,5 @@ extension_column  = { named_column | reference | expression }
 // - + Enh:PartitionHint[&HASH, count=8]
 // - + Opt:SomeOptimization[threshold=100, mode='fast']
 // - + Ext:BlobStoreRead['path/to/file']
-addendum      = { "+" ~ sp ~ addendum_type ~ ":" ~ name ~ "[" ~ arguments ~ "]" }
+addendum      = { "+" ~ sp ~ addendum_type ~ ":" ~ name ~ "[" ~ extension_args ~ "]" }
 addendum_type = { "Enh" | "Opt" | "Ext" }
