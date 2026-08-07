@@ -669,8 +669,6 @@ Root[result]
 
 #[test]
 fn test_malformed_input_error_handling() {
-    use substrait_explain::Parser;
-
     // Test malformed input: unclosed bracket in extension relation
     let malformed_plan = r#"=== Plan
 Root[result]

@@ -26,7 +26,9 @@
 //! into default Substrait literal expressions.
 
 use std::collections::HashSet;
-use std::fmt;
+use std::slice::Iter as SliceIter;
+use std::vec::IntoIter as VecIntoIter;
+use std::{fmt, thread};
 
 use indexmap::IndexMap;
 use substrait::proto;
@@ -289,7 +291,7 @@ impl<'a> ArgsExtractor<'a> {
 
 impl Drop for ArgsExtractor<'_> {
     fn drop(&mut self) {
-        if self.checked || std::thread::panicking() {
+        if self.checked || thread::panicking() {
             return;
         }
         // If we get here, the caller forgot to call check_exhausted().
@@ -316,14 +318,14 @@ impl TupleValue {
         self.0.is_empty()
     }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, ExtensionValue> {
+    pub fn iter(&self) -> SliceIter<'_, ExtensionValue> {
         self.0.iter()
     }
 }
 
 impl<'a> IntoIterator for &'a TupleValue {
     type Item = &'a ExtensionValue;
-    type IntoIter = std::slice::Iter<'a, ExtensionValue>;
+    type IntoIter = SliceIter<'a, ExtensionValue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -332,7 +334,7 @@ impl<'a> IntoIterator for &'a TupleValue {
 
 impl IntoIterator for TupleValue {
     type Item = ExtensionValue;
-    type IntoIter = std::vec::IntoIter<ExtensionValue>;
+    type IntoIter = VecIntoIter<ExtensionValue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()

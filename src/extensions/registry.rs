@@ -82,6 +82,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use substrait::proto::NamedStruct;
@@ -322,7 +323,7 @@ trait ExtensionConverter: Send + Sync {
 ///
 /// The PhantomData is necessary because we don't actually store a T, but we need
 /// the type information to call T's static methods (from_args, from_any).
-struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
+struct ExtensionAdapter<T>(PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
@@ -387,8 +388,7 @@ impl ExtensionRegistry {
     {
         let canonical_name = T::name();
         let type_url = T::type_url();
-        let handler: Arc<dyn ExtensionConverter> =
-            Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData));
+        let handler: Arc<dyn ExtensionConverter> = Arc::new(ExtensionAdapter::<T>(PhantomData));
 
         let key = (ext_type, canonical_name.to_string());
         if self.handlers.contains_key(&key) {
@@ -647,6 +647,8 @@ impl fmt::Debug for ExtensionRegistry {
 mod tests {
     use super::*;
     use crate::extensions::ExtensionColumn;
+    use crate::fixtures::parse_type;
+    use crate::textify::expressions::Reference;
 
     // Mock type for testing
     struct TestExtension {
@@ -789,12 +791,12 @@ mod tests {
         args.insert("batch_size", 1024_i64);
 
         // Add positional args
-        args.push(crate::textify::expressions::Reference(0));
+        args.push(Reference(0));
 
         // Add output columns
         args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
-            r#type: crate::fixtures::parse_type("i32"),
+            r#type: parse_type("i32"),
         });
 
         // Test retrieval - use extractor

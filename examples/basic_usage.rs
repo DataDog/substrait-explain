@@ -2,9 +2,11 @@
 //!
 //! This example shows how to parse a Substrait plan and format it with different output options.
 
+use std::error::Error;
+
 use substrait_explain::{OutputOptions, Parser, format, format_with_options};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     println!("=== Substrait-Explain Basic Usage ===\n");
 
     // Parse a plan with extensions

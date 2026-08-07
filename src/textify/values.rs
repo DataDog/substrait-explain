@@ -12,7 +12,7 @@ use substrait::proto::expression::field_reference::ReferenceType as FieldReferen
 use substrait::proto::expression::reference_segment::ReferenceType as SegmentReferenceType;
 use substrait::proto::sort_field::{SortDirection, SortKind};
 use substrait::proto::{
-    AggregateFunction, AggregationPhase, Expression, SortField, join_rel, set_rel,
+    AggregateFunction, AggregationPhase, Expression, SortField, Type, join_rel, set_rel,
 };
 
 use super::types::Name;
@@ -34,7 +34,7 @@ pub struct NamedArg<'a> {
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
     TableName(Vec<Name<'a>>),
-    Field(Option<Name<'a>>, Option<&'a substrait::proto::Type>),
+    Field(Option<Name<'a>>, Option<&'a Type>),
     Tuple(Vec<Value<'a>>),
     Reference(i32),
     Expression(&'a Expression),

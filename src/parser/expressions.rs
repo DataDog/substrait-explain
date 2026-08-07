@@ -1,4 +1,5 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
+use pest::iterators::Pair;
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
@@ -53,7 +54,7 @@ impl ParsePair for FieldIndex {
         "FieldIndex"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         let index: i32 = inner.as_str().parse().unwrap();
@@ -70,7 +71,7 @@ impl ParsePair for FieldReference {
         "FieldReference"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
         // TODO: Other types of references.
@@ -78,20 +79,17 @@ impl ParsePair for FieldReference {
     }
 }
 
-fn to_int_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+const UNSIGNED_INT_KIND: Kind = Kind::I64(I64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
+fn to_int_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::integer);
     let parsed_value: i64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::I64(I64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume i64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_INT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         // If no type is provided, we assume i64, Nullability::Required.
@@ -131,20 +129,17 @@ fn to_int_literal(
     })
 }
 
-fn to_float_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+const UNSIGNED_FLOAT_KIND: Kind = Kind::Fp64(Fp64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
+fn to_float_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::float);
     let parsed_value: f64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::Fp64(Fp64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume fp64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_FLOAT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         Kind::Fp32(f) => (
@@ -173,10 +168,7 @@ fn to_float_literal(
     })
 }
 
-fn to_boolean_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_boolean_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::boolean);
     let parsed_value: bool = value.as_str().parse().unwrap();
 
@@ -202,10 +194,7 @@ fn to_boolean_literal(
     })
 }
 
-fn to_string_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_string_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::string_literal);
     let string_value = unescape_string(value.clone());
 
@@ -319,10 +308,7 @@ fn to_string_literal(
     }
 }
 
-fn to_null_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_null_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::null);
     let typ = typ.ok_or_else(|| {
         MessageParseError::invalid(
@@ -558,7 +544,7 @@ impl ScopedParsePair for Literal {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
@@ -591,7 +577,7 @@ impl ScopedParsePair for ScalarFunction {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let span = pair.as_span();
@@ -653,7 +639,7 @@ impl ScopedParsePair for Cast {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
@@ -697,7 +683,7 @@ impl ScopedParsePair for Expression {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
@@ -744,7 +730,7 @@ impl ScopedParsePair for IfClause {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner(); // should have 2 children, 2 expressions
@@ -773,7 +759,7 @@ impl ScopedParsePair for IfThen {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -808,7 +794,7 @@ impl ParsePair for Name {
         "Name"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
@@ -828,7 +814,7 @@ impl ParsePair for CompoundName {
         "CompoundName"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         CompoundName::new(pair.as_str())
     }
@@ -845,7 +831,7 @@ impl ScopedParsePair for Measure {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -870,12 +856,14 @@ impl ScopedParsePair for Measure {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use pest::Parser as PestParser;
 
     use super::*;
     use crate::parser::ExpressionParser;
 
-    fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
+    fn parse_exact(rule: Rule, input: &'_ str) -> Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();
@@ -883,13 +871,13 @@ mod tests {
         pair
     }
 
-    fn assert_parses_to<T: ParsePair + PartialEq + std::fmt::Debug>(input: &str, expected: T) {
+    fn assert_parses_to<T: ParsePair + PartialEq + Debug>(input: &str, expected: T) {
         let pair = parse_exact(T::rule(), input);
         let actual = T::parse_pair(pair);
         assert_eq!(actual, expected);
     }
 
-    fn assert_parses_with<T: ScopedParsePair + PartialEq + std::fmt::Debug>(
+    fn assert_parses_with<T: ScopedParsePair + PartialEq + Debug>(
         ext: &SimpleExtensions,
         input: &str,
         expected: T,
@@ -1479,27 +1467,12 @@ mod tests {
     fn make_extensions_for_fn_tests() -> SimpleExtensions {
         let mut exts = SimpleExtensions::default();
         exts.add_extension_urn("urn".to_string(), 1).unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            1,
-            "equal:any_any".to_string(),
-        )
-        .unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            2,
-            "equal:str_str".to_string(),
-        )
-        .unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            3,
-            "add:i64_i64".to_string(),
-        )
-        .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 1, "equal:any_any".to_string())
+            .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 2, "equal:str_str".to_string())
+            .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 3, "add:i64_i64".to_string())
+            .unwrap();
         exts
     }
 
@@ -1584,7 +1557,7 @@ mod tests {
         let mut exts = SimpleExtensions::default();
         exts.add_extension_urn("urn".to_string(), 1).unwrap();
         exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
+            ExtensionKind::Function,
             1,
             10,
             "json_extract_path:u!json_str".to_string(),
@@ -1629,7 +1602,7 @@ mod tests {
         // Target type should be i16
         let target = result.r#type.as_ref().unwrap();
         match &target.kind {
-            Some(substrait::proto::r#type::Kind::I16(_)) => {}
+            Some(Kind::I16(_)) => {}
             other => panic!("Expected i16 type, got: {:?}", other),
         }
 
@@ -1671,7 +1644,7 @@ mod tests {
         }
 
         match &result.r#type.as_ref().unwrap().kind {
-            Some(substrait::proto::r#type::Kind::I32(_)) => {}
+            Some(Kind::I32(_)) => {}
             other => panic!("Expected i32 outer type, got: {:?}", other),
         }
     }
@@ -1741,18 +1714,13 @@ mod tests {
         let mut extensions = SimpleExtensions::default();
         extensions.add_extension_urn("urn".to_string(), 1).unwrap();
         extensions
-            .add_extension(
-                crate::extensions::simple::ExtensionKind::Type,
-                1,
-                5,
-                "u!json".to_string(),
-            )
+            .add_extension(ExtensionKind::Type, 1, 5, "u!json".to_string())
             .unwrap();
 
         let pair = parse_exact(Rule::cast_expression, "($0)::u!json");
         let result = Cast::parse_pair(&extensions, pair).unwrap();
         match result.r#type.as_ref().unwrap().kind.as_ref().unwrap() {
-            substrait::proto::r#type::Kind::UserDefined(u) => {
+            Kind::UserDefined(u) => {
                 assert_eq!(u.type_reference, 5);
             }
             other => panic!("expected UserDefined, got {other:?}"),

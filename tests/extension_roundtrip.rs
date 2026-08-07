@@ -136,50 +136,50 @@ Root[result]
     assert!(result.is_err());
 }
 
+// An additional type of config, for variety
+#[derive(Clone, PartialEq, Message)]
+pub struct FilterConfig {
+    #[prost(string, tag = "1")]
+    pub expression: String,
+}
+
+impl Name for FilterConfig {
+    const NAME: &'static str = "FilterConfig";
+    const PACKAGE: &'static str = "test";
+
+    fn full_name() -> String {
+        "test.FilterConfig".to_string()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/test.FilterConfig".to_string()
+    }
+}
+
+impl Explainable for FilterConfig {
+    fn name() -> &'static str {
+        "TestFilter"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        let expression: String = extractor.expect_named_arg::<&str>("expr")?.to_string();
+        extractor.check_exhausted()?;
+
+        Ok(FilterConfig { expression })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::default();
+        args.insert("expr", self.expression.clone());
+        Ok(args)
+    }
+}
+
 #[test]
 fn test_multiple_extensions_in_plan() {
     let mut registry = ExtensionRegistry::new();
     registry.register_relation::<UserTableConfig>().unwrap();
-
-    // Also register a second type for variety
-    #[derive(Clone, PartialEq, Message)]
-    pub struct FilterConfig {
-        #[prost(string, tag = "1")]
-        pub expression: String,
-    }
-
-    impl Name for FilterConfig {
-        const NAME: &'static str = "FilterConfig";
-        const PACKAGE: &'static str = "test";
-
-        fn full_name() -> String {
-            "test.FilterConfig".to_string()
-        }
-
-        fn type_url() -> String {
-            "type.googleapis.com/test.FilterConfig".to_string()
-        }
-    }
-
-    impl Explainable for FilterConfig {
-        fn name() -> &'static str {
-            "TestFilter"
-        }
-
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let expression: String = extractor.expect_named_arg::<&str>("expr")?.to_string();
-            extractor.check_exhausted()?;
-
-            Ok(FilterConfig { expression })
-        }
-
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = ExtensionArgs::default();
-            args.insert("expr", self.expression.clone());
-            Ok(args)
-        }
-    }
 
     registry.register_relation::<FilterConfig>().unwrap();
 
