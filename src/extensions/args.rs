@@ -196,27 +196,33 @@ pub struct ExtensionArgs {
     pub output_columns: Vec<ExtensionColumn>,
 }
 
-/// Helper struct for extracting named arguments with validation.
+/// Arguments presented to an [`Explainable`](super::Explainable) decoder.
 ///
-/// Tracks which arguments have been consumed. Callers **must** call
-/// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
-/// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic. This catches [`Explainable`](super::Explainable)
-/// implementations that forget to reject unexpected named arguments.
+/// Named argument accessors track which fields the decoder consumes. When the
+/// decoder returns successfully, the registry rejects any unconsumed named
+/// arguments. Positional arguments and output columns are available through
+/// read-only accessors and are not subject to exhaustion checking.
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
     consumed: HashSet<&'a str>,
-    checked: bool,
 }
 
 impl<'a> ArgsExtractor<'a> {
-    /// Create a new extractor for the given arguments
-    pub fn new(args: &'a ExtensionArgs) -> Self {
+    pub(crate) fn new(args: &'a ExtensionArgs) -> Self {
         Self {
             args,
             consumed: HashSet::new(),
-            checked: false,
         }
+    }
+
+    /// Positional arguments, in source order.
+    pub fn positional(&self) -> &'a [ExtensionValue] {
+        &self.args.positional
+    }
+
+    /// Output columns for a custom relation.
+    pub fn output_columns(&self) -> &'a [ExtensionColumn] {
+        &self.args.output_columns
     }
 
     /// Get a named argument value, marking it as consumed if found.
@@ -262,15 +268,8 @@ impl<'a> ArgsExtractor<'a> {
             })
     }
 
-    /// Check that all named arguments in the source have been consumed,
-    /// returning an error if not.
-    ///
-    /// Must be called before the extractor is dropped, to validate that all
-    /// args are correctly handled. In debug builds, dropping without calling
-    /// this method will panic.
-    pub fn check_exhausted(&mut self) -> Result<(), ExtensionError> {
-        self.checked = true;
-
+    /// Finish successful extraction, rejecting unconsumed named arguments.
+    pub(crate) fn finish(self) -> Result<(), ExtensionError> {
         let mut unknown_args = Vec::new();
         for name in self.args.named.keys() {
             if !self.consumed.contains(name.as_str()) {
@@ -288,19 +287,6 @@ impl<'a> ArgsExtractor<'a> {
                 unknown_args.join(", ")
             )))
         }
-    }
-}
-
-impl Drop for ArgsExtractor<'_> {
-    fn drop(&mut self) {
-        if self.checked || std::thread::panicking() {
-            return;
-        }
-        // If we get here, the caller forgot to call check_exhausted().
-        debug_assert!(
-            false,
-            "ArgsExtractor dropped without calling check_exhausted()"
-        );
     }
 }
 
@@ -664,11 +650,6 @@ impl ExtensionArgs {
     {
         self.named.insert(name.into(), value.into())
     }
-
-    /// Create an extractor for validating named arguments
-    pub fn extractor(&self) -> ArgsExtractor<'_> {
-        ArgsExtractor::new(self)
-    }
 }
 
 #[cfg(test)]
@@ -679,18 +660,18 @@ mod tests {
     fn get_named_converts_present_values_and_returns_none_for_missing_values() {
         let mut args = ExtensionArgs::default();
         args.insert("count", 8_i64);
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
 
         assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
         assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
     }
 
     #[test]
     fn get_named_contextualizes_conversion_errors() {
         let mut args = ExtensionArgs::default();
         args.insert("count", "eight");
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
 
         let error = extractor
             .get_named::<i64>("count")
@@ -700,7 +681,7 @@ mod tests {
             error.to_string(),
             "Invalid named argument 'count': Invalid argument: expected integer, got string"
         );
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
     }
 
     #[test]
@@ -714,13 +695,13 @@ mod tests {
     #[test]
     fn expect_named_reports_missing_argument_name() {
         let args = ExtensionArgs::default();
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
 
         let error = extractor
             .expect_named::<i64>("count")
             .expect_err("missing argument should fail");
 
         assert_eq!(error.to_string(), "Missing required argument: count");
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
     }
 }

@@ -10,7 +10,7 @@ use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::r#type::Nullability;
 use substrait_explain::extensions::examples::PartitionHint;
 use substrait_explain::extensions::{
-    EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
+    ArgsExtractor, EnumValue, Explainable, Expr, ExtensionArgs, ExtensionColumn, ExtensionError,
     ExtensionProtoConvert, ExtensionRegistry, ExtensionValue, TupleValue,
 };
 use substrait_explain::{Parser, format_with_registry};
@@ -49,17 +49,14 @@ impl Explainable for UserTableConfig {
         "UserTable"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        let table_name: &str = extractor.expect_named("name")?;
-        let version: i64 = extractor.get_named("version")?.unwrap_or(1);
-        let is_temporary: bool = extractor.get_named("temp")?.unwrap_or(false);
-
-        extractor.check_exhausted()?;
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+        let table_name: &str = args.expect_named("name")?;
+        let version: i64 = args.get_named("version")?.unwrap_or(1);
+        let is_temporary: bool = args.get_named("temp")?.unwrap_or(false);
 
         // Extract columns from output columns to populate tracked_columns
         let mut tracked_columns = Vec::new();
-        for col in &args.output_columns {
+        for col in args.output_columns() {
             match col {
                 ExtensionColumn::Named { name, .. } => {
                     tracked_columns.push(name.clone());
@@ -166,10 +163,8 @@ fn test_multiple_extensions_in_plan() {
             "TestFilter"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let expression: String = extractor.expect_named::<&str>("expr")?.to_string();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+            let expression: String = args.expect_named::<&str>("expr")?.to_string();
 
             Ok(FilterConfig { expression })
         }
@@ -230,13 +225,12 @@ impl Explainable for LiteralConfig {
         "LiteralTest"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        let path: String = extractor.expect_named::<&str>("path")?.to_string();
-        let big: i64 = extractor.expect_named("big")?;
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+        let path: String = args.expect_named::<&str>("path")?.to_string();
+        let big: i64 = args.expect_named("big")?;
 
         // Manually handle ratio to support both Integer and Float types
-        let ratio = match extractor.get_named_arg("ratio") {
+        let ratio = match args.get_named_arg("ratio") {
             Some(ExtensionValue::Float(f)) => *f,
             Some(ExtensionValue::Integer(i)) => *i as f64,
             Some(v) => {
@@ -252,9 +246,7 @@ impl Explainable for LiteralConfig {
             }
         };
 
-        let enabled: bool = extractor.expect_named("enabled")?;
-
-        extractor.check_exhausted()?;
+        let enabled: bool = args.expect_named("enabled")?;
 
         Ok(LiteralConfig {
             path,
@@ -344,9 +336,7 @@ impl Explainable for EmptySource {
         "EmptySource"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        extractor.check_exhausted()?;
+    fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
         Ok(EmptySource {
             marker: "empty".to_string(),
         })
@@ -381,9 +371,7 @@ impl Explainable for ErrorValueExtension {
         "ErrorValueExtension"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        extractor.check_exhausted()?;
+    fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
         Ok(Self {
             marker: "parsed".to_string(),
         })
@@ -499,9 +487,7 @@ impl Explainable for PassThroughWrapper {
         "PassThrough"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        extractor.check_exhausted()?;
+    fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
         Ok(PassThroughWrapper {})
     }
 
@@ -533,9 +519,7 @@ impl Explainable for BinaryMerge {
         "BinaryMerge"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        extractor.check_exhausted()?;
+    fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
         Ok(BinaryMerge {})
     }
 
@@ -684,14 +668,14 @@ impl Explainable for TupleSortHint {
         "TupleSortHint"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        if args.positional.len() != 1 {
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+        if args.positional().len() != 1 {
             return Err(ExtensionError::InvalidArgument(format!(
                 "expected 1 positional tuple arg, got {}",
-                args.positional.len()
+                args.positional().len()
             )));
         }
-        let tv = <&TupleValue>::try_from(&args.positional[0])?;
+        let tv = <&TupleValue>::try_from(&args.positional()[0])?;
         let directions = tv
             .iter()
             .map(|v| {
@@ -699,8 +683,6 @@ impl Explainable for TupleSortHint {
                 Ok(s)
             })
             .collect::<Result<Vec<_>, ExtensionError>>()?;
-        let mut extractor = args.extractor();
-        extractor.check_exhausted()?;
         Ok(TupleSortHint { directions })
     }
 
@@ -761,7 +743,7 @@ fn test_tuple_sort_hint_from_args_rejects_non_tuple() {
     let mut args = ExtensionArgs::default();
     args.positional
         .push(ExtensionValue::Enum("ASC".to_string()));
-    let result = TupleSortHint::from_args(&args);
+    let result = args.parse::<TupleSortHint>();
     assert!(
         result.is_err(),
         "expected error when positional arg is not a tuple"

@@ -26,7 +26,8 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{
-//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+//!     Any, AnyConvertible, AnyRef, ArgsExtractor, Explainable, ExtensionArgs, ExtensionError,
+//!     ExtensionRegistry,
 //! };
 //!
 //! // Define a custom extension type
@@ -59,10 +60,8 @@
 //!         "ParquetScan"
 //!     }
 //!
-//!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-//!         let mut extractor = args.extractor();
-//!         let path: &str = extractor.expect_named("path")?;
-//!         extractor.check_exhausted()?;
+//!     fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+//!         let path: &str = args.expect_named("path")?;
 //!         Ok(CustomScanConfig {
 //!             path: path.to_string(),
 //!         })
@@ -89,7 +88,7 @@ use substrait::proto::r#type::{Nullability, Struct};
 use thiserror::Error;
 
 use crate::extensions::any::{Any, AnyRef};
-use crate::extensions::args::{ExtensionArgs, ExtensionColumn, ExtensionValueKind};
+use crate::extensions::args::{ArgsExtractor, ExtensionArgs, ExtensionColumn, ExtensionValueKind};
 
 /// Type of extension in the registry, used for namespace separation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -288,11 +287,30 @@ pub trait Explainable: Sized {
     /// Substrait text plans and how the registry identifies the type.
     fn name() -> &'static str;
 
-    /// Parse extension arguments into this type
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
+    /// Parse extension arguments into this type.
+    ///
+    /// Named arguments read through `args` are tracked. If this method returns
+    /// successfully, the registry rejects any named arguments it did not read.
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError>;
 
     /// Convert this type to extension arguments
     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
+}
+
+impl ExtensionArgs {
+    /// Parse these arguments with an [`Explainable`] implementation.
+    ///
+    /// If the implementation returns successfully, this rejects any named
+    /// arguments it did not consume. Extraction errors are returned unchanged.
+    pub fn parse<T>(&self) -> Result<T, ExtensionError>
+    where
+        T: Explainable,
+    {
+        let mut extractor = ArgsExtractor::new(self);
+        let value = T::from_args(&mut extractor)?;
+        extractor.finish()?;
+        Ok(value)
+    }
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -334,7 +352,7 @@ struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
-        T::from_args(args)?.to_any()
+        args.parse::<T>()?.to_any()
     }
 
     fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
@@ -699,11 +717,9 @@ mod tests {
             "TestExtension"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let path: String = extractor.expect_named::<&str>("path")?.to_string();
-            let batch_size: i64 = extractor.expect_named("batch_size")?;
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+            let path: String = args.expect_named::<&str>("path")?.to_string();
+            let batch_size: i64 = args.expect_named("batch_size")?;
 
             Ok(TestExtension {
                 path: path.to_string(),
@@ -758,6 +774,44 @@ mod tests {
     }
 
     #[test]
+    fn argument_error_takes_precedence_over_unconsumed_arguments() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("unexpected", true);
+
+        let error = registry
+            .parse_extension("TestExtension", &args)
+            .expect_err("missing path should return an error");
+
+        assert!(matches!(
+            error,
+            ExtensionError::MissingArgument { name } if name == "path"
+        ));
+    }
+
+    #[test]
+    fn successful_decode_rejects_unconsumed_named_arguments() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+        args.insert("unexpected", true);
+
+        let error = registry
+            .parse_extension("TestExtension", &args)
+            .expect_err("unconsumed argument should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid argument: Unknown named arguments: unexpected"
+        );
+    }
+
+    #[test]
     fn test_extension_table_registry_basic() {
         let mut registry = ExtensionRegistry::new();
 
@@ -806,7 +860,7 @@ mod tests {
         });
 
         // Test retrieval - use extractor
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
 
         let path = extractor.get_named_arg("path").unwrap();
         assert_eq!(<&str>::try_from(path).unwrap(), "data/*.parquet");
@@ -815,7 +869,7 @@ mod tests {
         assert_eq!(i64::try_from(batch_size).unwrap(), 1024);
 
         // Verify they were consumed
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
 
         assert_eq!(args.positional.len(), 1);
         assert_eq!(args.output_columns.len(), 1);
@@ -832,18 +886,18 @@ mod tests {
 
         // Missing argument
         let args = ExtensionArgs::default();
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
         let result = extractor.get_named_arg("missing");
         assert!(result.is_none());
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
 
         // Type check example
         let mut args = ExtensionArgs::default();
         args.insert("test", 42_i64);
-        let mut extractor = args.extractor();
+        let mut extractor = ArgsExtractor::new(&args);
         let result = extractor.get_named_arg("test");
         assert_eq!(i64::try_from(result.unwrap()).unwrap(), 42);
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(extractor.finish().is_ok());
     }
 
     // Mock enhancement type for testing namespace separation
@@ -880,10 +934,8 @@ mod tests {
             "TestEnhancement"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named::<&str>("hint")?.to_string();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+            let hint: String = args.expect_named::<&str>("hint")?.to_string();
             Ok(TestEnhancement { hint })
         }
 
@@ -1020,7 +1072,7 @@ mod tests {
             "ConflictingExtension"
         }
 
-        fn from_args(_args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
             Ok(ConflictingExtension)
         }
 

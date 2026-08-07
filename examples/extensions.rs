@@ -15,7 +15,8 @@ use prost::{Message, Name};
 use substrait::proto::{self, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
-    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    AnyConvertible, ArgsExtractor, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+    ExtensionRegistry,
 };
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
@@ -68,19 +69,15 @@ impl Explainable for ParquetScanConfig {
         "TypedParquetScan"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
         // path is required
-        let path: &str = extractor.expect_named("path")?;
+        let path: &str = args.expect_named("path")?;
         // batch_size and use_dictionary are optional, with default values
-        let batch_size: i64 = extractor.get_named("batch_size")?.unwrap_or(1024);
-        let use_dictionary: bool = extractor.get_named("use_dictionary")?.unwrap_or(true);
-
-        // Validate there are no other named arguments
-        extractor.check_exhausted()?;
+        let batch_size: i64 = args.get_named("batch_size")?.unwrap_or(1024);
+        let use_dictionary: bool = args.get_named("use_dictionary")?.unwrap_or(true);
 
         let selected_columns = args
-            .output_columns
+            .output_columns()
             .iter()
             .map(|column| match column {
                 ExtensionColumn::Named { name, r#type } => Ok(ParquetColumn {

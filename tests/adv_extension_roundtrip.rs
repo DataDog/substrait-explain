@@ -165,7 +165,9 @@ Root[result]
 /// A minimal Explainable + prost::Message used to register as an optimization.
 mod opt_fixture {
     use prost::Name;
-    use substrait_explain::extensions::{Explainable, ExtensionArgs, ExtensionError};
+    use substrait_explain::extensions::{
+        ArgsExtractor, Explainable, ExtensionArgs, ExtensionError,
+    };
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct PlanHint {
@@ -191,10 +193,8 @@ mod opt_fixture {
             "PlanHint"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+            let hint: String = args.expect_named::<&str>("hint")?.to_owned();
             Ok(PlanHint { hint })
         }
 
@@ -520,7 +520,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        ArgsExtractor, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -544,11 +544,9 @@ mod extension_child_fixture {
             "TwoColumnScan"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
             // Output columns are validated by the parser; we just ignore them here.
-            let _ = &args.output_columns;
+            let _ = args.output_columns();
             Ok(TwoColumnScan {})
         }
 
@@ -844,7 +842,7 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        ArgsExtractor, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -868,9 +866,7 @@ mod adv_ext_with_columns_fixture {
             "EnhancementWithColumns"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            extractor.check_exhausted()?;
+        fn from_args(_args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
             Ok(EnhancementWithColumns {})
         }
 
