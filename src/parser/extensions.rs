@@ -291,7 +291,7 @@ impl ScopedParsePair for ExtensionValue {
                 ExtensionValue::from(Reference(field_index.0))
             }
             Rule::untyped_literal => {
-                // Literal can contain integer, float, boolean, or string_literal
+                // Literal can contain integer, float, boolean, string_literal, or null.
                 let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
@@ -302,6 +302,7 @@ impl ScopedParsePair for ExtensionValue {
                         ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
                     }
                     Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
+                    Rule::null => ExtensionValue::Null,
                     _ => panic!(
                         "Unexpected extension scalar literal type: {:?}",
                         value_pair.as_rule()
@@ -1004,6 +1005,13 @@ Functions:
 
         let expression = ExtensionValue::from(Expr::from(42_i64));
         assert_eq!(ctx.textify_no_errors(&expression), "42:i64");
+    }
+
+    #[test]
+    fn test_untyped_null_extension_literal_roundtrips() {
+        let value = parse_extension_value("null");
+        assert!(matches!(value, ExtensionValue::Null));
+        assert_eq!(TestContext::new().textify_no_errors(&value), "null");
     }
 
     #[test]
