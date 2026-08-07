@@ -34,7 +34,7 @@ impl Explainable for UserTable {
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
-        let name: &str = extractor.expect_named_arg("name")?;
+        let name: &str = extractor.expect_named("name")?;
 
         extractor.check_exhausted()?;
 

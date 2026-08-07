@@ -906,7 +906,7 @@ Root[result]
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let tag: &str = extractor.expect_named_arg("tag")?;
+            let tag: &str = extractor.expect_named("tag")?;
             extractor.check_exhausted()?;
             Ok(TestSource {
                 tag: tag.to_string(),

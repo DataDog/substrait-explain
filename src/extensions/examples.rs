@@ -138,7 +138,7 @@ impl Explainable for PartitionHint {
             .collect();
 
         let mut extractor = args.extractor();
-        let count: i64 = extractor.get_named_or("count", 0)?;
+        let count: i64 = extractor.get_named("count")?.unwrap_or_default();
         extractor.check_exhausted()?;
 
         Ok(PartitionHint {
@@ -225,7 +225,7 @@ impl Explainable for PlanHint {
         }
 
         let mut extractor = args.extractor();
-        let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
+        let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
         extractor.check_exhausted()?;
         Ok(PlanHint { hint })
     }
@@ -316,8 +316,8 @@ impl Explainable for BlobStoreRead {
 
         let path = <&str>::try_from(&args.positional[0])?.to_owned();
         let mut extractor = args.extractor();
-        let limit: i64 = extractor.get_named_or("limit", 0)?;
-        let include_archived: bool = extractor.get_named_or("include_archived", false)?;
+        let limit: i64 = extractor.get_named("limit")?.unwrap_or_default();
+        let include_archived: bool = extractor.get_named("include_archived")?.unwrap_or(false);
         extractor.check_exhausted()?;
 
         Ok(Self {
