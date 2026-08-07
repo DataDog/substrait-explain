@@ -357,6 +357,78 @@ impl Explainable for EmptySource {
     }
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct ErrorValueExtension {
+    #[prost(string, tag = "1")]
+    marker: String,
+}
+
+impl Name for ErrorValueExtension {
+    const NAME: &'static str = "ErrorValueExtension";
+    const PACKAGE: &'static str = "test";
+
+    fn full_name() -> String {
+        "test.ErrorValueExtension".to_string()
+    }
+
+    fn type_url() -> String {
+        "type.googleapis.com/test.ErrorValueExtension".to_string()
+    }
+}
+
+impl Explainable for ErrorValueExtension {
+    fn name() -> &'static str {
+        "ErrorValueExtension"
+    }
+
+    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        let mut extractor = args.extractor();
+        extractor.check_exhausted()?;
+        Ok(Self {
+            marker: "parsed".to_string(),
+        })
+    }
+
+    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::default();
+        args.insert(
+            "bad",
+            ExtensionValue::Error(ExtensionError::Custom("malformed field".to_string())),
+        );
+        args.insert("good", "continues");
+        Ok(args)
+    }
+}
+
+#[test]
+fn test_extension_value_error_does_not_stop_later_args() {
+    let mut registry = ExtensionRegistry::new();
+    registry.register_relation::<ErrorValueExtension>().unwrap();
+
+    let plan_text = r#"
+=== Plan
+Root[result]
+  ExtensionLeaf:ErrorValueExtension[_ => ]
+"#;
+
+    let parser = Parser::new().with_extension_registry(registry.clone());
+    let plan = parser
+        .parse_plan(plan_text)
+        .expect("Failed to parse extension");
+
+    let (formatted, errors) = format_with_registry(&plan, &Default::default(), &registry);
+    assert!(
+        formatted.contains("bad=!{extension}, good='continues'"),
+        "expected the later argument after the failure token, got:\n{formatted}"
+    );
+    assert_eq!(errors.len(), 1, "expected one field error, got: {errors:?}");
+    assert!(
+        errors[0].to_string().contains("malformed field"),
+        "expected the original extension error, got: {:?}",
+        errors[0]
+    );
+}
+
 #[test]
 fn test_extension_empty_args_roundtrip() {
     let mut registry = ExtensionRegistry::new();

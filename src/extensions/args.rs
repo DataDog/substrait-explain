@@ -371,6 +371,8 @@ pub enum ExtensionValue {
     Boolean(bool),
     /// An untyped null literal.
     Null,
+    /// A conversion or formatting error preserved for best-effort textification.
+    Error(ExtensionError),
 
     /// Substrait expression value, including typed literals and field references.
     ///
@@ -395,6 +397,7 @@ pub enum ExtensionValueKind {
     Float,
     Boolean,
     Null,
+    Error,
     Reference,
     Enum,
     Tuple,
@@ -409,6 +412,7 @@ impl fmt::Display for ExtensionValueKind {
             ExtensionValueKind::Float => write!(f, "float"),
             ExtensionValueKind::Boolean => write!(f, "boolean"),
             ExtensionValueKind::Null => write!(f, "null"),
+            ExtensionValueKind::Error => write!(f, "error"),
             ExtensionValueKind::Reference => write!(f, "reference"),
             ExtensionValueKind::Enum => write!(f, "enum"),
             ExtensionValueKind::Tuple => write!(f, "tuple"),
@@ -426,10 +430,17 @@ impl ExtensionValue {
             ExtensionValue::Float(_) => ExtensionValueKind::Float,
             ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
             ExtensionValue::Null => ExtensionValueKind::Null,
+            ExtensionValue::Error(_) => ExtensionValueKind::Error,
             ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
             ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
             ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
         }
+    }
+}
+
+impl From<ExtensionError> for ExtensionValue {
+    fn from(error: ExtensionError) -> Self {
+        ExtensionValue::Error(error)
     }
 }
 
@@ -488,9 +499,12 @@ impl From<&str> for ExtensionValue {
 }
 
 fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> ExtensionError {
-    ExtensionError::InvalidArgumentType {
-        expected,
-        actual: actual.kind(),
+    match actual {
+        ExtensionValue::Error(error) => error.clone(),
+        _ => ExtensionError::InvalidArgumentType {
+            expected,
+            actual: actual.kind(),
+        },
     }
 }
 
@@ -687,6 +701,14 @@ mod tests {
             "Invalid named argument 'count': Invalid argument: expected integer, got string"
         );
         assert!(extractor.check_exhausted().is_ok());
+    }
+
+    #[test]
+    fn error_value_preserves_error_during_conversion() {
+        let value = ExtensionValue::Error(ExtensionError::Custom("bad value".to_string()));
+
+        let error = i64::try_from(&value).expect_err("error value should not convert");
+        assert!(matches!(error, ExtensionError::Custom(message) if message == "bad value"));
     }
 
     #[test]

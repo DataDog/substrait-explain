@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use crate::FormatError;
 use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
 use crate::textify::foundation::{Scope, Textify};
 use crate::textify::types::{Name, escaped};
@@ -40,6 +41,9 @@ impl Textify for ExtensionValue {
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Null => write!(w, "null"),
+            ExtensionValue::Error(error) => {
+                write!(w, "{}", ctx.failure(FormatError::Extension(error.clone())))
+            }
             ExtensionValue::Expr(expr) => expr.textify(ctx, w),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Tuple(tv) => tv.textify(ctx, w),
