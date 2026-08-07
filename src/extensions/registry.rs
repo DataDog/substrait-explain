@@ -26,8 +26,8 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{
-//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
-//!     ExtensionRegistry,
+//!     Any, AnyConvertible, AnyRef, ArgsAccess, Explainable, ExtensionArgs, ExtensionContext,
+//!     ExtensionError, ExtensionRegistry,
 //! };
 //!
 //! // Define a custom extension type
@@ -60,10 +60,8 @@
 //!         "ParquetScan"
 //!     }
 //!
-//!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-//!         let mut extractor = args.extractor();
-//!         let path: &str = extractor.expect_named("path")?;
-//!         extractor.check_exhausted()?;
+//!     fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+//!         let path: &str = args.expect_named("path")?;
 //!         Ok(CustomScanConfig {
 //!             path: path.to_string(),
 //!         })
@@ -94,7 +92,7 @@ use substrait::proto::r#type::{Nullability, Struct};
 use thiserror::Error;
 
 use crate::extensions::any::{Any, AnyRef};
-use crate::extensions::args::{ExtensionArgs, ExtensionColumn, ExtensionValueKind};
+use crate::extensions::args::{ArgsAccess, ExtensionArgs, ExtensionColumn, ExtensionValueKind};
 
 /// Type of extension in the registry, used for namespace separation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -173,7 +171,7 @@ pub enum ExtensionError {
     #[error("Extension '{name}' not found in registry")]
     NotFound { name: String },
 
-    /// Required argument not present (from ArgsExtractor)
+    /// A required named argument was not present.
     #[error("Missing required argument: {name}")]
     MissingArgument { name: String },
 
@@ -335,16 +333,26 @@ impl ExtensionProtoConvert<Vec<ExtensionColumn>> for NamedStruct {
     }
 }
 
-/// Trait for types that participate in text explanations.
+/// Maps a registered extension type to and from text-format arguments.
+///
+/// Implement this trait for each protobuf extension type you register with an
+/// [`ExtensionRegistry`].
 pub trait Explainable: Sized {
-    /// Canonical textual name for this extension. This is what appears in
-    /// Substrait text plans and how the registry identifies the type.
+    /// Returns the name used in the text format and the extension registry.
     fn name() -> &'static str;
 
-    /// Parse extension arguments into this type
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
+    /// Builds your extension value from its text-format arguments.
+    ///
+    /// Read every named and positional argument the extension accepts from
+    /// `args`. After this method returns `Ok`, [`ExtensionArgs::parse`] and the
+    /// registry reject any arguments you did not access. If it returns `Err`,
+    /// they return that error without checking for unhandled arguments. Output
+    /// columns are not included in this check.
+    fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError>;
 
-    /// Convert this type to extension arguments
+    /// Builds the text-format arguments for this value.
+    ///
+    /// The [`context`](ExtensionContext) provides the relation's inputs.
     fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError>;
 }
 
@@ -391,7 +399,7 @@ struct ExtensionAdapter<T>(PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
-        T::from_args(args)?.to_any()
+        args.parse::<T>()?.to_any()
     }
 
     fn textify_detail(
@@ -779,11 +787,9 @@ mod tests {
             "TestExtension"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let path: String = extractor.expect_named::<&str>("path")?.to_string();
-            let batch_size: i64 = extractor.expect_named("batch_size")?;
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+            let path: String = args.expect_named::<&str>("path")?.to_string();
+            let batch_size: i64 = args.expect_named("batch_size")?;
 
             Ok(TestExtension {
                 path: path.to_string(),
@@ -863,6 +869,64 @@ mod tests {
     }
 
     #[test]
+    fn argument_error_takes_precedence_over_unhandled_arguments() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("unexpected", true);
+
+        let error = registry
+            .parse_extension("TestExtension", &args)
+            .expect_err("missing path should return an error");
+
+        assert!(matches!(
+            error,
+            ExtensionError::MissingArgument { name } if name == "path"
+        ));
+    }
+
+    #[test]
+    fn successful_decode_rejects_unhandled_named_arguments() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+        args.insert("unexpected", true);
+
+        let error = registry
+            .parse_extension("TestExtension", &args)
+            .expect_err("unhandled argument should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid argument: Unknown named arguments: unexpected"
+        );
+    }
+
+    #[test]
+    fn successful_decode_rejects_unhandled_positional_arguments() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.push(true);
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+
+        let error = registry
+            .parse_extension("TestExtension", &args)
+            .expect_err("unhandled positional argument should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid argument: Unhandled positional arguments: 1"
+        );
+    }
+
+    #[test]
     fn test_extension_table_registry_basic() {
         let mut registry = ExtensionRegistry::new();
 
@@ -911,17 +975,17 @@ mod tests {
             r#type: parse_type("i32"),
         });
 
-        // Test retrieval - use extractor
-        let mut extractor = args.extractor();
+        let mut access = ArgsAccess::new(&args);
 
-        let path = extractor.get_named_arg("path").unwrap();
+        let path = access.get_named_arg("path").unwrap();
         assert_eq!(<&str>::try_from(path).unwrap(), "data/*.parquet");
 
-        let batch_size = extractor.get_named_arg("batch_size").unwrap();
+        let batch_size = access.get_named_arg("batch_size").unwrap();
         assert_eq!(i64::try_from(batch_size).unwrap(), 1024);
+        assert_eq!(access.positional().len(), 1);
 
-        // Verify they were consumed
-        assert!(extractor.check_exhausted().is_ok());
+        // Output columns are not part of argument validation.
+        assert!(access.finish().is_ok());
 
         assert_eq!(args.positional.len(), 1);
         assert_eq!(args.output_columns.len(), 1);
@@ -936,20 +1000,18 @@ mod tests {
         let result = registry.parse_extension("NonExistent", &args);
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
 
-        // Missing argument
         let args = ExtensionArgs::default();
-        let mut extractor = args.extractor();
-        let result = extractor.get_named_arg("missing");
+        let mut access = ArgsAccess::new(&args);
+        let result = access.get_named_arg("missing");
         assert!(result.is_none());
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(access.finish().is_ok());
 
-        // Type check example
         let mut args = ExtensionArgs::default();
         args.insert("test", 42_i64);
-        let mut extractor = args.extractor();
-        let result = extractor.get_named_arg("test");
+        let mut access = ArgsAccess::new(&args);
+        let result = access.get_named_arg("test");
         assert_eq!(i64::try_from(result.unwrap()).unwrap(), 42);
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(access.finish().is_ok());
     }
 
     // Mock enhancement type for testing namespace separation
@@ -986,10 +1048,8 @@ mod tests {
             "TestEnhancement"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named::<&str>("hint")?.to_string();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+            let hint: String = args.expect_named::<&str>("hint")?.to_string();
             Ok(TestEnhancement { hint })
         }
 
@@ -1129,7 +1189,7 @@ mod tests {
             "ConflictingExtension"
         }
 
-        fn from_args(_args: &ExtensionArgs) -> Result<Self, ExtensionError> {
+        fn from_args(_args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
             Ok(ConflictingExtension)
         }
 

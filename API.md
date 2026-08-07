@@ -101,7 +101,7 @@ Substrait has two extension mechanisms:
 
 - **Simple extensions** declare extension functions, types, and type variations.
   `substrait-explain` reads and writes these declarations in the `===
-  Extensions` section and uses them to resolve anchors while parsing and
+Extensions` section and uses them to resolve anchors while parsing and
   formatting expressions and types. No YAML files are read; substrait-explain
   relies on the protobufs / text format itself for function names, and does not
   validate type signatures exist / match extensions.
@@ -137,9 +137,10 @@ extension arguments. `substrait-explain` handles parsing and rendering the text
 syntax around those arguments:
 
 - `name()` - The extension name used in text (e.g., `"ParquetScan"`)
-- `from_args(args)` - Parse text arguments into your type
-- `to_args(&self, context)` - Convert your type to text arguments, optionally
-  using information about relation inputs.
+- `from_args(args)` - Build your extension value from text arguments with
+  `ArgsAccess`
+- `to_args(&self, context)` - Convert your extension value to text arguments,
+  optionally using information about relation inputs
 
 The extension API works across three representations:
 
@@ -151,7 +152,7 @@ The extension API works across three representations:
 Untyped scalar extension literals such as `2` or `'path'` are represented as
 scalar `ExtensionValue` variants and render without expression type suffixes,
 even in verbose output. The same values can still be requested as `Expr` through
-`ArgsExtractor`, which widens them to default non-nullable Substrait literal
+`ArgsAccess`, which widens them to default non-nullable Substrait literal
 expressions. Typed literals, field references, function calls, and casts are
 represented as expression values.
 
@@ -164,11 +165,21 @@ The `to_args` method receives an `ExtensionContext`. Relation extensions get one
 emitted column count, including any output mapping applied by that child. Other
 extension namespaces receive an empty input slice.
 
-Use `ArgsExtractor` for convenient argument parsing:
+### Reading Extension Arguments
 
-- `extractor.expect_named::<T>(name)` - Required argument
-- `extractor.get_named::<T>(name)?` - Optional argument, returning `Option<T>`
-- `extractor.check_exhausted()` - Verify no unexpected arguments
+The registry passes [`ArgsAccess`] to your [`Explainable::from_args`]
+implementation. It provides access to positional arguments, named arguments,
+and the relation's output columns declared by custom relations.
+
+If `from_args` returns successfully, the registry rejects any positional or
+named arguments the implementation did not access. If `from_args` returns an
+error, the registry preserves that error without checking for unhandled
+arguments. Output columns are relation metadata and are not included in this
+check.
+
+Call [`ExtensionArgs::parse`](extensions::ExtensionArgs::parse) to perform the
+same checked conversion directly, such as when testing an `Explainable`
+implementation.
 
 ### Extension Namespaces
 
@@ -189,7 +200,8 @@ Register extensions to the appropriate namespace:
 ```rust,no_run
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
-#     Explainable, ExtensionArgs, ExtensionContext, ExtensionError, ExtensionRegistry,
+#     ArgsAccess, Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+#     ExtensionRegistry,
 # };
 #[derive(Clone, PartialEq, Message)]
 pub struct MySourceConfig {
@@ -204,7 +216,9 @@ impl Name for MySourceConfig {
 }
 # impl Explainable for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
-#     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
+#     fn from_args(_: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+#         Ok(Self::default())
+#     }
 #     fn to_args(
 #         &self,
 #         _context: &ExtensionContext<'_>,

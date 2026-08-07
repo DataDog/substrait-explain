@@ -2,7 +2,7 @@
 
 // Used as links in API.md
 #[cfg(doc)]
-pub use extensions::{AnyConvertible, Explainable, ExtensionRegistry};
+pub use extensions::{AnyConvertible, ArgsAccess, Explainable, ExtensionRegistry};
 
 pub mod extensions;
 pub mod grammar;

@@ -4,7 +4,8 @@ mod common;
 
 use prost::{Message, Name};
 use substrait_explain::extensions::{
-    Explainable, ExtensionArgs, ExtensionContext, ExtensionError, ExtensionRegistry, examples,
+    ArgsAccess, Explainable, ExtensionArgs, ExtensionContext, ExtensionError, ExtensionRegistry,
+    examples,
 };
 use substrait_explain::{Parser, format_with_registry};
 
@@ -32,11 +33,8 @@ impl Explainable for UserTable {
         "UserTable"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut extractor = args.extractor();
-        let name: &str = extractor.expect_named("name")?;
-
-        extractor.check_exhausted()?;
+    fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+        let name: &str = args.expect_named("name")?;
 
         Ok(Self {
             name: name.to_string(),
