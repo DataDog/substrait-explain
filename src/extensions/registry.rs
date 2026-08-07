@@ -132,6 +132,14 @@ pub enum ExtensionError {
     #[error("Missing required argument: {name}")]
     MissingArgument { name: String },
 
+    /// A named argument failed conversion to the requested type.
+    #[error("Invalid named argument '{name}': {source}")]
+    NamedArgumentConversion {
+        name: String,
+        #[source]
+        source: Box<ExtensionError>,
+    },
+
     /// Invalid argument type found while extracting an extension argument.
     #[error("Invalid argument: expected {expected}, got {actual}")]
     InvalidArgumentType {
