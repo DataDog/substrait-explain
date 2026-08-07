@@ -241,7 +241,12 @@ impl<'a> ArgsExtractor<'a> {
         T::Error: Into<ExtensionError>,
     {
         self.get_named_arg(name)
-            .map(|value| T::try_from(value).map_err(Into::into))
+            .map(|value| {
+                T::try_from(value).map_err(|error| ExtensionError::NamedArgumentConversion {
+                    name: name.to_string(),
+                    source: Box::new(error.into()),
+                })
+            })
             .transpose()
     }
 
@@ -661,6 +666,23 @@ mod tests {
 
         assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
         assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
+        assert!(extractor.check_exhausted().is_ok());
+    }
+
+    #[test]
+    fn get_named_contextualizes_conversion_errors() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", "eight");
+        let mut extractor = args.extractor();
+
+        let error = extractor
+            .get_named::<i64>("count")
+            .expect_err("string should not convert to i64");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid named argument 'count': Invalid argument: expected integer, got string"
+        );
         assert!(extractor.check_exhausted().is_ok());
     }
 
