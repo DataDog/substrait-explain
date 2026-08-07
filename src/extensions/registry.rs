@@ -185,6 +185,14 @@ pub enum ExtensionError {
         source: Box<ExtensionError>,
     },
 
+    /// An argument containing an earlier error could not be converted.
+    #[error("Cannot convert argument to {expected}: {source}")]
+    ArgumentConversion {
+        expected: ExtensionValueKind,
+        #[source]
+        source: Box<ExtensionError>,
+    },
+
     /// Invalid argument type found while extracting an extension argument.
     #[error("Invalid argument: expected {expected}, got {actual}")]
     InvalidArgumentType {

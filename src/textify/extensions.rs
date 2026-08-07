@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use crate::FormatError;
 use crate::extensions::{Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, TupleValue};
 use crate::textify::foundation::{Scope, Textify};
 use crate::textify::types::{Name, escaped};
@@ -40,6 +41,9 @@ impl Textify for ExtensionValue {
             ExtensionValue::Float(f) => write!(w, "{f}"),
             ExtensionValue::Boolean(b) => write!(w, "{b}"),
             ExtensionValue::Null => write!(w, "null"),
+            ExtensionValue::Error(error) => {
+                write!(w, "{}", ctx.failure(FormatError::Extension(error.clone())))
+            }
             ExtensionValue::Expr(expr) => expr.textify(ctx, w),
             ExtensionValue::Enum(e) => write!(w, "&{e}"),
             ExtensionValue::Tuple(tv) => tv.textify(ctx, w),
@@ -109,5 +113,28 @@ impl Textify for ExtensionArgs {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensions::ExtensionError;
+    use crate::fixtures::TestContext;
+
+    #[test]
+    fn error_value_renders_failure_and_continues() {
+        let mut args = ExtensionArgs::default();
+        args.insert("bad", ExtensionError::Custom("malformed field".to_string()));
+        args.insert("good", "continues");
+
+        let (rendered, errors) = TestContext::new().textify(&args);
+
+        assert_eq!(rendered, "bad=!{extension}, good='continues'");
+        assert!(matches!(
+            errors.0.as_slice(),
+            [FormatError::Extension(ExtensionError::Custom(message))]
+                if message == "malformed field"
+        ));
     }
 }
