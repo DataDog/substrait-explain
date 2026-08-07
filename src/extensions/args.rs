@@ -196,27 +196,33 @@ pub struct ExtensionArgs {
     pub output_columns: Vec<ExtensionColumn>,
 }
 
-/// Helper struct for extracting named arguments with validation.
+/// Arguments presented to an [`Explainable`](super::Explainable) decoder.
 ///
-/// Tracks which arguments have been consumed. Callers **must** call
-/// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
-/// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic. This catches [`Explainable`](super::Explainable)
-/// implementations that forget to reject unexpected named arguments.
+/// Named argument accessors track which fields the decoder consumes. When the
+/// decoder returns successfully, the registry rejects any unconsumed named
+/// arguments. Positional arguments and output columns are available through
+/// read-only accessors and are not subject to exhaustion checking.
 pub struct ArgsExtractor<'a> {
     args: &'a ExtensionArgs,
     consumed: HashSet<&'a str>,
-    checked: bool,
 }
 
 impl<'a> ArgsExtractor<'a> {
-    /// Create a new extractor for the given arguments
-    pub fn new(args: &'a ExtensionArgs) -> Self {
+    pub(crate) fn new(args: &'a ExtensionArgs) -> Self {
         Self {
             args,
             consumed: HashSet::new(),
-            checked: false,
         }
+    }
+
+    /// Positional arguments, in source order.
+    pub fn positional(&self) -> &'a [ExtensionValue] {
+        &self.args.positional
+    }
+
+    /// Output columns for a custom relation.
+    pub fn output_columns(&self) -> &'a [ExtensionColumn] {
+        &self.args.output_columns
     }
 
     /// Get a named argument value, marking it as consumed if found.
@@ -230,43 +236,40 @@ impl<'a> ArgsExtractor<'a> {
         }
     }
 
-    /// Get a named argument value or return an error
-    /// Marks the argument as consumed if found
-    pub fn expect_named_arg<T>(&mut self, name: &str) -> Result<T, ExtensionError>
-    where
-        T: TryFrom<&'a ExtensionValue>,
-        T::Error: Into<ExtensionError>,
-    {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(ExtensionError::MissingArgument {
-                name: name.to_string(),
-            }),
-        }
-    }
-
-    /// Get a named argument value or default
-    /// Marks the argument as consumed if it exists in the source args
-    pub fn get_named_or<T>(&mut self, name: &str, default: T) -> Result<T, ExtensionError>
-    where
-        T: TryFrom<&'a ExtensionValue>,
-        T::Error: Into<ExtensionError>,
-    {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Ok(default),
-        }
-    }
-
-    /// Check that all named arguments in the source have been consumed,
-    /// returning an error if not.
+    /// Get a named argument converted to `T`, or `None` if it is absent.
     ///
-    /// Must be called before the extractor is dropped, to validate that all
-    /// args are correctly handled. In debug builds, dropping without calling
-    /// this method will panic.
-    pub fn check_exhausted(&mut self) -> Result<(), ExtensionError> {
-        self.checked = true;
+    /// Marks the argument as consumed if it exists in the source args.
+    pub fn get_named<T>(&mut self, name: &str) -> Result<Option<T>, ExtensionError>
+    where
+        T: TryFrom<&'a ExtensionValue>,
+        T::Error: Into<ExtensionError>,
+    {
+        self.get_named_arg(name)
+            .map(|value| {
+                T::try_from(value).map_err(|error| ExtensionError::NamedArgumentConversion {
+                    name: name.to_string(),
+                    source: Box::new(error.into()),
+                })
+            })
+            .transpose()
+    }
 
+    /// Get a required named argument converted to `T`.
+    ///
+    /// Marks the argument as consumed if found.
+    pub fn expect_named<T>(&mut self, name: &str) -> Result<T, ExtensionError>
+    where
+        T: TryFrom<&'a ExtensionValue>,
+        T::Error: Into<ExtensionError>,
+    {
+        self.get_named(name)?
+            .ok_or_else(|| ExtensionError::MissingArgument {
+                name: name.to_string(),
+            })
+    }
+
+    /// Finish successful extraction, rejecting unconsumed named arguments.
+    pub(crate) fn finish(self) -> Result<(), ExtensionError> {
         let mut unknown_args = Vec::new();
         for name in self.args.named.keys() {
             if !self.consumed.contains(name.as_str()) {
@@ -284,19 +287,6 @@ impl<'a> ArgsExtractor<'a> {
                 unknown_args.join(", ")
             )))
         }
-    }
-}
-
-impl Drop for ArgsExtractor<'_> {
-    fn drop(&mut self) {
-        if self.checked || std::thread::panicking() {
-            return;
-        }
-        // If we get here, the caller forgot to call check_exhausted().
-        debug_assert!(
-            false,
-            "ArgsExtractor dropped without calling check_exhausted()"
-        );
     }
 }
 
@@ -365,6 +355,10 @@ pub enum ExtensionValue {
     Integer(i64),
     Float(f64),
     Boolean(bool),
+    /// An untyped null literal.
+    Null,
+    /// A conversion or formatting error preserved for best-effort textification.
+    Error(ExtensionError),
 
     /// Substrait expression value, including typed literals and field references.
     ///
@@ -388,6 +382,8 @@ pub enum ExtensionValueKind {
     Integer,
     Float,
     Boolean,
+    Null,
+    Error,
     Reference,
     Enum,
     Tuple,
@@ -401,6 +397,8 @@ impl fmt::Display for ExtensionValueKind {
             ExtensionValueKind::Integer => write!(f, "integer"),
             ExtensionValueKind::Float => write!(f, "float"),
             ExtensionValueKind::Boolean => write!(f, "boolean"),
+            ExtensionValueKind::Null => write!(f, "null"),
+            ExtensionValueKind::Error => write!(f, "error"),
             ExtensionValueKind::Reference => write!(f, "reference"),
             ExtensionValueKind::Enum => write!(f, "enum"),
             ExtensionValueKind::Tuple => write!(f, "tuple"),
@@ -417,10 +415,18 @@ impl ExtensionValue {
             ExtensionValue::Integer(_) => ExtensionValueKind::Integer,
             ExtensionValue::Float(_) => ExtensionValueKind::Float,
             ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
+            ExtensionValue::Null => ExtensionValueKind::Null,
+            ExtensionValue::Error(_) => ExtensionValueKind::Error,
             ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
             ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
             ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
         }
+    }
+}
+
+impl From<ExtensionError> for ExtensionValue {
+    fn from(error: ExtensionError) -> Self {
+        ExtensionValue::Error(error)
     }
 }
 
@@ -479,9 +485,12 @@ impl From<&str> for ExtensionValue {
 }
 
 fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> ExtensionError {
-    ExtensionError::InvalidArgumentType {
-        expected,
-        actual: actual.kind(),
+    match actual {
+        ExtensionValue::Error(error) => error.clone(),
+        _ => ExtensionError::InvalidArgumentType {
+            expected,
+            actual: actual.kind(),
+        },
     }
 }
 
@@ -641,9 +650,58 @@ impl ExtensionArgs {
     {
         self.named.insert(name.into(), value.into())
     }
+}
 
-    /// Create an extractor for validating named arguments
-    pub fn extractor(&self) -> ArgsExtractor<'_> {
-        ArgsExtractor::new(self)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_named_converts_present_values_and_returns_none_for_missing_values() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", 8_i64);
+        let mut extractor = ArgsExtractor::new(&args);
+
+        assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
+        assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
+        assert!(extractor.finish().is_ok());
+    }
+
+    #[test]
+    fn get_named_contextualizes_conversion_errors() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", "eight");
+        let mut extractor = ArgsExtractor::new(&args);
+
+        let error = extractor
+            .get_named::<i64>("count")
+            .expect_err("string should not convert to i64");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid named argument 'count': Invalid argument: expected integer, got string"
+        );
+        assert!(extractor.finish().is_ok());
+    }
+
+    #[test]
+    fn error_value_preserves_error_during_conversion() {
+        let value = ExtensionValue::Error(ExtensionError::Custom("bad value".to_string()));
+
+        let error = i64::try_from(&value).expect_err("error value should not convert");
+        assert!(matches!(error, ExtensionError::Custom(message) if message == "bad value"));
+    }
+
+    #[test]
+    fn expect_named_reports_missing_argument_name() {
+        let args = ExtensionArgs::default();
+        let mut extractor = ArgsExtractor::new(&args);
+
+        let error = extractor
+            .expect_named::<i64>("count")
+            .expect_err("missing argument should fail");
+
+        assert_eq!(error.to_string(), "Missing required argument: count");
+        assert!(extractor.finish().is_ok());
     }
 }

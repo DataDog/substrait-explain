@@ -8,7 +8,7 @@
 use substrait::proto;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
-    Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    ArgsExtractor, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
 };
 use substrait_explain::json::{build_descriptor_pool, parse_json};
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
@@ -27,11 +27,9 @@ impl Explainable for ParquetScanConfig {
         "ParquetScan"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        let mut x = args.extractor();
-        let path: &str = x.expect_named_arg("path")?;
-        let batch_size: i64 = x.get_named_or("batch_size", 1024)?;
-        x.check_exhausted()?;
+    fn from_args(args: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> {
+        let path: &str = args.expect_named("path")?;
+        let batch_size: i64 = args.get_named("batch_size")?.unwrap_or(1024);
         Ok(Self {
             path: path.to_string(),
             batch_size,

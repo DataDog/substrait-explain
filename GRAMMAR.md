@@ -63,6 +63,7 @@ This document uses **PEG (Parsing Expression Grammar)** notation:
 - **`element+`** - One or more repetitions
 - **`element1 / element2`** - Choice (try element1 first)
   - _Implementation Note: Pest uses `|` instead of `/`_
+- **`!element`** - Negative lookahead (the next input must not match `element`)
 - **`element1 element2`** - Sequence
   - _Implementation Note: Pest uses `~` for explicit concatenation_
 
@@ -218,32 +219,21 @@ Enum fields in arguments are represented as &-prefixed variants (e.g., `&AscNull
 
 - `&AscNullsFirst`, `&AscNullsLast`, `&DescNullsFirst`, `&DescNullsLast` - sort directions
 
-### `literal`
+### Scalar values
 
-A literal can be an integer, float, boolean, string, or null. Literals may include a type annotation:
-
-`literal := (float / integer / boolean / string / "null") (":" type)?`
+These terminals describe the scalar tokens used by expression literals and by
+relation-specific arguments. Their meaning and accepted type annotations depend
+on the production in which they appear.
 
 - **`integer`**` := "-"? digit+`
   - Examples: `42`, `-10`, `0`
-  - Default to `i64` type; other integer types may be assigned
 - **`float`**` := "-"? digit+ "." digit+`
   - Examples: `3.14`, `-2.5`, `1.0`
-  - Default to `fp64` type; other float types may be assigned
 - **`boolean`**` := "true" / "false"`
   - Examples: `true`, `false`
-  - May only be boolean type
 - **`string`**` := "'" ("\\" . / !"'" .)* "'"`
   - Examples: `'hello'`, `'table name'`, `'C:\path\to\file'`, `'line1\nline2'`, `'quote\'s here'`
-  - Default to `string` type; other types may also be assigned
 - **`null`**` := "null"`
-  - Examples: `null:i64?`, `null:string?`, `null:date?`
-  - A type annotation is required for `null`
-- **`typed_literal`**` := string ":" type`
-  - String literals with type annotations for non-primitive types
-  - Examples: `'2023-01-01':date`, `'2023-12-25T14:30:45.123':timestamp`, `'2023-01-01T12:00:00.123456789':precisiontimestamp<9>`, `'14:30:45.123456':precisiontime<6>`
-
-All basic literal types (`integer`, `float`, `boolean`, and `string`) are supported, plus `date`, `time`, `timestamp`, `precisiontime`, `precisiontimestamp`, `precisiontimestamptz`, and typed null literals. Other Substrait literal types (e.g., `interval_year`, `decimal`, `uuid`) are not yet implemented. The deprecated `timestamp_tz` literal is also not yet implemented; use `precisiontimestamptz<6>` instead.
 
 ## Types
 
@@ -421,6 +411,33 @@ add($3, 10):i64              // Simple function call with required output type
 add#10@2($3, 10):i64         // Function call with anchors and output type
 ```
 
+### Literals
+
+A literal in an expression represents a Substrait `Literal` expression and
+therefore always has a type. The text format may infer the conventional type
+for a non-null scalar when its type annotation is omitted:
+
+```text
+literal := (float / integer / boolean / string) (":" type)?
+         / "null" ":" type
+```
+
+- An unannotated `integer` has type `i64`; an annotation can select another
+  integer type, as in `5:i16`.
+- An unannotated `float` has type `fp64`; an annotation can select another
+  floating-point type.
+- A `boolean` may only have boolean type.
+- An unannotated `string` has type `string`. String values may be annotated as
+  other supported literal types, such as `'2023-01-01':date`.
+- A `null` literal requires an explicit type, such as `null:i64?`,
+  `null:string?`, or `null:date?`.
+
+The supported non-primitive literal types are `date`, `time`, `timestamp`,
+`precisiontime`, `precisiontimestamp`, and `precisiontimestamptz`. Other
+Substrait literal types, including `interval_year`, `decimal`, and `uuid`, are
+not yet implemented. The deprecated `timestamp_tz` literal is also not
+implemented; use `precisiontimestamptz<6>` instead.
+
 ### Field References
 
 Currently, only references to fields in the Relations' input are supported.
@@ -571,31 +588,16 @@ The exact structure varies by relation type, but all follow this basic pattern.
 
 ### Arguments
 
-Arguments in relations can be literals, expressions, enums, or tuples thereof.
+There is no single argument production shared by every relation. Bracketed
+arguments map to relation-specific Substrait fields, and each relation grammar
+below defines the forms it accepts. Common forms include expressions, enum
+values, field references, named scalar fields such as `limit=10`, and tuples
+whose element structure is defined by that relation.
 
-#### Syntax
-
-```text
-argument := enum / reference / literal / expression / tuple
-tuple := "(" ")"                                        // 0-tuple
-       / "(" argument "," ")"                           // 1-tuple (trailing comma required)
-       / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
-arguments := argument ("," argument)*
-named_arguments := name "=" argument ("," name "=" argument)*
-```
-
-Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
-expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to
-form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and
-`(x, y,)` are equivalent.
-
-#### Examples
-
-- Simple arguments: `$0`, `42`, `'hello'`, `&AscNullsFirst`
-- 0-tuple: `()`
-- 1-tuple: `(&HASH,)` — trailing comma required
-- 2+-tuple: `($0, &AscNullsFirst)`, `(&HASH, &RANGE,)`
-- Named arguments: `limit=10`, `offset=5`
+For example, `Project` accepts expressions, while `Fetch` defines `limit` and
+`offset` fields that each accept an integer or expression. A scalar token used
+as a relation field does not independently carry a type annotation; the
+relation grammar determines its meaning.
 
 ### Root Relation
 
@@ -1121,7 +1123,11 @@ extension_relation := extension_type ":" name "[" (empty / extension_args)? ("=>
 extension_type := "ExtensionLeaf" / "ExtensionSingle" / "ExtensionMulti"
 extension_args := (positional_args ("," named_args)?) / named_args
 positional_args := extension_arg ("," extension_arg)*
-extension_arg := enum / reference / literal / expression / tuple
+extension_arg := enum / extension_scalar / expression / tuple
+extension_scalar := (float / integer / boolean / string / "null") !":"
+tuple := "(" ")"
+       / "(" extension_arg "," ")"
+       / "(" extension_arg ("," extension_arg)+ ","? ")"
 named_args := named_arg ("," named_arg)*
 named_arg := name "=" extension_arg
 extension_columns := (extension_column ("," extension_column)*)?
@@ -1138,13 +1144,21 @@ Note: the parser also accepts the `=>` section being omitted entirely (e.g. `Ext
 - **`extension_args`** - Positional arguments (enums, references, literals, expressions, or tuples) and/or named arguments (`key=value` pairs); both are optional
 - **`extension_columns`** - Output column definitions: named columns (`name:type`), field references (`$0`), or expressions
 
-Untyped scalar extension arguments such as `2`, `2.4`, `true`, and `'path'`
-are treated as extension scalar values and render without expression type
-suffixes, even in verbose output. They can still be consumed by extension
-handlers as expressions, in which case they widen to default non-nullable
-Substrait literal expressions. Typed literals such as `2:i16` or
-`'2024-01-01':date`, field references, function calls, and casts are expression
-values.
+An `extension_scalar` is an untyped value exposed to the registered
+`Explainable` implementation. Values such as `2`, `2.4`, `true`, `'path'`, and
+`null` therefore render without expression type suffixes, even in verbose
+output. Bare `null` is distinct from an absent argument, and the typed extractor
+treats it as a present value that must be handled explicitly.
+
+Non-null extension scalars can still be consumed by extension handlers as
+expressions, in which case they widen to default non-nullable Substrait literal
+expressions. A typed literal such as `2:i16`, `'2024-01-01':date`, or
+`null:i64?` matches `expression` rather than `extension_scalar`. Field
+references, function calls, and casts are also expression values.
+
+Extension tuples follow the Python/Rust trailing-comma convention. `()` is an
+empty tuple, `(x,)` is a one-element tuple, and `(x, y)` or `(x, y,)` is a
+two-element tuple.
 
 #### Examples
 

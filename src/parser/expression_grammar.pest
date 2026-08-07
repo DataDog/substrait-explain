@@ -375,8 +375,9 @@ extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument
 // Untyped scalar extension literals render independently of expression literal
 // verbosity. Typed literals (for example, 2:i16 or '2024-01-01':date) fall
 // through to expression parsing so their Substrait type information is
-// preserved.
-untyped_literal = { (float | integer | boolean | string_literal) ~ !(":") }
+// preserved. Bare null is an untyped extension value; typed null falls
+// through to expression parsing for the same reason as other typed literals.
+untyped_literal = { (float | integer | boolean | string_literal | null) ~ !(":") }
 
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.

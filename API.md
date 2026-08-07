@@ -137,7 +137,7 @@ extension arguments. `substrait-explain` handles parsing and rendering the text
 syntax around those arguments:
 
 - `name()` - The extension name used in text (e.g., `"ParquetScan"`)
-- `from_args(args)` - Parse text arguments into your type
+- `from_args(args)` - Parse text arguments from a framework-managed `ArgsExtractor`
 - `to_args(&self)` - Convert your type to text arguments
 
 The extension API works across three representations:
@@ -160,9 +160,15 @@ protobuf values in either direction, such as output columns and relation
 
 Use `ArgsExtractor` for convenient argument parsing:
 
-- `extractor.expect_named_arg::<T>(name)` - Required argument
-- `extractor.get_named_or::<T>(name, default)` - Optional with default
-- `extractor.check_exhausted()` - Verify no unexpected arguments
+- `args.expect_named::<T>(name)` - Required named argument
+- `args.get_named::<T>(name)?` - Optional named argument, returning `Option<T>`
+- `args.positional()` - Positional arguments in source order
+- `args.output_columns()` - Output columns for a custom relation
+
+The registry creates the extractor and, when `from_args` succeeds, rejects any
+named arguments the implementation did not consume. If extraction fails, the
+original error is returned without running the exhaustion check. To perform the
+same checked conversion directly, use `extension_args.parse::<T>()`.
 
 ### Extension Namespaces
 
@@ -183,7 +189,7 @@ Register extensions to the appropriate namespace:
 ```rust,no_run
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
-#     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+#     ArgsExtractor, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
 # };
 #[derive(Clone, PartialEq, Message)]
 pub struct MySourceConfig {
@@ -198,7 +204,7 @@ impl Name for MySourceConfig {
 }
 # impl Explainable for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
-#     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
+#     fn from_args(_: &mut ArgsExtractor<'_>) -> Result<Self, ExtensionError> { Ok(Self::default()) }
 #     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
 #         Ok(ExtensionArgs::default())
 #     }
