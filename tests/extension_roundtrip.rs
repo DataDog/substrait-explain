@@ -51,9 +51,9 @@ impl Explainable for UserTableConfig {
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
-        let table_name: &str = extractor.expect_named_arg("name")?;
-        let version: i64 = extractor.get_named_or("version", 1)?;
-        let is_temporary: bool = extractor.get_named_or("temp", false)?;
+        let table_name: &str = extractor.expect_named("name")?;
+        let version: i64 = extractor.get_named("version")?.unwrap_or(1);
+        let is_temporary: bool = extractor.get_named("temp")?.unwrap_or(false);
 
         extractor.check_exhausted()?;
 
@@ -163,7 +163,7 @@ impl Explainable for FilterConfig {
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
-        let expression: String = extractor.expect_named_arg::<&str>("expr")?.to_string();
+        let expression: String = extractor.expect_named::<&str>("expr")?.to_string();
         extractor.check_exhausted()?;
 
         Ok(FilterConfig { expression })
@@ -232,8 +232,8 @@ impl Explainable for LiteralConfig {
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
-        let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
-        let big: i64 = extractor.expect_named_arg("big")?;
+        let path: String = extractor.expect_named::<&str>("path")?.to_string();
+        let big: i64 = extractor.expect_named("big")?;
 
         // Manually handle ratio to support both Integer and Float types
         let ratio = match extractor.get_named_arg("ratio") {
@@ -252,7 +252,7 @@ impl Explainable for LiteralConfig {
             }
         };
 
-        let enabled: bool = extractor.expect_named_arg("enabled")?;
+        let enabled: bool = extractor.expect_named("enabled")?;
 
         extractor.check_exhausted()?;
 

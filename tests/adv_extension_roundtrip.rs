@@ -197,7 +197,7 @@ mod opt_fixture {
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
+            let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
             extractor.check_exhausted()?;
             Ok(PlanHint { hint })
         }

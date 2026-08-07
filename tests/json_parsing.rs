@@ -40,8 +40,8 @@ impl Explainable for ParquetScanConfig {
 
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut x = args.extractor();
-        let path: &str = x.expect_named_arg("path")?;
-        let batch_size: i64 = x.get_named_or("batch_size", 1024)?;
+        let path: &str = x.expect_named("path")?;
+        let batch_size: i64 = x.get_named("batch_size")?.unwrap_or(1024);
         x.check_exhausted()?;
         Ok(Self {
             path: path.to_string(),

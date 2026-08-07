@@ -232,32 +232,31 @@ impl<'a> ArgsExtractor<'a> {
         }
     }
 
-    /// Get a named argument value or return an error
-    /// Marks the argument as consumed if found
-    pub fn expect_named_arg<T>(&mut self, name: &str) -> Result<T, ExtensionError>
+    /// Get a named argument converted to `T`, or `None` if it is absent.
+    ///
+    /// Marks the argument as consumed if it exists in the source args.
+    pub fn get_named<T>(&mut self, name: &str) -> Result<Option<T>, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
         T::Error: Into<ExtensionError>,
     {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(ExtensionError::MissingArgument {
-                name: name.to_string(),
-            }),
-        }
+        self.get_named_arg(name)
+            .map(|value| T::try_from(value).map_err(Into::into))
+            .transpose()
     }
 
-    /// Get a named argument value or default
-    /// Marks the argument as consumed if it exists in the source args
-    pub fn get_named_or<T>(&mut self, name: &str, default: T) -> Result<T, ExtensionError>
+    /// Get a required named argument converted to `T`.
+    ///
+    /// Marks the argument as consumed if found.
+    pub fn expect_named<T>(&mut self, name: &str) -> Result<T, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
         T::Error: Into<ExtensionError>,
     {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Ok(default),
-        }
+        self.get_named(name)?
+            .ok_or_else(|| ExtensionError::MissingArgument {
+                name: name.to_string(),
+            })
     }
 
     /// Check that all named arguments in the source have been consumed,
@@ -647,5 +646,34 @@ impl ExtensionArgs {
     /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_named_converts_present_values_and_returns_none_for_missing_values() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", 8_i64);
+        let mut extractor = args.extractor();
+
+        assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
+        assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
+        assert!(extractor.check_exhausted().is_ok());
+    }
+
+    #[test]
+    fn expect_named_reports_missing_argument_name() {
+        let args = ExtensionArgs::default();
+        let mut extractor = args.extractor();
+
+        let error = extractor
+            .expect_named::<i64>("count")
+            .expect_err("missing argument should fail");
+
+        assert_eq!(error.to_string(), "Missing required argument: count");
+        assert!(extractor.check_exhausted().is_ok());
     }
 }
