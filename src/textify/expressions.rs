@@ -805,7 +805,7 @@ impl Textify for AggregateFunction {
 #[cfg(test)]
 mod tests {
     use substrait::proto::Type;
-    use substrait::proto::expression::{cast, if_then};
+    use substrait::proto::expression::{cast, field_reference, if_then};
     use substrait::proto::r#type::{Boolean, I16, I32, I64, Kind, Nullability, UserDefined};
 
     use super::*;
@@ -1388,8 +1388,6 @@ mod tests {
 
     #[test]
     fn test_field_reference_outer_reference_unimplemented() {
-        use substrait::proto::expression::field_reference;
-
         let ctx = TestContext::new();
         let mut fr = struct_field_reference(3);
         fr.root_type = Some(RootType::OuterReference(field_reference::OuterReference {

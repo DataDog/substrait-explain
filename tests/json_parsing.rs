@@ -5,6 +5,8 @@
 //! and the compiled descriptor binary are all generated at build time by
 //! `build.rs` using protox and prost-build.
 
+use std::io::Cursor;
+
 use substrait::proto;
 use substrait_explain::cli::{Cli, Commands, Format};
 use substrait_explain::extensions::{
@@ -14,8 +16,16 @@ use substrait_explain::extensions::{
 use substrait_explain::json::{build_descriptor_pool, parse_json};
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
-// ParquetScanConfig struct + impl prost::Name — generated from parquet_scan.proto by build.rs.
-include!(concat!(env!("OUT_DIR"), "/example.rs"));
+mod example_protos {
+    #![allow(
+        clippy::absolute_paths,
+        reason = "prost-build generates fully qualified paths"
+    )]
+
+    include!(concat!(env!("OUT_DIR"), "/example.rs"));
+}
+
+use example_protos::ParquetScanConfig;
 
 // Compiled FileDescriptorSet for ParquetScanConfig, written to OUT_DIR by build.rs.
 // Passed to build_descriptor_pool so prost-reflect can resolve the type URL when
@@ -72,7 +82,7 @@ fn build_registry() -> ExtensionRegistry {
     r
 }
 
-fn format_plan(plan: &substrait::proto::Plan) -> String {
+fn format_plan(plan: &proto::Plan) -> String {
     let registry = build_registry();
     let (text, errors) = format_with_registry(plan, &OutputOptions::default(), &registry);
     assert!(
@@ -196,7 +206,7 @@ fn test_cli_parses_rustjson() {
     let registry = build_registry();
     let mut output = Vec::new();
 
-    cli.run_with_io(std::io::Cursor::new(PLAN_PBJSON), &mut output, &registry)
+    cli.run_with_io(Cursor::new(PLAN_PBJSON), &mut output, &registry)
         .expect("CLI failed to parse pbjson");
 
     let result = String::from_utf8(output).unwrap();
@@ -213,7 +223,7 @@ fn test_cli_parses_gojson() {
     let registry = build_registry();
     let mut output = Vec::new();
 
-    cli.run_with_io(std::io::Cursor::new(PLAN_PROTOJSON), &mut output, &registry)
+    cli.run_with_io(Cursor::new(PLAN_PROTOJSON), &mut output, &registry)
         .expect("CLI failed to parse go protojson");
 
     let result = String::from_utf8(output).unwrap();
@@ -254,7 +264,7 @@ fn test_cli_parses_standard_plan_json() {
     let mut output = Vec::new();
 
     cli.run_with_io(
-        std::io::Cursor::new(standard_json),
+        Cursor::new(standard_json),
         &mut output,
         &ExtensionRegistry::default(),
     )

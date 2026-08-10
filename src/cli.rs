@@ -1,13 +1,18 @@
 use std::fs;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::process::ExitCode;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use prost::Message;
+use substrait::proto::Plan;
 
 use crate::extensions::ExtensionRegistry;
-use crate::{FormatError, OutputOptions, Visibility, format_with_registry, parse_with_registry};
+use crate::{
+    FormatError, OutputOptions, Visibility, format_with_registry, json, parse_with_registry,
+};
 
 /// The outcome of a CLI operation.
 ///
@@ -301,7 +306,7 @@ pub enum Format {
     Protobuf,
 }
 
-impl std::str::FromStr for Format {
+impl FromStr for Format {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -324,7 +329,7 @@ impl Format {
             return None; // stdin/stdout - no extension
         }
 
-        let extension = std::path::Path::new(path)
+        let extension = Path::new(path)
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_lowercase());
@@ -338,11 +343,7 @@ impl Format {
         }
     }
 
-    pub fn read_plan<R: Read>(
-        &self,
-        reader: R,
-        registry: &ExtensionRegistry,
-    ) -> Result<substrait::proto::Plan> {
+    pub fn read_plan<R: Read>(&self, reader: R, registry: &ExtensionRegistry) -> Result<Plan> {
         match self {
             Format::Text => {
                 let input_text = read_text_input(reader)?;
@@ -350,8 +351,8 @@ impl Format {
             }
             Format::Json => {
                 let input_text = read_text_input(reader)?;
-                let pool = crate::json::build_descriptor_pool(&registry.descriptors())?;
-                crate::json::parse_json(&input_text, &pool)
+                let pool = json::build_descriptor_pool(&registry.descriptors())?;
+                json::parse_json(&input_text, &pool)
             }
             Format::Yaml => {
                 #[cfg(feature = "serde")]
@@ -366,7 +367,7 @@ impl Format {
             }
             Format::Protobuf => {
                 let input_bytes = read_binary_input(reader)?;
-                Ok(substrait::proto::Plan::decode(&input_bytes[..])?)
+                Ok(Plan::decode(&input_bytes[..])?)
             }
         }
     }
@@ -374,7 +375,7 @@ impl Format {
     pub fn write_plan<W: Write>(
         &self,
         writer: W,
-        plan: &substrait::proto::Plan,
+        plan: &Plan,
         options: &OutputOptions,
         registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
@@ -1028,7 +1029,7 @@ Root[val]
     }
 
     /// Creates a plan with an invalid function reference that will cause formatting errors.
-    fn make_plan_with_invalid_function_ref() -> substrait::proto::Plan {
+    fn make_plan_with_invalid_function_ref() -> Plan {
         const VALID_PLAN: &str = r#"=== Extensions
 URNs:
   @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_comparison.yaml

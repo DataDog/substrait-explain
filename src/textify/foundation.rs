@@ -1,6 +1,7 @@
 //! Foundation types for textifying a plan.
 
 use std::borrow::Cow;
+use std::error::Error as StdError;
 use std::fmt;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -194,11 +195,11 @@ impl fmt::Debug for ErrorList {
 }
 
 #[cfg(test)]
-impl std::error::Error for ErrorList {}
+impl StdError for ErrorList {}
 
 impl<'e> IntoIterator for &'e ErrorQueue {
     type Item = FormatError;
-    type IntoIter = std::sync::mpsc::TryIter<'e, FormatError>;
+    type IntoIter = mpsc::TryIter<'e, FormatError>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.receiver.try_iter()
@@ -381,7 +382,7 @@ impl fmt::Display for FormatErrorType {
     }
 }
 
-impl std::error::Error for PlanError {}
+impl StdError for PlanError {}
 
 impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
