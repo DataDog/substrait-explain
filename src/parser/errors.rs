@@ -1,3 +1,6 @@
+use std::fmt;
+
+use substrait::proto::Plan;
 use thiserror::Error;
 
 use super::MessageParseError;
@@ -17,8 +20,8 @@ impl ParseContext {
     }
 }
 
-impl std::fmt::Display for ParseContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ParseContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "line {}: '{}'", self.line_no, self.line)
     }
 }
@@ -61,4 +64,4 @@ pub enum ParseError {
 }
 
 /// Result type for the public Parser API
-pub type ParseResult = Result<substrait::proto::Plan, ParseError>;
+pub type ParseResult = Result<Plan, ParseError>;

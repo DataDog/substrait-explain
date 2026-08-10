@@ -12,7 +12,7 @@
 //! implementation following the same pattern shown for `Explainable`.
 
 use prost::{Message, Name};
-use substrait::proto::{self, plan_rel, rel};
+use substrait::proto::{self, Plan, PlanRel, Rel, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
     AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
@@ -174,10 +174,10 @@ Root[customer_id, amount]
 }
 
 /// Extract the extension detail from the plan, for validation. Assumes Root -> ExtensionLeaf plan.
-fn extension_detail<'a>(plan: &'a substrait::proto::Plan) -> Result<AnyRef<'a>, anyhow::Error> {
+fn extension_detail<'a>(plan: &'a Plan) -> Result<AnyRef<'a>, anyhow::Error> {
     assert!(plan.relations.len() == 1);
     let root = match plan.relations.first().unwrap() {
-        substrait::proto::PlanRel {
+        PlanRel {
             rel_type: Some(plan_rel::RelType::Root(root)),
         } => root,
         rel => return Err(anyhow::anyhow!("expected Root relation, got {rel:?}")),
@@ -186,7 +186,7 @@ fn extension_detail<'a>(plan: &'a substrait::proto::Plan) -> Result<AnyRef<'a>, 
     let rel = root.input.as_ref().unwrap();
 
     match root.input.as_ref() {
-        Some(substrait::proto::Rel {
+        Some(Rel {
             rel_type: Some(rel::RelType::ExtensionLeaf(leaf)),
         }) => leaf
             .detail
