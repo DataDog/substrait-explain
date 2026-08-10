@@ -400,7 +400,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / expression_literal / if_then`
+`expression := function_call / reference / expression_literal / cast_expression / if_then`
 
 ### Examples
 
@@ -523,6 +523,32 @@ count():i64
 // Signature: resolves if "count:" is registered exactly once with
 // type signature "" (zero arguments)
 count:():i64
+```
+
+### Cast Expressions
+
+A cast converts an expression to a target type. Its optional failure behavior
+controls what happens when the value cannot be converted.
+
+#### Syntax
+
+```text
+cast_expression := "(" expression ")" "::" cast_failure_behavior? type
+cast_failure_behavior := "?" / "!"
+```
+
+Where:
+
+- no failure prefix leaves the behavior unspecified
+- `?` returns null when the cast fails
+- `!` raises an error when the cast fails
+
+#### Examples
+
+```text
+(78:i32)::i16
+($0)::?i16
+($0)::!i16
 ```
 
 ### Aggregate Measures
@@ -1018,6 +1044,45 @@ sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&Des
 - Each sort field is a tuple: `(reference, sort_direction)`
 - Sort directions follow the general `enum` syntax and specify null handling
 - `reference_list` - comma-separated list of field references to pass through
+
+### Fetch Relation
+
+A Fetch relation limits or offsets rows from its input.
+
+#### Syntax
+
+```text
+fetch_relation := "Fetch" "[" fetch_args "=>" reference_list "]"
+fetch_args := fetch_arg ("," fetch_arg)* / "_"
+fetch_arg := ("limit" / "offset") "=" (integer / expression)
+```
+
+#### Components
+
+- `limit` - maximum number of rows to return
+- `offset` - number of rows to skip
+- `_` - no limit or offset
+- `reference_list` - fields to pass through, optionally reordered
+
+`limit` and `offset` may appear in either order, but no more than once each. A
+bare integer is a parameter literal and must be non-negative; other values are
+expressions.
+
+#### Example
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Plan
+Root[id, name]
+  Fetch[limit=10, offset=5 => $0, $1]
+    Read[records => id:i64, name:string]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
 
 ### Join Relation
 
