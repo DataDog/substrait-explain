@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/DataDog/substrait-explain/compare/v0.7.0...v0.8.0) - 2026-08-10
+
+### Bug Fixes
+
+- undo incorrect left anti/semi join tests and re-do the original join TODO comment in relations.rs ([#194](https://github.com/DataDog/substrait-explain/pull/194))
+- fix aggregate expression outputs ([#181](https://github.com/DataDog/substrait-explain/pull/181))
+
+### Features
+
+- *(extensions)* [**breaking**] Add context to to_args in Explainable trait ([#202](https://github.com/DataDog/substrait-explain/pull/202))
+- added support for post join filter ([#191](https://github.com/DataDog/substrait-explain/pull/191))
+- added support for filters on virutal table read rels ([#192](https://github.com/DataDog/substrait-explain/pull/192))
+- precision literal implementations ([#178](https://github.com/DataDog/substrait-explain/pull/178))
+- added a unit test and roundtrip test for right anti joins ([#190](https://github.com/DataDog/substrait-explain/pull/190))
+- added a unit test for right semi joins, and extended test join relation right semi types round trip with a RightSemi case ([#189](https://github.com/DataDog/substrait-explain/pull/189))
+- add explicit emit output grammar and parsing support ([#173](https://github.com/DataDog/substrait-explain/pull/173))
+- implemented cross relations ([#180](https://github.com/DataDog/substrait-explain/pull/180))
+- added support for set relations ([#172](https://github.com/DataDog/substrait-explain/pull/172))
+- added versioning to plans, and textifies versions from substrait plans ([#168](https://github.com/DataDog/substrait-explain/pull/168))
+
+### Refactoring
+
+- *(textify)* extract shared textify components ([#186](https://github.com/DataDog/substrait-explain/pull/186))
+
 ## [0.7.0](https://github.com/DataDog/substrait-explain/compare/v0.6.0...v0.7.0) - 2026-07-02
 
 ### Bug Fixes
