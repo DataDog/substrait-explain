@@ -165,7 +165,9 @@ Root[result]
 /// A minimal Explainable + prost::Message used to register as an optimization.
 mod opt_fixture {
     use prost::Name;
-    use substrait_explain::extensions::{Explainable, ExtensionArgs, ExtensionError};
+    use substrait_explain::extensions::{
+        Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+    };
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct PlanHint {
@@ -198,7 +200,10 @@ mod opt_fixture {
             Ok(PlanHint { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
@@ -520,7 +525,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -552,7 +557,10 @@ mod extension_child_fixture {
             Ok(TwoColumnScan {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
@@ -844,7 +852,7 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -874,7 +882,10 @@ mod adv_ext_with_columns_fixture {
             Ok(EnhancementWithColumns {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             // Deliberately populate output_columns - the addendum grammar
             // has no "=> columns" clause, so this cannot be round-tripped.

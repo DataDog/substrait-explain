@@ -15,7 +15,8 @@ use prost::{Message, Name};
 use substrait::proto::{self, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
-    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
+    ExtensionRegistry,
 };
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
@@ -102,7 +103,7 @@ impl Explainable for ParquetScanConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
 
         // Add named arguments from the message
