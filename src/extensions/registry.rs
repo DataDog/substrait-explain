@@ -26,7 +26,8 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{
-//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+//!     ExtensionRegistry,
 //! };
 //!
 //! // Define a custom extension type
@@ -68,7 +69,10 @@
 //!         })
 //!     }
 //!
-//!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+//!     fn to_args(
+//!         &self,
+//!         _context: &ExtensionContext<'_>,
+//!     ) -> Result<ExtensionArgs, ExtensionError> {
 //!         let mut args = ExtensionArgs::default();
 //!         args.insert("path", self.path.clone());
 //!         Ok(args)
@@ -324,21 +328,7 @@ pub trait Explainable: Sized {
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
 
     /// Convert this type to extension arguments
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
-
-    /// Convert this type to extension arguments with information about its inputs.
-    ///
-    /// The default delegates to [`Explainable::to_args()`], preserving the
-    /// behavior of existing implementations. Relation extensions receive
-    /// their inputs in relation order; other extension namespaces receive an
-    /// empty input slice.
-    fn to_args_with_context(
-        &self,
-        context: &ExtensionContext<'_>,
-    ) -> Result<ExtensionArgs, ExtensionError> {
-        let _ = context;
-        self.to_args()
-    }
+    fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -393,7 +383,7 @@ impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for Exten
         context: &ExtensionContext<'_>,
     ) -> Result<ExtensionArgs, ExtensionError> {
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
-        T::from_any(owned_any.as_ref())?.to_args_with_context(context)
+        T::from_any(owned_any.as_ref())?.to_args(context)
     }
 }
 
@@ -783,18 +773,10 @@ mod tests {
             })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("path", self.path.clone());
             args.insert("batch_size", self.batch_size);
-            Ok(args)
-        }
-
-        fn to_args_with_context(
-            &self,
-            context: &ExtensionContext<'_>,
-        ) -> Result<ExtensionArgs, ExtensionError> {
-            let mut args = self.to_args()?;
             if !context.inputs().is_empty() {
                 args.insert("input_count", context.inputs().len() as i64);
             }
@@ -993,7 +975,10 @@ mod tests {
             Ok(TestEnhancement { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
@@ -1130,7 +1115,10 @@ mod tests {
             Ok(ConflictingExtension)
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             Ok(ExtensionArgs::default())
         }
     }

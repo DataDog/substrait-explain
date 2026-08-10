@@ -80,7 +80,7 @@ impl Explainable for UserTableConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
 
         // Add named arguments
@@ -174,7 +174,10 @@ fn test_multiple_extensions_in_plan() {
             Ok(FilterConfig { expression })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("expr", self.expression.clone());
             Ok(args)
@@ -264,7 +267,7 @@ impl Explainable for LiteralConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         args.insert("path", self.path.clone());
         args.insert("big", self.big);
@@ -352,7 +355,7 @@ impl Explainable for EmptySource {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         Ok(ExtensionArgs::default())
     }
 }
@@ -431,15 +434,8 @@ impl Explainable for PassThroughWrapper {
         Ok(PassThroughWrapper {})
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
-        Ok(ExtensionArgs::default())
-    }
-
-    fn to_args_with_context(
-        &self,
-        context: &ExtensionContext<'_>,
-    ) -> Result<ExtensionArgs, ExtensionError> {
-        let mut args = self.to_args()?;
+    fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
+        let mut args = ExtensionArgs::default();
         let input = context.inputs().first().ok_or_else(|| {
             ExtensionError::InvalidArgument("PassThrough expects one input".to_owned())
         })?;
@@ -477,7 +473,7 @@ impl Explainable for BinaryMerge {
         Ok(BinaryMerge {})
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         args.output_columns.push(ExtensionColumn::field(0));
         args.output_columns.push(ExtensionColumn::field(1));
@@ -661,7 +657,7 @@ impl Explainable for TupleSortHint {
         Ok(TupleSortHint { directions })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         let tv: TupleValue = self
             .directions
