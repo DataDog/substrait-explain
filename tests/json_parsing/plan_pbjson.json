@@ -4,6 +4,9 @@
       "root": {
         "input": {
           "extensionLeaf": {
+            "common": {
+              "direct": {}
+            },
             "detail": {
               "typeUrl": "type.googleapis.com/example.ParquetScanConfig",
               "value": "ChJkYXRhL3NhbGVzLnBhcnF1ZXQQgBA="
