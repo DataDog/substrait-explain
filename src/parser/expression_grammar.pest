@@ -146,7 +146,7 @@ type = { simple_type | compound_type | user_defined_type }
 
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
-// An unresolved reference to a function:
+// A function reference:
 // - Compound function name (base name or base:signature, e.g. "equal" or "equal:any_any")
 // - Optional Anchor, e.g. #1
 // - Optional URN Anchor, e.g. @1
