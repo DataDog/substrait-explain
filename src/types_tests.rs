@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display};
+
 use substrait::proto::expression::{FieldReference, Literal, ScalarFunction};
 use substrait::proto::{Expression, Type};
 
@@ -9,7 +11,7 @@ use crate::textify::foundation::ErrorQueue;
 use crate::textify::{OutputOptions, Textify};
 
 /// Helper function to parse and check for errors, panicking if either fails
-fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {
+fn must_parse<T, E: Display>(result: Result<T, E>, input: &str) -> T {
     let errors = ErrorQueue::default();
     let t = match result {
         Ok(t) => t,
@@ -22,21 +24,21 @@ fn must_parse<T, E: std::fmt::Display>(result: Result<T, E>, input: &str) -> T {
     t
 }
 
-fn roundtrip_parse<T: Parse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
+fn roundtrip_parse<T: Parse + Textify + Debug>(ctx: &TestContext, input: &str) {
     let t = must_parse(T::parse(input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
 }
 
-fn assert_roundtrip<T: ScopedParse + Textify + std::fmt::Debug>(ctx: &TestContext, input: &str) {
+fn assert_roundtrip<T: ScopedParse + Textify + Debug>(ctx: &TestContext, input: &str) {
     let t = must_parse(T::parse(&ctx.extensions, input), input);
 
     let actual = ctx.textify_no_errors(&t);
     assert_eq!(actual, input);
 }
 
-fn roundtrip_with_simple_output<T: ScopedParse + Textify + std::fmt::Debug>(
+fn roundtrip_with_simple_output<T: ScopedParse + Textify + Debug>(
     extensions: SimpleExtensions,
     verbose: &str,
     simple: &str,

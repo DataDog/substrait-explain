@@ -23,16 +23,18 @@
 //! let plan = parse_json(json_str, &pool).unwrap();
 //! ```
 
+use std::collections::HashSet;
+
 use anyhow::Context;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use prost_types::FileDescriptorSet;
-use substrait::proto::Plan;
+use substrait::proto::{FILE_DESCRIPTOR_SET, Plan};
 
 /// Build a [`DescriptorPool`] covering the Substrait core schema plus any extra
 /// descriptor passed in.
 pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<DescriptorPool> {
-    let mut fds = FileDescriptorSet::decode(substrait::proto::FILE_DESCRIPTOR_SET)
+    let mut fds = FileDescriptorSet::decode(FILE_DESCRIPTOR_SET)
         .context("failed to decode substrait core descriptor")?;
 
     // Descriptor blobs compiled from proto files bundle their transitive dependencies,
@@ -41,8 +43,7 @@ pub fn build_descriptor_pool(extra_descriptors: &[&[u8]]) -> anyhow::Result<Desc
     // which are also present in substrait core protos.
     // DescriptorPool::decode treats duplicate filenames as a hard error.
     // Track filenames already in the set so we can skip duplicates.
-    let mut seen: std::collections::HashSet<String> =
-        fds.file.iter().map(|f| f.name().to_owned()).collect();
+    let mut seen: HashSet<String> = fds.file.iter().map(|f| f.name().to_owned()).collect();
 
     for blob in extra_descriptors {
         let extra =

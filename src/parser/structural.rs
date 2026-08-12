@@ -4,9 +4,10 @@
 //! for tracking which section of the file we are currently parsing, and parsing
 //! each line separately.
 
-use std::fmt;
+use std::{fmt, mem};
 
-use pest::iterators::Pair;
+use pest::Parser as PestParser;
+use pest::iterators::{Pair, Pairs};
 use substrait::proto::extensions::AdvancedExtension;
 use substrait::proto::{
     AggregateRel, CrossRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel,
@@ -94,8 +95,8 @@ pub enum LineNode<'a> {
 
 impl<'a> LineNode<'a> {
     pub fn parse(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
-        let mut pairs: pest::iterators::Pairs<'a, Rule> =
-            <ExpressionParser as pest::Parser<Rule>>::parse(Rule::planNode, line).map_err(|e| {
+        let mut pairs: Pairs<'a, Rule> =
+            <ExpressionParser as PestParser<Rule>>::parse(Rule::planNode, line).map_err(|e| {
                 ParseError::Plan(
                     ParseContext {
                         line_no,
@@ -125,10 +126,9 @@ impl<'a> LineNode<'a> {
 
     /// Parse the line as a top-level relation at depth 0 (either root_relation or regular relation)
     pub fn parse_root(line: &'a str, line_no: i64) -> Result<Self, ParseError> {
-        let mut pairs: pest::iterators::Pairs<'a, Rule> = <ExpressionParser as pest::Parser<
-            Rule,
-        >>::parse(
-            Rule::top_level_relation, line
+        let mut pairs: Pairs<'a, Rule> = <ExpressionParser as PestParser<Rule>>::parse(
+            Rule::top_level_relation,
+            line,
         )
         .map_err(|e| {
             ParseError::Plan(
@@ -289,7 +289,7 @@ impl<'a> TreeBuilder<'a> {
         if let Some(node) = self.current.take() {
             self.completed.push(node);
         }
-        std::mem::take(&mut self.completed)
+        mem::take(&mut self.completed)
     }
 }
 

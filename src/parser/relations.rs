@@ -887,7 +887,7 @@ impl ScopedParsePair for SortField {
         iter.done();
         Ok(SortField {
             expr: Some(Expression {
-                rex_type: Some(substrait::proto::expression::RexType::Selection(Box::new(
+                rex_type: Some(RexType::Selection(Box::new(
                     field_index.to_field_reference(),
                 ))),
             }),
@@ -2241,7 +2241,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
+    fn parse_exact(rule: Rule, input: &'_ str) -> Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();

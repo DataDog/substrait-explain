@@ -1,19 +1,26 @@
 use std::fmt;
 use std::str::FromStr;
 
-use substrait::proto::{Expression, Type};
+use pest::iterators::Pair;
+use substrait::proto::rel::RelType;
+use substrait::proto::{
+    Expression, ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel, Rel, Type,
+};
 use thiserror::Error;
 
 use super::{
     ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
     unescape_string, unwrap_single_pair,
 };
+use crate::extensions::any::Any;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
     TupleValue,
 };
+use crate::parser::expressions::{FieldIndex, Name};
 use crate::parser::structural::IndentedLine;
+use crate::textify::expressions::Reference;
 
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
@@ -182,7 +189,7 @@ impl ParsePair for URNExtensionDeclaration {
         "URNExtensionDeclaration"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let mut iter = RuleIter::from(pair.into_inner());
@@ -258,10 +265,6 @@ impl SimpleExtensionDeclaration {
 // Extension relation parsing implementations
 // These were moved from extensions/registry.rs to maintain clean architecture
 
-use crate::extensions::any::Any;
-use crate::parser::expressions::{FieldIndex, Name};
-use crate::textify::expressions::Reference;
-
 impl ScopedParsePair for ExtensionValue {
     fn rule() -> Rule {
         Rule::extension_argument
@@ -273,7 +276,7 @@ impl ScopedParsePair for ExtensionValue {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -335,7 +338,7 @@ impl ScopedParsePair for ExtensionColumn {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -414,14 +417,7 @@ impl ExtensionRelationKind {
     }
 
     /// Create appropriate relation structure from extension detail and children.
-    pub(crate) fn create_rel(
-        self,
-        detail: Option<Any>,
-        children: Vec<substrait::proto::Rel>,
-    ) -> substrait::proto::Rel {
-        use substrait::proto::rel::RelType;
-        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
-
+    pub(crate) fn create_rel(self, detail: Option<Any>, children: Vec<Rel>) -> Rel {
         let rel_type = match self {
             ExtensionRelationKind::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
                 common: None,
@@ -442,7 +438,7 @@ impl ExtensionRelationKind {
             }),
         };
 
-        substrait::proto::Rel {
+        Rel {
             rel_type: Some(rel_type),
         }
     }
@@ -468,7 +464,7 @@ impl ScopedParsePair for ExtensionInvocation {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -542,7 +538,7 @@ impl ScopedParsePair for AddendumInvocation {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -578,7 +574,7 @@ impl ScopedParsePair for AddendumInvocation {
 
 fn arguments_rule_parsing(
     extensions: &SimpleExtensions,
-    inner_pair: pest::iterators::Pair<'_, Rule>,
+    inner_pair: Pair<'_, Rule>,
     args: &mut ExtensionArgs,
 ) -> Result<(), MessageParseError> {
     for arg in inner_pair.into_inner() {
@@ -616,8 +612,8 @@ mod tests {
     use super::*;
     use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
-    use crate::parser::Parser;
     use crate::parser::common::test_support::ScopedParse;
+    use crate::parser::{ParseError, Parser};
     use crate::{OutputOptions, format};
 
     fn parse_extension_value(text: &str) -> ExtensionValue {
@@ -822,7 +818,7 @@ Root[result]
         assert!(
             matches!(
                 err,
-                crate::parser::ParseError::Extension(_, ExtensionParseError::Message(_))
+                ParseError::Extension(_, ExtensionParseError::Message(_))
             ),
             "expected parser-level MessageParseError, got: {err}"
         );
@@ -846,7 +842,7 @@ Functions:
         // Compound names must survive the roundtrip
         assert_eq!(
             extensions
-                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 1)
+                .find_by_anchor(ExtensionKind::Function, 1)
                 .unwrap()
                 .1
                 .full(),
@@ -854,7 +850,7 @@ Functions:
         );
         assert_eq!(
             extensions
-                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 3)
+                .find_by_anchor(ExtensionKind::Function, 3)
                 .unwrap()
                 .1
                 .full(),

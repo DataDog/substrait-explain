@@ -4,7 +4,7 @@ use std::convert::TryFrom;
 use std::fmt;
 
 use prost::Message;
-use substrait::proto::fetch_rel::CountMode;
+use substrait::proto::fetch_rel::{CountMode, OffsetMode};
 use substrait::proto::plan_rel::RelType as PlanRelType;
 use substrait::proto::read_rel::ReadType;
 use substrait::proto::rel::RelType;
@@ -21,7 +21,7 @@ use super::values::{Arguments, NamedArg, Value, ValueEnum, decode_enum_field};
 use super::{PlanError, Scope, Textify};
 use crate::FormatError;
 use crate::extensions::any::AnyRef;
-use crate::extensions::{ExtensionArgs, ExtensionError};
+use crate::extensions::{ExtensionContext, ExtensionError, ExtensionInput};
 
 pub trait NamedRelation {
     fn name(&self) -> &'static str;
@@ -611,45 +611,61 @@ impl<'a> Relation<'a> {
     }
 
     fn from_extension_leaf<S: Scope>(rel: &'a ExtensionLeafRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
-        Relation::from_extension("ExtensionLeaf", decoded, vec![], ctx)
+        Relation::from_extension(
+            "ExtensionLeaf",
+            rel.detail.as_ref().map(AnyRef::from),
+            vec![],
+            ctx,
+        )
     }
 
     fn from_extension_single<S: Scope>(rel: &'a ExtensionSingleRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
-        Relation::from_extension("ExtensionSingle", decoded, vec![rel.input.as_deref()], ctx)
+        Relation::from_extension(
+            "ExtensionSingle",
+            rel.detail.as_ref().map(AnyRef::from),
+            vec![rel.input.as_deref()],
+            ctx,
+        )
     }
 
     fn from_extension_multi<S: Scope>(rel: &'a ExtensionMultiRel, ctx: &S) -> Self {
-        let detail_ref = rel.detail.as_ref().map(AnyRef::from);
-        let decoded = match detail_ref {
-            Some(d) => ctx.extension_registry().decode(d),
-            None => Err(ExtensionError::MissingDetail),
-        };
         let mut child_refs: Vec<Option<&'a Rel>> = vec![];
         for input in &rel.inputs {
             child_refs.push(Some(input));
         }
-        Relation::from_extension("ExtensionMulti", decoded, child_refs, ctx)
+        Relation::from_extension(
+            "ExtensionMulti",
+            rel.detail.as_ref().map(AnyRef::from),
+            child_refs,
+            ctx,
+        )
     }
 
     fn from_extension<S: Scope>(
         ext_type: &'static str,
-        decoded: Result<(String, ExtensionArgs), ExtensionError>,
+        detail: Option<AnyRef<'a>>,
         child_refs: Vec<Option<&'a Rel>>,
         ctx: &S,
     ) -> Self {
+        let (children, _) = Relation::convert_children(child_refs, ctx);
+        let inputs = children
+            .iter()
+            .filter_map(|child| {
+                child
+                    .as_ref()
+                    .map(|child| ExtensionInput::new(child.emitted()))
+            })
+            .collect::<Vec<_>>();
+        let context = ExtensionContext::new(&inputs);
+        let decoded = match detail {
+            Some(detail) => ctx
+                .extension_registry()
+                .decode_with_context(detail, &context),
+            None => Err(ExtensionError::MissingDetail),
+        };
+
         match decoded {
             Ok((name, args)) => {
-                let (children, _) = Relation::convert_children(child_refs, ctx);
                 let mut positional = vec![];
                 for value in args.positional {
                     positional.push(Value::ExtensionArgument(value));
@@ -661,10 +677,11 @@ impl<'a> Relation<'a> {
                         value: Value::ExtensionArgument(value),
                     });
                 }
-                let mut columns = vec![];
-                for col in args.output_columns {
-                    columns.push(Value::ExtColumn(col));
-                }
+                let columns = args
+                    .output_columns
+                    .into_iter()
+                    .map(Value::ExtColumn)
+                    .collect();
                 Relation {
                     name: Cow::Owned(format!("{}:{}", ext_type, name)),
                     arguments: Some(RelationArgs::inline(positional, named)),
@@ -678,22 +695,19 @@ impl<'a> Relation<'a> {
                     children,
                 }
             }
-            Err(error) => {
-                let (children, _) = Relation::convert_children(child_refs, ctx);
-                Relation {
-                    name: Cow::Borrowed(ext_type),
-                    arguments: None,
-                    columns: vec![Value::Missing(PlanError::invalid(
-                        "extension",
-                        None::<&str>,
-                        error.to_string(),
-                    ))],
-                    emit: None,
-                    output_syntax: OutputSyntax::Implicit,
-                    addenda: AddendumLines::none(),
-                    children,
-                }
-            }
+            Err(error) => Relation {
+                name: Cow::Borrowed(ext_type),
+                arguments: None,
+                columns: vec![Value::Missing(PlanError::invalid(
+                    "extension",
+                    None::<&str>,
+                    error.to_string(),
+                ))],
+                emit: None,
+                output_syntax: OutputSyntax::Implicit,
+                addenda: AddendumLines::none(),
+                children,
+            },
         }
     }
 
@@ -911,14 +925,14 @@ impl<'a> Relation<'a> {
         }
         if let Some(offset) = &rel.offset_mode {
             match offset {
-                substrait::proto::fetch_rel::OffsetMode::OffsetExpr(expr) => {
+                OffsetMode::OffsetExpr(expr) => {
                     named_args.push(NamedArg {
                         name: Cow::Borrowed("offset"),
                         value: Value::Expression(expr),
                     });
                 }
                 #[allow(deprecated)]
-                substrait::proto::fetch_rel::OffsetMode::Offset(val) => {
+                OffsetMode::Offset(val) => {
                     named_args.push(NamedArg {
                         name: Cow::Borrowed("offset"),
                         value: Value::Integer(*val),
@@ -1119,13 +1133,15 @@ mod tests {
     use substrait::proto::rel_common::{Direct, Emit};
     use substrait::proto::r#type::{self as ptype, Boolean, I64, Kind, Nullability, Struct};
     use substrait::proto::{
-        AggregateFunction, Expression, FunctionArgument, NamedStruct, ReadRel, Type, aggregate_rel,
+        AggregateFunction, Expression, FunctionArgument, NamedStruct, ReadRel, ReferenceRel, Type,
+        aggregate_rel,
     };
 
     use super::*;
     use crate::fixtures::TestContext;
     use crate::parser::expressions::FieldIndex;
     use crate::textify::expressions::Reference;
+    use crate::textify::foundation::FormatErrorType;
 
     #[test]
     fn test_read_rel() {
@@ -1853,8 +1869,6 @@ Cross[$0, $3]
 
     #[test]
     fn test_unsupported_rel_type_produces_failure_token() {
-        use substrait::proto::ReferenceRel;
-
         let ctx = TestContext::new();
 
         // ReferenceRel is a valid Substrait relation type that the textifier
@@ -1879,10 +1893,7 @@ Cross[$0, $3]
         match &errors.0[0] {
             FormatError::Format(plan_err) => {
                 assert_eq!(plan_err.message, "Rel");
-                assert_eq!(
-                    plan_err.error_type,
-                    crate::textify::foundation::FormatErrorType::Unimplemented
-                );
+                assert_eq!(plan_err.error_type, FormatErrorType::Unimplemented);
                 assert!(
                     plan_err
                         .lookup

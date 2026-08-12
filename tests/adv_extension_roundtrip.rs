@@ -5,9 +5,11 @@
 
 mod common;
 
+use adv_ext_with_columns_fixture::EnhancementWithColumns;
 use common::parse_type;
 use substrait::proto::plan_rel;
 use substrait::proto::rel::RelType;
+use substrait::proto::rel_common::EmitKind;
 use substrait_explain::extensions::ExtensionRegistry;
 use substrait_explain::extensions::examples::{PartitionHint, PartitionStrategy};
 use substrait_explain::extensions::registry::ExtensionError;
@@ -165,7 +167,9 @@ Root[result]
 /// A minimal Explainable + prost::Message used to register as an optimization.
 mod opt_fixture {
     use prost::Name;
-    use substrait_explain::extensions::{Explainable, ExtensionArgs, ExtensionError};
+    use substrait_explain::extensions::{
+        Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+    };
 
     #[derive(Clone, PartialEq, prost::Message)]
     pub struct PlanHint {
@@ -198,7 +202,10 @@ mod opt_fixture {
             Ok(PlanHint { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
@@ -520,7 +527,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -552,7 +559,10 @@ mod extension_child_fixture {
             Ok(TwoColumnScan {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.output_columns.push(ExtensionColumn::Named {
                 name: "col0".to_owned(),
@@ -574,11 +584,7 @@ mod extension_child_fixture {
 /// With the fix it must be `[0, 1, 2]`.
 #[test]
 fn test_project_over_extension_leaf_emit_mapping() {
-    use substrait::proto::plan_rel;
-    use substrait::proto::rel::RelType;
-    use substrait::proto::rel_common::EmitKind;
-
-    let mut registry = substrait_explain::extensions::ExtensionRegistry::new();
+    let mut registry = ExtensionRegistry::new();
     registry
         .register_relation::<extension_child_fixture::TwoColumnScan>()
         .expect("register_relation");
@@ -844,7 +850,7 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionError,
+        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -874,7 +880,10 @@ mod adv_ext_with_columns_fixture {
             Ok(EnhancementWithColumns {})
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             // Deliberately populate output_columns - the addendum grammar
             // has no "=> columns" clause, so this cannot be round-tripped.
@@ -892,8 +901,6 @@ mod adv_ext_with_columns_fixture {
 /// `+ Enh:Name[args => col:type]`, which the addendum grammar cannot parse.
 #[test]
 fn test_adv_ext_output_columns_produces_failure_token() {
-    use adv_ext_with_columns_fixture::EnhancementWithColumns;
-
     let mut registry = ExtensionRegistry::new();
     registry
         .register_enhancement::<EnhancementWithColumns>()
