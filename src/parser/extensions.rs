@@ -19,6 +19,7 @@ use crate::extensions::{
     TupleValue,
 };
 use crate::parser::expressions::{FieldIndex, Name};
+use crate::parser::relations::direct_common;
 use crate::parser::structural::IndentedLine;
 use crate::textify::expressions::Reference;
 
@@ -420,19 +421,19 @@ impl ExtensionRelationKind {
     pub(crate) fn create_rel(self, detail: Option<Any>, children: Vec<Rel>) -> Rel {
         let rel_type = match self {
             ExtensionRelationKind::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common: None,
+                common: Some(direct_common()),
                 detail: detail.map(Into::into),
             }),
             ExtensionRelationKind::Single => {
                 let input = children.into_iter().next();
                 RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common: None,
+                    common: Some(direct_common()),
                     detail: detail.map(Into::into),
                     input: input.map(Box::new),
                 }))
             }
             ExtensionRelationKind::Multi => RelType::ExtensionMulti(ExtensionMultiRel {
-                common: None,
+                common: Some(direct_common()),
                 detail: detail.map(Into::into),
                 inputs: children,
             }),

@@ -21,13 +21,18 @@ Root[c, d]
     roundtrip_plan(plan);
 }
 
+/// `=>` and a `+>` with no remap both mean a `Direct` emit, so they produce the
+/// same plan and print as `=>`.
 #[test]
 fn test_read_explicit_direct_roundtrip() {
-    let plan = r#"=== Plan
+    let canonical = r#"=== Plan
+Root[a, b]
+  Read[my.table => a:i32, b:string?]"#;
+    let equivalent = r#"=== Plan
 Root[a, b]
   Read[my.table +> a:i32, b:string?]"#;
 
-    roundtrip_plan(plan);
+    assert_roundtrip_canonical(canonical, equivalent);
 }
 
 #[test]

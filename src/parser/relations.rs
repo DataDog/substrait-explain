@@ -229,6 +229,14 @@ fn make_emit(output_mapping: Vec<i32>, direct_output_count: usize) -> EmitKind {
     }
 }
 
+/// A [`RelCommon`] with an explicit `Direct` emit.
+pub(crate) fn direct_common() -> RelCommon {
+    RelCommon {
+        emit_kind: Some(EmitKind::Direct(Direct {})),
+        ..Default::default()
+    }
+}
+
 /// Parse a reference list into an emit and output field count.
 fn parse_emit(reference_list: Pair<Rule>, direct_output_count: usize) -> (EmitKind, usize) {
     let output_mapping = parse_output_mapping(reference_list);
@@ -249,7 +257,7 @@ fn parse_output(
             let columns = iter.parse_next_scoped::<NamedColumnList>(extensions)?.0;
             iter.done();
             let output_count = columns.len();
-            Ok((columns, None, output_count))
+            Ok((columns, Some(direct_common()), output_count))
         }
         Rule::direct_output => {
             let mut iter = RuleIter::from(output.into_inner());
@@ -391,6 +399,7 @@ impl RelationParsePair for VirtualReadRel {
         let output_count = columns.len();
         Ok((
             VirtualReadRel(ReadRel {
+                common: Some(direct_common()),
                 base_schema: Some(build_named_struct(columns)),
                 read_type: Some(read_rel::ReadType::VirtualTable(read_rel::VirtualTable {
                     expressions: rows,
@@ -447,6 +456,7 @@ impl ExtensionReadRel {
 
         let output_count = columns.len();
         let rel = ExtensionReadRel(ReadRel {
+            common: Some(direct_common()),
             base_schema: Some(build_named_struct(columns)),
             read_type: Some(read_rel::ReadType::ExtensionTable(
                 read_rel::ExtensionTable {
@@ -1415,7 +1425,7 @@ mod tests {
             .unwrap()
             .types;
         assert_eq!(columns.len(), 2);
-        assert!(read.common.is_none());
+        assert_eq!(read.common, Some(direct_common()));
     }
 
     #[test]

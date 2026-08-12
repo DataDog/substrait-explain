@@ -378,16 +378,15 @@ impl<'a> Relation<'a> {
         match &rel.read_type {
             Some(ReadType::NamedTable(table)) => {
                 let table_name = Value::TableName(table.names.iter().map(|n| Name(n)).collect());
-                // XXX: For `ReadRel`s, we use `=>` if emit is None, `+>` if
-                // `emit` is `Some(Direct)`, and `+> … |>` if emit is
-                // `Some(Remap(…))`. However, we ignore the
+                // XXX: For `ReadRel`s, we use `=>` unless there is a remap to
+                // show, in which case we use `+> … |>`. `Direct` and an absent
+                // `common` render the same. However, we ignore the
                 // `OutputOptions::show_emit` option, and we haven't yet
                 // supported other operators; at some point, we should figure
                 // out our policy here and clean this up.
-                let output_syntax = if emit.is_some() {
-                    OutputSyntax::Explicit
-                } else {
-                    OutputSyntax::Implicit
+                let output_syntax = match emit {
+                    Some(EmitKind::Emit(_)) => OutputSyntax::Explicit,
+                    Some(EmitKind::Direct(_)) | None => OutputSyntax::Implicit,
                 };
                 Relation {
                     name: Cow::Borrowed("Read"),

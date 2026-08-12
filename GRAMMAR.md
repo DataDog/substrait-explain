@@ -569,6 +569,13 @@ RelationName[arguments, named_arguments => columns]
 
 The exact structure varies by relation type, but all follow this basic pattern.
 
+#### Emit
+
+Every relation this crate parses carries an explicit `RelCommon.emit_kind`:
+`Direct` when the columns pass through unchanged, `Emit` when the text gives a
+remap. `emit_kind` is a protobuf `oneof`, so leaving it unset has no default a
+consumer can rely on — it would have to infer `Direct`.
+
 ### Arguments
 
 Arguments in relations can be literals, expressions, enums, or tuples thereof.
@@ -636,7 +643,7 @@ direct_output := "+>" named_column_list ("|>" reference_list)?
 - `named_column := name ":" type` - column name with type annotation
 - `named_column_list := (named_column ("," named_column)*)?` - the list of columns and their types to be read from the table `table_name`.
   - `=>` is used to mean implicit column ordering; for `Read`, this translates to `Direct` column ordering.
-  - When used with `+>` and no `|>`, the `named_column`s are in the expected order of the table, and `Direct` emit is used.
+  - `+>` with no `|>` also means `Direct`, and is accepted as an equivalent spelling of `=>`. The canonical form is `=>`.
   - When used with `+> … |>`, the `named_column`s are in the expected order of the table, and the emit order is a Remap specified by `reference_list`.
 
 #### Example
@@ -657,7 +664,7 @@ Root[result2]
 # let plan = Parser::parse(plan_text).unwrap();
 # assert_eq!(plan.relations.len(), 2);
 ```
-Use `+>` when the read's base schema records the direct output domain:
+`+>` with no `|>` is accepted as an equivalent of `=>`, and prints back as `=>`:
 
 ```rust
 # use substrait_explain::Parser;
