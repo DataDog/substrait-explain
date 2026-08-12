@@ -319,15 +319,6 @@ impl Drop for RuleIter<'_> {
 
 /// A collection of named arguments (`name=value` pairs) extracted from a
 /// named-argument-list rule, keyed by name with duplicate-name rejection.
-///
-/// Shared by every consumer of the generic `name=value` grammar — the `Fetch`
-/// relation's `limit=`/`offset=`, and window functions' `over(...)` arguments.
-/// It lives here in `common` (rather than in `relations` or `expressions`) so
-/// that neither of those modules has to depend on the other for it.
-///
-/// The fluent API ensures all arguments are processed exactly once and none are
-/// forgotten: [`pop`](Self::pop) consumes a known argument, and
-/// [`done`](Self::done) errors on any that remain unconsumed.
 pub(crate) struct ParsedNamedArgs<'a> {
     map: HashMap<&'a str, pest::iterators::Pair<'a, Rule>>,
 }
@@ -358,8 +349,6 @@ impl<'a> ParsedNamedArgs<'a> {
     }
 
     // Returns the pair if it exists and matches the rule, otherwise None.
-    // Asserts that the rule must match the rule of the pair (and therefore
-    // panics in non-release-mode if not)
     pub(crate) fn pop(
         mut self,
         name: &str,

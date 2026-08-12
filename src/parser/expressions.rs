@@ -635,19 +635,32 @@ impl FunctionReference {
     }
 }
 
-/// Parse an `argument_list` rule (`(expr, expr, ...)`) into function arguments.
-fn parse_argument_list(
-    extensions: &SimpleExtensions,
-    pair: pest::iterators::Pair<Rule>,
-) -> Result<Vec<FunctionArgument>, MessageParseError> {
-    assert_eq!(pair.as_rule(), Rule::argument_list);
-    pair.into_inner()
-        .map(|e| {
-            Ok(FunctionArgument {
+/// The parenthesized arguments of a function call (`(expr, expr, ...)`), each
+/// parsed as a value argument.
+struct FunctionArguments(Vec<FunctionArgument>);
+
+impl ScopedParsePair for FunctionArguments {
+    fn rule() -> Rule {
+        Rule::argument_list
+    }
+
+    fn message() -> &'static str {
+        "FunctionArguments"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: pest::iterators::Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arguments = Vec::new();
+        for e in pair.into_inner() {
+            arguments.push(FunctionArgument {
                 arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(Self(arguments))
+    }
 }
 
 impl ScopedParsePair for ScalarFunction {
@@ -676,7 +689,7 @@ impl ScopedParsePair for ScalarFunction {
         iter.done();
 
         let reference = FunctionReference::parse_pair(reference_pair);
-        let arguments = parse_argument_list(extensions, args_pair)?;
+        let FunctionArguments(arguments) = FunctionArguments::parse_pair(extensions, args_pair)?;
         // Required output type (e.g., :i64); the grammar guarantees its presence.
         let output_type = Type::parse_pair(extensions, type_pair)?;
 
@@ -1524,6 +1537,40 @@ mod tests {
         // In a function call, the function_signature must stop before the '('.
         let pairs = ExpressionParser::parse(Rule::function_signature, "equal:any_any").unwrap();
         assert_eq!(pairs.as_str(), "equal:any_any");
+    }
+
+    #[test]
+    fn test_parse_function_arguments() {
+        // The argument list parses on its own, independent of a function call.
+        let exts = SimpleExtensions::default();
+
+        let pair = parse_exact(Rule::argument_list, "()");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert!(args.is_empty());
+
+        let pair = parse_exact(Rule::argument_list, "($0, 1)");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Selection(Box::new(
+                            FieldIndex(0).to_field_reference()
+                        ))),
+                    })),
+                },
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Literal(Literal {
+                            literal_type: Some(LiteralType::I64(1)),
+                            nullable: false,
+                            type_variation_reference: 0,
+                        })),
+                    })),
+                },
+            ]
+        );
     }
 
     fn make_extensions_for_fn_tests() -> SimpleExtensions {
