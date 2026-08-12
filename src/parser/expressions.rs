@@ -566,6 +566,89 @@ impl ScopedParsePair for Literal {
     }
 }
 
+/// An unresolved reference to a function: its compound name plus an optional explicit anchor.
+struct FunctionReference {
+    name: CompoundName,
+    anchor: Option<u32>,
+}
+
+impl ParsePair for FunctionReference {
+    fn rule() -> Rule {
+        Rule::function_reference
+    }
+
+    fn message() -> &'static str {
+        "FunctionReference"
+    }
+
+    fn parse_pair(pair: Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Compound function name (required) — e.g. "equal" or "equal:any_any"
+        let name = iter.parse_next::<CompoundName>();
+
+        // Optional anchor (e.g., #1)
+        let anchor = iter
+            .try_pop(Rule::anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
+
+        // Optional URN anchor (e.g., @1); currently unused.
+        let _urn_anchor = iter
+            .try_pop(Rule::urn_anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
+
+        iter.done();
+        FunctionReference { name, anchor }
+    }
+}
+
+impl FunctionReference {
+    /// Resolve this reference to a concrete function anchor against the
+    /// extension registry.
+    fn resolve(
+        &self,
+        extensions: &SimpleExtensions,
+        span: pest::Span,
+    ) -> Result<u32, MessageParseError> {
+        get_and_validate_anchor(
+            extensions,
+            ExtensionKind::Function,
+            self.anchor,
+            self.name.full(),
+            span,
+        )
+    }
+}
+
+/// The parenthesized arguments of a function call (`(expr, expr, ...)`), each
+/// parsed as a value argument.
+struct FunctionArguments(Vec<FunctionArgument>);
+
+impl ScopedParsePair for FunctionArguments {
+    fn rule() -> Rule {
+        Rule::argument_list
+    }
+
+    fn message() -> &'static str {
+        "FunctionArguments"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arguments = Vec::new();
+        for e in pair.into_inner() {
+            arguments.push(FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
+            });
+        }
+        Ok(Self(arguments))
+    }
+}
+
 impl ScopedParsePair for ScalarFunction {
     fn rule() -> Rule {
         Rule::function_call
@@ -583,45 +666,27 @@ impl ScopedParsePair for ScalarFunction {
         let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
 
-        // Parse compound function name (required) — e.g. "equal" or "equal:any_any"
-        let name = iter.parse_next::<CompoundName>();
-
-        // Parse optional anchor (e.g., #1)
-        let anchor = iter
-            .try_pop(Rule::anchor)
-            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
-
-        // Parse optional URN anchor (e.g., @1)
-        let _urn_anchor = iter
-            .try_pop(Rule::urn_anchor)
-            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
-
-        // Parse argument list (required)
-        let argument_list = iter.pop(Rule::argument_list);
-        let mut arguments = Vec::new();
-        for e in argument_list.into_inner() {
-            arguments.push(FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
-            });
-        }
-
-        // Parse required output type (e.g., :i64). pop is safe here because
-        // the grammar guarantees the type token is always present.
-        let output_type = Some(Type::parse_pair(extensions, iter.pop(Rule::r#type))?);
-
+        // Drain the iterator into raw pairs before any fallible parsing, so an
+        // early return doesn't trip the RuleIter drop guard with pairs still
+        // pending.
+        let reference_pair = iter.pop(Rule::function_reference);
+        let args_pair = iter.pop(Rule::argument_list);
+        let type_pair = iter.pop(Rule::r#type);
         iter.done();
-        let anchor = get_and_validate_anchor(
-            extensions,
-            ExtensionKind::Function,
-            anchor,
-            name.full(),
-            span,
-        )?;
+
+        let reference = FunctionReference::parse_pair(reference_pair);
+        let FunctionArguments(arguments) = FunctionArguments::parse_pair(extensions, args_pair)?;
+        // Required output type (e.g., :i64); the grammar guarantees its presence.
+        let output_type = Type::parse_pair(extensions, type_pair)?;
+
+        // Resolve the function reference against the registry last, once the
+        // rest of the call has parsed cleanly.
+        let function_reference = reference.resolve(extensions, span)?;
         Ok(ScalarFunction {
-            function_reference: anchor,
+            function_reference,
             arguments,
             options: vec![], // TODO: Function Options
-            output_type,
+            output_type: Some(output_type),
             #[allow(deprecated)]
             args: vec![],
         })
@@ -1462,7 +1527,39 @@ mod tests {
         assert_eq!(pairs.as_str(), "equal:any_any");
     }
 
-    // ---- Tests for ScalarFunction parsing with compound names ----
+    #[test]
+    fn test_parse_function_arguments() {
+        // The argument list parses on its own, independent of a function call.
+        let exts = SimpleExtensions::default();
+
+        let pair = parse_exact(Rule::argument_list, "()");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert!(args.is_empty());
+
+        let pair = parse_exact(Rule::argument_list, "($0, 1)");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Selection(Box::new(
+                            FieldIndex(0).to_field_reference()
+                        ))),
+                    })),
+                },
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Literal(Literal {
+                            literal_type: Some(LiteralType::I64(1)),
+                            nullable: false,
+                            type_variation_reference: 0,
+                        })),
+                    })),
+                },
+            ]
+        );
+    }
 
     fn make_extensions_for_fn_tests() -> SimpleExtensions {
         let mut exts = SimpleExtensions::default();

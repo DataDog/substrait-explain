@@ -146,15 +146,19 @@ type = { simple_type | compound_type | user_defined_type }
 
 argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 
-// Scalar function call:
+// A function reference:
 // - Compound function name (base name or base:signature, e.g. "equal" or "equal:any_any")
 // - Optional Anchor, e.g. #1
 // - Optional URN Anchor, e.g. @1
+function_reference = { function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? }
+
+// Scalar function call:
+// - A function_reference
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Required output type annotation after closing paren, e.g. :i64
 //   (unambiguous because function_signature is atomic and ends before the opening paren)
 function_call = {
-    function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? ~ sp ~ argument_list ~ ":" ~ sp ~ type
+    function_reference ~ sp ~ argument_list ~ ":" ~ sp ~ type
 }
 
 if_clause = {
