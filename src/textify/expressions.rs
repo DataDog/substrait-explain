@@ -3,8 +3,8 @@ use std::fmt::{self};
 use chrono::{DateTime, NaiveDate, NaiveTime};
 use expr::RexType;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
-use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::literal::interval_day_to_second::PrecisionMode;
+use substrait::proto::expression::literal::{IntervalDayToSecond, LiteralType};
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
 };
@@ -197,9 +197,7 @@ fn precision_time_to_string(value: i64, precision: i32) -> Result<String, Precis
 /// also means microseconds: that is Substrait's documented meaning for interval
 /// values recorded before `precision_mode` existed, and it matches the default
 /// the type textifier uses for `Type.IntervalDay` with no precision.
-fn interval_day_precision_units(
-    interval: &substrait::proto::expression::literal::IntervalDayToSecond,
-) -> (i32, i64) {
+fn interval_day_precision_units(interval: &IntervalDayToSecond) -> (i32, i64) {
     #[allow(deprecated)]
     match interval.precision_mode {
         Some(PrecisionMode::Precision(p)) => (p, interval.subseconds),
@@ -209,7 +207,7 @@ fn interval_day_precision_units(
 }
 
 fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
-    interval: &substrait::proto::expression::literal::IntervalDayToSecond,
+    interval: &IntervalDayToSecond,
     ctx: &S,
     w: &mut W,
 ) -> fmt::Result {
