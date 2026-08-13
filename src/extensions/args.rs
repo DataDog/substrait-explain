@@ -267,6 +267,32 @@ impl<'a> ArgsAccess<'a> {
             .transpose()
     }
 
+    /// Fetch the named argument `name`, with an expected type of
+    /// [`TupleValue`], and convert each element to type `T`.
+    ///
+    /// Returns `Ok(None)` if the argument is absent. Returns an error if the
+    /// argument is not a tuple, or if any element of the tuple fails
+    /// conversion.
+    pub fn get_named_tuple<T>(&mut self, name: &str) -> Result<Option<Vec<T>>, ExtensionError>
+    where
+        T: TryFrom<&'a ExtensionValue>,
+        T::Error: Into<ExtensionError>,
+    {
+        self.get_named_arg(name)
+            .map(|value| {
+                let tuple = <&TupleValue>::try_from(value)?;
+                tuple
+                    .into_iter()
+                    .map(|element| T::try_from(element).map_err(Into::into))
+                    .collect::<Result<Vec<_>, ExtensionError>>()
+            })
+            .transpose()
+            .map_err(|source| ExtensionError::NamedArgumentConversion {
+                name: name.to_string(),
+                source: Box::new(source),
+            })
+    }
+
     /// Returns a required named argument converted to `T`.
     ///
     /// A present argument is marked as handled.
@@ -504,6 +530,15 @@ impl From<&str> for ExtensionValue {
     }
 }
 
+impl<T> From<Vec<T>> for ExtensionValue
+where
+    T: Into<ExtensionValue>,
+{
+    fn from(values: Vec<T>) -> Self {
+        ExtensionValue::Tuple(values.into_iter().map(Into::into).collect())
+    }
+}
+
 impl ExtensionError {
     fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> Self {
         match actual {
@@ -530,11 +565,19 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a str {
     }
 }
 
+impl TryFrom<&ExtensionValue> for String {
+    type Error = ExtensionError;
+
+    fn try_from(value: &ExtensionValue) -> Result<String, Self::Error> {
+        <&str>::try_from(value).map(ToOwned::to_owned)
+    }
+}
+
 impl TryFrom<ExtensionValue> for String {
     type Error = ExtensionError;
 
     fn try_from(value: ExtensionValue) -> Result<String, Self::Error> {
-        <&str>::try_from(&value).map(ToOwned::to_owned)
+        String::try_from(&value)
     }
 }
 
@@ -702,6 +745,31 @@ impl ExtensionArgs {
 mod tests {
     use super::*;
 
+    fn assert_named_invalid_type(
+        error: &ExtensionError,
+        name: &str,
+        expected: ExtensionValueKind,
+        actual: ExtensionValueKind,
+    ) {
+        assert!(
+            matches!(
+                error,
+                ExtensionError::NamedArgumentConversion {
+                    name: actual_name,
+                    source,
+                } if actual_name == name
+                    && matches!(
+                        source.as_ref(),
+                        ExtensionError::InvalidArgumentType {
+                            expected: actual_expected,
+                            actual: actual_actual,
+                        } if *actual_expected == expected && *actual_actual == actual
+                    )
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
     #[test]
     fn get_named_converts_present_values_and_returns_none_for_missing_values() {
         let mut args = ExtensionArgs::default();
@@ -728,6 +796,77 @@ mod tests {
             "Invalid named argument 'count': Invalid argument: expected integer, got null"
         );
         assert!(access.finish().is_ok());
+    }
+
+    #[test]
+    fn get_named_tuple_converts_present_values_and_returns_none_for_missing_values() {
+        let mut args = ExtensionArgs::default();
+        args.insert(
+            "names",
+            ExtensionValue::Tuple(vec!["first".into(), "second".into()].into()),
+        );
+        let mut access = ArgsAccess::new(&args);
+
+        assert_eq!(access.get_named_tuple::<String>("missing").unwrap(), None);
+        assert_eq!(
+            access.get_named_tuple::<String>("names").unwrap(),
+            Some(vec!["first".to_string(), "second".to_string()])
+        );
+        assert!(access.finish().is_ok());
+    }
+
+    #[test]
+    fn get_named_tuple_contextualizes_invalid_outer_value() {
+        let mut args = ExtensionArgs::default();
+        args.insert("names", "not a tuple");
+        let mut access = ArgsAccess::new(&args);
+
+        let error = access
+            .get_named_tuple::<String>("names")
+            .expect_err("string should not convert to tuple");
+
+        assert_named_invalid_type(
+            &error,
+            "names",
+            ExtensionValueKind::Tuple,
+            ExtensionValueKind::String,
+        );
+        assert!(access.finish().is_ok());
+    }
+
+    #[test]
+    fn get_named_tuple_contextualizes_invalid_element() {
+        let mut args = ExtensionArgs::default();
+        args.insert(
+            "names",
+            ExtensionValue::Tuple(vec!["first".into(), 2_i64.into()].into()),
+        );
+        let mut access = ArgsAccess::new(&args);
+
+        let error = access
+            .get_named_tuple::<String>("names")
+            .expect_err("integer should not convert to string");
+
+        assert_named_invalid_type(
+            &error,
+            "names",
+            ExtensionValueKind::String,
+            ExtensionValueKind::Integer,
+        );
+        assert!(access.finish().is_ok());
+    }
+
+    #[test]
+    fn vector_encodes_as_tuple() {
+        let encoded: ExtensionValue = vec![1_i64, 2_i64].into();
+        let tuple = <&TupleValue>::try_from(&encoded).unwrap();
+        let values = tuple
+            .iter()
+            .map(i64::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(values, vec![1, 2]);
     }
 
     #[test]
