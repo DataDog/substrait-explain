@@ -535,7 +535,7 @@ fn parse_time_to_precision_units(
 
 impl ScopedParsePair for Literal {
     fn rule() -> Rule {
-        Rule::literal
+        Rule::expression_literal
     }
 
     fn message() -> &'static str {
@@ -753,7 +753,7 @@ impl ScopedParsePair for Expression {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
-            Rule::literal => Ok(Expression {
+            Rule::expression_literal => Ok(Expression {
                 rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
             }),
             Rule::function_call => Ok(Expression {
@@ -777,7 +777,7 @@ impl ScopedParsePair for Expression {
                 )?))),
             }),
             _ => unreachable!(
-                "Grammar guarantees expression can only be literal, function_call, reference, if_then, or cast_expression, got: {:?}",
+                "Grammar guarantees expression can only be expression_literal, function_call, reference, if_then, or cast_expression, got: {:?}",
                 inner.as_rule()
             ),
         }
@@ -1065,7 +1065,7 @@ mod tests {
     #[test]
     fn test_parse_float_literal_with_fp32_type() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "3.82:fp32");
+        let pair = parse_exact(Rule::expression_literal, "3.82:fp32");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1077,7 +1077,7 @@ mod tests {
     #[test]
     fn test_parse_date_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-12-25':date");
+        let pair = parse_exact(Rule::expression_literal, "'2023-12-25':date");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1096,7 +1096,7 @@ mod tests {
     #[test]
     fn test_parse_time_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45':time");
+        let pair = parse_exact(Rule::expression_literal, "'14:30:45':time");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_t() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':timestamp");
+        let pair = parse_exact(Rule::expression_literal, "'2023-01-01T12:00:00':timestamp");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_space() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-01-01 12:00:00':timestamp");
+        let pair = parse_exact(Rule::expression_literal, "'2023-01-01 12:00:00':timestamp");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1156,7 +1156,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123456789':precisiontimestamp<9>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1181,7 +1181,7 @@ mod tests {
     fn test_parse_precision_timestamp_tz_literal_nullable() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123':precisiontimestamptz?<3>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1202,7 +1202,10 @@ mod tests {
     #[test]
     fn test_parse_precision_time_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<6>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime<6>",
+        );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1222,7 +1225,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal_precision_12_unsupported() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00':precisiontimestamp<12>",
         );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
@@ -1233,7 +1236,10 @@ mod tests {
     fn test_parse_precision_timestamp_literal_invalid_precision() {
         let extensions = SimpleExtensions::default();
         // 5 isn't a recognized precision for precisiontimestamp, so this should error.
-        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':precisiontimestamp<5>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'2023-01-01T12:00:00':precisiontimestamp<5>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("Invalid precision 5"));
     }
@@ -1242,7 +1248,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal_nullable() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123456789':precisiontimestamp?<9>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1252,7 +1258,10 @@ mod tests {
     #[test]
     fn test_parse_precision_time_literal_nullable() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime?<6>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime?<6>",
+        );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
         assert!(result.nullable);
     }
@@ -1263,7 +1272,7 @@ mod tests {
         // precisiontimestamp<0> declares second resolution, but the value has a
         // fractional second; this must error rather than silently drop the ".999".
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.999':precisiontimestamp<0>",
         );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
@@ -1275,7 +1284,10 @@ mod tests {
         let extensions = SimpleExtensions::default();
         // precisiontime<3> declares millisecond resolution, but the value has
         // more fractional digits than that; this must error, not truncate.
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<3>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime<3>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("fractional"));
     }
@@ -1285,7 +1297,10 @@ mod tests {
         let extensions = SimpleExtensions::default();
         // 2300 is past chrono's ~292-year-around-1970 nanosecond range,
         // so this must error rather than silently parsing to some truncated or zeroed value.
-        let pair = parse_exact(Rule::literal, "'2300-01-01T00:00:00':precisiontimestamp<9>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'2300-01-01T00:00:00':precisiontimestamp<9>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("out of range"));
     }

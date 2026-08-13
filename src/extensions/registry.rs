@@ -62,7 +62,7 @@
 //!
 //!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
 //!         let mut extractor = args.extractor();
-//!         let path: &str = extractor.expect_named_arg("path")?;
+//!         let path: &str = extractor.expect_named("path")?;
 //!         extractor.check_exhausted()?;
 //!         Ok(CustomScanConfig {
 //!             path: path.to_string(),
@@ -176,6 +176,22 @@ pub enum ExtensionError {
     /// Required argument not present (from ArgsExtractor)
     #[error("Missing required argument: {name}")]
     MissingArgument { name: String },
+
+    /// A named argument failed conversion to the requested type.
+    #[error("Invalid named argument '{name}': {source}")]
+    NamedArgumentConversion {
+        name: String,
+        #[source]
+        source: Box<ExtensionError>,
+    },
+
+    /// An argument containing an earlier error could not be converted.
+    #[error("Cannot convert argument to {expected}: {source}")]
+    ArgumentConversion {
+        expected: ExtensionValueKind,
+        #[source]
+        source: Box<ExtensionError>,
+    },
 
     /// Invalid argument type found while extracting an extension argument.
     #[error("Invalid argument: expected {expected}, got {actual}")]
@@ -765,8 +781,8 @@ mod tests {
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
-            let batch_size: i64 = extractor.expect_named_arg("batch_size")?;
+            let path: String = extractor.expect_named::<&str>("path")?.to_string();
+            let batch_size: i64 = extractor.expect_named("batch_size")?;
             extractor.check_exhausted()?;
 
             Ok(TestExtension {
@@ -972,7 +988,7 @@ mod tests {
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_string();
+            let hint: String = extractor.expect_named::<&str>("hint")?.to_string();
             extractor.check_exhausted()?;
             Ok(TestEnhancement { hint })
         }

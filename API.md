@@ -166,8 +166,8 @@ extension namespaces receive an empty input slice.
 
 Use `ArgsExtractor` for convenient argument parsing:
 
-- `extractor.expect_named_arg::<T>(name)` - Required argument
-- `extractor.get_named_or::<T>(name, default)` - Optional with default
+- `extractor.expect_named::<T>(name)` - Required argument
+- `extractor.get_named::<T>(name)?` - Optional argument, returning `Option<T>`
 - `extractor.check_exhausted()` - Verify no unexpected arguments
 
 ### Extension Namespaces

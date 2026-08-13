@@ -232,32 +232,36 @@ impl<'a> ArgsExtractor<'a> {
         }
     }
 
-    /// Get a named argument value or return an error
-    /// Marks the argument as consumed if found
-    pub fn expect_named_arg<T>(&mut self, name: &str) -> Result<T, ExtensionError>
+    /// Get a named argument converted to `T`, or `None` if it is absent.
+    ///
+    /// Marks the argument as consumed if it exists in the source args.
+    pub fn get_named<T>(&mut self, name: &str) -> Result<Option<T>, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
         T::Error: Into<ExtensionError>,
     {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(ExtensionError::MissingArgument {
-                name: name.to_string(),
-            }),
-        }
+        self.get_named_arg(name)
+            .map(|value| {
+                T::try_from(value).map_err(|error| ExtensionError::NamedArgumentConversion {
+                    name: name.to_string(),
+                    source: Box::new(error.into()),
+                })
+            })
+            .transpose()
     }
 
-    /// Get a named argument value or default
-    /// Marks the argument as consumed if it exists in the source args
-    pub fn get_named_or<T>(&mut self, name: &str, default: T) -> Result<T, ExtensionError>
+    /// Get a required named argument converted to `T`.
+    ///
+    /// Marks the argument as consumed if found.
+    pub fn expect_named<T>(&mut self, name: &str) -> Result<T, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
         T::Error: Into<ExtensionError>,
     {
-        match self.get_named_arg(name) {
-            Some(value) => T::try_from(value).map_err(Into::into),
-            None => Ok(default),
-        }
+        self.get_named(name)?
+            .ok_or_else(|| ExtensionError::MissingArgument {
+                name: name.to_string(),
+            })
     }
 
     /// Check that all named arguments in the source have been consumed,
@@ -367,6 +371,10 @@ pub enum ExtensionValue {
     Integer(i64),
     Float(f64),
     Boolean(bool),
+    /// An untyped null literal.
+    Null,
+    /// A conversion or formatting error preserved for best-effort textification.
+    Error(ExtensionError),
 
     /// Substrait expression value, including typed literals and field references.
     ///
@@ -390,6 +398,8 @@ pub enum ExtensionValueKind {
     Integer,
     Float,
     Boolean,
+    Null,
+    Error,
     Reference,
     Enum,
     Tuple,
@@ -403,6 +413,8 @@ impl fmt::Display for ExtensionValueKind {
             ExtensionValueKind::Integer => write!(f, "integer"),
             ExtensionValueKind::Float => write!(f, "float"),
             ExtensionValueKind::Boolean => write!(f, "boolean"),
+            ExtensionValueKind::Null => write!(f, "null"),
+            ExtensionValueKind::Error => write!(f, "error"),
             ExtensionValueKind::Reference => write!(f, "reference"),
             ExtensionValueKind::Enum => write!(f, "enum"),
             ExtensionValueKind::Tuple => write!(f, "tuple"),
@@ -419,10 +431,18 @@ impl ExtensionValue {
             ExtensionValue::Integer(_) => ExtensionValueKind::Integer,
             ExtensionValue::Float(_) => ExtensionValueKind::Float,
             ExtensionValue::Boolean(_) => ExtensionValueKind::Boolean,
+            ExtensionValue::Null => ExtensionValueKind::Null,
+            ExtensionValue::Error(_) => ExtensionValueKind::Error,
             ExtensionValue::Expr(_) => ExtensionValueKind::Expression,
             ExtensionValue::Enum(_) => ExtensionValueKind::Enum,
             ExtensionValue::Tuple(_) => ExtensionValueKind::Tuple,
         }
+    }
+}
+
+impl From<ExtensionError> for ExtensionValue {
+    fn from(error: ExtensionError) -> Self {
+        ExtensionValue::Error(error)
     }
 }
 
@@ -480,10 +500,18 @@ impl From<&str> for ExtensionValue {
     }
 }
 
-fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> ExtensionError {
-    ExtensionError::InvalidArgumentType {
-        expected,
-        actual: actual.kind(),
+impl ExtensionError {
+    fn invalid_type(expected: ExtensionValueKind, actual: &ExtensionValue) -> Self {
+        match actual {
+            ExtensionValue::Error(source) => Self::ArgumentConversion {
+                expected,
+                source: Box::new(source.clone()),
+            },
+            _ => Self::InvalidArgumentType {
+                expected,
+                actual: actual.kind(),
+            },
+        }
     }
 }
 
@@ -493,7 +521,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a str {
     fn try_from(value: &'a ExtensionValue) -> Result<&'a str, Self::Error> {
         match value {
             ExtensionValue::String(s) => Ok(s),
-            v => Err(invalid_type(ExtensionValueKind::String, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::String, v)),
         }
     }
 }
@@ -515,7 +543,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for EnumValue {
     fn try_from(value: &'a ExtensionValue) -> Result<EnumValue, Self::Error> {
         match value {
             ExtensionValue::Enum(s) => Ok(EnumValue(s.clone())),
-            v => Err(invalid_type(ExtensionValueKind::Enum, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::Enum, v)),
         }
     }
 }
@@ -526,7 +554,7 @@ impl<'a> TryFrom<&'a ExtensionValue> for &'a TupleValue {
     fn try_from(value: &'a ExtensionValue) -> Result<&'a TupleValue, Self::Error> {
         match value {
             ExtensionValue::Tuple(tv) => Ok(tv),
-            v => Err(invalid_type(ExtensionValueKind::Tuple, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::Tuple, v)),
         }
     }
 }
@@ -537,7 +565,7 @@ impl TryFrom<&ExtensionValue> for i64 {
     fn try_from(value: &ExtensionValue) -> Result<i64, Self::Error> {
         match value {
             ExtensionValue::Integer(i) => Ok(*i),
-            v => Err(invalid_type(ExtensionValueKind::Integer, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::Integer, v)),
         }
     }
 }
@@ -548,7 +576,7 @@ impl TryFrom<&ExtensionValue> for f64 {
     fn try_from(value: &ExtensionValue) -> Result<f64, Self::Error> {
         match value {
             ExtensionValue::Float(f) => Ok(*f),
-            v => Err(invalid_type(ExtensionValueKind::Float, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::Float, v)),
         }
     }
 }
@@ -559,7 +587,7 @@ impl TryFrom<&ExtensionValue> for bool {
     fn try_from(value: &ExtensionValue) -> Result<bool, Self::Error> {
         match value {
             ExtensionValue::Boolean(b) => Ok(*b),
-            v => Err(invalid_type(ExtensionValueKind::Boolean, v)),
+            v => Err(ExtensionError::invalid_type(ExtensionValueKind::Boolean, v)),
         }
     }
 }
@@ -572,8 +600,11 @@ impl TryFrom<&ExtensionValue> for Reference {
             ExtensionValue::Expr(expr) => expr
                 .as_direct_reference()
                 .map(Reference)
-                .ok_or_else(|| invalid_type(ExtensionValueKind::Reference, value)),
-            v => Err(invalid_type(ExtensionValueKind::Reference, v)),
+                .ok_or_else(|| ExtensionError::invalid_type(ExtensionValueKind::Reference, value)),
+            v => Err(ExtensionError::invalid_type(
+                ExtensionValueKind::Reference,
+                v,
+            )),
         }
     }
 }
@@ -594,7 +625,10 @@ impl TryFrom<&ExtensionValue> for Expr {
             ExtensionValue::Float(f) => Ok(Expr::from(*f)),
             ExtensionValue::String(s) => Ok(Expr::from(s.as_str())),
             ExtensionValue::Boolean(b) => Ok(Expr::from(*b)),
-            v => Err(invalid_type(ExtensionValueKind::Expression, v)),
+            v => Err(ExtensionError::invalid_type(
+                ExtensionValueKind::Expression,
+                v,
+            )),
         }
     }
 }
@@ -647,5 +681,70 @@ impl ExtensionArgs {
     /// Create an extractor for validating named arguments
     pub fn extractor(&self) -> ArgsExtractor<'_> {
         ArgsExtractor::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_named_converts_present_values_and_returns_none_for_missing_values() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", 8_i64);
+        let mut extractor = args.extractor();
+
+        assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
+        assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
+        assert!(extractor.check_exhausted().is_ok());
+    }
+
+    #[test]
+    fn get_named_contextualizes_conversion_errors() {
+        let mut args = ExtensionArgs::default();
+        args.insert("count", ExtensionValue::Null);
+        let mut extractor = args.extractor();
+
+        let error = extractor
+            .get_named::<i64>("count")
+            .expect_err("null should not convert to i64");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid named argument 'count': Invalid argument: expected integer, got null"
+        );
+        assert!(extractor.check_exhausted().is_ok());
+    }
+
+    #[test]
+    fn error_value_reports_expected_type_and_source_when_extracted() {
+        let value = ExtensionValue::Error(ExtensionError::Custom("bad value".to_string()));
+
+        let error = i64::try_from(&value).expect_err("error value should not convert");
+
+        assert_eq!(
+            error.to_string(),
+            "Cannot convert argument to integer: bad value"
+        );
+        assert!(matches!(
+            &error,
+            ExtensionError::ArgumentConversion {
+                expected: ExtensionValueKind::Integer,
+                source,
+            } if matches!(source.as_ref(), ExtensionError::Custom(message) if message == "bad value")
+        ));
+    }
+
+    #[test]
+    fn expect_named_reports_missing_argument_name() {
+        let args = ExtensionArgs::default();
+        let mut extractor = args.extractor();
+
+        let error = extractor
+            .expect_named::<i64>("count")
+            .expect_err("missing argument should fail");
+
+        assert_eq!(error.to_string(), "Missing required argument: count");
+        assert!(extractor.check_exhausted().is_ok());
     }
 }
