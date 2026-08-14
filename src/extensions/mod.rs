@@ -22,7 +22,7 @@ pub use args::{
     EnumValue, Expr, ExtensionArgs, ExtensionColumn, ExtensionValue, ExtensionValueKind, TupleValue,
 };
 pub use registry::{
-    AnyConvertible, Explainable, Extension, ExtensionError, ExtensionProtoConvert,
-    ExtensionRegistry, ExtensionType, RegistrationError,
+    AnyConvertible, Explainable, Extension, ExtensionContext, ExtensionError, ExtensionInput,
+    ExtensionProtoConvert, ExtensionRegistry, ExtensionType, RegistrationError,
 };
 pub use simple::{InsertError, SimpleExtension, SimpleExtensions};

@@ -1,5 +1,10 @@
+use std::fmt::{self, Display, Formatter};
+use std::mem::size_of;
+use std::str::FromStr;
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use pest::Parser as PestParser;
+use pest::iterators::Pair;
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
@@ -57,7 +62,7 @@ impl ParsePair for FieldIndex {
         "FieldIndex"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         let index: i32 = inner.as_str().parse().unwrap();
@@ -74,7 +79,7 @@ impl ParsePair for FieldReference {
         "FieldReference"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
         // TODO: Other types of references.
@@ -82,20 +87,17 @@ impl ParsePair for FieldReference {
     }
 }
 
-fn to_int_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+const UNSIGNED_INT_KIND: Kind = Kind::I64(I64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
+fn to_int_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::integer);
     let parsed_value: i64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::I64(I64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume i64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_INT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         // If no type is provided, we assume i64, Nullability::Required.
@@ -135,20 +137,17 @@ fn to_int_literal(
     })
 }
 
-fn to_float_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+const UNSIGNED_FLOAT_KIND: Kind = Kind::Fp64(Fp64 {
+    type_variation_reference: 0,
+    nullability: Nullability::Required as i32,
+});
+
+fn to_float_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::float);
     let parsed_value: f64 = value.as_str().parse().unwrap();
 
-    const DEFAULT_KIND: Kind = Kind::Fp64(Fp64 {
-        type_variation_reference: 0,
-        nullability: Nullability::Required as i32,
-    });
-
     // If no type is provided, we assume fp64, Nullability::Required.
-    let kind = typ.and_then(|t| t.kind).unwrap_or(DEFAULT_KIND);
+    let kind = typ.and_then(|t| t.kind).unwrap_or(UNSIGNED_FLOAT_KIND);
 
     let (lit, nullability, tvar) = match &kind {
         Kind::Fp32(f) => (
@@ -177,10 +176,7 @@ fn to_float_literal(
     })
 }
 
-fn to_boolean_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_boolean_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::boolean);
     let parsed_value: bool = value.as_str().parse().unwrap();
 
@@ -206,10 +202,7 @@ fn to_boolean_literal(
     })
 }
 
-fn to_string_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_string_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::string_literal);
     let string_value = unescape_string(value.clone());
 
@@ -351,10 +344,7 @@ fn to_string_literal(
     }
 }
 
-fn to_null_literal(
-    value: pest::iterators::Pair<Rule>,
-    typ: Option<Type>,
-) -> Result<Literal, MessageParseError> {
+fn to_null_literal(value: Pair<Rule>, typ: Option<Type>) -> Result<Literal, MessageParseError> {
     assert_eq!(value.as_rule(), Rule::null);
     let typ = typ.ok_or_else(|| {
         MessageParseError::invalid(
@@ -581,8 +571,8 @@ enum IntervalDayError {
     },
 }
 
-impl std::fmt::Display for IntervalDayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for IntervalDayError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             IntervalDayError::TermOverflow { unit, number, bits } => write!(
                 f,
@@ -604,14 +594,14 @@ impl std::fmt::Display for IntervalDayError {
 ///
 /// The grammar guarantees an optionally-signed run of digits, so the only way
 /// this can fail is a value too large for the protobuf field it is stored in.
-fn parse_duration_number<T: std::str::FromStr>(
+fn parse_duration_number<T: FromStr>(
     number: &str,
     unit: &'static str,
 ) -> Result<T, IntervalDayError> {
     number.parse().map_err(|_| IntervalDayError::TermOverflow {
         unit,
         number: number.to_string(),
-        bits: std::mem::size_of::<T>() * 8,
+        bits: size_of::<T>() * 8,
     })
 }
 
@@ -649,7 +639,7 @@ fn parse_interval_day_duration(
 /// Convert a matched [`Rule::interval_day_duration`] into an
 /// `IntervalDayToSecond` at `precision`.
 fn interval_day_from_pair(
-    pair: pest::iterators::Pair<Rule>,
+    pair: Pair<Rule>,
     precision: SupportedPrecision,
 ) -> Result<IntervalDayToSecond, IntervalDayError> {
     assert_eq!(pair.as_rule(), Rule::interval_day_duration);
@@ -711,7 +701,7 @@ fn interval_day_from_pair(
 
 impl ScopedParsePair for Literal {
     fn rule() -> Rule {
-        Rule::literal
+        Rule::expression_literal
     }
 
     fn message() -> &'static str {
@@ -720,7 +710,7 @@ impl ScopedParsePair for Literal {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
@@ -742,6 +732,89 @@ impl ScopedParsePair for Literal {
     }
 }
 
+/// An unresolved reference to a function: its compound name plus an optional explicit anchor.
+struct FunctionReference {
+    name: CompoundName,
+    anchor: Option<u32>,
+}
+
+impl ParsePair for FunctionReference {
+    fn rule() -> Rule {
+        Rule::function_reference
+    }
+
+    fn message() -> &'static str {
+        "FunctionReference"
+    }
+
+    fn parse_pair(pair: Pair<Rule>) -> Self {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Compound function name (required) — e.g. "equal" or "equal:any_any"
+        let name = iter.parse_next::<CompoundName>();
+
+        // Optional anchor (e.g., #1)
+        let anchor = iter
+            .try_pop(Rule::anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
+
+        // Optional URN anchor (e.g., @1); currently unused.
+        let _urn_anchor = iter
+            .try_pop(Rule::urn_anchor)
+            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
+
+        iter.done();
+        FunctionReference { name, anchor }
+    }
+}
+
+impl FunctionReference {
+    /// Resolve this reference to a concrete function anchor against the
+    /// extension registry.
+    fn resolve(
+        &self,
+        extensions: &SimpleExtensions,
+        span: pest::Span,
+    ) -> Result<u32, MessageParseError> {
+        get_and_validate_anchor(
+            extensions,
+            ExtensionKind::Function,
+            self.anchor,
+            self.name.full(),
+            span,
+        )
+    }
+}
+
+/// The parenthesized arguments of a function call (`(expr, expr, ...)`), each
+/// parsed as a value argument.
+struct FunctionArguments(Vec<FunctionArgument>);
+
+impl ScopedParsePair for FunctionArguments {
+    fn rule() -> Rule {
+        Rule::argument_list
+    }
+
+    fn message() -> &'static str {
+        "FunctionArguments"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let mut arguments = Vec::new();
+        for e in pair.into_inner() {
+            arguments.push(FunctionArgument {
+                arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
+            });
+        }
+        Ok(Self(arguments))
+    }
+}
+
 impl ScopedParsePair for ScalarFunction {
     fn rule() -> Rule {
         Rule::function_call
@@ -753,51 +826,33 @@ impl ScopedParsePair for ScalarFunction {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let span = pair.as_span();
         let mut iter = RuleIter::from(pair.into_inner());
 
-        // Parse compound function name (required) — e.g. "equal" or "equal:any_any"
-        let name = iter.parse_next::<CompoundName>();
-
-        // Parse optional anchor (e.g., #1)
-        let anchor = iter
-            .try_pop(Rule::anchor)
-            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
-
-        // Parse optional URN anchor (e.g., @1)
-        let _urn_anchor = iter
-            .try_pop(Rule::urn_anchor)
-            .map(|n| unwrap_single_pair(n).as_str().parse::<u32>().unwrap());
-
-        // Parse argument list (required)
-        let argument_list = iter.pop(Rule::argument_list);
-        let mut arguments = Vec::new();
-        for e in argument_list.into_inner() {
-            arguments.push(FunctionArgument {
-                arg_type: Some(ArgType::Value(Expression::parse_pair(extensions, e)?)),
-            });
-        }
-
-        // Parse required output type (e.g., :i64). pop is safe here because
-        // the grammar guarantees the type token is always present.
-        let output_type = Some(Type::parse_pair(extensions, iter.pop(Rule::r#type))?);
-
+        // Drain the iterator into raw pairs before any fallible parsing, so an
+        // early return doesn't trip the RuleIter drop guard with pairs still
+        // pending.
+        let reference_pair = iter.pop(Rule::function_reference);
+        let args_pair = iter.pop(Rule::argument_list);
+        let type_pair = iter.pop(Rule::r#type);
         iter.done();
-        let anchor = get_and_validate_anchor(
-            extensions,
-            ExtensionKind::Function,
-            anchor,
-            name.full(),
-            span,
-        )?;
+
+        let reference = FunctionReference::parse_pair(reference_pair);
+        let FunctionArguments(arguments) = FunctionArguments::parse_pair(extensions, args_pair)?;
+        // Required output type (e.g., :i64); the grammar guarantees its presence.
+        let output_type = Type::parse_pair(extensions, type_pair)?;
+
+        // Resolve the function reference against the registry last, once the
+        // rest of the call has parsed cleanly.
+        let function_reference = reference.resolve(extensions, span)?;
         Ok(ScalarFunction {
-            function_reference: anchor,
+            function_reference,
             arguments,
             options: vec![], // TODO: Function Options
-            output_type,
+            output_type: Some(output_type),
             #[allow(deprecated)]
             args: vec![],
         })
@@ -815,7 +870,7 @@ impl ScopedParsePair for Cast {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner();
@@ -859,12 +914,12 @@ impl ScopedParsePair for Expression {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
-            Rule::literal => Ok(Expression {
+            Rule::expression_literal => Ok(Expression {
                 rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
             }),
             Rule::function_call => Ok(Expression {
@@ -888,7 +943,7 @@ impl ScopedParsePair for Expression {
                 )?))),
             }),
             _ => unreachable!(
-                "Grammar guarantees expression can only be literal, function_call, reference, if_then, or cast_expression, got: {:?}",
+                "Grammar guarantees expression can only be expression_literal, function_call, reference, if_then, or cast_expression, got: {:?}",
                 inner.as_rule()
             ),
         }
@@ -906,7 +961,7 @@ impl ScopedParsePair for IfClause {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut pairs = pair.into_inner(); // should have 2 children, 2 expressions
@@ -935,7 +990,7 @@ impl ScopedParsePair for IfThen {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -970,7 +1025,7 @@ impl ParsePair for Name {
         "Name"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         let inner = unwrap_single_pair(pair);
         match inner.as_rule() {
@@ -990,7 +1045,7 @@ impl ParsePair for CompoundName {
         "CompoundName"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
         CompoundName::new(pair.as_str())
     }
@@ -1007,7 +1062,7 @@ impl ScopedParsePair for Measure {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -1032,12 +1087,14 @@ impl ScopedParsePair for Measure {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use pest::Parser as PestParser;
 
     use super::*;
     use crate::parser::ExpressionParser;
 
-    fn parse_exact(rule: Rule, input: &'_ str) -> pest::iterators::Pair<'_, Rule> {
+    fn parse_exact(rule: Rule, input: &'_ str) -> Pair<'_, Rule> {
         let mut pairs = ExpressionParser::parse(rule, input).unwrap();
         assert_eq!(pairs.as_str(), input);
         let pair = pairs.next().unwrap();
@@ -1045,13 +1102,13 @@ mod tests {
         pair
     }
 
-    fn assert_parses_to<T: ParsePair + PartialEq + std::fmt::Debug>(input: &str, expected: T) {
+    fn assert_parses_to<T: ParsePair + PartialEq + Debug>(input: &str, expected: T) {
         let pair = parse_exact(T::rule(), input);
         let actual = T::parse_pair(pair);
         assert_eq!(actual, expected);
     }
 
-    fn assert_parses_with<T: ScopedParsePair + PartialEq + std::fmt::Debug>(
+    fn assert_parses_with<T: ScopedParsePair + PartialEq + Debug>(
         ext: &SimpleExtensions,
         input: &str,
         expected: T,
@@ -1174,7 +1231,7 @@ mod tests {
     #[test]
     fn test_parse_float_literal_with_fp32_type() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "3.82:fp32");
+        let pair = parse_exact(Rule::expression_literal, "3.82:fp32");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1186,7 +1243,7 @@ mod tests {
     #[test]
     fn test_parse_date_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-12-25':date");
+        let pair = parse_exact(Rule::expression_literal, "'2023-12-25':date");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1205,7 +1262,7 @@ mod tests {
     #[test]
     fn test_parse_time_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45':time");
+        let pair = parse_exact(Rule::expression_literal, "'14:30:45':time");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1222,7 +1279,7 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_t() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':timestamp");
+        let pair = parse_exact(Rule::expression_literal, "'2023-01-01T12:00:00':timestamp");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1243,7 +1300,7 @@ mod tests {
     #[test]
     fn test_parse_timestamp_literal_with_space() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'2023-01-01 12:00:00':timestamp");
+        let pair = parse_exact(Rule::expression_literal, "'2023-01-01 12:00:00':timestamp");
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1265,7 +1322,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123456789':precisiontimestamp<9>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1290,7 +1347,7 @@ mod tests {
     fn test_parse_precision_timestamp_tz_literal_nullable() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123':precisiontimestamptz?<3>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1311,7 +1368,10 @@ mod tests {
     #[test]
     fn test_parse_precision_time_literal() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<6>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime<6>",
+        );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
 
         match result.literal_type {
@@ -1331,7 +1391,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal_precision_12_unsupported() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00':precisiontimestamp<12>",
         );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
@@ -1342,7 +1402,10 @@ mod tests {
     fn test_parse_precision_timestamp_literal_invalid_precision() {
         let extensions = SimpleExtensions::default();
         // 5 isn't a recognized precision for precisiontimestamp, so this should error.
-        let pair = parse_exact(Rule::literal, "'2023-01-01T12:00:00':precisiontimestamp<5>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'2023-01-01T12:00:00':precisiontimestamp<5>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("Invalid precision 5"));
     }
@@ -1351,7 +1414,7 @@ mod tests {
     fn test_parse_precision_timestamp_literal_nullable() {
         let extensions = SimpleExtensions::default();
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.123456789':precisiontimestamp?<9>",
         );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
@@ -1361,7 +1424,10 @@ mod tests {
     #[test]
     fn test_parse_precision_time_literal_nullable() {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime?<6>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime?<6>",
+        );
         let result = Literal::parse_pair(&extensions, pair).unwrap();
         assert!(result.nullable);
     }
@@ -1372,7 +1438,7 @@ mod tests {
         // precisiontimestamp<0> declares second resolution, but the value has a
         // fractional second; this must error rather than silently drop the ".999".
         let pair = parse_exact(
-            Rule::literal,
+            Rule::expression_literal,
             "'2023-01-01T12:00:00.999':precisiontimestamp<0>",
         );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
@@ -1384,7 +1450,10 @@ mod tests {
         let extensions = SimpleExtensions::default();
         // precisiontime<3> declares millisecond resolution, but the value has
         // more fractional digits than that; this must error, not truncate.
-        let pair = parse_exact(Rule::literal, "'14:30:45.123456':precisiontime<3>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'14:30:45.123456':precisiontime<3>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("fractional"));
     }
@@ -1394,14 +1463,17 @@ mod tests {
         let extensions = SimpleExtensions::default();
         // 2300 is past chrono's ~292-year-around-1970 nanosecond range,
         // so this must error rather than silently parsing to some truncated or zeroed value.
-        let pair = parse_exact(Rule::literal, "'2300-01-01T00:00:00':precisiontimestamp<9>");
+        let pair = parse_exact(
+            Rule::expression_literal,
+            "'2300-01-01T00:00:00':precisiontimestamp<9>",
+        );
         let err = Literal::parse_pair(&extensions, pair).unwrap_err();
         assert!(err.to_string().contains("out of range"));
     }
 
     fn parse_interval_day_literal(input: &str) -> Result<IntervalDayToSecond, MessageParseError> {
         let extensions = SimpleExtensions::default();
-        let pair = parse_exact(Rule::literal, input);
+        let pair = parse_exact(Rule::expression_literal, input);
         let result = Literal::parse_pair(&extensions, pair)?;
         match result.literal_type {
             Some(LiteralType::IntervalDayToSecond(interval)) => Ok(interval),
@@ -1745,32 +1817,49 @@ mod tests {
         assert_eq!(pairs.as_str(), "equal:any_any");
     }
 
-    // ---- Tests for ScalarFunction parsing with compound names ----
+    #[test]
+    fn test_parse_function_arguments() {
+        // The argument list parses on its own, independent of a function call.
+        let exts = SimpleExtensions::default();
+
+        let pair = parse_exact(Rule::argument_list, "()");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert!(args.is_empty());
+
+        let pair = parse_exact(Rule::argument_list, "($0, 1)");
+        let FunctionArguments(args) = FunctionArguments::parse_pair(&exts, pair).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Selection(Box::new(
+                            FieldIndex(0).to_field_reference()
+                        ))),
+                    })),
+                },
+                FunctionArgument {
+                    arg_type: Some(ArgType::Value(Expression {
+                        rex_type: Some(RexType::Literal(Literal {
+                            literal_type: Some(LiteralType::I64(1)),
+                            nullable: false,
+                            type_variation_reference: 0,
+                        })),
+                    })),
+                },
+            ]
+        );
+    }
 
     fn make_extensions_for_fn_tests() -> SimpleExtensions {
         let mut exts = SimpleExtensions::default();
         exts.add_extension_urn("urn".to_string(), 1).unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            1,
-            "equal:any_any".to_string(),
-        )
-        .unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            2,
-            "equal:str_str".to_string(),
-        )
-        .unwrap();
-        exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
-            1,
-            3,
-            "add:i64_i64".to_string(),
-        )
-        .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 1, "equal:any_any".to_string())
+            .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 2, "equal:str_str".to_string())
+            .unwrap();
+        exts.add_extension(ExtensionKind::Function, 1, 3, "add:i64_i64".to_string())
+            .unwrap();
         exts
     }
 
@@ -1855,7 +1944,7 @@ mod tests {
         let mut exts = SimpleExtensions::default();
         exts.add_extension_urn("urn".to_string(), 1).unwrap();
         exts.add_extension(
-            crate::extensions::simple::ExtensionKind::Function,
+            ExtensionKind::Function,
             1,
             10,
             "json_extract_path:u!json_str".to_string(),
@@ -1900,7 +1989,7 @@ mod tests {
         // Target type should be i16
         let target = result.r#type.as_ref().unwrap();
         match &target.kind {
-            Some(substrait::proto::r#type::Kind::I16(_)) => {}
+            Some(Kind::I16(_)) => {}
             other => panic!("Expected i16 type, got: {:?}", other),
         }
 
@@ -1942,7 +2031,7 @@ mod tests {
         }
 
         match &result.r#type.as_ref().unwrap().kind {
-            Some(substrait::proto::r#type::Kind::I32(_)) => {}
+            Some(Kind::I32(_)) => {}
             other => panic!("Expected i32 outer type, got: {:?}", other),
         }
     }
@@ -2012,18 +2101,13 @@ mod tests {
         let mut extensions = SimpleExtensions::default();
         extensions.add_extension_urn("urn".to_string(), 1).unwrap();
         extensions
-            .add_extension(
-                crate::extensions::simple::ExtensionKind::Type,
-                1,
-                5,
-                "u!json".to_string(),
-            )
+            .add_extension(ExtensionKind::Type, 1, 5, "u!json".to_string())
             .unwrap();
 
         let pair = parse_exact(Rule::cast_expression, "($0)::u!json");
         let result = Cast::parse_pair(&extensions, pair).unwrap();
         match result.r#type.as_ref().unwrap().kind.as_ref().unwrap() {
-            substrait::proto::r#type::Kind::UserDefined(u) => {
+            Kind::UserDefined(u) => {
                 assert_eq!(u.type_reference, 5);
             }
             other => panic!("expected UserDefined, got {other:?}"),

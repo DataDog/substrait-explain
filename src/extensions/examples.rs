@@ -16,7 +16,9 @@
 //! integration tests, not a stable extension API.
 
 use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionValue};
-use crate::extensions::registry::{Explainable, ExtensionError, ExtensionRegistry};
+use crate::extensions::registry::{
+    Explainable, ExtensionContext, ExtensionError, ExtensionRegistry,
+};
 
 // ---------------------------------------------------------------------------
 // PartitionStrategy enum
@@ -138,7 +140,7 @@ impl Explainable for PartitionHint {
             .collect();
 
         let mut extractor = args.extractor();
-        let count: i64 = extractor.get_named_or("count", 0)?;
+        let count: i64 = extractor.get_named("count")?.unwrap_or_default();
         extractor.check_exhausted()?;
 
         Ok(PartitionHint {
@@ -147,7 +149,7 @@ impl Explainable for PartitionHint {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         for &raw in &self.strategies {
             let s = PartitionStrategy::try_from(raw).unwrap_or(PartitionStrategy::Unspecified);
@@ -225,12 +227,12 @@ impl Explainable for PlanHint {
         }
 
         let mut extractor = args.extractor();
-        let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_owned();
+        let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
         extractor.check_exhausted()?;
         Ok(PlanHint { hint })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         args.named
             .insert("hint".to_owned(), ExtensionValue::String(self.hint.clone()));
@@ -316,8 +318,8 @@ impl Explainable for BlobStoreRead {
 
         let path = <&str>::try_from(&args.positional[0])?.to_owned();
         let mut extractor = args.extractor();
-        let limit: i64 = extractor.get_named_or("limit", 0)?;
-        let include_archived: bool = extractor.get_named_or("include_archived", false)?;
+        let limit: i64 = extractor.get_named("limit")?.unwrap_or_default();
+        let include_archived: bool = extractor.get_named("include_archived")?.unwrap_or(false);
         extractor.check_exhausted()?;
 
         Ok(Self {
@@ -327,7 +329,7 @@ impl Explainable for BlobStoreRead {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
         args.positional
             .push(ExtensionValue::String(self.path.clone()));
@@ -381,7 +383,7 @@ mod tests {
     #[test]
     fn to_args_produces_enum_and_named() {
         let hint = make_hint(vec![PartitionStrategy::Hash], 8);
-        let args = hint.to_args().unwrap();
+        let args = hint.to_args(&ExtensionContext::default()).unwrap();
         assert_eq!(args.positional.len(), 1);
         assert!(matches!(&args.positional[0], ExtensionValue::Enum(s) if s == "HASH"));
         let count = args.named.get("count").expect("count arg");
@@ -391,14 +393,14 @@ mod tests {
     #[test]
     fn to_args_omits_zero_count() {
         let hint = make_hint(vec![PartitionStrategy::Broadcast], 0);
-        let args = hint.to_args().unwrap();
+        let args = hint.to_args(&ExtensionContext::default()).unwrap();
         assert!(args.named.is_empty(), "count=0 should be omitted");
     }
 
     #[test]
     fn from_args_round_trip() {
         let original = make_hint(vec![PartitionStrategy::Hash, PartitionStrategy::Range], 16);
-        let args = original.to_args().unwrap();
+        let args = original.to_args(&ExtensionContext::default()).unwrap();
         let decoded = PartitionHint::from_args(&args).unwrap();
         assert_eq!(original, decoded);
     }
@@ -438,7 +440,7 @@ mod tests {
     #[test]
     fn from_args_empty_strategies_roundtrip() {
         let original = make_hint(vec![], 0);
-        let args = original.to_args().unwrap();
+        let args = original.to_args(&ExtensionContext::default()).unwrap();
         let decoded = PartitionHint::from_args(&args).unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.strategies.is_empty());
@@ -470,7 +472,7 @@ mod tests {
         let original = PlanHint {
             hint: "use_index".to_owned(),
         };
-        let args = original.to_args().unwrap();
+        let args = original.to_args(&ExtensionContext::default()).unwrap();
         let decoded = PlanHint::from_args(&args).unwrap();
         assert_eq!(original, decoded);
     }
@@ -504,7 +506,7 @@ mod tests {
             include_archived: true,
         };
 
-        let args = original.to_args().unwrap();
+        let args = original.to_args(&ExtensionContext::default()).unwrap();
         let decoded = BlobStoreRead::from_args(&args).unwrap();
 
         assert_eq!(original, decoded);

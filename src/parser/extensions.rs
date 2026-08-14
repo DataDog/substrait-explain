@@ -1,19 +1,27 @@
 use std::fmt;
 use std::str::FromStr;
 
-use substrait::proto::{Expression, Type};
+use pest::iterators::Pair;
+use substrait::proto::rel::RelType;
+use substrait::proto::{
+    Expression, ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel, Rel, Type,
+};
 use thiserror::Error;
 
 use super::{
     ErrorKind, ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
     unescape_string, unwrap_single_pair,
 };
+use crate::extensions::any::Any;
 use crate::extensions::simple::{self, ExtensionKind};
 use crate::extensions::{
     AddendumKind, ExtensionArgs, ExtensionColumn, ExtensionValue, InsertError, SimpleExtensions,
     TupleValue,
 };
+use crate::parser::expressions::{FieldIndex, Name};
+use crate::parser::relations::direct_common;
 use crate::parser::structural::IndentedLine;
+use crate::textify::expressions::Reference;
 
 #[derive(Debug, Clone, Error)]
 pub enum ExtensionParseError {
@@ -182,7 +190,7 @@ impl ParsePair for URNExtensionDeclaration {
         "URNExtensionDeclaration"
     }
 
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self {
+    fn parse_pair(pair: Pair<Rule>) -> Self {
         assert_eq!(pair.as_rule(), Self::rule());
 
         let mut iter = RuleIter::from(pair.into_inner());
@@ -258,10 +266,6 @@ impl SimpleExtensionDeclaration {
 // Extension relation parsing implementations
 // These were moved from extensions/registry.rs to maintain clean architecture
 
-use crate::extensions::any::Any;
-use crate::parser::expressions::{FieldIndex, Name};
-use crate::textify::expressions::Reference;
-
 impl ScopedParsePair for ExtensionValue {
     fn rule() -> Rule {
         Rule::extension_argument
@@ -273,7 +277,7 @@ impl ScopedParsePair for ExtensionValue {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -290,8 +294,8 @@ impl ScopedParsePair for ExtensionValue {
                 let field_index = FieldIndex::parse_pair(inner);
                 ExtensionValue::from(Reference(field_index.0))
             }
-            Rule::untyped_literal => {
-                // Literal can contain integer, float, boolean, or string_literal
+            Rule::parameter_literal => {
+                // Parameter literals can contain integer, float, boolean, string, or null.
                 let value_pair = unwrap_single_pair(inner);
                 match value_pair.as_rule() {
                     Rule::string_literal => ExtensionValue::String(unescape_string(value_pair)),
@@ -302,8 +306,9 @@ impl ScopedParsePair for ExtensionValue {
                         ExtensionValue::Float(value_pair.as_str().parse::<f64>().unwrap())
                     }
                     Rule::boolean => ExtensionValue::Boolean(value_pair.as_str() == "true"),
+                    Rule::null => ExtensionValue::Null,
                     _ => panic!(
-                        "Unexpected extension scalar literal type: {:?}",
+                        "Unexpected extension parameter literal type: {:?}",
                         value_pair.as_rule()
                     ),
                 }
@@ -335,7 +340,7 @@ impl ScopedParsePair for ExtensionColumn {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -414,35 +419,28 @@ impl ExtensionRelationKind {
     }
 
     /// Create appropriate relation structure from extension detail and children.
-    pub(crate) fn create_rel(
-        self,
-        detail: Option<Any>,
-        children: Vec<substrait::proto::Rel>,
-    ) -> substrait::proto::Rel {
-        use substrait::proto::rel::RelType;
-        use substrait::proto::{ExtensionLeafRel, ExtensionMultiRel, ExtensionSingleRel};
-
+    pub(crate) fn create_rel(self, detail: Option<Any>, children: Vec<Rel>) -> Rel {
         let rel_type = match self {
             ExtensionRelationKind::Leaf => RelType::ExtensionLeaf(ExtensionLeafRel {
-                common: None,
+                common: Some(direct_common()),
                 detail: detail.map(Into::into),
             }),
             ExtensionRelationKind::Single => {
                 let input = children.into_iter().next();
                 RelType::ExtensionSingle(Box::new(ExtensionSingleRel {
-                    common: None,
+                    common: Some(direct_common()),
                     detail: detail.map(Into::into),
                     input: input.map(Box::new),
                 }))
             }
             ExtensionRelationKind::Multi => RelType::ExtensionMulti(ExtensionMultiRel {
-                common: None,
+                common: Some(direct_common()),
                 detail: detail.map(Into::into),
                 inputs: children,
             }),
         };
 
-        substrait::proto::Rel {
+        Rel {
             rel_type: Some(rel_type),
         }
     }
@@ -468,7 +466,7 @@ impl ScopedParsePair for ExtensionInvocation {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -493,8 +491,8 @@ impl ScopedParsePair for ExtensionInvocation {
         // Parse optional arguments
         let ext_arguments = iter.next().unwrap();
         match ext_arguments.as_rule() {
-            Rule::arguments => {
-                arguments_rule_parsing(extensions, ext_arguments, &mut args)?;
+            Rule::extension_args => {
+                extension_args_rule_parsing(extensions, ext_arguments, &mut args)?;
             }
             r => unreachable!("Unexpected rule in ExtensionArgs: {:?}", r),
         }
@@ -542,7 +540,7 @@ impl ScopedParsePair for AddendumInvocation {
 
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
 
@@ -561,13 +559,13 @@ impl ScopedParsePair for AddendumInvocation {
         let name_pair = iter.next().unwrap();
         let name = Name::parse_pair(name_pair).0.to_string();
 
-        // Remaining token: arguments — grammar guarantees it is always present.
+        // Remaining token: extension_args — grammar guarantees it is always present.
         let mut args = ExtensionArgs::default();
 
         let arguments_pair = iter.next().unwrap();
         match arguments_pair.as_rule() {
-            Rule::arguments => {
-                arguments_rule_parsing(extensions, arguments_pair, &mut args)?;
+            Rule::extension_args => {
+                extension_args_rule_parsing(extensions, arguments_pair, &mut args)?;
             }
             r => unreachable!("Unexpected rule in AddendumInvocation args: {r:?}"),
         }
@@ -576,9 +574,9 @@ impl ScopedParsePair for AddendumInvocation {
     }
 }
 
-fn arguments_rule_parsing(
+fn extension_args_rule_parsing(
     extensions: &SimpleExtensions,
-    inner_pair: pest::iterators::Pair<'_, Rule>,
+    inner_pair: Pair<'_, Rule>,
     args: &mut ExtensionArgs,
 ) -> Result<(), MessageParseError> {
     for arg in inner_pair.into_inner() {
@@ -616,8 +614,8 @@ mod tests {
     use super::*;
     use crate::extensions::{Expr, ExtensionValue};
     use crate::fixtures::TestContext;
-    use crate::parser::Parser;
     use crate::parser::common::test_support::ScopedParse;
+    use crate::parser::{ParseError, Parser};
     use crate::{OutputOptions, format};
 
     fn parse_extension_value(text: &str) -> ExtensionValue {
@@ -822,7 +820,7 @@ Root[result]
         assert!(
             matches!(
                 err,
-                crate::parser::ParseError::Extension(_, ExtensionParseError::Message(_))
+                ParseError::Extension(_, ExtensionParseError::Message(_))
             ),
             "expected parser-level MessageParseError, got: {err}"
         );
@@ -846,7 +844,7 @@ Functions:
         // Compound names must survive the roundtrip
         assert_eq!(
             extensions
-                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 1)
+                .find_by_anchor(ExtensionKind::Function, 1)
                 .unwrap()
                 .1
                 .full(),
@@ -854,7 +852,7 @@ Functions:
         );
         assert_eq!(
             extensions
-                .find_by_anchor(crate::extensions::simple::ExtensionKind::Function, 3)
+                .find_by_anchor(ExtensionKind::Function, 3)
                 .unwrap()
                 .1
                 .full(),
@@ -996,7 +994,7 @@ Functions:
     }
 
     #[test]
-    fn test_extension_scalar_literals_stay_scalar_in_verbose_output() {
+    fn test_extension_parameter_literals_stay_scalar_in_verbose_output() {
         let ctx = TestContext::new().with_options(OutputOptions::verbose());
 
         let scalar = ExtensionValue::from(42_i64);
@@ -1007,12 +1005,19 @@ Functions:
     }
 
     #[test]
+    fn test_untyped_null_extension_literal_roundtrips() {
+        let value = parse_extension_value("null");
+        assert!(matches!(value, ExtensionValue::Null));
+        assert_eq!(TestContext::new().textify_no_errors(&value), "null");
+    }
+
+    #[test]
     fn test_typed_extension_literal_parses_as_expression() {
-        let value = parse_extension_value("42:i16");
+        let value = parse_extension_value("null:i64?");
         assert!(i64::try_from(&value).is_err());
 
         let expr = Expr::try_from(&value).unwrap();
-        assert_eq!(ctx_text(&expr), "42:i16");
+        assert_eq!(ctx_text(&expr), "null:i64?");
     }
 
     fn ctx_text(value: &Expr) -> String {

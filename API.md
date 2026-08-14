@@ -138,7 +138,8 @@ syntax around those arguments:
 
 - `name()` - The extension name used in text (e.g., `"ParquetScan"`)
 - `from_args(args)` - Parse text arguments into your type
-- `to_args(&self)` - Convert your type to text arguments
+- `to_args(&self, context)` - Convert your type to text arguments, optionally
+  using information about relation inputs.
 
 The extension API works across three representations:
 
@@ -158,10 +159,15 @@ represented as expression values.
 protobuf values in either direction, such as output columns and relation
 `NamedStruct`s.
 
+The `to_args` method receives an `ExtensionContext`. Relation extensions get one
+`ExtensionInput` per available child, in relation order. Each input exposes its
+emitted column count, including any output mapping applied by that child. Other
+extension namespaces receive an empty input slice.
+
 Use `ArgsExtractor` for convenient argument parsing:
 
-- `extractor.expect_named_arg::<T>(name)` - Required argument
-- `extractor.get_named_or::<T>(name, default)` - Optional with default
+- `extractor.expect_named::<T>(name)` - Required argument
+- `extractor.get_named::<T>(name)?` - Optional argument, returning `Option<T>`
 - `extractor.check_exhausted()` - Verify no unexpected arguments
 
 ### Extension Namespaces
@@ -183,7 +189,7 @@ Register extensions to the appropriate namespace:
 ```rust,no_run
 # use prost::{Message, Name};
 # use substrait_explain::extensions::{
-#     Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+#     Explainable, ExtensionArgs, ExtensionContext, ExtensionError, ExtensionRegistry,
 # };
 #[derive(Clone, PartialEq, Message)]
 pub struct MySourceConfig {
@@ -199,7 +205,10 @@ impl Name for MySourceConfig {
 # impl Explainable for MySourceConfig {
 #     fn name() -> &'static str { "MySource" }
 #     fn from_args(_: &ExtensionArgs) -> Result<Self, ExtensionError> { Ok(Self::default()) }
-#     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+#     fn to_args(
+#         &self,
+#         _context: &ExtensionContext<'_>,
+#     ) -> Result<ExtensionArgs, ExtensionError> {
 #         Ok(ExtensionArgs::default())
 #     }
 # }

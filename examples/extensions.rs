@@ -12,10 +12,11 @@
 //! implementation following the same pattern shown for `Explainable`.
 
 use prost::{Message, Name};
-use substrait::proto::{self, plan_rel, rel};
+use substrait::proto::{self, Plan, PlanRel, Rel, plan_rel, rel};
 use substrait_explain::extensions::any::AnyRef;
 use substrait_explain::extensions::{
-    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionError, ExtensionRegistry,
+    AnyConvertible, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
+    ExtensionRegistry,
 };
 use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
@@ -71,10 +72,10 @@ impl Explainable for ParquetScanConfig {
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
         let mut extractor = args.extractor();
         // path is required
-        let path: &str = extractor.expect_named_arg("path")?;
+        let path: &str = extractor.expect_named("path")?;
         // batch_size and use_dictionary are optional, with default values
-        let batch_size: i64 = extractor.get_named_or("batch_size", 1024)?;
-        let use_dictionary: bool = extractor.get_named_or("use_dictionary", true)?;
+        let batch_size: i64 = extractor.get_named("batch_size")?.unwrap_or(1024);
+        let use_dictionary: bool = extractor.get_named("use_dictionary")?.unwrap_or(true);
 
         // Validate there are no other named arguments
         extractor.check_exhausted()?;
@@ -102,7 +103,7 @@ impl Explainable for ParquetScanConfig {
         })
     }
 
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+    fn to_args(&self, _context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
         let mut args = ExtensionArgs::default();
 
         // Add named arguments from the message
@@ -173,10 +174,10 @@ Root[customer_id, amount]
 }
 
 /// Extract the extension detail from the plan, for validation. Assumes Root -> ExtensionLeaf plan.
-fn extension_detail<'a>(plan: &'a substrait::proto::Plan) -> Result<AnyRef<'a>, anyhow::Error> {
+fn extension_detail<'a>(plan: &'a Plan) -> Result<AnyRef<'a>, anyhow::Error> {
     assert!(plan.relations.len() == 1);
     let root = match plan.relations.first().unwrap() {
-        substrait::proto::PlanRel {
+        PlanRel {
             rel_type: Some(plan_rel::RelType::Root(root)),
         } => root,
         rel => return Err(anyhow::anyhow!("expected Root relation, got {rel:?}")),
@@ -185,7 +186,7 @@ fn extension_detail<'a>(plan: &'a substrait::proto::Plan) -> Result<AnyRef<'a>, 
     let rel = root.input.as_ref().unwrap();
 
     match root.input.as_ref() {
-        Some(substrait::proto::Rel {
+        Some(Rel {
             rel_type: Some(rel::RelType::ExtensionLeaf(leaf)),
         }) => leaf
             .detail

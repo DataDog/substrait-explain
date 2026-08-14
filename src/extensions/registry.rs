@@ -26,7 +26,8 @@
 //!
 //! ```rust
 //! use substrait_explain::extensions::{
-//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionError, ExtensionRegistry,
+//!     Any, AnyConvertible, AnyRef, Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+//!     ExtensionRegistry,
 //! };
 //!
 //! // Define a custom extension type
@@ -61,14 +62,17 @@
 //!
 //!     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
 //!         let mut extractor = args.extractor();
-//!         let path: &str = extractor.expect_named_arg("path")?;
+//!         let path: &str = extractor.expect_named("path")?;
 //!         extractor.check_exhausted()?;
 //!         Ok(CustomScanConfig {
 //!             path: path.to_string(),
 //!         })
 //!     }
 //!
-//!     fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+//!     fn to_args(
+//!         &self,
+//!         _context: &ExtensionContext<'_>,
+//!     ) -> Result<ExtensionArgs, ExtensionError> {
 //!         let mut args = ExtensionArgs::default();
 //!         args.insert("path", self.path.clone());
 //!         Ok(args)
@@ -82,6 +86,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use substrait::proto::NamedStruct;
@@ -102,6 +107,46 @@ pub enum ExtensionType {
     Enhancement,
     /// Optimization attached to a relation (uses `+ Opt:` prefix in text format)
     Optimization,
+}
+
+/// Information about one input to an extension relation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionInput {
+    emitted_column_count: usize,
+}
+
+impl ExtensionInput {
+    pub(crate) fn new(emitted_column_count: usize) -> Self {
+        Self {
+            emitted_column_count,
+        }
+    }
+
+    /// Number of columns emitted by this input after applying its output mapping.
+    pub fn emitted_column_count(&self) -> usize {
+        self.emitted_column_count
+    }
+}
+
+/// Context available while converting an extension payload to text arguments.
+///
+/// Relation extensions receive one entry per available input, in relation
+/// order. Other extension namespaces, and context-free registry decoding,
+/// receive an empty input slice.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExtensionContext<'a> {
+    inputs: &'a [ExtensionInput],
+}
+
+impl<'a> ExtensionContext<'a> {
+    pub(crate) fn new(inputs: &'a [ExtensionInput]) -> Self {
+        Self { inputs }
+    }
+
+    /// Inputs to the extension relation, in relation order.
+    pub fn inputs(&self) -> &'a [ExtensionInput] {
+        self.inputs
+    }
 }
 
 /// Errors during extension registration (setup phase)
@@ -131,6 +176,22 @@ pub enum ExtensionError {
     /// Required argument not present (from ArgsExtractor)
     #[error("Missing required argument: {name}")]
     MissingArgument { name: String },
+
+    /// A named argument failed conversion to the requested type.
+    #[error("Invalid named argument '{name}': {source}")]
+    NamedArgumentConversion {
+        name: String,
+        #[source]
+        source: Box<ExtensionError>,
+    },
+
+    /// An argument containing an earlier error could not be converted.
+    #[error("Cannot convert argument to {expected}: {source}")]
+    ArgumentConversion {
+        expected: ExtensionValueKind,
+        #[source]
+        source: Box<ExtensionError>,
+    },
 
     /// Invalid argument type found while extracting an extension argument.
     #[error("Invalid argument: expected {expected}, got {actual}")]
@@ -284,7 +345,7 @@ pub trait Explainable: Sized {
     fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError>;
 
     /// Convert this type to extension arguments
-    fn to_args(&self) -> Result<ExtensionArgs, ExtensionError>;
+    fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Internal trait that converts between ExtensionArgs and protobuf Any messages.
@@ -303,7 +364,11 @@ pub trait Explainable: Sized {
 trait ExtensionConverter: Send + Sync {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError>;
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError>;
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError>;
 }
 
 /// Type adapter that implements ExtensionConverter for any type T that implements
@@ -322,16 +387,20 @@ trait ExtensionConverter: Send + Sync {
 ///
 /// The PhantomData is necessary because we don't actually store a T, but we need
 /// the type information to call T's static methods (from_args, from_any).
-struct ExtensionAdapter<T>(std::marker::PhantomData<T>);
+struct ExtensionAdapter<T>(PhantomData<T>);
 
 impl<T: AnyConvertible + Explainable + Send + Sync> ExtensionConverter for ExtensionAdapter<T> {
     fn parse_detail(&self, args: &ExtensionArgs) -> Result<Any, ExtensionError> {
         T::from_args(args)?.to_any()
     }
 
-    fn textify_detail(&self, detail: AnyRef<'_>) -> Result<ExtensionArgs, ExtensionError> {
+    fn textify_detail(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<ExtensionArgs, ExtensionError> {
         let owned_any = Any::new(detail.type_url.to_string(), detail.value.to_vec());
-        T::from_any(owned_any.as_ref())?.to_args()
+        T::from_any(owned_any.as_ref())?.to_args(context)
     }
 }
 
@@ -387,8 +456,7 @@ impl ExtensionRegistry {
     {
         let canonical_name = T::name();
         let type_url = T::type_url();
-        let handler: Arc<dyn ExtensionConverter> =
-            Arc::new(ExtensionAdapter::<T>(std::marker::PhantomData));
+        let handler: Arc<dyn ExtensionConverter> = Arc::new(ExtensionAdapter::<T>(PhantomData));
 
         let key = (ext_type, canonical_name.to_string());
         if self.handlers.contains_key(&key) {
@@ -536,6 +604,15 @@ impl ExtensionRegistry {
         self.decode_with_type(ExtensionType::Relation, detail)
     }
 
+    /// Decode relation extension detail using information about its inputs.
+    pub(crate) fn decode_with_context(
+        &self,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type_and_context(ExtensionType::Relation, detail, context)
+    }
+
     /// Decode ExtensionTable detail to extension name and ExtensionArgs
     ///
     /// This is the primary method for textification of ExtensionTable reads -
@@ -582,6 +659,15 @@ impl ExtensionRegistry {
         ext_type: ExtensionType,
         detail: AnyRef<'_>,
     ) -> Result<(String, ExtensionArgs), ExtensionError> {
+        self.decode_with_type_and_context(ext_type, detail, &ExtensionContext::default())
+    }
+
+    fn decode_with_type_and_context(
+        &self,
+        ext_type: ExtensionType,
+        detail: AnyRef<'_>,
+        context: &ExtensionContext<'_>,
+    ) -> Result<(String, ExtensionArgs), ExtensionError> {
         // Find extension name by type URL in the specified namespace
         let type_url_key = (ext_type, detail.type_url.to_string());
         let extension_name =
@@ -600,7 +686,7 @@ impl ExtensionRegistry {
                 name: extension_name.clone(),
             })?;
 
-        let args = handler.textify_detail(detail)?;
+        let args = handler.textify_detail(detail, context)?;
 
         Ok((extension_name.clone(), args))
     }
@@ -647,6 +733,8 @@ impl fmt::Debug for ExtensionRegistry {
 mod tests {
     use super::*;
     use crate::extensions::ExtensionColumn;
+    use crate::fixtures::parse_type;
+    use crate::textify::expressions::Reference;
 
     // Mock type for testing
     struct TestExtension {
@@ -693,8 +781,8 @@ mod tests {
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let path: String = extractor.expect_named_arg::<&str>("path")?.to_string();
-            let batch_size: i64 = extractor.expect_named_arg("batch_size")?;
+            let path: String = extractor.expect_named::<&str>("path")?.to_string();
+            let batch_size: i64 = extractor.expect_named("batch_size")?;
             extractor.check_exhausted()?;
 
             Ok(TestExtension {
@@ -703,10 +791,13 @@ mod tests {
             })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(&self, context: &ExtensionContext<'_>) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("path", self.path.clone());
             args.insert("batch_size", self.batch_size);
+            if !context.inputs().is_empty() {
+                args.insert("input_count", context.inputs().len() as i64);
+            }
             Ok(args)
         }
     }
@@ -747,6 +838,28 @@ mod tests {
             <&str>::try_from(result.1.named.get("path").unwrap()).unwrap(),
             "test.parquet"
         );
+        assert!(!result.1.named.contains_key("input_count"));
+    }
+
+    #[test]
+    fn test_extension_registry_decode_with_context() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register_relation::<TestExtension>().unwrap();
+
+        let mut args = ExtensionArgs::default();
+        args.insert("path", "data.parquet");
+        args.insert("batch_size", 2048_i64);
+        let any = registry.parse_extension("TestExtension", &args).unwrap();
+        let inputs = [ExtensionInput::new(4)];
+        let context = ExtensionContext::new(&inputs);
+
+        let (_, decoded_args) = registry
+            .decode_with_context(any.as_ref(), &context)
+            .unwrap();
+        assert_eq!(
+            i64::try_from(decoded_args.named.get("input_count").unwrap()).unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -778,6 +891,7 @@ mod tests {
             <&str>::try_from(decoded_args.named.get("path").unwrap()).unwrap(),
             "test.parquet"
         );
+        assert!(!decoded_args.named.contains_key("input_count"));
     }
 
     #[test]
@@ -789,12 +903,12 @@ mod tests {
         args.insert("batch_size", 1024_i64);
 
         // Add positional args
-        args.push(crate::textify::expressions::Reference(0));
+        args.push(Reference(0));
 
         // Add output columns
         args.output_columns.push(ExtensionColumn::Named {
             name: "col1".to_string(),
-            r#type: crate::fixtures::parse_type("i32"),
+            r#type: parse_type("i32"),
         });
 
         // Test retrieval - use extractor
@@ -874,12 +988,15 @@ mod tests {
 
         fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
             let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named_arg::<&str>("hint")?.to_string();
+            let hint: String = extractor.expect_named::<&str>("hint")?.to_string();
             extractor.check_exhausted()?;
             Ok(TestEnhancement { hint })
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             let mut args = ExtensionArgs::default();
             args.insert("hint", self.hint.clone());
             Ok(args)
@@ -1016,7 +1133,10 @@ mod tests {
             Ok(ConflictingExtension)
         }
 
-        fn to_args(&self) -> Result<ExtensionArgs, ExtensionError> {
+        fn to_args(
+            &self,
+            _context: &ExtensionContext<'_>,
+        ) -> Result<ExtensionArgs, ExtensionError> {
             Ok(ExtensionArgs::default())
         }
     }

@@ -3,14 +3,13 @@
 //! This example shows how to parse a Substrait plan and format it with
 //! different output options.
 
+use std::error::Error;
+
 use substrait::proto::Plan;
 use substrait_explain::{OutputOptions, Parser, Visibility, format_with_options};
 
 /// Helper function to format a plan with given options and print the result with error handling
-fn print_with_errors(
-    plan: &Plan,
-    options: Option<&OutputOptions>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn print_with_errors(plan: &Plan, options: Option<&OutputOptions>) -> Result<(), Box<dyn Error>> {
     let default_options;
     let options = match options {
         Some(options) => options,
@@ -30,7 +29,7 @@ fn print_with_errors(
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     // Parse a plan with extensions
     let plan_text = r#"
 === Extensions

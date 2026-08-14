@@ -702,7 +702,7 @@ mod tests {
     use super::*;
     use crate::extensions::simple::{ExtensionKind, MissingReference};
     use crate::fixtures::TestContext;
-    use crate::textify::foundation::FormatError;
+    use crate::textify::foundation::{ErrorQueue, FormatError};
 
     #[test]
     fn type_display() {
@@ -968,7 +968,7 @@ mod tests {
         // `add:i64_i64` is the only function with base name "add".
         // Compact mode: show base name only, no anchor (compound name unique).
         let ctx = overloaded_ctx();
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 3);
         assert!(na.base_name_unique, "add should have unique base name");
@@ -984,7 +984,7 @@ mod tests {
         // Compact mode: base name not unique → show full compound name.
         // Compound name is unique (only one URN) → no anchor.
         let ctx = overloaded_ctx();
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 1);
         assert!(!na.base_name_unique, "equal base name should not be unique");
@@ -1003,7 +1003,7 @@ mod tests {
         let mut ctx = overloaded_ctx();
         ctx.options.show_simple_extension_anchors = Visibility::Always;
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 3);
         let s = ctx.textify_no_errors(&na);
@@ -1016,7 +1016,7 @@ mod tests {
         let mut ctx = overloaded_ctx();
         ctx.options.show_simple_extension_anchors = Visibility::Always;
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 2);
         let s = ctx.textify_no_errors(&na);
@@ -1033,7 +1033,7 @@ mod tests {
             .with_function(1, 1, "equal:any_any")
             .with_function(2, 2, "equal:any_any");
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 1);
         assert!(!na.base_name_unique);
@@ -1053,7 +1053,7 @@ mod tests {
             .with_urn(1, "urn")
             .with_function(1, 5, "count:");
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
         assert!(na.base_name_unique);
@@ -1071,7 +1071,7 @@ mod tests {
             .with_function(1, 5, "count:");
         ctx.options.show_simple_extension_anchors = Visibility::Always;
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 5);
 
@@ -1085,7 +1085,7 @@ mod tests {
             .with_urn(1, "urn")
             .with_function(1, 10, "coalesce");
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 10);
         assert!(na.base_name_unique);
@@ -1139,7 +1139,7 @@ mod tests {
             .with_function(1, 231, "duplicated")
             .with_function(2, 232, "duplicated");
 
-        let eq = crate::textify::ErrorQueue::default();
+        let eq = ErrorQueue::default();
         let scope = ctx.scope(&eq);
         let na = NamedAnchor::lookup(&scope, ExtensionKind::Function, 231);
         assert!(!na.base_name_unique);

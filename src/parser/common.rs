@@ -1,6 +1,11 @@
-use std::fmt;
+use std::collections::HashMap;
+use std::{fmt, thread};
 
+use pest::error::{Error as PestError, ErrorVariant};
+use pest::iterators::{Pair, Pairs};
+use pest::{Parser as PestParser, Span};
 use pest_derive::Parser as PestDeriveParser;
+use substrait::proto::sort_field::SortDirection;
 use thiserror::Error;
 
 use crate::extensions::SimpleExtensions;
@@ -18,7 +23,7 @@ pub struct MessageParseError {
     message: &'static str,
     kind: ErrorKind,
     #[source]
-    error: Box<pest::error::Error<Rule>>,
+    error: Box<PestError<Rule>>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,13 +34,9 @@ pub(crate) enum ErrorKind {
 }
 
 impl MessageParseError {
-    pub(crate) fn invalid(
-        message: &'static str,
-        span: pest::Span,
-        description: impl ToString,
-    ) -> Self {
-        let error = pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
+    pub(crate) fn invalid(message: &'static str, span: Span, description: impl ToString) -> Self {
+        let error = PestError::new_from_span(
+            ErrorVariant::CustomError {
                 message: description.to_string(),
             },
             span,
@@ -46,11 +47,11 @@ impl MessageParseError {
     pub(crate) fn lookup(
         message: &'static str,
         missing: MissingReference,
-        span: pest::Span,
+        span: Span,
         description: impl ToString,
     ) -> Self {
-        let error = pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
+        let error = PestError::new_from_span(
+            ErrorVariant::CustomError {
                 message: description.to_string(),
             },
             span,
@@ -60,11 +61,7 @@ impl MessageParseError {
 }
 
 impl MessageParseError {
-    pub(crate) fn new(
-        message: &'static str,
-        kind: ErrorKind,
-        error: Box<pest::error::Error<Rule>>,
-    ) -> Self {
+    pub(crate) fn new(message: &'static str, kind: ErrorKind, error: Box<PestError<Rule>>) -> Self {
         Self {
             message,
             kind,
@@ -83,7 +80,7 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-pub(crate) fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::iterators::Pair<Rule> {
+pub(crate) fn unwrap_single_pair(pair: Pair<Rule>) -> Pair<Rule> {
     let mut pairs = pair.into_inner();
     let pair = pairs.next().unwrap();
     assert_eq!(pairs.next(), None);
@@ -102,7 +99,7 @@ pub(crate) fn unwrap_single_pair(pair: pest::iterators::Pair<Rule>) -> pest::ite
 /// Panics if the rule is not `string_literal` or `quoted_name` (this should never happen
 /// if the pest grammar is working correctly).
 ///
-pub(crate) fn unescape_string(pair: pest::iterators::Pair<Rule>) -> String {
+pub(crate) fn unescape_string(pair: Pair<Rule>) -> String {
     let s = pair.as_str();
 
     // Determine opener/closer based on rule type
@@ -168,10 +165,10 @@ pub(crate) trait ParsePair: Sized {
     // Parse a single instance of this type from a pest::iterators::Pair<Rule>.
     // The input must match the rule returned by `rule`; otherwise, a panic is
     // expected.
-    fn parse_pair(pair: pest::iterators::Pair<Rule>) -> Self;
+    fn parse_pair(pair: Pair<Rule>) -> Self;
 
     fn parse_str(s: &str) -> Result<Self, MessageParseError> {
-        let mut pairs = <ExpressionParser as pest::Parser<Rule>>::parse(Self::rule(), s)
+        let mut pairs = <ExpressionParser as PestParser<Rule>>::parse(Self::rule(), s)
             .map_err(|e| MessageParseError::new(Self::message(), ErrorKind::Syntax, Box::new(e)))?;
         assert_eq!(pairs.as_str(), s);
         let pair = pairs.next().unwrap();
@@ -196,11 +193,11 @@ pub(crate) trait ScopedParsePair: Sized {
     // expected.
     fn parse_pair(
         extensions: &SimpleExtensions,
-        pair: pest::iterators::Pair<Rule>,
+        pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError>;
 }
 
-pub(crate) fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_> {
+pub(crate) fn iter_pairs(pair: Pairs<'_, Rule>) -> RuleIter<'_> {
     RuleIter {
         iter: pair,
         done: false,
@@ -208,24 +205,24 @@ pub(crate) fn iter_pairs(pair: pest::iterators::Pairs<'_, Rule>) -> RuleIter<'_>
 }
 
 pub(crate) struct RuleIter<'a> {
-    iter: pest::iterators::Pairs<'a, Rule>,
+    iter: Pairs<'a, Rule>,
     // Set to true when done is called, so destructor doesn't panic
     done: bool,
 }
 
-impl<'a> From<pest::iterators::Pairs<'a, Rule>> for RuleIter<'a> {
-    fn from(iter: pest::iterators::Pairs<'a, Rule>) -> Self {
+impl<'a> From<Pairs<'a, Rule>> for RuleIter<'a> {
+    fn from(iter: Pairs<'a, Rule>) -> Self {
         RuleIter { iter, done: false }
     }
 }
 
 impl<'a> RuleIter<'a> {
-    pub(crate) fn peek(&self) -> Option<pest::iterators::Pair<'a, Rule>> {
+    pub(crate) fn peek(&self) -> Option<Pair<'a, Rule>> {
         self.iter.peek()
     }
 
     // Pop the next pair if it matches the rule. Returns None if not.
-    pub(crate) fn try_pop(&mut self, rule: Rule) -> Option<pest::iterators::Pair<'a, Rule>> {
+    pub(crate) fn try_pop(&mut self, rule: Rule) -> Option<Pair<'a, Rule>> {
         match self.peek() {
             Some(pair) if pair.as_rule() == rule => {
                 self.iter.next();
@@ -236,7 +233,7 @@ impl<'a> RuleIter<'a> {
     }
 
     // Pop the next pair, asserting it matches the given rule. Panics if not.
-    pub(crate) fn pop(&mut self, rule: Rule) -> pest::iterators::Pair<'a, Rule> {
+    pub(crate) fn pop(&mut self, rule: Rule) -> Pair<'a, Rule> {
         let pair = self.iter.next().expect("expected another pair");
         assert_eq!(
             pair.as_rule(),
@@ -307,11 +304,84 @@ impl<'a> RuleIter<'a> {
 /// This is not strictly necessary, but it's a good way to catch bugs.
 impl Drop for RuleIter<'_> {
     fn drop(&mut self) {
-        if self.done || std::thread::panicking() {
+        if self.done || thread::panicking() {
             return;
         }
         // If the iterator is not done, something probably went wrong.
         assert_eq!(self.iter.next(), None);
+    }
+}
+
+/// A collection of named arguments (`name=value` pairs) extracted from a
+/// named-argument-list rule, keyed by name with duplicate-name rejection.
+pub(crate) struct ParsedNamedArgs<'a> {
+    map: HashMap<&'a str, Pair<'a, Rule>>,
+}
+
+impl<'a> ParsedNamedArgs<'a> {
+    pub(crate) fn new(pairs: Pairs<'a, Rule>, rule: Rule) -> Result<Self, MessageParseError> {
+        let mut map = HashMap::new();
+        for pair in pairs {
+            assert_eq!(pair.as_rule(), rule);
+            let mut inner = pair.clone().into_inner();
+            let name_pair = inner.next().unwrap();
+            let value_pair = inner.next().unwrap();
+            assert_eq!(inner.next(), None);
+            let name = name_pair.as_str();
+            if map.contains_key(name) {
+                return Err(MessageParseError::invalid(
+                    "NamedArg",
+                    name_pair.as_span(),
+                    format!("Duplicate argument: {name}"),
+                ));
+            }
+            map.insert(name, value_pair);
+        }
+        Ok(Self { map })
+    }
+
+    // Returns the pair if it exists and matches the rule, otherwise None.
+    pub(crate) fn pop(mut self, name: &str, rule: Rule) -> (Self, Option<Pair<'a, Rule>>) {
+        let pair = self.map.remove(name).inspect(|pair| {
+            assert_eq!(pair.as_rule(), rule, "Rule mismatch for argument {name}");
+        });
+        (self, pair)
+    }
+
+    // Returns an error if there are any unused arguments.
+    pub(crate) fn done(self) -> Result<(), MessageParseError> {
+        if let Some((name, pair)) = self.map.iter().next() {
+            return Err(MessageParseError::invalid(
+                "NamedArgExtractor",
+                // No span available for all unused args; use default.
+                pair.as_span(),
+                format!("Unknown argument: {name}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Map a sort-direction enum identifier (without the leading `&`) to a
+/// [`SortDirection`]. Shared by the `Sort` relation's `sort_field` parser and
+/// the window function's `order=` parser, which reach it from different grammar
+/// rules (`sort_direction` vs a generic `enum_value`) but accept the same set
+/// of variant names. Lives in `common` so neither `relations` nor
+/// `expressions` depends on the other for it.
+pub(crate) fn sort_direction_from_str(
+    name: &str,
+    span: pest::Span,
+) -> Result<SortDirection, MessageParseError> {
+    match name {
+        "AscNullsFirst" => Ok(SortDirection::AscNullsFirst),
+        "AscNullsLast" => Ok(SortDirection::AscNullsLast),
+        "DescNullsFirst" => Ok(SortDirection::DescNullsFirst),
+        "DescNullsLast" => Ok(SortDirection::DescNullsLast),
+        other => Err(MessageParseError::invalid(
+            "SortDirection",
+            span,
+            format!("Unknown sort direction: {other}"),
+        )),
     }
 }
 
