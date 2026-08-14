@@ -3,7 +3,8 @@ use std::fmt;
 use chrono::{DateTime, NaiveDate, NaiveTime};
 use expr::RexType;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
-use substrait::proto::expression::literal::LiteralType;
+use substrait::proto::expression::literal::interval_day_to_second::PrecisionMode;
+use substrait::proto::expression::literal::{IntervalDayToSecond, LiteralType};
 use substrait::proto::expression::{
     Cast, FieldReference, IfThen, ReferenceSegment, ScalarFunction, cast, reference_segment,
 };
@@ -14,6 +15,7 @@ use substrait::proto::{
 
 use super::{PlanError, Scope, Textify, Visibility};
 use crate::extensions::simple::ExtensionKind;
+use crate::precision::SupportedPrecision;
 use crate::textify::types::{Name, NamedAnchor, OutputType, escaped};
 
 // …(…) for function call
@@ -188,6 +190,117 @@ fn precision_time_to_string(value: i64, precision: i32) -> Result<String, Precis
     Ok(time.format(&format).to_string())
 }
 
+/// The precision and sub-second count of an `IntervalDayToSecond`, as stored.
+///
+/// The deprecated `microseconds` precision mode is normalized to precision 6,
+/// since that field is microseconds by definition. An unset `precision_mode`
+/// also means microseconds: that is Substrait's documented meaning for interval
+/// values recorded before `precision_mode` existed, and it matches the default
+/// the type textifier uses for `Type.IntervalDay` with no precision.
+fn interval_day_precision_units(interval: &IntervalDayToSecond) -> (i32, i64) {
+    #[allow(deprecated)]
+    match interval.precision_mode {
+        Some(PrecisionMode::Precision(p)) => (p, interval.subseconds),
+        Some(PrecisionMode::Microseconds(us)) => (6, us as i64),
+        None => (6, interval.subseconds),
+    }
+}
+
+fn write_interval_day_to_second_literal<S: Scope, W: fmt::Write>(
+    interval: &IntervalDayToSecond,
+    ctx: &S,
+    w: &mut W,
+) -> fmt::Result {
+    // Substrait bounds interval_day to [-3,650,000..3,650,000] days, both for
+    // `days` alone and for `days` and `seconds` combined. Out-of-range values
+    // are still writable, so report them and keep going.
+    const MAX_DAYS: i64 = 3_650_000;
+
+    let (units, subseconds) = interval_day_precision_units(interval);
+    let Some(precision) = SupportedPrecision::from_units(units) else {
+        return write!(
+            w,
+            "{}",
+            ctx.failure(PlanError::invalid(
+                "LiteralType",
+                Some("IntervalDayToSecond.precision"),
+                format!(
+                    "IntervalDayToSecond precision {units} has no duration unit to write it in; expected one of 0, 3, 6, 9, or 12"
+                ),
+            ))
+        );
+    };
+
+    let total_seconds = interval.days as i64 * 86_400 + interval.seconds as i64;
+    if !(-MAX_DAYS..=MAX_DAYS).contains(&(interval.days as i64))
+        || !(-MAX_DAYS * 86_400..=MAX_DAYS * 86_400).contains(&total_seconds)
+    {
+        ctx.push_error(
+            PlanError::invalid(
+                "LiteralType",
+                Some("IntervalDayToSecond.days"),
+                format!(
+                    "IntervalDayToSecond days ({}) and seconds ({}) exceed the Substrait maximum of {MAX_DAYS} days",
+                    interval.days, interval.seconds
+                ),
+            )
+            .into(),
+        );
+    }
+
+    let mut parts = Vec::new();
+    if interval.days != 0 {
+        parts.push(format!("{}d", interval.days));
+    }
+    if interval.seconds != 0 {
+        parts.push(format!("{}s", interval.seconds));
+    }
+    if subseconds != 0 {
+        // Precision 0 has no sub-second component at all, so there is no term to
+        // write a non-zero `subseconds` as.
+        let Some(unit) = precision.subsecond_unit() else {
+            return write!(
+                w,
+                "{}",
+                ctx.failure(PlanError::invalid(
+                    "LiteralType",
+                    Some("IntervalDayToSecond.subseconds"),
+                    format!(
+                        "IntervalDayToSecond subseconds ({subseconds}) must be 0 at precision 0; there is no sub-second unit to write it in"
+                    ),
+                ))
+            );
+        };
+
+        // `subseconds` is the fraction of a second below `precision`, so whole
+        // seconds belong in the `seconds` field. Still writable, so report and
+        // keep going.
+        let subsecond_bound = 10_i64.pow(precision.units() as u32);
+        if subseconds <= -subsecond_bound || subseconds >= subsecond_bound {
+            ctx.push_error(
+                PlanError::invalid(
+                    "LiteralType",
+                    Some("IntervalDayToSecond.subseconds"),
+                    format!(
+                        "IntervalDayToSecond subseconds ({subseconds}) is a whole second or more at precision {precision}; whole seconds belong in the seconds field"
+                    ),
+                )
+                .into(),
+            );
+        }
+
+        parts.push(format!("{subseconds}{unit}"));
+    }
+
+    let duration = if parts.is_empty() {
+        "0s".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    write!(w, "'{}'", escaped(&duration))
+}
+
 /// Write just the value portion of a literal, with no type suffix or
 /// nullability marker.
 ///
@@ -225,7 +338,9 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
             w,
         ),
         LiteralType::IntervalYearToMonth(_) => unimplemented_literal("IntervalYearToMonth", ctx, w),
-        LiteralType::IntervalDayToSecond(_) => unimplemented_literal("IntervalDayToSecond", ctx, w),
+        LiteralType::IntervalDayToSecond(interval) => {
+            write_interval_day_to_second_literal(interval, ctx, w)
+        }
         LiteralType::IntervalCompound(_) => unimplemented_literal("IntervalCompound", ctx, w),
         LiteralType::FixedChar(_) => unimplemented_literal("FixedChar", ctx, w),
         LiteralType::VarChar(_) => unimplemented_literal("VarChar", ctx, w),
@@ -265,7 +380,11 @@ fn write_literal_value<S: Scope, W: fmt::Write>(
     }
 }
 
-/// The type suffix for a literal (e.g., `"i32"`, `"fp64"`, `"date"`).
+/// The type suffix for a literal, including its nullability marker (e.g.
+/// `"i32"`, `"fp64?"`, `"date"`, `"interval_day?<6>"`).
+///
+/// Nullability is part of the suffix because a parameterized type writes it
+/// before the parameter list (`interval_day?<6>`, not `interval_day<6>?`).
 /// Returns `None` for unimplemented types whose [`write_literal_value`] already
 /// emitted an error token.
 fn write_literal_type_suffix<W: fmt::Write>(
@@ -292,6 +411,12 @@ fn write_literal_type_suffix<W: fmt::Write>(
         LiteralType::PrecisionTimestamp(p) => ("precisiontimestamp", Some(p.precision)),
         LiteralType::PrecisionTimestampTz(p) => ("precisiontimestamptz", Some(p.precision)),
         LiteralType::PrecisionTime(p) => ("precisiontime", Some(p.precision)),
+        // interval_day carries the value's sub-second precision, so the duration
+        // string doesn't have to encode it.
+        LiteralType::IntervalDayToSecond(interval) => (
+            "interval_day",
+            Some(interval_day_precision_units(interval).0),
+        ),
         _ => return Ok(()),
     };
 
@@ -837,6 +962,183 @@ mod tests {
 
         let literal = non_nullable_literal(LiteralType::Boolean(true));
         assert_eq!(ctx.textify_no_errors(&literal), "true");
+    }
+
+    fn interval_day_literal(
+        days: i32,
+        seconds: i32,
+        subseconds: i64,
+        precision: i32,
+    ) -> expr::Literal {
+        non_nullable_literal(LiteralType::IntervalDayToSecond(
+            expr::literal::IntervalDayToSecond {
+                days,
+                seconds,
+                subseconds,
+                precision_mode: Some(PrecisionMode::Precision(precision)),
+            },
+        ))
+    }
+
+    #[test]
+    fn test_interval_day_literal_textify() {
+        let ctx = TestContext::new();
+
+        for (literal, expected) in [
+            // Only non-zero components are written: precision travels in the
+            // type suffix, so it survives without a zero sub-second term.
+            (interval_day_literal(5, 0, 0, 6), "'5d':interval_day<6>"),
+            (interval_day_literal(5, 0, 0, 0), "'5d':interval_day<0>"),
+            (interval_day_literal(4, 5, 0, 9), "'4d 5s':interval_day<9>"),
+            (
+                interval_day_literal(0, 0, 123, 3),
+                "'123ms':interval_day<3>",
+            ),
+            (
+                interval_day_literal(0, 0, 123_456, 6),
+                "'123456us':interval_day<6>",
+            ),
+            (
+                interval_day_literal(5, 3, 123_456_789, 9),
+                "'5d 3s 123456789ns':interval_day<9>",
+            ),
+            (
+                interval_day_literal(0, 0, -500, 12),
+                "'-500ps':interval_day<12>",
+            ),
+            // An all-zero interval still needs a term to be a valid duration.
+            (interval_day_literal(0, 0, 0, 0), "'0s':interval_day<0>"),
+            (interval_day_literal(0, 0, 0, 9), "'0s':interval_day<9>"),
+        ] {
+            assert_eq!(ctx.textify_no_errors(&literal), expected);
+        }
+    }
+
+    #[test]
+    fn test_interval_day_literal_textify_nullable() {
+        let ctx = TestContext::new();
+        let literal = nullable_literal(LiteralType::IntervalDayToSecond(
+            expr::literal::IntervalDayToSecond {
+                days: 5,
+                seconds: 0,
+                subseconds: 0,
+                precision_mode: Some(PrecisionMode::Precision(6)),
+            },
+        ));
+        // Nullability goes before the parameter list, as it does for types.
+        assert_eq!(ctx.textify_no_errors(&literal), "'5d':interval_day?<6>");
+    }
+
+    #[test]
+    fn test_interval_day_literal_textify_precision_modes() {
+        let ctx = TestContext::new();
+
+        // The deprecated `microseconds` mode is microseconds by definition, and an
+        // unset `precision_mode` means microseconds for compatibility - both are
+        // written as precision 6 so protobuf -> text -> protobuf keeps precision.
+        #[allow(deprecated)]
+        let deprecated_microseconds = non_nullable_literal(LiteralType::IntervalDayToSecond(
+            expr::literal::IntervalDayToSecond {
+                days: 5,
+                seconds: 0,
+                subseconds: 0,
+                precision_mode: Some(PrecisionMode::Microseconds(123)),
+            },
+        ));
+        assert_eq!(
+            ctx.textify_no_errors(&deprecated_microseconds),
+            "'5d 123us':interval_day<6>"
+        );
+
+        let unset = non_nullable_literal(LiteralType::IntervalDayToSecond(
+            expr::literal::IntervalDayToSecond {
+                days: 5,
+                seconds: 0,
+                subseconds: 123,
+                precision_mode: None,
+            },
+        ));
+        assert_eq!(ctx.textify_no_errors(&unset), "'5d 123us':interval_day<6>");
+    }
+
+    #[test]
+    fn test_interval_day_literal_textify_invalid_precision_is_error() {
+        let ctx = TestContext::new();
+        // A precision with no duration unit has no way to write a sub-second
+        // value. Only the value becomes an error token; the suffix still reports
+        // the precision that was actually stored.
+        for precision in [4, 13, -1] {
+            let literal = interval_day_literal(0, 0, 2, precision);
+
+            let (text, errors) = ctx.textify(&literal);
+
+            assert_eq!(text, format!("!{{LiteralType}}:interval_day<{precision}>"));
+            match errors.first() {
+                FormatError::Format(e) => {
+                    assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+                    assert_eq!(e.lookup.as_deref(), Some("IntervalDayToSecond.precision"));
+                }
+                other => panic!("expected FormatError::Format, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_interval_day_literal_textify_subseconds_at_precision_zero_is_error() {
+        let ctx = TestContext::new();
+        // Precision 0 has no sub-second component, so a non-zero `subseconds`
+        // is invalid Substrait with no term to write it in.
+        let literal = interval_day_literal(0, 0, 2, 0);
+
+        let (text, errors) = ctx.textify(&literal);
+
+        assert_eq!(text, "!{LiteralType}:interval_day<0>");
+        match errors.first() {
+            FormatError::Format(e) => {
+                assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+                assert_eq!(e.lookup.as_deref(), Some("IntervalDayToSecond.subseconds"));
+            }
+            other => panic!("expected FormatError::Format, got: {other:?}"),
+        }
+    }
+
+    /// Values outside the Substrait ranges still have an unambiguous text form,
+    /// so they are written and reported rather than replaced with an error token.
+    #[test]
+    fn test_interval_day_literal_textify_out_of_range_is_written_with_warning() {
+        let ctx = TestContext::new();
+
+        for (literal, expected, field) in [
+            // `days` alone exceeds the 3,650,000-day maximum.
+            (
+                interval_day_literal(3_650_001, 0, 0, 0),
+                "'3650001d':interval_day<0>",
+                "IntervalDayToSecond.days",
+            ),
+            // `days` and `seconds` are each in range, but combined they aren't.
+            (
+                interval_day_literal(3_649_999, 100_000, 0, 0),
+                "'3649999d 100000s':interval_day<0>",
+                "IntervalDayToSecond.days",
+            ),
+            // `subseconds` is a whole second or more at this precision.
+            (
+                interval_day_literal(0, 0, 1_000_000_000, 9),
+                "'1000000000ns':interval_day<9>",
+                "IntervalDayToSecond.subseconds",
+            ),
+        ] {
+            let (text, errors) = ctx.textify(&literal);
+
+            assert_eq!(text, expected);
+            match errors.first() {
+                FormatError::Format(e) => {
+                    assert_eq!(e.error_type, FormatErrorType::InvalidValue);
+                    assert_eq!(e.lookup.as_deref(), Some(field));
+                }
+                other => panic!("expected FormatError::Format, got: {other:?}"),
+            }
+        }
     }
 
     fn nullable_literal(lit: expr::literal::LiteralType) -> expr::Literal {
