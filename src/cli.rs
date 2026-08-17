@@ -480,7 +480,7 @@ mod tests {
 
     use super::*;
     use crate::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
+        ArgsAccess, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
     use crate::fixtures::parse_type;
     use crate::parse;
@@ -907,10 +907,8 @@ Root[result]
             "TestSource"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let tag: &str = extractor.expect_named("tag")?;
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+            let tag: &str = args.expect_named("tag")?;
             Ok(TestSource {
                 tag: tag.to_string(),
             })

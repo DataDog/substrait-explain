@@ -15,7 +15,7 @@
 //! This hidden module is crate-owned example support for doctests and
 //! integration tests, not a stable extension API.
 
-use crate::extensions::args::{EnumValue, ExtensionArgs, ExtensionValue};
+use crate::extensions::args::{ArgsAccess, EnumValue, ExtensionArgs, ExtensionValue};
 use crate::extensions::registry::{
     Explainable, ExtensionContext, ExtensionError, ExtensionRegistry,
 };
@@ -121,10 +121,10 @@ impl Explainable for PartitionHint {
         "PartitionHint"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        // Positional arguments are PartitionStrategy enum values.
+    fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+        // Read each positional argument as a PartitionStrategy enum.
         let strategies: Result<Vec<i32>, ExtensionError> = args
-            .positional
+            .positional()
             .iter()
             .map(|val| {
                 let EnumValue(ident) = EnumValue::try_from(val)?;
@@ -139,9 +139,7 @@ impl Explainable for PartitionHint {
             })
             .collect();
 
-        let mut extractor = args.extractor();
-        let count: i64 = extractor.get_named("count")?.unwrap_or_default();
-        extractor.check_exhausted()?;
+        let count: i64 = args.get_named("count")?.unwrap_or_default();
 
         Ok(PartitionHint {
             strategies: strategies?,
@@ -219,16 +217,14 @@ impl Explainable for PlanHint {
         "PlanHint"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        if !args.positional.is_empty() {
+    fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+        if !args.positional().is_empty() {
             return Err(ExtensionError::InvalidArgument(
                 "PlanHint does not accept positional arguments".to_owned(),
             ));
         }
 
-        let mut extractor = args.extractor();
-        let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
-        extractor.check_exhausted()?;
+        let hint: String = args.expect_named::<&str>("hint")?.to_owned();
         Ok(PlanHint { hint })
     }
 
@@ -303,24 +299,22 @@ impl Explainable for BlobStoreRead {
         "BlobStoreRead"
     }
 
-    fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-        if args.positional.len() != 1 {
+    fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+        if args.positional().len() != 1 {
             return Err(ExtensionError::InvalidArgument(format!(
                 "BlobStoreRead expects exactly 1 positional path argument, got {}",
-                args.positional.len()
+                args.positional().len()
             )));
         }
-        if !args.output_columns.is_empty() {
+        if !args.output_columns().is_empty() {
             return Err(ExtensionError::InvalidArgument(
                 "BlobStoreRead output columns belong in Read:Extension[...]".to_owned(),
             ));
         }
 
-        let path = <&str>::try_from(&args.positional[0])?.to_owned();
-        let mut extractor = args.extractor();
-        let limit: i64 = extractor.get_named("limit")?.unwrap_or_default();
-        let include_archived: bool = extractor.get_named("include_archived")?.unwrap_or(false);
-        extractor.check_exhausted()?;
+        let path = <&str>::try_from(&args.positional()[0])?.to_owned();
+        let limit: i64 = args.get_named("limit")?.unwrap_or_default();
+        let include_archived: bool = args.get_named("include_archived")?.unwrap_or(false);
 
         Ok(Self {
             path,
@@ -401,7 +395,7 @@ mod tests {
     fn from_args_round_trip() {
         let original = make_hint(vec![PartitionStrategy::Hash, PartitionStrategy::Range], 16);
         let args = original.to_args(&ExtensionContext::default()).unwrap();
-        let decoded = PartitionHint::from_args(&args).unwrap();
+        let decoded = args.parse::<PartitionHint>().unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -410,7 +404,7 @@ mod tests {
         let mut args = ExtensionArgs::default();
         args.positional
             .push(ExtensionValue::Enum("BOGUS".to_owned()));
-        assert!(PartitionHint::from_args(&args).is_err());
+        assert!(args.parse::<PartitionHint>().is_err());
     }
 
     #[test]
@@ -418,7 +412,7 @@ mod tests {
         // An integer positional arg where an enum is expected should fail.
         let mut args = ExtensionArgs::default();
         args.push(1_i64);
-        let result = PartitionHint::from_args(&args);
+        let result = args.parse::<PartitionHint>();
         assert!(
             result.is_err(),
             "expected error for non-enum positional arg, got {result:?}"
@@ -427,10 +421,9 @@ mod tests {
 
     #[test]
     fn from_args_rejects_extra_named_args() {
-        // check_exhausted should reject unknown named args.
         let mut args = ExtensionArgs::default();
         args.insert("unknown_key", 99_i64);
-        let result = PartitionHint::from_args(&args);
+        let result = args.parse::<PartitionHint>();
         assert!(
             result.is_err(),
             "expected error for unknown named arg, got {result:?}"
@@ -441,7 +434,7 @@ mod tests {
     fn from_args_empty_strategies_roundtrip() {
         let original = make_hint(vec![], 0);
         let args = original.to_args(&ExtensionContext::default()).unwrap();
-        let decoded = PartitionHint::from_args(&args).unwrap();
+        let decoded = args.parse::<PartitionHint>().unwrap();
         assert_eq!(original, decoded);
         assert!(decoded.strategies.is_empty());
         assert_eq!(decoded.count, 0);
@@ -473,7 +466,7 @@ mod tests {
             hint: "use_index".to_owned(),
         };
         let args = original.to_args(&ExtensionContext::default()).unwrap();
-        let decoded = PlanHint::from_args(&args).unwrap();
+        let decoded = args.parse::<PlanHint>().unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -507,7 +500,7 @@ mod tests {
         };
 
         let args = original.to_args(&ExtensionContext::default()).unwrap();
-        let decoded = BlobStoreRead::from_args(&args).unwrap();
+        let decoded = args.parse::<BlobStoreRead>().unwrap();
 
         assert_eq!(original, decoded);
     }

@@ -26,9 +26,9 @@
 //! into default Substrait literal expressions.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::slice::Iter as SliceIter;
 use std::vec::IntoIter as VecIntoIter;
-use std::{fmt, thread};
 
 use indexmap::IndexMap;
 use substrait::proto;
@@ -36,7 +36,7 @@ use substrait::proto::expression::field_reference::ReferenceType;
 use substrait::proto::expression::literal::LiteralType;
 use substrait::proto::expression::{RexType, reference_segment};
 
-use super::ExtensionError;
+use super::{Explainable, ExtensionError};
 use crate::textify::expressions::Reference;
 
 /// Kind of relation addendum in the text format.
@@ -198,43 +198,60 @@ pub struct ExtensionArgs {
     pub output_columns: Vec<ExtensionColumn>,
 }
 
-/// Helper struct for extracting named arguments with validation.
+/// [`ArgsAccess`] provides a view of the arguments in the text form of an
+/// extension relation or advanced extension.
 ///
-/// Tracks which arguments have been consumed. Callers **must** call
-/// [`check_exhausted`](ArgsExtractor::check_exhausted) before dropping to
-/// verify no unexpected arguments remain. In debug builds, dropping without
-/// calling `check_exhausted` will panic. This catches [`Explainable`](super::Explainable)
-/// implementations that forget to reject unexpected named arguments.
-pub struct ArgsExtractor<'a> {
+/// Positional arguments are available via [`Self::positional`], named arguments
+/// via [`Self::get_named`] or [`Self::expect_named`] which can do type
+/// conversion as well, and output columns via [`Self::output_columns`].
+///
+/// [`ArgsAccess`] tracks which arguments are accessed; when
+/// [`Explainable::from_args`] returns, any unaccessed arguments will be raised
+/// as [`ExtensionError::InvalidArgument`] errors.
+pub struct ArgsAccess<'a> {
     args: &'a ExtensionArgs,
-    consumed: HashSet<&'a str>,
-    checked: bool,
+    handled: HashSet<&'a str>,
+    positional_handled: bool,
 }
 
-impl<'a> ArgsExtractor<'a> {
-    /// Create a new extractor for the given arguments
-    pub fn new(args: &'a ExtensionArgs) -> Self {
+impl<'a> ArgsAccess<'a> {
+    pub(crate) fn new(args: &'a ExtensionArgs) -> Self {
         Self {
             args,
-            consumed: HashSet::new(),
-            checked: false,
+            handled: HashSet::new(),
+            positional_handled: false,
         }
     }
 
-    /// Get a named argument value, marking it as consumed if found.
+    /// Returns the positional arguments in source order and marks them as handled.
+    pub fn positional(&mut self) -> &'a [ExtensionValue] {
+        self.positional_handled = true;
+        &self.args.positional
+    }
+
+    /// Returns the output columns for a custom relation.
+    ///
+    /// Output columns are not included in the unhandled-argument check.
+    pub fn output_columns(&self) -> &'a [ExtensionColumn] {
+        &self.args.output_columns
+    }
+
+    /// Returns a named argument without converting it, or `None` if it is absent.
+    ///
+    /// A present argument is marked as handled.
     pub fn get_named_arg(&mut self, name: &str) -> Option<&'a ExtensionValue> {
         match self.args.named.get_key_value(name) {
             Some((k, value)) => {
-                self.consumed.insert(k);
+                self.handled.insert(k);
                 Some(value)
             }
             None => None,
         }
     }
 
-    /// Get a named argument converted to `T`, or `None` if it is absent.
+    /// Returns a named argument converted to `T`, or `None` if it is absent.
     ///
-    /// Marks the argument as consumed if it exists in the source args.
+    /// A present argument is marked as handled.
     pub fn get_named<T>(&mut self, name: &str) -> Result<Option<T>, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
@@ -250,9 +267,9 @@ impl<'a> ArgsExtractor<'a> {
             .transpose()
     }
 
-    /// Get a required named argument converted to `T`.
+    /// Returns a required named argument converted to `T`.
     ///
-    /// Marks the argument as consumed if found.
+    /// A present argument is marked as handled.
     pub fn expect_named<T>(&mut self, name: &str) -> Result<T, ExtensionError>
     where
         T: TryFrom<&'a ExtensionValue>,
@@ -264,45 +281,32 @@ impl<'a> ArgsExtractor<'a> {
             })
     }
 
-    /// Check that all named arguments in the source have been consumed,
-    /// returning an error if not.
-    ///
-    /// Must be called before the extractor is dropped, to validate that all
-    /// args are correctly handled. In debug builds, dropping without calling
-    /// this method will panic.
-    pub fn check_exhausted(&mut self) -> Result<(), ExtensionError> {
-        self.checked = true;
+    /// Rejects arguments that the decoder did not handle.
+    pub(crate) fn finish(self) -> Result<(), ExtensionError> {
+        if !self.positional_handled && !self.args.positional.is_empty() {
+            return Err(ExtensionError::InvalidArgument(format!(
+                "Unhandled positional arguments: {}",
+                self.args.positional.len()
+            )));
+        }
 
-        let mut unknown_args = Vec::new();
+        let mut unhandled_args = Vec::new();
         for name in self.args.named.keys() {
-            if !self.consumed.contains(name.as_str()) {
-                unknown_args.push(name.as_str());
+            if !self.handled.contains(name.as_str()) {
+                unhandled_args.push(name.as_str());
             }
         }
 
-        if unknown_args.is_empty() {
+        if unhandled_args.is_empty() {
             Ok(())
         } else {
-            // Sort for stable error messages
-            unknown_args.sort();
+            // Sort for stable error messages.
+            unhandled_args.sort();
             Err(ExtensionError::InvalidArgument(format!(
                 "Unknown named arguments: {}",
-                unknown_args.join(", ")
+                unhandled_args.join(", ")
             )))
         }
-    }
-}
-
-impl Drop for ArgsExtractor<'_> {
-    fn drop(&mut self) {
-        if self.checked || thread::panicking() {
-            return;
-        }
-        // If we get here, the caller forgot to call check_exhausted().
-        debug_assert!(
-            false,
-            "ArgsExtractor dropped without calling check_exhausted()"
-        );
     }
 }
 
@@ -661,6 +665,21 @@ impl ExtensionColumn {
 }
 
 impl ExtensionArgs {
+    /// Decodes these arguments as an [`Explainable`] extension value.
+    ///
+    /// If decoding succeeds, this method rejects any named or positional
+    /// arguments the implementation did not access. If decoding fails, it
+    /// returns that error without checking for unhandled arguments.
+    pub fn parse<T>(&self) -> Result<T, ExtensionError>
+    where
+        T: Explainable,
+    {
+        let mut access = ArgsAccess::new(self);
+        let value = T::from_args(&mut access)?;
+        access.finish()?;
+        Ok(value)
+    }
+
     /// Push a positional extension argument.
     pub fn push<T>(&mut self, value: T)
     where
@@ -677,11 +696,6 @@ impl ExtensionArgs {
     {
         self.named.insert(name.into(), value.into())
     }
-
-    /// Create an extractor for validating named arguments
-    pub fn extractor(&self) -> ArgsExtractor<'_> {
-        ArgsExtractor::new(self)
-    }
 }
 
 #[cfg(test)]
@@ -692,20 +706,20 @@ mod tests {
     fn get_named_converts_present_values_and_returns_none_for_missing_values() {
         let mut args = ExtensionArgs::default();
         args.insert("count", 8_i64);
-        let mut extractor = args.extractor();
+        let mut access = ArgsAccess::new(&args);
 
-        assert_eq!(extractor.get_named::<i64>("count").unwrap(), Some(8));
-        assert_eq!(extractor.get_named::<i64>("missing").unwrap(), None);
-        assert!(extractor.check_exhausted().is_ok());
+        assert_eq!(access.get_named::<i64>("count").unwrap(), Some(8));
+        assert_eq!(access.get_named::<i64>("missing").unwrap(), None);
+        assert!(access.finish().is_ok());
     }
 
     #[test]
     fn get_named_contextualizes_conversion_errors() {
         let mut args = ExtensionArgs::default();
         args.insert("count", ExtensionValue::Null);
-        let mut extractor = args.extractor();
+        let mut access = ArgsAccess::new(&args);
 
-        let error = extractor
+        let error = access
             .get_named::<i64>("count")
             .expect_err("null should not convert to i64");
 
@@ -713,7 +727,7 @@ mod tests {
             error.to_string(),
             "Invalid named argument 'count': Invalid argument: expected integer, got null"
         );
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(access.finish().is_ok());
     }
 
     #[test]
@@ -738,13 +752,13 @@ mod tests {
     #[test]
     fn expect_named_reports_missing_argument_name() {
         let args = ExtensionArgs::default();
-        let mut extractor = args.extractor();
+        let mut access = ArgsAccess::new(&args);
 
-        let error = extractor
+        let error = access
             .expect_named::<i64>("count")
             .expect_err("missing argument should fail");
 
         assert_eq!(error.to_string(), "Missing required argument: count");
-        assert!(extractor.check_exhausted().is_ok());
+        assert!(access.finish().is_ok());
     }
 }

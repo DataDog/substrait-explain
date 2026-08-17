@@ -168,7 +168,7 @@ Root[result]
 mod opt_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
+        ArgsAccess, Explainable, ExtensionArgs, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -195,10 +195,8 @@ mod opt_fixture {
             "PlanHint"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            let hint: String = extractor.expect_named::<&str>("hint")?.to_owned();
-            extractor.check_exhausted()?;
+        fn from_args(args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
+            let hint: String = args.expect_named::<&str>("hint")?.to_owned();
             Ok(PlanHint { hint })
         }
 
@@ -527,7 +525,7 @@ Root[result]
 mod extension_child_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
+        ArgsAccess, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -551,11 +549,7 @@ mod extension_child_fixture {
             "TwoColumnScan"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            extractor.check_exhausted()?;
-            // Output columns are validated by the parser; we just ignore them here.
-            let _ = &args.output_columns;
+        fn from_args(_args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
             Ok(TwoColumnScan {})
         }
 
@@ -850,7 +844,7 @@ Root[result]
 mod adv_ext_with_columns_fixture {
     use prost::Name;
     use substrait_explain::extensions::{
-        Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
+        ArgsAccess, Explainable, ExtensionArgs, ExtensionColumn, ExtensionContext, ExtensionError,
     };
 
     #[derive(Clone, PartialEq, prost::Message)]
@@ -874,9 +868,7 @@ mod adv_ext_with_columns_fixture {
             "EnhancementWithColumns"
         }
 
-        fn from_args(args: &ExtensionArgs) -> Result<Self, ExtensionError> {
-            let mut extractor = args.extractor();
-            extractor.check_exhausted()?;
+        fn from_args(_args: &mut ArgsAccess<'_>) -> Result<Self, ExtensionError> {
             Ok(EnhancementWithColumns {})
         }
 
