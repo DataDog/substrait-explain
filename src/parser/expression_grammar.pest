@@ -333,10 +333,10 @@ aggregate_output      = { (expression ~ (sp ~ "," ~ sp ~ expression)*)? }
 // Empty grouping symbol
 empty = { "_" }
 
-// SortRel: Sort[($0, &AscNullsFirst), ($2, &DescNullsLast) => ...]
+// SortRel: Sort[($0, &AscNullsFirst), (lower($1):string, &DescNullsLast) => ...]
 sort_relation   = { "Sort" ~ "[" ~ sort_field_list ~ sp ~ "=>" ~ sp ~ reference_list ~ "]" }
 sort_field_list = { (sort_field ~ (sp ~ "," ~ sp ~ sort_field)*)? }
-sort_field      = { "(" ~ sp ~ reference ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
+sort_field      = { "(" ~ sp ~ expression ~ sp ~ "," ~ sp ~ sort_direction ~ sp ~ ")" }
 sort_direction  = { "&AscNullsFirst" | "&AscNullsLast" | "&DescNullsFirst" | "&DescNullsLast" }
 
 // FetchRel: Fetch[limit=..., offset=... => ...] (named arguments only, any order, or _ for empty)

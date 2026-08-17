@@ -1088,22 +1088,22 @@ Root[result]
 
 ### Sort Relation
 
-The Sort relation specifies sort fields and directions for ordering the input:
+The Sort relation specifies sort expressions and directions for ordering the input:
 
-Sort[($0, &AscNullsFirst), ($1, &DescNullsLast) => $0, $1]
+Sort[($0, &AscNullsFirst), (lower($1):string, &DescNullsLast) => $0, $1]
 
 #### Syntax
 
 ```text
 sort_relation := "Sort" "[" sort_fields "=>" reference_list "]"
 sort_fields := sort_field ("," sort_field)*
-sort_field := "(" reference "," sort_direction ")"
+sort_field := "(" expression "," sort_direction ")"
 sort_direction := "&AscNullsFirst" / "&AscNullsLast" / "&DescNullsFirst" / "&DescNullsLast"
 ```
 
 #### Components
 
-- Each sort field is a tuple: `(reference, sort_direction)`
+- Each sort field is a tuple: `(expression, sort_direction)`
 - Sort directions follow the general `enum` syntax and specify null handling
 - `reference_list` - comma-separated list of field references to pass through
 
