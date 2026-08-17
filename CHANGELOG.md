@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/DataDog/substrait-explain/compare/v0.8.0...v0.9.0) - 2026-08-17
+
+### Features
+
+- *(extensions)* support homogeneous tuple arguments ([#208](https://github.com/DataDog/substrait-explain/pull/208))
+- Support expressions inside Sort relations
+- interval day to second support ([#183](https://github.com/DataDog/substrait-explain/pull/183))
+- *(extensions)* [**breaking**] improve argument handling ([#203](https://github.com/DataDog/substrait-explain/pull/203))
+- added support for setting common defaults explicitly ([#207](https://github.com/DataDog/substrait-explain/pull/207))
+
+### Refactoring
+
+- *(extensions)* [**breaking**] centralize argument extraction ([#205](https://github.com/DataDog/substrait-explain/pull/205))
+- *(parser)* extract shared components ([#187](https://github.com/DataDog/substrait-explain/pull/187))
+
 ## [0.8.0](https://github.com/DataDog/substrait-explain/compare/v0.7.0...v0.8.0) - 2026-08-10
 
 ### Bug Fixes
