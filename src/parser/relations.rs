@@ -882,13 +882,13 @@ impl ScopedParsePair for SortField {
     }
 
     fn parse_pair(
-        _extensions: &SimpleExtensions,
+        extensions: &SimpleExtensions,
         pair: Pair<Rule>,
     ) -> Result<Self, MessageParseError> {
         assert_eq!(pair.as_rule(), Self::rule());
         let mut iter = RuleIter::from(pair.into_inner());
-        let reference_pair = iter.pop(Rule::reference);
-        let field_index = FieldIndex::parse_pair(reference_pair);
+        let expression_pair = iter.pop(Rule::expression);
+        let expression = Expression::parse_pair(extensions, expression_pair)?;
         let direction_pair = iter.pop(Rule::sort_direction);
         let direction = sort_direction_from_str(
             direction_pair.as_str().trim_start_matches('&'),
@@ -896,11 +896,7 @@ impl ScopedParsePair for SortField {
         )?;
         iter.done();
         Ok(SortField {
-            expr: Some(Expression {
-                rex_type: Some(RexType::Selection(Box::new(
-                    field_index.to_field_reference(),
-                ))),
-            }),
+            expr: Some(expression),
             // TODO: Add support for SortKind::ComparisonFunctionReference
             sort_kind: Some(SortKind::Direction(direction as i32)),
         })

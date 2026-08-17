@@ -202,6 +202,22 @@ Root[a, b]
 }
 
 #[test]
+fn test_sort_relation_with_scalar_function_expressions_roundtrip() {
+    let plan = r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: add
+
+=== Plan
+Root[a, b]
+  Sort[(add($0, $1):i32, &AscNullsFirst), (add($1, 1:i32):i32, &DescNullsLast) => $0, $1]
+    Read[table => a:i32, b:i32]"#;
+
+    roundtrip_plan(plan);
+}
+
+#[test]
 fn test_fetch_relation_roundtrip() {
     let plan_both = r#"=== Plan
 Root[a, b]
