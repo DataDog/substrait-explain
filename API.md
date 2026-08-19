@@ -364,6 +364,7 @@ cat plan.substrait | substrait-explain convert -f text -t json > plan.json
 - `-i, --input <FILE>` - Input file (default: stdin)
 - `-o, --output <FILE>` - Output file (default: stdout)
 - `--show-literal-types` - Show type annotations on literals
+- `--show-plan-version` - Show the plan's Substrait version
 - `--verbose` - Show detailed progress information
 
 #### Validate Command
@@ -385,6 +386,7 @@ substrait-explain validate -i plan.substrait --verbose
 
 - `-i, --input <FILE>` - Input file (default: stdin)
 - `-o, --output <FILE>` - Output file (default: stdout)
+- `--show-plan-version` - Show the plan's Substrait version
 - `--verbose` - Show detailed progress information
 
 ### Examples

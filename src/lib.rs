@@ -24,7 +24,7 @@ pub mod json;
 // Re-export commonly used types for easier access
 pub use parser::{
     ExpectedExtensionLine, ExtensionParseError, MessageParseError, ParseContext, ParseError,
-    ParseResult, Parser,
+    ParseResult, Parser, default_plan_version,
 };
 use substrait::proto::Plan;
 use textify::foundation::ErrorQueue;
@@ -40,6 +40,9 @@ use textify::plan::PlanWriter;
 /// - An optional extensions section starting with "=== Extensions"
 /// - A plan section starting with "=== Plan"
 /// - Indented relation definitions
+///
+/// A document with no version section gets [`default_plan_version`];
+/// `=== Version null` gets no version.
 ///
 /// # Example
 /// ```rust

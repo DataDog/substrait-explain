@@ -4,9 +4,9 @@ use substrait::proto;
 
 use super::Textify;
 use crate::extensions::{ExtensionRegistry, SimpleExtensions};
-use crate::parser::{PLAN_HEADER, VERSION_HEADER};
+use crate::parser::{PLAN_HEADER, VERSION_HEADER, VERSION_NULL};
 use crate::textify::foundation::ErrorAccumulator;
-use crate::textify::{OutputOptions, ScopedContext};
+use crate::textify::{OutputOptions, ScopedContext, Visibility};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlanWriter<'a, E: ErrorAccumulator + Default> {
@@ -56,15 +56,27 @@ impl<'a, E: ErrorAccumulator + Default + Clone> PlanWriter<'a, E> {
         )
     }
 
-    /// Write the `=== Version` section. Emits nothing unless the plan
-    /// carries a version that is not entirely empty
+    /// Write the `=== Version` section, as directed by
+    /// [`OutputOptions::show_version`].
+    ///
+    /// `Never` writes nothing. `Required` writes the section only when the plan
+    /// carries a version that is not entirely empty. `Always` writes it
+    /// unconditionally, as `=== Version null` when the plan has no version.
     pub(crate) fn write_version(&self, w: &mut impl fmt::Write) -> fmt::Result {
-        let Some(version) = self.version else {
-            return Ok(());
+        let always = match self.options.show_version {
+            Visibility::Never => return Ok(()),
+            Visibility::Required => false,
+            Visibility::Always => true,
         };
-        if version == &proto::Version::default() {
-            return Ok(());
-        }
+
+        let version = match self.version {
+            // Record the absence explicitly; otherwise reading this output back
+            // in would substitute a default version for an unset one.
+            None if always => return writeln!(w, "{VERSION_HEADER} {VERSION_NULL}"),
+            None => return Ok(()),
+            Some(v) if !always && v == &proto::Version::default() => return Ok(()),
+            Some(v) => v,
+        };
 
         writeln!(
             w,

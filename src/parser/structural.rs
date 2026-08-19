@@ -13,6 +13,7 @@ use substrait::proto::{
     AggregateRel, CrossRel, FetchRel, FilterRel, JoinRel, Plan, PlanRel, ProjectRel, ReadRel, Rel,
     RelRoot, SortRel, Version, plan_rel,
 };
+use substrait::version::version_with_producer;
 
 use crate::extensions::any::Any;
 use crate::extensions::{AddendumKind, ExtensionRegistry, SimpleExtensions, simple};
@@ -30,6 +31,8 @@ use crate::parser::{ErrorKind, ExpressionParser, RelationParsePair, Rule, unwrap
 
 pub const PLAN_HEADER: &str = "=== Plan";
 pub const VERSION_HEADER: &str = "=== Version";
+/// Marks a plan with no version at all: `=== Version null`.
+pub const VERSION_NULL: &str = "null";
 
 /// Represents an input line, trimmed of leading two-space indents and final
 /// whitespace. Contains the number of indents and the trimmed line.
@@ -162,6 +165,14 @@ impl<'a> LineNode<'a> {
             children: Vec::new(),
         }))
     }
+}
+
+/// The [`Version`] a plan gets when the text is empty.
+///
+/// Substrait's `plan.proto` documents `Plan.version` as "optional up to 0.17.0,
+/// required for later versions".
+pub fn default_plan_version() -> Version {
+    version_with_producer(concat!("substrait-explain ", env!("CARGO_PKG_VERSION")))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -895,7 +906,8 @@ pub struct Parser<'a> {
     /// [`next_chunk`](Self::next_chunk). `None` before parsing starts and once
     /// the input is exhausted.
     cursor: Option<ChunkCursor<'a>>,
-    /// The plan version from an optional `=== Version` section
+    /// The plan version. Starts as [`default_plan_version`], which a
+    /// `=== Version` section overrides and `=== Version null` clears.
     version: Option<Version>,
     extension_parser: ExtensionParser,
     extension_registry: ExtensionRegistry,
@@ -916,6 +928,9 @@ impl<'a> Parser<'a> {
     /// - An optional extensions section starting with "=== Extensions"
     /// - A plan section starting with "=== Plan"
     /// - Indented relation definitions
+    ///
+    /// A document with no version(`=== Version null`) section gets
+    /// [`default_plan_version`](crate::default_plan_version);
     ///
     /// # Examples
     ///
@@ -946,7 +961,7 @@ impl<'a> Parser<'a> {
             line_no: 1,
             state: State::Initial,
             cursor: None,
-            version: None,
+            version: Some(default_plan_version()),
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
             relation_parser: RelationParser::default(),
@@ -1097,7 +1112,7 @@ impl<'a> Parser<'a> {
         if let Some(rest) = line.strip_prefix(VERSION_HEADER)
             && (rest.is_empty() || rest.starts_with(' '))
         {
-            self.version = Some(self.parse_version_header(line)?);
+            self.version = self.parse_version_header(line)?;
             return Ok(State::Version);
         }
 
@@ -1111,14 +1126,19 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// Parse the `=== Version <major>.<minor>.<patch>` header line and store
-    /// the resulting [`Version`], leaving `producer` / `git_hash` empty
-    fn parse_version_header(&self, line: &str) -> Result<Version, ParseError> {
+    /// Parse the `=== Version <major>.<minor>.<patch>` header line and return
+    /// the resulting [`Version`], leaving `producer` / `git_hash` empty, or
+    /// `None` for `=== Version null`
+    fn parse_version_header(&self, line: &str) -> Result<Option<Version>, ParseError> {
         let ctx = || ParseContext::new(self.line_no, line.to_string());
         let rest = line
             .strip_prefix(VERSION_HEADER)
             .expect("version header prefix checked by caller")
             .trim();
+
+        if rest == VERSION_NULL {
+            return Ok(None);
+        }
 
         let mut numbers = rest.split('.');
         let mut next_number = |field: &str| -> Result<u32, ParseError> {
@@ -1148,12 +1168,12 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        Ok(Version {
+        Ok(Some(Version {
             major_number,
             minor_number,
             patch_number,
             ..Default::default()
-        })
+        }))
     }
 
     /// Parses a single line from the version section: an indented
@@ -1184,10 +1204,15 @@ impl<'a> Parser<'a> {
             )
         })?;
         let value = value.trim().to_string();
-        let version = self
-            .version
-            .as_mut()
-            .expect("version is set on entry to the version section");
+        let Some(version) = self.version.as_mut() else {
+            return Err(ParseError::ValidationError(
+                ctx(),
+                format!(
+                    "unexpected detail line {line:?} under \
+                     '{VERSION_HEADER} {VERSION_NULL}'; a null version has no fields"
+                ),
+            ));
+        };
         match key.trim() {
             "producer" => version.producer = value,
             "git_hash" => version.git_hash = value,

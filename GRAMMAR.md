@@ -116,8 +116,16 @@ The header carries the version number as `major.minor.patch` (three
 non-negative integers). The indented `producer:` and `git_hash:` lines are
 optional and may appear in either order beneath the header.
 
-The `=== Version` section as a whole is optional; a document with no version
-section is valid and denotes a plan without a declared version.
+The section is optional, and a document that leaves it out gets the Substrait
+version `substrait-explain` was built against, with `substrait-explain` recorded
+as the producer. `null` in place of the version number means the plan has no
+version at all:
+
+```text
+=== Version null
+```
+
+Output leaves the section out unless `OutputOptions::show_version` asks for it.
 
 ```rust
 # use substrait_explain::Parser;
@@ -134,6 +142,35 @@ Root[result]
 # let version = plan.version.unwrap();
 # assert_eq!(version.minor_number, 55);
 # assert_eq!(version.producer, "my-optimizer");
+```
+
+```rust
+# use substrait_explain::{Parser, default_plan_version};
+#
+# let null_version = r#"
+=== Version null
+=== Plan
+Root[result]
+  Read[orders => quantity:i32?]
+# "#;
+#
+# let plan = Parser::parse(null_version).unwrap();
+# assert!(plan.version.is_none());
+#
+# let no_section = r#"
+# === Plan
+# Root[result]
+#   Read[orders => quantity:i32?]
+# "#;
+#
+# let plan = Parser::parse(no_section).unwrap();
+# assert_eq!(plan.version, Some(default_plan_version()));
+#
+# // nothing and `null` are different inputs, and stay different.
+# assert_ne!(
+#     Parser::parse(null_version).unwrap().version,
+#     Parser::parse(no_section).unwrap().version
+# );
 ```
 
 #### Extension format
