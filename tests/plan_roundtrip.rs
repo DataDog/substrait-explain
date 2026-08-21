@@ -7,8 +7,12 @@
 
 mod common;
 
-use common::{assert_roundtrip_canonical, roundtrip_plan};
-use substrait_explain::{ParseError, Parser};
+use common::{assert_roundtrip_canonical, roundtrip_plan, roundtrip_plan_with_options};
+use substrait::proto::Version;
+use substrait_explain::{
+    OutputOptions, ParseError, Parser, Visibility, default_plan_version, format,
+    format_with_options,
+};
 
 #[test]
 fn test_simple_plan_roundtrip() {
@@ -1185,23 +1189,53 @@ Root[a]
     roundtrip_plan(plan);
 }
 
-/// A plan with no version section parses to `version: None` and emits no
-/// `=== Version` line.
+/// A document with no version section gets the built-in version, which default
+/// output leaves out - so the text round-trips unchanged - and verbose output
+/// shows.
 #[test]
 fn test_version_absent() {
     let plan = r#"=== Plan
 Root[a]
   Read[t => a:i64]"#;
 
-    let parsed = Parser::parse(plan).unwrap();
-    assert!(parsed.version.is_none());
+    roundtrip_plan(plan);
 
-    let (text, errors) = substrait_explain::format(&parsed);
+    let parsed = Parser::parse(plan).unwrap();
+    assert_eq!(parsed.version, Some(default_plan_version()));
+
+    let (text, errors) = format(&parsed);
     assert!(errors.is_empty());
     assert!(
         !text.contains("=== Version"),
         "no version section expected, got:\n{text}"
     );
+
+    let (verbose_text, errors) = format_with_options(&parsed, &OutputOptions::verbose());
+    assert!(errors.is_empty());
+    let built_in = default_plan_version();
+    let expected = format!(
+        "=== Version {}.{}.{}",
+        built_in.major_number, built_in.minor_number, built_in.patch_number
+    );
+    assert!(
+        verbose_text.starts_with(&expected),
+        "expected verbose output to start with {expected:?}, got:\n{verbose_text}"
+    );
+}
+
+#[test]
+fn test_version_maintained() {
+    let plan = r#"=== Version 0.52.0
+  producer: some-optimizer
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    roundtrip_plan(plan);
+
+    let version = Parser::parse(plan).unwrap().version.unwrap();
+    assert_eq!(version.minor_number, 52);
+    assert_eq!(version.producer, "some-optimizer");
 }
 
 /// An all-default `Version` (0.0.0 with no producer/git_hash) is treated as
@@ -1215,14 +1249,76 @@ Root[a]
 
     // The parser preserves the (empty) version it was given...
     let parsed = Parser::parse(plan).unwrap();
-    assert!(parsed.version.is_some());
+    assert_eq!(parsed.version, Some(Version::default()));
 
-    // ...but the formatter suppresses an all-default version.
-    let (text, errors) = substrait_explain::format(&parsed);
+    // ...but an all-default version says nothing, so it is not written out.
+    let (text, errors) = format(&parsed);
     assert!(errors.is_empty());
     assert!(
         !text.contains("=== Version"),
         "all-zero version should be suppressed, got:\n{text}"
+    );
+}
+
+/// `Always` writes the header even for an all-default version, which `Required`
+/// hides.
+#[test]
+fn test_version_all_zero_shown_when_always() {
+    let plan = r#"=== Version 0.0.0
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    roundtrip_plan_with_options(
+        plan,
+        &OutputOptions {
+            show_version: Visibility::Always,
+            ..OutputOptions::default()
+        },
+    );
+
+    let parsed = Parser::parse(plan).unwrap();
+    assert_eq!(parsed.version, Some(Version::default()));
+}
+
+/// `=== Version null` says the plan has no version.
+#[test]
+fn test_version_null_roundtrip() {
+    let plan = r#"=== Version null
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    roundtrip_plan_with_options(
+        plan,
+        &OutputOptions {
+            show_version: Visibility::Always,
+            ..OutputOptions::default()
+        },
+    );
+
+    let parsed = Parser::parse(plan).unwrap();
+    assert!(
+        parsed.version.is_none(),
+        "expected no version, got {:?}",
+        parsed.version
+    );
+}
+
+/// A null version has no fields, so detail lines under it are a contradiction.
+#[test]
+fn test_version_null_with_detail_errors() {
+    let plan = r#"=== Version null
+  producer: some-optimizer
+=== Plan
+Root[a]
+  Read[t => a:i64]"#;
+
+    let err = Parser::parse(plan).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("null version has no fields"),
+        "expected a null-version error, got: {msg}"
     );
 }
 

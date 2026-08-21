@@ -116,8 +116,14 @@ The header carries the version number as `major.minor.patch` (three
 non-negative integers). The indented `producer:` and `git_hash:` lines are
 optional and may appear in either order beneath the header.
 
-The `=== Version` section as a whole is optional; a document with no version
-section is valid and denotes a plan without a declared version.
+The section is optional, and a document that leaves it out gets the Substrait
+version `substrait-explain` was built against, with `substrait-explain` recorded
+as the producer. `null` in place of the version number means the plan has no
+version at all:
+
+```text
+=== Version null
+```
 
 ```rust
 # use substrait_explain::Parser;
@@ -134,6 +140,19 @@ Root[result]
 # let version = plan.version.unwrap();
 # assert_eq!(version.minor_number, 55);
 # assert_eq!(version.producer, "my-optimizer");
+```
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Version null
+=== Plan
+Root[result]
+  Read[orders => quantity:i32?]
+# "#;
+#
+# Parser::parse(plan_text).unwrap();
 ```
 
 #### Extension format
