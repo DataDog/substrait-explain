@@ -14,7 +14,7 @@ use substrait_explain::extensions::{
     ExtensionRegistry,
 };
 use substrait_explain::json::{build_descriptor_pool, parse_json};
-use substrait_explain::{OutputOptions, Parser, default_plan_version, format_with_registry};
+use substrait_explain::{OutputOptions, Parser, format_with_registry};
 
 mod example_protos {
     #![allow(
@@ -101,16 +101,6 @@ fn test_text_path() {
         .with_extension_registry(registry)
         .parse_plan(PLAN_TEXT)
         .expect("failed to parse text plan");
-
-    // The text fixture has no `=== Version` section, so parsing fills in the
-    // Substrait version substrait-explain is built against. Assert that here and
-    // drop it before the comparison; baking the number into the fixture would
-    // mean re-generating it on every substrait dependency bump.
-    assert_eq!(plan.version, Some(default_plan_version()));
-    let plan = proto::Plan {
-        version: None,
-        ..plan
-    };
 
     let serialized = serde_json::to_string_pretty(&plan).expect("failed to serialize");
     assert_eq!(
@@ -202,8 +192,7 @@ fn make_cli(from: Format) -> Cli {
             output: "-".to_string(),
             from: Some(from),
             to: Some(Format::Text),
-            show_literal_types: false,
-            show_plan_version: false,
+            detailed: false,
             verbose: false,
         },
     }

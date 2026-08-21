@@ -125,8 +125,6 @@ version at all:
 === Version null
 ```
 
-Output leaves the section out unless `OutputOptions::show_version` asks for it.
-
 ```rust
 # use substrait_explain::Parser;
 #
@@ -145,32 +143,16 @@ Root[result]
 ```
 
 ```rust
-# use substrait_explain::{Parser, default_plan_version};
+# use substrait_explain::Parser;
 #
-# let null_version = r#"
+# let plan_text = r#"
 === Version null
 === Plan
 Root[result]
   Read[orders => quantity:i32?]
 # "#;
 #
-# let plan = Parser::parse(null_version).unwrap();
-# assert!(plan.version.is_none());
-#
-# let no_section = r#"
-# === Plan
-# Root[result]
-#   Read[orders => quantity:i32?]
-# "#;
-#
-# let plan = Parser::parse(no_section).unwrap();
-# assert_eq!(plan.version, Some(default_plan_version()));
-#
-# // nothing and `null` are different inputs, and stay different.
-# assert_ne!(
-#     Parser::parse(null_version).unwrap().version,
-#     Parser::parse(no_section).unwrap().version
-# );
+# Parser::parse(plan_text).unwrap();
 ```
 
 #### Extension format

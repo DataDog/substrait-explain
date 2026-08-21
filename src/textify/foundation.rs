@@ -29,12 +29,13 @@ pub enum Visibility {
 pub struct OutputOptions {
     /// Show the `=== Version` section.
     ///
-    /// If `Required`, the section is shown only when the plan carries a version
-    /// that is not entirely empty, and empty `producer` / `git_hash` fields are
-    /// left out.
+    /// If `Never`, the section is left out entirely.
     ///
-    /// If `Always`, the section is shown even when the plan has no version - as
-    /// `=== Version null`.
+    /// If `Required` - the default - the plan's version is shown, unless it is
+    /// empty or the [`default_plan_version`](crate::default_plan_version)(add by the parser).
+    ///
+    /// If `Always`, the section is shown even when the plan has no version at
+    /// all, as `=== Version null`.
     pub show_version: Visibility,
     /// Show the extension URNs in the output.
     pub show_extension_urns: bool,
@@ -70,7 +71,7 @@ pub struct OutputOptions {
 impl Default for OutputOptions {
     fn default() -> Self {
         Self {
-            show_version: Visibility::Never,
+            show_version: Visibility::Required,
             show_extension_urns: false,
             show_simple_extensions: false,
             show_simple_extension_anchors: Visibility::Required,

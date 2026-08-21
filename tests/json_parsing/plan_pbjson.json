@@ -1,4 +1,7 @@
 {
+  "version": {
+    "minorNumber": 55
+  },
   "relations": [
     {
       "root": {

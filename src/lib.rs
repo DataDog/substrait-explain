@@ -41,9 +41,6 @@ use textify::plan::PlanWriter;
 /// - A plan section starting with "=== Plan"
 /// - Indented relation definitions
 ///
-/// A document with no version section gets [`default_plan_version`];
-/// `=== Version null` gets no version.
-///
 /// # Example
 /// ```rust
 /// use substrait_explain::parse;

@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{assert_roundtrip_canonical, roundtrip_plan};
+use common::{assert_roundtrip_canonical, roundtrip_plan, roundtrip_plan_with_options};
 use substrait::proto::Version;
 use substrait_explain::{
     OutputOptions, ParseError, Parser, Visibility, default_plan_version, format,
@@ -1125,23 +1125,6 @@ Root[sum]
     roundtrip_plan(plan);
 }
 
-/// Round-trip `input` with the version section at the given visibility, leaving
-/// every other option at its default.
-fn roundtrip_showing_version(input: &str, show_version: Visibility) {
-    let plan = Parser::parse(input).expect("parse failed");
-    let options = OutputOptions {
-        show_version,
-        ..OutputOptions::default()
-    };
-    let (text, errors) = format_with_options(&plan, &options);
-
-    assert!(
-        errors.is_empty(),
-        "unexpected formatting errors: {errors:?}"
-    );
-    assert_eq!(text.trim(), input.trim());
-}
-
 #[test]
 fn test_version_semver_only_roundtrip() {
     let plan = r#"=== Version 0.55.0
@@ -1149,7 +1132,7 @@ fn test_version_semver_only_roundtrip() {
 Root[a]
   Read[t => a:i64]"#;
 
-    roundtrip_showing_version(plan, Visibility::Required);
+    roundtrip_plan(plan);
 
     let parsed = Parser::parse(plan).unwrap();
     let version = parsed.version.expect("version should be set");
@@ -1178,7 +1161,7 @@ Root[sum]
   Project[add($0, $1):i64]
     Read[t => a:i64, b:i64]"#;
 
-    roundtrip_showing_version(plan, Visibility::Required);
+    roundtrip_plan(plan);
 
     let version = Parser::parse(plan).unwrap().version.unwrap();
     assert_eq!(
@@ -1203,7 +1186,7 @@ fn test_version_git_hash_only_roundtrip() {
 Root[a]
   Read[t => a:i64]"#;
 
-    roundtrip_showing_version(plan, Visibility::Required);
+    roundtrip_plan(plan);
 }
 
 /// A document with no version section gets the built-in version, which default
@@ -1240,21 +1223,19 @@ Root[a]
     );
 }
 
-/// Default output drops the version section, so a versioned plan and an
-/// unversioned one print the same way. The version is not recoverable from that
-/// output; the plan parsed back from it gets the built-in version instead.
 #[test]
-fn test_version_dropped_by_default() {
-    let canonical = r#"=== Plan
-Root[a]
-  Read[t => a:i64]"#;
-    let versioned = r#"=== Version 0.52.0
+fn test_version_maintained() {
+    let plan = r#"=== Version 0.52.0
   producer: some-optimizer
 === Plan
 Root[a]
   Read[t => a:i64]"#;
 
-    assert_roundtrip_canonical(canonical, versioned);
+    roundtrip_plan(plan);
+
+    let version = Parser::parse(plan).unwrap().version.unwrap();
+    assert_eq!(version.minor_number, 52);
+    assert_eq!(version.producer, "some-optimizer");
 }
 
 /// An all-default `Version` (0.0.0 with no producer/git_hash) is treated as
@@ -1270,13 +1251,8 @@ Root[a]
     let parsed = Parser::parse(plan).unwrap();
     assert_eq!(parsed.version, Some(Version::default()));
 
-    // ...but `Required` suppresses an all-default version, as does the default
-    // `Never`.
-    let options = OutputOptions {
-        show_version: Visibility::Required,
-        ..OutputOptions::default()
-    };
-    let (text, errors) = format_with_options(&parsed, &options);
+    // ...but an all-default version says nothing, so it is not written out.
+    let (text, errors) = format(&parsed);
     assert!(errors.is_empty());
     assert!(
         !text.contains("=== Version"),
@@ -1293,7 +1269,13 @@ fn test_version_all_zero_shown_when_always() {
 Root[a]
   Read[t => a:i64]"#;
 
-    roundtrip_showing_version(plan, Visibility::Always);
+    roundtrip_plan_with_options(
+        plan,
+        &OutputOptions {
+            show_version: Visibility::Always,
+            ..OutputOptions::default()
+        },
+    );
 
     let parsed = Parser::parse(plan).unwrap();
     assert_eq!(parsed.version, Some(Version::default()));
@@ -1307,7 +1289,13 @@ fn test_version_null_roundtrip() {
 Root[a]
   Read[t => a:i64]"#;
 
-    roundtrip_showing_version(plan, Visibility::Always);
+    roundtrip_plan_with_options(
+        plan,
+        &OutputOptions {
+            show_version: Visibility::Always,
+            ..OutputOptions::default()
+        },
+    );
 
     let parsed = Parser::parse(plan).unwrap();
     assert!(

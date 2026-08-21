@@ -10,9 +10,7 @@ use prost::Message;
 use substrait::proto::Plan;
 
 use crate::extensions::ExtensionRegistry;
-use crate::{
-    FormatError, OutputOptions, Visibility, format_with_registry, json, parse_with_registry,
-};
+use crate::{FormatError, OutputOptions, format_with_registry, json, parse_with_registry};
 
 /// The outcome of a CLI operation.
 ///
@@ -77,15 +75,14 @@ impl Cli {
                 output,
                 from,
                 to,
-                show_literal_types,
-                show_plan_version,
+                detailed,
                 verbose,
             } => {
                 let reader = get_reader(input)
                     .with_context(|| format!("Failed to open input file: {input}"))?;
                 let writer = get_writer(output)
                     .with_context(|| format!("Failed to create output file: {output}"))?;
-                let options = self.create_output_options(*show_literal_types, *show_plan_version);
+                let options = self.create_output_options(*detailed);
                 let from_format = self.resolve_input_format(from, input)?;
                 let to_format = self.resolve_output_format(to, output)?;
                 self.run_convert_with_io(
@@ -102,14 +99,13 @@ impl Cli {
             Commands::Validate {
                 input,
                 output,
-                show_plan_version,
                 verbose,
             } => {
                 let reader = get_reader(input)
                     .with_context(|| format!("Failed to open input file: {input}"))?;
                 let writer = get_writer(output)
                     .with_context(|| format!("Failed to create output file: {output}"))?;
-                self.run_validate_with_io(reader, writer, *show_plan_version, *verbose, registry)
+                self.run_validate_with_io(reader, writer, *verbose, registry)
             }
         }
     }
@@ -127,12 +123,11 @@ impl Cli {
                 output,
                 from,
                 to,
-                show_literal_types,
-                show_plan_version,
+                detailed,
                 verbose,
                 ..
             } => {
-                let options = self.create_output_options(*show_literal_types, *show_plan_version);
+                let options = self.create_output_options(*detailed);
                 let from_format = self.resolve_input_format(from, input)?;
                 let to_format = self.resolve_output_format(to, output)?;
                 self.run_convert_with_io(
@@ -146,29 +141,18 @@ impl Cli {
                 )
             }
 
-            Commands::Validate {
-                show_plan_version,
-                verbose,
-                ..
-            } => self.run_validate_with_io(reader, writer, *show_plan_version, *verbose, registry),
+            Commands::Validate { verbose, .. } => {
+                self.run_validate_with_io(reader, writer, *verbose, registry)
+            }
         }
     }
 
-    fn create_output_options(
-        &self,
-        show_literal_types: bool,
-        show_plan_version: bool,
-    ) -> OutputOptions {
-        let mut options = OutputOptions::default();
-
-        if show_literal_types {
-            options.literal_types = Visibility::Always;
+    fn create_output_options(&self, detailed: bool) -> OutputOptions {
+        if detailed {
+            OutputOptions::verbose()
+        } else {
+            OutputOptions::default()
         }
-        if show_plan_version {
-            options.show_version = Visibility::Always;
-        }
-
-        options
     }
 
     fn resolve_input_format(&self, format: &Option<Format>, input_path: &str) -> Result<Format> {
@@ -240,7 +224,6 @@ impl Cli {
         &self,
         reader: R,
         writer: W,
-        show_plan_version: bool,
         verbose: bool,
         registry: &ExtensionRegistry,
     ) -> Result<Outcome> {
@@ -248,11 +231,8 @@ impl Cli {
             .read_plan(reader, registry)
             .with_context(|| "Failed to parse input as Substrait text format")?;
 
-        // `--show-literal-types` is a convert option; validate only varies whether
-        // the version section is part of the round-tripped output.
-        let options = self.create_output_options(false, show_plan_version);
         let outcome = Format::Text
-            .write_plan(writer, &plan, &options, registry)
+            .write_plan(writer, &plan, &OutputOptions::default(), registry)
             .with_context(|| "Failed to format plan as Substrait text format")?;
 
         if verbose && matches!(outcome, Outcome::Success) {
@@ -293,12 +273,9 @@ pub enum Commands {
         /// Output format: text, json, yaml, protobuf/proto/pb (auto-detected from file extension if not specified)
         #[arg(short = 't', long)]
         to: Option<Format>,
-        /// Show literal types (text output only)
+        /// Show more detail on plans, including type annotations and plan version
         #[arg(long)]
-        show_literal_types: bool,
-        /// Show the plan's Substrait version (text output only)
-        #[arg(long)]
-        show_plan_version: bool,
+        detailed: bool,
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -311,9 +288,6 @@ pub enum Commands {
         /// Output file (use - for stdout)
         #[arg(short, long, default_value = "-")]
         output: String,
-        /// Show the plan's Substrait version (text output only)
-        #[arg(long)]
-        show_plan_version: bool,
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -537,8 +511,7 @@ Root[result]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Text),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -564,8 +537,7 @@ Root[result]
                 output: "output.json".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Json),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -592,8 +564,7 @@ Root[result]
                 output: "output.json".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Json),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -612,8 +583,7 @@ Root[result]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Json),
                 to: Some(Format::Text),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -638,8 +608,7 @@ Root[result]
                 output: "output.pb".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Protobuf),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -664,7 +633,6 @@ Root[result]
             command: Commands::Validate {
                 input: String::new(),
                 output: String::new(),
-                show_plan_version: false,
                 verbose: false,
             },
         };
@@ -688,7 +656,6 @@ Root[result]
             command: Commands::Validate {
                 input: String::new(),
                 output: String::new(),
-                show_plan_version: false,
                 verbose: false,
             },
         };
@@ -714,8 +681,7 @@ Root[result]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Text),
-                show_literal_types: true,
-                show_plan_version: false,
+                detailed: true,
                 verbose: false,
             },
         };
@@ -723,9 +689,13 @@ Root[result]
         cli.run_with_io(input, &mut output, &ExtensionRegistry::default())
             .unwrap();
 
+        // `--detailed` adds what the default output leaves out: the version
+        // section, read types, and nullability.
         let output_content = String::from_utf8(output).unwrap();
+        assert!(output_content.contains("=== Version"));
         assert!(output_content.contains("=== Plan"));
         assert!(output_content.contains("Root[result]"));
+        assert!(output_content.contains("Read[data => a:i64, b:string]"));
     }
 
     #[test]
@@ -768,8 +738,7 @@ Root[result]
                 output: "output.json".to_string(),
                 from: None, // Auto-detect from extension
                 to: None,   // Auto-detect from extension
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -795,8 +764,7 @@ Root[result]
                 output: "output.json".to_string(),
                 from: None, // Should fail auto-detection
                 to: None,
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -822,8 +790,7 @@ Root[result]
                 output: "output.unknown".to_string(),
                 from: None,
                 to: None, // Should fail auto-detection
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -849,8 +816,7 @@ Root[result]
                 output: "output.pb".to_string(), // Would auto-detect as Protobuf
                 from: Some(Format::Text),        // Explicit override
                 to: Some(Format::Text),          // Explicit override
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -875,8 +841,7 @@ Root[result]
                 output: "output.pb".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Protobuf),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -895,8 +860,7 @@ Root[result]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Protobuf),
                 to: Some(Format::Text),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -987,8 +951,7 @@ Root[val]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Text),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -1011,8 +974,7 @@ Root[val]
                 output: "output.json".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Json),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };
@@ -1033,7 +995,6 @@ Root[val]
             command: Commands::Validate {
                 input: String::new(),
                 output: String::new(),
-                show_plan_version: false,
                 verbose: false,
             },
         };
@@ -1056,8 +1017,7 @@ Root[val]
                 output: "output.substrait".to_string(),
                 from: Some(Format::Text),
                 to: Some(Format::Text),
-                show_literal_types: false,
-                show_plan_version: false,
+                detailed: false,
                 verbose: false,
             },
         };

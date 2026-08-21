@@ -929,9 +929,6 @@ impl<'a> Parser<'a> {
     /// - A plan section starting with "=== Plan"
     /// - Indented relation definitions
     ///
-    /// A document with no version(`=== Version null`) section gets
-    /// [`default_plan_version`](crate::default_plan_version);
-    ///
     /// # Examples
     ///
     /// Simple parsing:
@@ -961,6 +958,10 @@ impl<'a> Parser<'a> {
             line_no: 1,
             state: State::Initial,
             cursor: None,
+            // We set the version to our substrait-explain default.
+            // An explicitly set version (either null or with a
+            // version number / attributes) will override this.
+            // `None` here means 'explicitly unset'.
             version: Some(default_plan_version()),
             extension_parser: ExtensionParser::default(),
             extension_registry: ExtensionRegistry::new(),
