@@ -963,7 +963,7 @@ impl<'a> Parser<'a> {
             // version number / attributes) will override this.
             // `None` here means 'explicitly unset'.
             // We set the version to our substrait-explain default.
-            // An explicitly set version (either null or with a 
+            // An explicitly set version (either null or with a
             // version number / attributes) will override this.
             // `None` here means 'explicitly unset'.
             version: Some(default_plan_version()),
