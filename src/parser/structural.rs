@@ -167,7 +167,7 @@ impl<'a> LineNode<'a> {
     }
 }
 
-/// The [`Version`] a plan gets when the text is empty.
+/// The [`Version`] a plan gets when the input text omits a version section.
 ///
 /// Substrait's `plan.proto` documents `Plan.version` as "optional up to 0.17.0,
 /// required for later versions".
@@ -960,6 +960,10 @@ impl<'a> Parser<'a> {
             cursor: None,
             // We set the version to our substrait-explain default.
             // An explicitly set version (either null or with a
+            // version number / attributes) will override this.
+            // `None` here means 'explicitly unset'.
+            // We set the version to our substrait-explain default.
+            // An explicitly set version (either null or with a 
             // version number / attributes) will override this.
             // `None` here means 'explicitly unset'.
             version: Some(default_plan_version()),

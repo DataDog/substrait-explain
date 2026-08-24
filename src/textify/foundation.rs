@@ -32,8 +32,7 @@ pub struct OutputOptions {
     /// If `Never`, the section is left out entirely.
     ///
     /// If `Required` - the default - the plan's version is shown, unless it is
-    /// empty or the [`default_plan_version`](crate::default_plan_version)(add by the parser).
-    ///
+    /// empty or the [`default_plan_version`](crate::default_plan_version) (added by the parser).
     /// If `Always`, the section is shown even when the plan has no version at
     /// all, as `=== Version null`.
     pub show_version: Visibility,
