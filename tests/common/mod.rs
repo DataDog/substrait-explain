@@ -2,17 +2,21 @@
 
 use substrait::proto;
 use substrait::proto::{plan_rel, rel};
-use substrait_explain::{Parser, format, parse};
+use substrait_explain::{OutputOptions, Parser, format, format_with_options, parse};
 
 /// Roundtrip a plan and verify that the output is the same as the input, after
 /// being parsed to a Substrait plan and then back to text.
 pub fn roundtrip_plan(input: &str) {
+    roundtrip_plan_with_options(input, &OutputOptions::default());
+}
+
+pub fn roundtrip_plan_with_options(input: &str, options: &OutputOptions) {
     let plan = Parser::parse(input).unwrap_or_else(|e| {
         println!("Error parsing plan:\n{e}");
         panic!("{e}");
     });
 
-    let (actual, errors) = format(&plan);
+    let (actual, errors) = format_with_options(&plan, options);
 
     if !errors.is_empty() {
         println!("Formatting errors:");

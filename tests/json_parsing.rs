@@ -192,7 +192,7 @@ fn make_cli(from: Format) -> Cli {
             output: "-".to_string(),
             from: Some(from),
             to: Some(Format::Text),
-            show_literal_types: false,
+            detailed: false,
             verbose: false,
         },
     }
