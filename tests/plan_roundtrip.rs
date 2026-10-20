@@ -1236,3 +1236,62 @@ Root[a]
 
     assert!(Parser::parse(plan).is_err());
 }
+
+/// Window functions preserve their canonical text through parsing and formatting.
+#[test]
+fn test_window_function_roundtrips() {
+    let cases: &[(&str, &str)] = &[
+        (
+            // multi-field order=, invocation=&Distinct, multi-expression
+            // partition=, and a preceding + current-row rows= frame.
+            "rows: computed order, multiple partitions, invocation, preceding + current row",
+            r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[a, b, s]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=((($0)::i32, &AscNullsLast), ($1, &DescNullsFirst)), invocation=&Distinct, partition=($0, $1), rows=(-3, 0)):fp64?]
+    Read[t => a:i32, b:fp64]"#,
+        ),
+        (
+            // range frame (requires exactly one order= field): single bare
+            // order=, invocation=&All, and an unbounded-lower + following frame.
+            "range: single bare order=, invocation=&All, unbounded + following",
+            r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  # 10 @  1: sum
+
+=== Plan
+Root[s]
+  Project[sum($0) over(phase=&InitialToResult, order=($0, &AscNullsLast), invocation=&All, range=(_, 5)):fp64?]
+    Read[t => a:fp64]"#,
+        ),
+        (
+            // No frame (the rows=/range= clause is omitted entirely), a 0-arg
+            // function, a bare literal partition=, and no order=/invocation=.
+            "no frame: 0-arg fn, literal partition, omitted clauses",
+            r#"=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
+Functions:
+  # 10 @  1: row_number
+
+=== Plan
+Root[a, r]
+  Project[$0, row_number() over(phase=&InitialToResult, partition=42):i64]
+    Read[t => a:i32]"#,
+        ),
+    ];
+
+    for (what, plan) in cases {
+        // Surface which case failed: roundtrip_plan panics with the diff, and
+        // this line pins it to a specific scenario.
+        eprintln!("window roundtrip case: {what}");
+        roundtrip_plan(plan);
+    }
+}

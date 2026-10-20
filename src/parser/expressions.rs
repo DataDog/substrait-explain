@@ -5,6 +5,7 @@ use std::str::FromStr;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 use pest::Parser as PestParser;
 use pest::iterators::Pair;
+use substrait::proto::aggregate_function::AggregationInvocation;
 use substrait::proto::aggregate_rel::Measure;
 use substrait::proto::expression::field_reference::{ReferenceType, RootReference, RootType};
 use substrait::proto::expression::if_then::IfClause;
@@ -13,18 +14,22 @@ use substrait::proto::expression::literal::{
     IntervalDayToSecond, LiteralType, PrecisionTime as LitPrecisionTime,
     PrecisionTimestamp as LitPrecisionTimestamp,
 };
+use substrait::proto::expression::window_function::{self, bound};
 use substrait::proto::expression::{
-    Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction, cast,
-    reference_segment,
+    Cast, FieldReference, IfThen, Literal, ReferenceSegment, RexType, ScalarFunction,
+    WindowFunction, cast, reference_segment,
 };
 use substrait::proto::function_argument::ArgType;
+use substrait::proto::sort_field::SortKind;
 use substrait::proto::r#type::{Fp64, I64, Kind, Nullability};
-use substrait::proto::{AggregateFunction, Expression, FunctionArgument, Type};
+use substrait::proto::{
+    AggregateFunction, AggregationPhase, Expression, FunctionArgument, SortField, Type,
+};
 
 use super::types::get_and_validate_anchor;
 use super::{
-    ExpressionParser, MessageParseError, ParsePair, Rule, RuleIter, ScopedParsePair,
-    unescape_string, unwrap_single_pair,
+    ExpressionParser, MessageParseError, ParsePair, ParsedNamedArgs, Rule, RuleIter,
+    ScopedParsePair, sort_direction_from_str, unescape_string, unwrap_single_pair,
 };
 use crate::extensions::SimpleExtensions;
 use crate::extensions::simple::{CompoundName, ExtensionKind};
@@ -837,8 +842,17 @@ impl ScopedParsePair for ScalarFunction {
         // pending.
         let reference_pair = iter.pop(Rule::function_reference);
         let args_pair = iter.pop(Rule::argument_list);
+        let over_pair = iter.try_pop(Rule::extension_named_arguments);
         let type_pair = iter.pop(Rule::r#type);
         iter.done();
+
+        if let Some(over_pair) = over_pair {
+            return Err(MessageParseError::invalid(
+                "ScalarFunction",
+                over_pair.as_span(),
+                "A window function cannot be used as a scalar or aggregate function here",
+            ));
+        }
 
         let reference = FunctionReference::parse_pair(reference_pair);
         let FunctionArguments(arguments) = FunctionArguments::parse_pair(extensions, args_pair)?;
@@ -856,6 +870,500 @@ impl ScopedParsePair for ScalarFunction {
             #[allow(deprecated)]
             args: vec![],
         })
+    }
+}
+
+/// Resolve an argument to an expression. The shared argument grammar captures
+/// bare scalars as parameter literals; window expression slots give them the
+/// same default types as other expression literals.
+fn window_expression_from_value(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Expression, MessageParseError> {
+    assert_eq!(pair.as_rule(), Rule::extension_argument);
+    let inner = unwrap_single_pair(pair);
+    match inner.as_rule() {
+        Rule::reference => Ok(Expression {
+            rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
+                inner,
+            )))),
+        }),
+        Rule::expression => Expression::parse_pair(extensions, inner),
+        Rule::parameter_literal => {
+            let value = unwrap_single_pair(inner);
+            let literal = match value.as_rule() {
+                Rule::integer => to_int_literal(value, None),
+                Rule::float => to_float_literal(value, None),
+                Rule::boolean => to_boolean_literal(value, None),
+                Rule::string_literal => to_string_literal(value, None),
+                Rule::null => to_null_literal(value, None),
+                rule => unreachable!("Unexpected parameter literal rule: {rule:?}"),
+            }?;
+            Ok(Expression {
+                rex_type: Some(RexType::Literal(literal)),
+            })
+        }
+        other => Err(MessageParseError::invalid(
+            "WindowFunction",
+            inner.as_span(),
+            format!("Expected an expression or field reference, got {other:?}"),
+        )),
+    }
+}
+
+fn parse_window_partition(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Vec<Expression>, MessageParseError> {
+    let inner = unwrap_single_pair(pair.clone());
+    match inner.as_rule() {
+        Rule::tuple => inner
+            .into_inner()
+            .map(|item| window_expression_from_value(extensions, item))
+            .collect(),
+        _ => Ok(vec![window_expression_from_value(extensions, pair)?]),
+    }
+}
+
+fn sort_field_from_tuple(
+    extensions: &SimpleExtensions,
+    tuple: Pair<Rule>,
+) -> Result<SortField, MessageParseError> {
+    let span = tuple.as_span();
+    if tuple.as_rule() != Rule::tuple {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            span,
+            format!(
+                "order= sort field must be a tuple (expression, direction), got {:?}",
+                tuple.as_rule()
+            ),
+        ));
+    }
+    let items: Vec<_> = tuple.into_inner().collect();
+    let [expr_pair, dir_pair] = <[_; 2]>::try_from(items).map_err(|items| {
+        MessageParseError::invalid(
+            "WindowFunction",
+            span,
+            format!(
+                "order= sort field must have exactly 2 elements (expression, direction), got {}",
+                items.len()
+            ),
+        )
+    })?;
+
+    let expr = window_expression_from_value(extensions, expr_pair)?;
+
+    let dir_inner = unwrap_single_pair(dir_pair);
+    if dir_inner.as_rule() != Rule::enum_value {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            dir_inner.as_span(),
+            format!(
+                "order= sort field direction must be an enum value, got {:?}",
+                dir_inner.as_rule()
+            ),
+        ));
+    }
+    let direction = sort_direction_from_str(
+        dir_inner.as_str().trim_start_matches('&'),
+        dir_inner.as_span(),
+    )?;
+    Ok(SortField {
+        expr: Some(expr),
+        sort_kind: Some(SortKind::Direction(direction as i32)),
+    })
+}
+
+fn parse_window_order(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<Vec<SortField>, MessageParseError> {
+    let inner = unwrap_single_pair(pair);
+    if inner.as_rule() != Rule::tuple {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            inner.as_span(),
+            format!(
+                "order= expects a sort field or a tuple of sort fields, got {:?}",
+                inner.as_rule()
+            ),
+        ));
+    }
+
+    let items: Vec<_> = inner.clone().into_inner().collect();
+    let is_list_of_fields = items
+        .first()
+        .map(|first| unwrap_single_pair(first.clone()).as_rule() == Rule::tuple)
+        .unwrap_or(false);
+
+    if is_list_of_fields {
+        items
+            .into_iter()
+            .map(|item| sort_field_from_tuple(extensions, unwrap_single_pair(item)))
+            .collect()
+    } else {
+        Ok(vec![sort_field_from_tuple(extensions, inner)?])
+    }
+}
+
+impl ScopedParsePair for window_function::Bound {
+    fn rule() -> Rule {
+        Rule::extension_argument
+    }
+
+    fn message() -> &'static str {
+        "WindowBound"
+    }
+
+    /// A bound is always present once its enclosing `rows=`/`range=` frame is
+    /// present: `_` (empty) is an explicit `Unbounded`, not a missing value.
+    fn parse_pair(
+        _extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let inner = unwrap_single_pair(pair);
+        match inner.as_rule() {
+            Rule::empty => Ok(window_function::Bound {
+                kind: Some(bound::Kind::Unbounded(bound::Unbounded {})),
+            }),
+            Rule::parameter_literal => {
+                let lit = unwrap_single_pair(inner.clone());
+                if lit.as_rule() != Rule::integer {
+                    return Err(MessageParseError::invalid(
+                        "WindowBound",
+                        inner.as_span(),
+                        format!(
+                            "Window bound must be an integer or '_', got {:?}",
+                            lit.as_rule()
+                        ),
+                    ));
+                }
+                let offset: i64 = lit.as_str().parse().map_err(|_| {
+                    MessageParseError::invalid(
+                        "WindowBound",
+                        lit.as_span(),
+                        format!("Window bound offset '{}' is out of range", lit.as_str()),
+                    )
+                })?;
+                let kind = match offset {
+                    0 => bound::Kind::CurrentRow(bound::CurrentRow {}),
+                    n if n > 0 => bound::Kind::Following(bound::Following { offset: n }),
+                    n => {
+                        let offset = n.checked_neg().ok_or_else(|| {
+                            MessageParseError::invalid(
+                                "WindowBound",
+                                lit.as_span(),
+                                format!("Window bound offset '{n}' is out of range"),
+                            )
+                        })?;
+                        bound::Kind::Preceding(bound::Preceding { offset })
+                    }
+                };
+                Ok(window_function::Bound { kind: Some(kind) })
+            }
+            other => Err(MessageParseError::invalid(
+                "WindowBound",
+                inner.as_span(),
+                format!("Window bound must be an integer or '_', got {other:?}"),
+            )),
+        }
+    }
+}
+
+fn parse_window_frame(
+    extensions: &SimpleExtensions,
+    pair: Pair<Rule>,
+) -> Result<(window_function::Bound, window_function::Bound), MessageParseError> {
+    let inner = unwrap_single_pair(pair);
+    if inner.as_rule() != Rule::tuple {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            inner.as_span(),
+            format!(
+                "rows=/range= expects a tuple of two bounds, got {:?}",
+                inner.as_rule()
+            ),
+        ));
+    }
+    let span = inner.as_span();
+    let items: Vec<_> = inner.into_inner().collect();
+    let [lower_pair, upper_pair] = <[_; 2]>::try_from(items).map_err(|items| {
+        MessageParseError::invalid(
+            "WindowFunction",
+            span,
+            format!(
+                "rows=/range= expects exactly 2 bounds (lower, upper), got {}",
+                items.len()
+            ),
+        )
+    })?;
+    let lower = window_function::Bound::parse_pair(extensions, lower_pair)?;
+    let upper = window_function::Bound::parse_pair(extensions, upper_pair)?;
+    Ok((lower, upper))
+}
+
+fn window_enum_str(pair: Pair<Rule>, field: &'static str) -> Result<String, MessageParseError> {
+    let inner = unwrap_single_pair(pair);
+    if inner.as_rule() != Rule::enum_value {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            inner.as_span(),
+            format!("{field}= expects an enum value, got {:?}", inner.as_rule()),
+        ));
+    }
+    Ok(inner.as_str().trim_start_matches('&').to_string())
+}
+
+/// The parsed `over(...)` clause of a window function: partitioning, ordering,
+/// aggregation phase/invocation, and an optional frame. All cross-field
+/// validation (required `phase=`, mutually-exclusive `rows=`/`range=`, and the
+/// single-`order=`-field requirement for `range=`) lives here, so the enclosing
+/// [`WindowFunctionInvocation`] just composes components.
+struct OverClause {
+    partitions: Vec<Expression>,
+    sorts: Vec<SortField>,
+    phase: i32,
+    invocation: i32,
+    bounds_type: i32,
+    lower_bound: Option<window_function::Bound>,
+    upper_bound: Option<window_function::Bound>,
+}
+
+impl ScopedParsePair for OverClause {
+    fn rule() -> Rule {
+        Rule::extension_named_arguments
+    }
+
+    fn message() -> &'static str {
+        "WindowFunction"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
+
+        // `over(...)` reuses the same duplicate/unknown-argument-rejecting
+        // extractor used for Fetch's `limit=`/`offset=` (see
+        // `ParsedNamedArgs` in `src/parser/common.rs`), instead of
+        // silently overwriting on duplicate names.
+        let extractor = ParsedNamedArgs::new(pair.into_inner(), Rule::extension_named_argument)?;
+        let (extractor, partition_pair) = extractor.pop("partition", Rule::extension_argument);
+        let (extractor, order_pair) = extractor.pop("order", Rule::extension_argument);
+        let (extractor, phase_pair) = extractor.pop("phase", Rule::extension_argument);
+        let (extractor, invocation_pair) = extractor.pop("invocation", Rule::extension_argument);
+        let (extractor, rows_pair) = extractor.pop("rows", Rule::extension_argument);
+        let (extractor, range_pair) = extractor.pop("range", Rule::extension_argument);
+        extractor.done()?;
+
+        if rows_pair.is_some() && range_pair.is_some() {
+            return Err(MessageParseError::invalid(
+                "WindowFunction",
+                span,
+                "rows= and range= are mutually exclusive",
+            ));
+        }
+
+        let partitions = partition_pair
+            .map(|p| parse_window_partition(extensions, p))
+            .transpose()?
+            .unwrap_or_default();
+        let sorts = order_pair
+            .map(|p| parse_window_order(extensions, p))
+            .transpose()?
+            .unwrap_or_default();
+
+        let phase_pair = phase_pair.ok_or_else(|| {
+            MessageParseError::invalid(
+                "WindowFunction",
+                span,
+                "Missing required phase= argument in over(...)",
+            )
+        })?;
+        let phase_span = phase_pair.as_span();
+        let phase = match window_enum_str(phase_pair, "phase")?.as_str() {
+            "Unspecified" => AggregationPhase::Unspecified as i32,
+            "InitialToIntermediate" => AggregationPhase::InitialToIntermediate as i32,
+            "IntermediateToIntermediate" => AggregationPhase::IntermediateToIntermediate as i32,
+            "InitialToResult" => AggregationPhase::InitialToResult as i32,
+            "IntermediateToResult" => AggregationPhase::IntermediateToResult as i32,
+            other => {
+                return Err(MessageParseError::invalid(
+                    "AggregationPhase",
+                    phase_span,
+                    format!("Unknown AggregationPhase: {other}"),
+                ));
+            }
+        };
+
+        let invocation = match invocation_pair {
+            None => AggregationInvocation::Unspecified as i32,
+            Some(p) => {
+                let invocation_span = p.as_span();
+                match window_enum_str(p, "invocation")?.as_str() {
+                    "Unspecified" => AggregationInvocation::Unspecified as i32,
+                    "All" => AggregationInvocation::All as i32,
+                    "Distinct" => AggregationInvocation::Distinct as i32,
+                    other => {
+                        return Err(MessageParseError::invalid(
+                            "AggregationInvocation",
+                            invocation_span,
+                            format!("Unknown AggregationInvocation: {other}"),
+                        ));
+                    }
+                }
+            }
+        };
+
+        let (bounds_type, lower_bound, upper_bound) = if let Some(p) = rows_pair {
+            let (lower, upper) = parse_window_frame(extensions, p)?;
+            (
+                window_function::BoundsType::Rows as i32,
+                Some(lower),
+                Some(upper),
+            )
+        } else if let Some(p) = range_pair {
+            let (lower, upper) = parse_window_frame(extensions, p)?;
+            (
+                window_function::BoundsType::Range as i32,
+                Some(lower),
+                Some(upper),
+            )
+        } else {
+            (window_function::BoundsType::Unspecified as i32, None, None)
+        };
+
+        if bounds_type == window_function::BoundsType::Range as i32 && sorts.len() != 1 {
+            return Err(MessageParseError::invalid(
+                "WindowFunction",
+                span,
+                format!(
+                    "range= frame requires exactly one order= field, got {}",
+                    sorts.len()
+                ),
+            ));
+        }
+
+        Ok(OverClause {
+            partitions,
+            sorts,
+            phase,
+            invocation,
+            bounds_type,
+            lower_bound,
+            upper_bound,
+        })
+    }
+}
+
+/// The parsed-but-unresolved form of a window function call:
+/// `name#anchor(args) over(...):type`. The function reference is resolved
+/// against the extension registry only in [`WindowFunctionInvocation::resolve`].
+struct WindowFunctionInvocation {
+    reference: FunctionReference,
+    arguments: Vec<FunctionArgument>,
+    over: OverClause,
+    output_type: Type,
+}
+
+impl ScopedParsePair for WindowFunctionInvocation {
+    fn rule() -> Rule {
+        Rule::function_call
+    }
+
+    fn message() -> &'static str {
+        "WindowFunction"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        assert_eq!(pair.as_rule(), Self::rule());
+        let span = pair.as_span();
+        let mut iter = RuleIter::from(pair.into_inner());
+
+        // Drain the iterator into raw pairs before any fallible parsing, so an
+        // early return doesn't trip the RuleIter drop guard with pairs still
+        // pending.
+        let reference_pair = iter.pop(Rule::function_reference);
+        let args_pair = iter.pop(Rule::argument_list);
+        let over_pair = iter.try_pop(Rule::extension_named_arguments);
+        let type_pair = iter.pop(Rule::r#type);
+        iter.done();
+
+        let over_pair = over_pair.ok_or_else(|| {
+            MessageParseError::invalid("WindowFunction", span, "Missing over(...) clause")
+        })?;
+        let reference = FunctionReference::parse_pair(reference_pair);
+        let FunctionArguments(arguments) = FunctionArguments::parse_pair(extensions, args_pair)?;
+        let over = OverClause::parse_pair(extensions, over_pair)?;
+        // Required output type (e.g., :i64); the grammar guarantees its presence.
+        let output_type = Type::parse_pair(extensions, type_pair)?;
+
+        Ok(WindowFunctionInvocation {
+            reference,
+            arguments,
+            over,
+            output_type,
+        })
+    }
+}
+
+impl WindowFunctionInvocation {
+    /// Resolve the function reference and build the protobuf message.
+    fn resolve(
+        self,
+        extensions: &SimpleExtensions,
+        span: pest::Span,
+    ) -> Result<WindowFunction, MessageParseError> {
+        let function_reference = self.reference.resolve(extensions, span)?;
+        let OverClause {
+            partitions,
+            sorts,
+            phase,
+            invocation,
+            bounds_type,
+            lower_bound,
+            upper_bound,
+        } = self.over;
+        Ok(WindowFunction {
+            function_reference,
+            arguments: self.arguments,
+            options: vec![], // TODO: Function Options
+            output_type: Some(self.output_type),
+            phase,
+            sorts,
+            invocation,
+            partitions,
+            bounds_type,
+            lower_bound,
+            upper_bound,
+            #[allow(deprecated)]
+            args: vec![],
+        })
+    }
+}
+
+impl ScopedParsePair for WindowFunction {
+    fn rule() -> Rule {
+        Rule::function_call
+    }
+
+    fn message() -> &'static str {
+        "WindowFunction"
+    }
+
+    fn parse_pair(
+        extensions: &SimpleExtensions,
+        pair: Pair<Rule>,
+    ) -> Result<Self, MessageParseError> {
+        let span = pair.as_span();
+        WindowFunctionInvocation::parse_pair(extensions, pair)?.resolve(extensions, span)
     }
 }
 
@@ -922,11 +1430,20 @@ impl ScopedParsePair for Expression {
             Rule::expression_literal => Ok(Expression {
                 rex_type: Some(RexType::Literal(Literal::parse_pair(extensions, inner)?)),
             }),
-            Rule::function_call => Ok(Expression {
-                rex_type: Some(RexType::ScalarFunction(ScalarFunction::parse_pair(
-                    extensions, inner,
-                )?)),
-            }),
+            Rule::function_call => {
+                let is_window = inner
+                    .clone()
+                    .into_inner()
+                    .any(|p| p.as_rule() == Rule::extension_named_arguments);
+                let rex_type = if is_window {
+                    RexType::WindowFunction(WindowFunction::parse_pair(extensions, inner)?)
+                } else {
+                    RexType::ScalarFunction(ScalarFunction::parse_pair(extensions, inner)?)
+                };
+                Ok(Expression {
+                    rex_type: Some(rex_type),
+                })
+            }
             Rule::reference => Ok(Expression {
                 rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
                     inner,
@@ -2122,5 +2639,36 @@ mod tests {
             ExpressionParser::parse(Rule::function_call, "u!json_get($0)").is_err(),
             "u! prefix in function call base name must be rejected by the grammar"
         );
+    }
+
+    #[test]
+    fn test_nested_function_calls_parse_without_backtracking() {
+        // Parsing each argument list twice makes nested calls exponentially expensive.
+        for suffix in ["", " over(phase=&InitialToResult)"] {
+            let mut input = "$0".to_string();
+            for _ in 0..24 {
+                input = format!("add({input}){suffix}:i64");
+            }
+            parse_exact(Rule::expression, &input);
+        }
+    }
+
+    #[test]
+    fn test_window_function_invalid_clauses_rejected() {
+        let extensions = make_extensions_for_fn_tests();
+        for clause in [
+            "partition=$0",
+            "phase=&Bogus",
+            "phase=&InitialToResult, rows=(0, 0), range=(0, 0)",
+            "phase=&InitialToResult, rows=(null, 0)",
+            "phase=&InitialToResult, rows=(-9223372036854775808, 0)",
+        ] {
+            let input = format!("add($0, $1) over({clause}):i64");
+            let pair = parse_exact(Rule::function_call, &input);
+            assert!(
+                WindowFunction::parse_pair(&extensions, pair).is_err(),
+                "should be rejected: {input}"
+            );
+        }
     }
 }

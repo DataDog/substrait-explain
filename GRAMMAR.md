@@ -462,7 +462,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / expression_literal / cast_expression / if_then`
+`expression := function_call / window_function / reference / expression_literal / cast_expression / if_then`
 
 ### Examples
 
@@ -646,6 +646,52 @@ Root[status]
 #  assert_eq!(plan.relations.len(), 1);
 ```
 
+### Window Functions
+
+A window function computes a value for each row using partitioning, ordering,
+and optional frame bounds.
+
+#### Syntax
+
+`window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" named_arguments ")" ":" type`
+
+#### Components
+
+- `phase` - required aggregation phase enum (e.g. `&InitialToResult`)
+- `partition` - optional expression or tuple of expressions
+- `order` - optional [sort field](#sort-relation) or tuple of sort fields
+- `invocation` - optional aggregation invocation enum (e.g. `&All`, `&Distinct`)
+- `rows` / `range` - optional frame bounds as `(lower, upper)`. Each bound is a
+  bare integer (negative = preceding, positive = following, `0` = current row)
+  or `_` for unbounded.
+
+`rows` and `range` are mutually exclusive. A `range` frame requires exactly one
+sort field.
+
+Function options and the deprecated protobuf `args` field are currently unsupported.
+
+#### Examples
+
+```rust
+# use substrait_explain::Parser;
+#
+# let plan_text = r#"
+=== Extensions
+URNs:
+  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate.yaml
+Functions:
+  ## 10 @  1: sum
+
+=== Plan
+Root[a, b, s]
+  Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):fp64?]
+    Read[t => a:i32, b:fp64]
+# "#;
+#
+# let plan = Parser::parse(plan_text).unwrap();
+# assert_eq!(plan.relations.len(), 1);
+```
+
 ## Relations
 
 Relations represent the operations in a query plan. Each relation is displayed on a single line with indentation showing the hierarchy.
@@ -700,7 +746,7 @@ Arguments in relations can be parameter literals, expressions, enums, or tuples 
 ```text
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
-argument := enum / reference / parameter_literal / expression / tuple
+argument := enum / reference / parameter_literal / expression / tuple / "_"
 parameter_literal := float / integer / boolean / string / null
 tuple := "(" ")"                                        // 0-tuple
        / "(" argument "," ")"                           // 1-tuple (trailing comma required)
@@ -712,7 +758,12 @@ and never has a type ascription. An `expression_literal` is part of an
 expression and therefore has a Substrait type. The relation-specific grammar
 determines which interpretation applies.
 
-Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and `(x, y,)` are equivalent.
+Within argument values, `_` is reserved for unbounded window frame bounds.
+
+Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
+expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to
+form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and
+`(x, y,)` are equivalent.
 
 #### Examples
 
