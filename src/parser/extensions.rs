@@ -634,14 +634,13 @@ mod tests {
 
     #[test]
     fn test_extension_value_empty_is_rejected() {
-        // `_` is a syntactically valid `extension_argument` (it is meaningful as an
-        // unbounded window frame bound), but has no meaning as an
-        // extension-relation argument.
-        let result = ExtensionValue::parse(&SimpleExtensions::default(), "_");
-        assert!(
-            result.is_err(),
-            "expected `_` to be rejected as an extension value, got {result:?}"
-        );
+        for input in ["_", "(_,)"] {
+            let result = ExtensionValue::parse(&SimpleExtensions::default(), input);
+            assert!(
+                result.is_err(),
+                "expected {input} to be rejected as an extension value, got {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -1019,7 +1018,7 @@ Functions:
     fn test_extension_parameter_literals_stay_scalar_in_verbose_output() {
         let ctx = TestContext::new().with_options(OutputOptions::verbose());
 
-        let scalar = ExtensionValue::from(42_i64);
+        let scalar = parse_extension_value("42");
         assert_eq!(ctx.textify_no_errors(&scalar), "42");
 
         let expression = ExtensionValue::from(Expr::from(42_i64));
@@ -1034,15 +1033,31 @@ Functions:
     }
 
     #[test]
-    fn test_typed_extension_literal_parses_as_expression() {
-        let value = parse_extension_value("null:i64?");
-        assert!(i64::try_from(&value).is_err());
-
-        let expr = Expr::try_from(&value).unwrap();
-        assert_eq!(ctx_text(&expr), "null:i64?");
+    fn test_parameter_literals_do_not_capture_function_names() {
+        for name in ["nullif", "null"] {
+            let mut extensions = SimpleExtensions::default();
+            extensions
+                .add_extension_urn("urn:example".into(), 1)
+                .unwrap();
+            extensions
+                .add_extension(ExtensionKind::Function, 1, 10, name.into())
+                .unwrap();
+            let input = format!("{name}($0):i64");
+            let value = ExtensionValue::parse(&extensions, &input).unwrap();
+            assert!(matches!(value, ExtensionValue::Expr(_)), "{input}");
+        }
     }
 
-    fn ctx_text(value: &Expr) -> String {
-        TestContext::new().textify_no_errors(value)
+    #[test]
+    fn test_typed_extension_literal_parses_as_expression() {
+        let ctx = TestContext::new().with_options(OutputOptions::verbose());
+        for input in ["42:i16", "null:i64?"] {
+            let value = parse_extension_value(input);
+            assert!(matches!(value, ExtensionValue::Expr(_)), "{input}");
+            assert!(i64::try_from(&value).is_err(), "{input}");
+
+            let expr = Expr::try_from(&value).unwrap();
+            assert_eq!(ctx.textify_no_errors(&expr), input);
+        }
     }
 }

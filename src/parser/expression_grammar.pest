@@ -156,13 +156,15 @@ argument_list = { "(" ~ (expression ~ (sp ~ "," ~ sp ~ expression)*)? ~ ")" }
 // - Optional URN Anchor, e.g. @1
 function_reference = { function_signature ~ sp ~ anchor? ~ sp ~ urn_anchor? }
 
-// Scalar function call:
+// Scalar or window function call:
 // - A function_reference
 // - Arguments `()` are required, e.g. (1, 2, 3)
 // - Required output type annotation after closing paren, e.g. :i64
 //   (unambiguous because function_signature is atomic and ends before the opening paren)
+// Parse the common prefix once: separate scalar/window alternatives would
+// repeatedly reparse nested argument lists when the window alternative fails.
 function_call = {
-    function_reference ~ sp ~ argument_list ~ ":" ~ sp ~ type
+    function_reference ~ sp ~ argument_list ~ window_over_clause? ~ ":" ~ sp ~ type
 }
 
 if_clause = {
@@ -197,7 +199,7 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 //   partition field may be written bare (`partition=$1`) or in a one-element
 //   tuple (`partition=($1,)`); multiple fields use a multi-element tuple.
 // - `order=...` - optional sort key(s); a single sort field is a bare 2-tuple
-//   of (reference, direction) (e.g. `order=($3,&AscNullsLast)`); multiple sort
+//   of (expression, direction) (e.g. `order=($3,&AscNullsLast)`); multiple sort
 //   fields are a tuple of such 2-tuples (e.g. `order=(($3,&AscNullsLast),($4,&DescNullsLast))`)
 // - `rows=(lower,upper)` / `range=(lower,upper)` - optional frame bounds (mutually
 //   exclusive), encodes `bounds_type` with rows and range.
@@ -205,16 +207,14 @@ cast_expression = { "(" ~ sp ~ expression ~ sp ~ ")" ~ sp ~ "::" ~ sp ~ cast_fai
 //   for the current row) or `_` for unbounded/unspecified.
 // - `phase=&...` - required aggregation phase
 // - `invocation=&...` - optional invocation (e.g. `&All`, `&Distinct`)
-window_function_call = {
-    function_reference ~ sp ~ argument_list ~ sp ~ "over" ~ sp ~ "(" ~ sp ~ extension_named_arguments ~ sp ~ ")" ~ ":" ~ sp ~ type
+window_over_clause = _{
+    sp ~ "over" ~ sp ~ "(" ~ sp ~ extension_named_arguments ~ sp ~ ")"
 }
 
 // Top-level Expression Rule
 // Order matters for PEGs: Since an identifier can be a function call, we put that first.
 // cast_expression must come before expression_literal/function_call since it starts with "("
-// window_function_call must come before function_call: both share the same
-// prefix, but window_function_call requires the trailing "over(...)" clause.
-expression = { if_then | cast_expression | window_function_call | function_call | reference | expression_literal }
+expression = { if_then | cast_expression | function_call | reference | expression_literal }
 
 // == Extensions ==
 // These rules are for parsing extension declarations, by line.
@@ -408,7 +408,12 @@ extension_arguments = { extension_argument ~ (sp ~ "," ~ sp ~ extension_argument
 // Ascribed literals (for example, 2:i16 or '2024-01-01':date) fall through to
 // expression parsing so their Substrait type information is preserved. Bare
 // null is a parameter value; ascribed null falls through to expression parsing.
-parameter_literal = { (float | integer | boolean | string_literal | null) ~ !(":") }
+// A function reference followed by `(` must also fall through: names such as
+// `nullif` or `true_value` must not be captured as a scalar keyword prefix.
+parameter_literal = {
+    !(function_reference ~ sp ~ "(")
+    ~ (float | integer | boolean | string_literal | null) ~ !(":")
+}
 
 // Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 // expressions.

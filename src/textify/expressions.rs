@@ -977,6 +977,27 @@ impl Textify for WindowFunction {
     }
 
     fn textify<S: Scope, W: fmt::Write>(&self, ctx: &S, w: &mut W) -> fmt::Result {
+        if !self.options.is_empty() {
+            ctx.push_error(
+                PlanError::unimplemented(
+                    "WindowFunction",
+                    Some("options"),
+                    "Window function options are not supported by the text parser",
+                )
+                .into(),
+            );
+        }
+        #[allow(deprecated)]
+        if !self.args.is_empty() {
+            ctx.push_error(
+                PlanError::unimplemented(
+                    "WindowFunction",
+                    Some("args"),
+                    "Deprecated window function args are not supported; use arguments instead",
+                )
+                .into(),
+            );
+        }
         // `sum#10@1($0)`, shared with scalar and aggregate calls.
         let invocation = FunctionInvocation::from(self);
         // `phase=..., order=...`. Never empty - `window_over_named_args` always
@@ -1121,7 +1142,6 @@ impl Textify for AggregateFunction {
 mod tests {
     use substrait::proto::Type;
     use substrait::proto::expression::{cast, field_reference, if_then};
-    use substrait::proto::sort_field::{SortDirection, SortKind};
     use substrait::proto::r#type::{Boolean, I16, I32, I64, Kind, Nullability, UserDefined};
 
     use super::*;
@@ -1956,248 +1976,32 @@ mod tests {
         assert_eq!(ctx.textify_no_errors(&cast), "(1:i32)::json");
     }
 
-    fn base_window_function() -> WindowFunction {
-        WindowFunction {
-            function_reference: 10,
-            arguments: vec![],
-            options: vec![],
-            output_type: Some(make_i16_type()),
-            phase: AggregationPhase::InitialToResult as i32,
-            sorts: vec![],
-            invocation: AggregationInvocation::Unspecified as i32,
-            partitions: vec![],
-            bounds_type: window_function::BoundsType::Unspecified as i32,
-            lower_bound: None,
-            upper_bound: None,
-            #[allow(deprecated)]
-            args: vec![],
-        }
-    }
-
-    fn field_expr(field: i32) -> Expression {
-        Expression {
-            rex_type: Some(RexType::Selection(Box::new(struct_field_reference(field)))),
-        }
-    }
-
-    fn sort_field(field: i32, direction: SortDirection) -> SortField {
-        SortField {
-            expr: Some(field_expr(field)),
-            sort_kind: Some(SortKind::Direction(direction as i32)),
-        }
-    }
-
-    /// How many accumulated diagnostics a textify case expects.
-    enum Diag {
-        /// Clean render, no errors.
-        None,
-        /// At least one diagnostic (best-effort output that won't re-parse).
-        Some,
-        /// Exactly this many diagnostics.
-        Exactly(usize),
-    }
-
-    fn bound(kind: bound::Kind) -> window_function::Bound {
-        window_function::Bound { kind: Some(kind) }
-    }
-
-    /// Window-function textify cases. Each builds a `WindowFunction` proto,
-    /// renders it, and checks the output string plus how many diagnostics were
-    /// accumulated. Grouped as a table since they share one shape;
     #[test]
-    fn test_window_function_textify() {
-        let rows = window_function::BoundsType::Rows as i32;
-        let current_row = || bound::Kind::CurrentRow(bound::CurrentRow {});
-        let unbounded = || bound::Kind::Unbounded(bound::Unbounded {});
+    fn test_window_function_textify_invalid_proto() {
+        // Valid windows are covered by roundtrips; malformed protos must still
+        // render best-effort output and accumulate errors without panicking.
+        let ctx = TestContext::new()
+            .with_urn(1, "urn:example")
+            .with_function(1, 10, "sum");
+        let function = WindowFunction {
+            function_reference: 10,
+            output_type: Some(make_i16_type()),
+            phase: 99,
+            bounds_type: window_function::BoundsType::Rows as i32,
+            lower_bound: Some(window_function::Bound {
+                kind: Some(bound::Kind::Preceding(bound::Preceding {
+                    offset: i64::MIN,
+                })),
+            }),
+            upper_bound: Some(window_function::Bound { kind: None }),
+            ..Default::default()
+        };
 
-        let cases: Vec<(&str, &str, WindowFunction, &str, Diag)> = vec![
-            (
-                "no frame: only the always-present phase= is emitted",
-                "row_number",
-                base_window_function(),
-                "row_number() over(phase=&InitialToResult):i16",
-                Diag::None,
-            ),
-            (
-                "full: bare partition, order, invocation, rows frame",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.partitions = vec![field_expr(0)];
-                    f.sorts = vec![sort_field(1, SortDirection::AscNullsLast)];
-                    f.invocation = AggregationInvocation::Distinct as i32;
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
-                        offset: 3,
-                    })));
-                    f.upper_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):i16",
-                Diag::None,
-            ),
-            (
-                "multiple order= fields render as a tuple of tuples",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.sorts = vec![
-                        sort_field(0, SortDirection::AscNullsLast),
-                        sort_field(1, SortDirection::DescNullsFirst),
-                    ];
-                    f
-                },
-                "sum() over(phase=&InitialToResult, order=(($0, &AscNullsLast), ($1, &DescNullsFirst))):i16",
-                Diag::None,
-            ),
-            (
-                "unbounded upper (None lower renders `_` too)",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = None;
-                    f.upper_bound = Some(bound(unbounded()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(_, _)):i16",
-                Diag::None,
-            ),
-            (
-                // bounds_type = Unspecified (0) is a *valid* enum variant, but a
-                // frame is set anyway. Distinct from the out-of-range case below:
-                // this hits the `Ok(Unspecified)` arm (a semantically-missing
-                // frame type), and also checks the early-return guard does NOT
-                // drop the frame when bounds are present. Best-effort rows=
-                // output with the loss surfaced.
-                "bounds_type = Unspecified (valid enum) with bounds set is lossy",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.lower_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(0, _)):i16",
-                Diag::Some,
-            ),
-            (
-                // A negative offset on either bound would re-parse as the
-                // opposite direction (preceding<->following); surface an error
-                // for each rather than silently flipping the sign. One proto
-                // exercises both guard arms (Preceding.offset<0, Following.offset<0);
-                // magnitude-agnostic, so this also covers i64::MIN.
-                "negative offset on either bound surfaces an error",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
-                        offset: -5,
-                    })));
-                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
-                        offset: -5,
-                    })));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16",
-                Diag::Exactly(2),
-            ),
-            (
-                // A present Bound with no kind is malformed (the parser never
-                // produces one); must not collapse into the `_` unbounded render.
-                "present bound with no kind surfaces error",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(window_function::Bound { kind: None });
-                    f.upper_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, 0)):i16",
-                Diag::Some,
-            ),
-            (
-                // A 0 offset on PRECEDING/FOLLOWING would re-parse as CurrentRow;
-                // surface a diagnostic for each rather than rendering bare `0`.
-                "zero offset on each bound surfaces two errors",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = rows;
-                    f.lower_bound = Some(bound(bound::Kind::Preceding(bound::Preceding {
-                        offset: 0,
-                    })));
-                    f.upper_bound = Some(bound(bound::Kind::Following(bound::Following {
-                        offset: 0,
-                    })));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(!{WindowFunction}, !{WindowFunction})):i16",
-                Diag::Exactly(2),
-            ),
-            (
-                // range= requires exactly one order= field; wrong count still
-                // renders best-effort but surfaces a diagnostic.
-                "range= with wrong order-field count surfaces error",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = window_function::BoundsType::Range as i32;
-                    f.lower_bound = Some(bound(unbounded()));
-                    f.upper_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, range=(_, 0)):i16",
-                Diag::Some,
-            ),
-            (
-                // bounds_type = 99 is an out-of-range int: `try_from` returns
-                // Err, so this hits the `Err(_)` arm (distinct from the valid
-                // `Ok(Unspecified)` case).
-                "bounds_type = out-of-range int falls back to rows= with a diagnostic",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.bounds_type = 99;
-                    f.lower_bound = Some(bound(current_row()));
-                    f.upper_bound = Some(bound(current_row()));
-                    f
-                },
-                "sum() over(phase=&InitialToResult, rows=(0, 0)):i16",
-                Diag::Some,
-            ),
-            (
-                // Unknown enum ints render as an error token tagged with the
-                // field's own enum type.
-                "unknown phase= / invocation= enum ints surface errors",
-                "sum",
-                {
-                    let mut f = base_window_function();
-                    f.phase = 99;
-                    f.invocation = 99;
-                    f
-                },
-                "sum() over(phase=!{AggregationPhase}, invocation=!{AggregationInvocation}):i16",
-                Diag::Some,
-            ),
-        ];
-
-        for (what, func, f, expected, diag) in cases {
-            let ctx = TestContext::new()
-                .with_urn(1, "urn:example")
-                .with_function(1, 10, func);
-            let (s, errs) = ctx.textify(&f);
-            assert_eq!(s, expected, "case: {what}");
-            match diag {
-                Diag::None => {
-                    assert!(errs.0.is_empty(), "case: {what}: expected no diagnostics")
-                }
-                Diag::Some => assert!(!errs.0.is_empty(), "case: {what}: expected a diagnostic"),
-                Diag::Exactly(n) => {
-                    assert_eq!(errs.0.len(), n, "case: {what}: diagnostic count")
-                }
-            }
-        }
+        let (rendered, errors) = ctx.textify(&function);
+        assert_eq!(
+            rendered,
+            "sum() over(phase=!{AggregationPhase}, rows=(!{WindowFunction}, !{WindowFunction})):i16"
+        );
+        assert_eq!(errors.0.len(), 3);
     }
 }

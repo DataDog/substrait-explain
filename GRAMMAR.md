@@ -462,7 +462,7 @@ Root[result]
 
 #### Syntax
 
-`expression := function_call / reference / expression_literal / cast_expression / if_then`
+`expression := function_call / window_function / reference / expression_literal / cast_expression / if_then`
 
 ### Examples
 
@@ -648,30 +648,27 @@ Root[status]
 
 ### Window Functions
 
-A window function computes a value over a "window" of rows related to the current row (partitioning, ordering, and an optional frame), rather than collapsing rows the way an aggregate does.
+A window function computes a value for each row using partitioning, ordering,
+and optional frame bounds.
 
 #### Syntax
 
 `window_function := function_signature anchor? urn_anchor? "(" (expression ("," expression)*)? ")" "over(" named_arguments ")" ":" type`
 
-Rather than a bespoke grammar production per named argument, `over(...)` reuses the same
-generic [`named_arguments`](#arguments) production used elsewhere (`name "=" argument`,
-comma-separated). Rust code (not the grammar) decides which names are allowed in `over(...)`
-and what shape each value must have:
+#### Components
 
-- `partition=argument` - optional partitioning expression(s); a single field may be written
-  bare (`partition=$1`) or in a one-element tuple (`partition=($1,)`); multiple fields use a
-  multi-element tuple (`partition=($1, $2)`)
-- `order=argument` - optional sort key(s); a single sort field is a bare 2-tuple of
-  `(reference, direction)` (e.g. `order=($3, &AscNullsLast)`); multiple sort fields are a
-  tuple of such 2-tuples (e.g. `order=(($3, &AscNullsLast), ($4, &DescNullsLast))`)
-- `invocation=&Distinct` / `invocation=&All` - optional aggregation invocation
-- `phase=&InitialToResult` (etc.) - required aggregation phase
-- `rows=(lower, upper)` / `range=(lower, upper)` - optional, mutually exclusive window frame;
-  each bound is an integer (negative = preceding, positive = following, `0` = current row) or
-  `_` for unbounded
+- `phase` - required aggregation phase enum (e.g. `&InitialToResult`)
+- `partition` - optional expression or tuple of expressions
+- `order` - optional [sort field](#sort-relation) or tuple of sort fields
+- `invocation` - optional aggregation invocation enum (e.g. `&All`, `&Distinct`)
+- `rows` / `range` - optional frame bounds as `(lower, upper)`. Each bound is a
+  bare integer (negative = preceding, positive = following, `0` = current row)
+  or `_` for unbounded.
 
-`partition=`, `order=`, `invocation=`, and `rows=`/`range=` are all optional and are omitted when empty; `phase=` is always required and always printed. The grammar itself only requires that at least one named argument be present; the specific rules — that `phase=` must appear, that `rows=`/`range=` are mutually exclusive, and that a `range=` frame have exactly one `order=` field — are all enforced by the parser rather than by the grammar.
+`rows` and `range` are mutually exclusive. A `range` frame requires exactly one
+sort field.
+
+Function options and the deprecated protobuf `args` field are currently unsupported.
 
 #### Examples
 
@@ -689,28 +686,6 @@ Functions:
 Root[a, b, s]
   Project[$0, $1, sum($1) over(phase=&InitialToResult, order=($1, &AscNullsLast), invocation=&Distinct, partition=$0, rows=(-3, 0)):fp64?]
     Read[t => a:i32, b:fp64]
-# "#;
-#
-# let plan = Parser::parse(plan_text).unwrap();
-# assert_eq!(plan.relations.len(), 1);
-```
-
-Ranking-style window functions have no meaningful frame, so the `rows=`/`range=` clause is omitted entirely:
-
-```rust
-# use substrait_explain::Parser;
-#
-# let plan_text = r#"
-=== Extensions
-URNs:
-  @  1: https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml
-Functions:
-  ## 10 @  1: row_number
-
-=== Plan
-Root[a, r]
-  Project[$0, row_number() over(phase=&InitialToResult, order=($0, &AscNullsLast), partition=$0):i64]
-    Read[t => a:i32]
 # "#;
 #
 # let plan = Parser::parse(plan_text).unwrap();
@@ -769,36 +744,26 @@ Arguments in relations can be parameter literals, expressions, enums, or tuples 
 #### Syntax
 
 ```text
-<<<<<<< HEAD
 arguments := argument ("," argument)*
 named_arguments := name "=" argument ("," name "=" argument)*
-argument := enum / reference / parameter_literal / expression / tuple
+argument := enum / reference / parameter_literal / expression / tuple / "_"
 parameter_literal := float / integer / boolean / string / null
-=======
-argument := enum / reference / literal / expression / tuple / "_"
->>>>>>> d44f8db (feat: window function support)
 tuple := "(" ")"                                        // 0-tuple
        / "(" argument "," ")"                           // 1-tuple (trailing comma required)
        / "(" argument ("," argument)+ ","? ")"          // 2+-tuple (trailing comma optional)
 ```
 
-<<<<<<< HEAD
 A `parameter_literal` supplies a scalar value directly to a relation parameter
 and never has a type ascription. An `expression_literal` is part of an
 expression and therefore has a Substrait type. The relation-specific grammar
 determines which interpretation applies.
 
-Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and `(x, y,)` are equivalent.
-=======
-`_` is accepted syntactically as an argument (it denotes an unbounded window frame
-bound in `over(...)`), but is only meaningful there; consumers that don't support it —
-extension-relation arguments, for example — reject it during parsing.
+Within argument values, `_` is reserved for unbounded window frame bounds.
 
 Tuples follow the Python/Rust trailing-comma convention to disambiguate from parenthesised
 expressions: `(x)` is a parenthesised expression, not a tuple. A trailing comma is required to
 form a 1-element tuple: `(x,)`. For 2+ elements the trailing comma is optional: `(x, y)` and
 `(x, y,)` are equivalent.
->>>>>>> d44f8db (feat: window function support)
 
 #### Examples
 
