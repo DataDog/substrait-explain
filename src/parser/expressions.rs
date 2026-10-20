@@ -900,12 +900,18 @@ fn parse_window_partition(
     }
 }
 
-fn sort_field_from_tuple(
-    extensions: &SimpleExtensions,
-    tuple: Pair<Rule>,
-) -> Result<SortField, MessageParseError> {
-    assert_eq!(tuple.as_rule(), Rule::tuple);
+fn sort_field_from_tuple(tuple: Pair<Rule>) -> Result<SortField, MessageParseError> {
     let span = tuple.as_span();
+    if tuple.as_rule() != Rule::tuple {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            span,
+            format!(
+                "order= sort field must be a tuple (reference, direction), got {:?}",
+                tuple.as_rule()
+            ),
+        ));
+    }
     let items: Vec<_> = tuple.into_inner().collect();
     let [expr_pair, dir_pair] = <[_; 2]>::try_from(items).map_err(|items| {
         MessageParseError::invalid(
@@ -918,7 +924,22 @@ fn sort_field_from_tuple(
         )
     })?;
 
-    let expr = window_expression_from_value(extensions, expr_pair)?;
+    let expr_inner = unwrap_single_pair(expr_pair);
+    if expr_inner.as_rule() != Rule::reference {
+        return Err(MessageParseError::invalid(
+            "WindowFunction",
+            expr_inner.as_span(),
+            format!(
+                "order= sort field key must be a field reference, got {:?}",
+                expr_inner.as_rule()
+            ),
+        ));
+    }
+    let expr = Expression {
+        rex_type: Some(RexType::Selection(Box::new(FieldReference::parse_pair(
+            expr_inner,
+        )))),
+    };
 
     let dir_inner = unwrap_single_pair(dir_pair);
     if dir_inner.as_rule() != Rule::enum_value {
@@ -941,10 +962,7 @@ fn sort_field_from_tuple(
     })
 }
 
-fn parse_window_order(
-    extensions: &SimpleExtensions,
-    pair: Pair<Rule>,
-) -> Result<Vec<SortField>, MessageParseError> {
+fn parse_window_order(pair: Pair<Rule>) -> Result<Vec<SortField>, MessageParseError> {
     let inner = unwrap_single_pair(pair);
     if inner.as_rule() != Rule::tuple {
         return Err(MessageParseError::invalid(
@@ -966,10 +984,10 @@ fn parse_window_order(
     if is_list_of_fields {
         items
             .into_iter()
-            .map(|item| sort_field_from_tuple(extensions, unwrap_single_pair(item)))
+            .map(|item| sort_field_from_tuple(unwrap_single_pair(item)))
             .collect()
     } else {
-        Ok(vec![sort_field_from_tuple(extensions, inner)?])
+        Ok(vec![sort_field_from_tuple(inner)?])
     }
 }
 
@@ -1139,7 +1157,7 @@ impl ScopedParsePair for OverClause {
             .transpose()?
             .unwrap_or_default();
         let sorts = order_pair
-            .map(|p| parse_window_order(extensions, p))
+            .map(parse_window_order)
             .transpose()?
             .unwrap_or_default();
 
@@ -1150,6 +1168,7 @@ impl ScopedParsePair for OverClause {
                 "Missing required phase= argument in over(...)",
             )
         })?;
+        let phase_span = phase_pair.as_span();
         let phase = match window_enum_str(phase_pair, "phase")?.as_str() {
             "Unspecified" => AggregationPhase::Unspecified as i32,
             "InitialToIntermediate" => AggregationPhase::InitialToIntermediate as i32,
@@ -1159,7 +1178,7 @@ impl ScopedParsePair for OverClause {
             other => {
                 return Err(MessageParseError::invalid(
                     "AggregationPhase",
-                    span,
+                    phase_span,
                     format!("Unknown AggregationPhase: {other}"),
                 ));
             }
@@ -1167,18 +1186,21 @@ impl ScopedParsePair for OverClause {
 
         let invocation = match invocation_pair {
             None => AggregationInvocation::Unspecified as i32,
-            Some(p) => match window_enum_str(p, "invocation")?.as_str() {
-                "Unspecified" => AggregationInvocation::Unspecified as i32,
-                "All" => AggregationInvocation::All as i32,
-                "Distinct" => AggregationInvocation::Distinct as i32,
-                other => {
-                    return Err(MessageParseError::invalid(
-                        "AggregationInvocation",
-                        span,
-                        format!("Unknown AggregationInvocation: {other}"),
-                    ));
+            Some(p) => {
+                let invocation_span = p.as_span();
+                match window_enum_str(p, "invocation")?.as_str() {
+                    "Unspecified" => AggregationInvocation::Unspecified as i32,
+                    "All" => AggregationInvocation::All as i32,
+                    "Distinct" => AggregationInvocation::Distinct as i32,
+                    other => {
+                        return Err(MessageParseError::invalid(
+                            "AggregationInvocation",
+                            invocation_span,
+                            format!("Unknown AggregationInvocation: {other}"),
+                        ));
+                    }
                 }
-            },
+            }
         };
 
         let (bounds_type, lower_bound, upper_bound) = if let Some(p) = rows_pair {
@@ -1558,9 +1580,11 @@ impl ScopedParsePair for Measure {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
     use std::fmt::Debug;
 
     use pest::Parser as PestParser;
+    use pest::error::{Error as PestError, InputLocation};
 
     use super::*;
     use crate::parser::ExpressionParser;
@@ -2696,10 +2720,6 @@ mod tests {
                 "range= frame requires exactly one order= field",
             ),
             (
-                "add:i64_i64($0, $1) over(phase=&Bogus):i64",
-                "unknown phase= enum value",
-            ),
-            (
                 "add:i64_i64($0, $1) over(phase=&InitialToResult, rows=(0,)):i64",
                 "window frame with != 2 bounds",
             ),
@@ -2716,6 +2736,63 @@ mod tests {
             assert!(
                 result.is_err(),
                 "should be rejected: {reason} -- input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_window_function_invalid_order_entries_rejected() {
+        let exts = make_extensions_for_fn_tests();
+        let cases = [
+            (
+                "(($0, &AscNullsLast), $1)",
+                "order= sort field must be a tuple",
+            ),
+            (
+                "(add:i64_i64($0, $1):i64, &AscNullsLast)",
+                "order= sort field key must be a field reference",
+            ),
+        ];
+        for (order, expected) in cases {
+            let input =
+                format!("add:i64_i64($0, $1) over(phase=&InitialToResult, order={order}):i64");
+            let pair = parse_exact(Rule::window_function_call, &input);
+            let error = WindowFunction::parse_pair(&exts, pair).unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} for {input:?}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_window_function_unknown_enum_error_spans() {
+        let exts = make_extensions_for_fn_tests();
+        let cases = [
+            (
+                "partition=$0, phase=&Bogus, order=($1, &AscNullsLast)",
+                "Unknown AggregationPhase: Bogus",
+            ),
+            (
+                "phase=&InitialToResult, invocation=&Bogus, partition=$0",
+                "Unknown AggregationInvocation: Bogus",
+            ),
+        ];
+        for (over, expected) in cases {
+            let input = format!("add:i64_i64($0, $1) over({over}):i64");
+            let pair = parse_exact(Rule::window_function_call, &input);
+            let error = WindowFunction::parse_pair(&exts, pair).unwrap_err();
+            assert!(error.to_string().contains(expected), "got {error}");
+            let source = error
+                .source()
+                .unwrap()
+                .downcast_ref::<Box<PestError<Rule>>>()
+                .unwrap();
+            let start = input.find("&Bogus").unwrap();
+            assert_eq!(
+                source.location,
+                InputLocation::Span((start, start + "&Bogus".len())),
+                "unknown enum diagnostic must highlight only &Bogus: {error}"
             );
         }
     }
